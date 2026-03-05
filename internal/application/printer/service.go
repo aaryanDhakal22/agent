@@ -16,18 +16,25 @@ type Service struct {
 func NewService(p printer.Printer, logger zerolog.Logger) *Service {
 	return &Service{
 		printer: p,
-		logger:  logger.With().Str("service", "printer").Logger(),
+		logger:  logger.With().Str("module", "printer-service").Logger(),
 	}
 }
 
 // Print builds ESC/POS commands from the order and sends them to the printer.
 func (s *Service) Print(o order.OrderRequest) error {
+	s.logger.Info().Int("order_id", o.OrderID).Msg("Detecting printer availability")
+
 	if err := s.printer.Detect(); err != nil {
 		s.logger.Error().Err(err).Int("order_id", o.OrderID).Msg("Printer not reachable, skipping print")
 		return err
 	}
 
+	s.logger.Debug().Int("order_id", o.OrderID).Msg("Printer reachable")
+
+	s.logger.Debug().Int("order_id", o.OrderID).Msg("Building receipt commands")
 	commands := receipt.Build(o)
+
+	s.logger.Info().Int("order_id", o.OrderID).Int("bytes", len(commands)).Msg("Sending print job to printer")
 
 	if err := s.printer.Print(printer.PrintJob{Commands: commands}); err != nil {
 		s.logger.Error().Err(err).Int("order_id", o.OrderID).Msg("Failed to print receipt")

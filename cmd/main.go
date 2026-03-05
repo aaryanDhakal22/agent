@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"io"
 	"os"
 	"os/signal"
 	"syscall"
@@ -16,15 +17,56 @@ import (
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/sqs"
 	"github.com/rs/zerolog"
+	"gopkg.in/lumberjack.v2"
 )
 
 func main() {
-	logger := zerolog.New(os.Stdout).With().Timestamp().Logger()
+	// Temporary bootstrap logger used before the real logger is configured.
+	bootstrap := zerolog.New(zerolog.ConsoleWriter{Out: os.Stdout}).With().Timestamp().Logger()
 
+	// Load config first with a temporary stdout logger for startup errors.
 	cfg, err := config.Load()
 	if err != nil {
-		logger.Fatal().Err(err).Msg("Failed to load config")
+		bootstrap.Fatal().Err(err).Msg("Failed to load config")
 	}
+
+	// Determine log output writer.
+	var writer io.Writer
+	switch cfg.LogOutput {
+	case "json":
+		writer = os.Stdout
+	case "file":
+		if err := os.MkdirAll("log", 0o755); err != nil {
+			bootstrap.Fatal().Err(err).Msg("Failed to create log directory")
+		}
+		writer = &lumberjack.Logger{
+			Filename:   "log/agent.log",
+			MaxSize:    100, // MB
+			MaxBackups: 10,
+			MaxAge:     30, // days
+			Compress:   true,
+		}
+	default: // "console" or unset
+		writer = zerolog.ConsoleWriter{Out: os.Stdout}
+	}
+
+	// Determine log level.
+	level, err := zerolog.ParseLevel(cfg.LogLevel)
+	if err != nil || cfg.LogLevel == "" {
+		level = zerolog.InfoLevel
+	}
+	zerolog.SetGlobalLevel(level)
+
+	logger := zerolog.New(writer).With().Timestamp().Logger()
+	logger.Info().
+		Str("log_level", level.String()).
+		Str("log_output", func() string {
+			if cfg.LogOutput == "" {
+				return "console"
+			}
+			return cfg.LogOutput
+		}()).
+		Msg("Agent starting")
 
 	awsCfg, err := awsconfig.LoadDefaultConfig(context.Background(),
 		awsconfig.WithRegion(cfg.AWSRegion),

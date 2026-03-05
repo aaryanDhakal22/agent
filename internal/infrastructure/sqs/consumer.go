@@ -25,7 +25,7 @@ func NewConsumer(client *sqs.Client, queueURL string, orderService *order.Servic
 		client:       client,
 		queueURL:     queueURL,
 		orderService: orderService,
-		logger:       logger.With().Str("component", "sqs-consumer").Logger(),
+		logger:       logger.With().Str("module", "sqs-consumer").Logger(),
 	}
 }
 
@@ -54,6 +54,8 @@ func (c *Consumer) Start(ctx context.Context) {
 			continue
 		}
 
+		c.logger.Debug().Int("count", len(output.Messages)).Msg("Poll returned messages")
+
 		for _, msg := range output.Messages {
 			c.processMessage(ctx, msg)
 		}
@@ -66,6 +68,11 @@ func (c *Consumer) processMessage(ctx context.Context, msg sqstypes.Message) {
 		return
 	}
 
+	c.logger.Debug().
+		Str("message_id", aws.ToString(msg.MessageId)).
+		Str("body", *msg.Body).
+		Msg("Raw SQS message body")
+
 	var o orderdomain.OrderRequest
 	if err := json.Unmarshal([]byte(*msg.Body), &o); err != nil {
 		c.logger.Error().
@@ -75,21 +82,31 @@ func (c *Consumer) processMessage(ctx context.Context, msg sqstypes.Message) {
 		return
 	}
 
+	customerName := o.Customer.FirstName + " " + o.Customer.LastName
+
 	c.logger.Info().
 		Str("message_id", aws.ToString(msg.MessageId)).
 		Int("order_id", o.OrderID).
-		Msg("Processing order")
+		Str("customer_name", customerName).
+		Str("service_type", o.ServiceType).
+		Msg("Order received")
+
+	c.logger.Info().
+		Int("order_id", o.OrderID).
+		Str("customer_name", customerName).
+		Msg("Sending order to handler")
 
 	if err := c.orderService.Handle(o); err != nil {
 		c.logger.Error().
 			Err(err).
 			Str("message_id", aws.ToString(msg.MessageId)).
 			Int("order_id", o.OrderID).
+			Str("customer_name", customerName).
 			Msg("Failed to handle order, leaving on queue for retry")
 		return
 	}
 
-	// Delete message only after successful handling
+	// Delete message only after successful handling.
 	if _, err := c.client.DeleteMessage(ctx, &sqs.DeleteMessageInput{
 		QueueUrl:      aws.String(c.queueURL),
 		ReceiptHandle: msg.ReceiptHandle,
@@ -97,12 +114,15 @@ func (c *Consumer) processMessage(ctx context.Context, msg sqstypes.Message) {
 		c.logger.Error().
 			Err(err).
 			Str("message_id", aws.ToString(msg.MessageId)).
-			Msg("Failed to delete SQS message")
+			Int("order_id", o.OrderID).
+			Str("customer_name", customerName).
+			Msg("Failed to delete message from queue")
 		return
 	}
 
 	c.logger.Info().
 		Str("message_id", aws.ToString(msg.MessageId)).
 		Int("order_id", o.OrderID).
-		Msg("Order processed and message deleted from queue")
+		Str("customer_name", customerName).
+		Msg("Message deleted from queue")
 }
