@@ -1,0 +1,6 @@
+services:
+  agent:
+    build: .
+    env_file: .env
+    restart: unless-stopped
+    network_mode: host
