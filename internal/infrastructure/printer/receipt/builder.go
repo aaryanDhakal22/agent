@@ -1,3 +1,6 @@
+// filename: receipt.go
+// breadcrumb: quiccpos/agent/internal/domain/receipt/receipt.go
+
 package receipt
 
 import (
@@ -10,69 +13,78 @@ import (
 )
 
 const (
-	lineWidth = 48
+	lineWidth    = 41 // Max characters per line for 2x font on 80mm paper
+	marginSpaces = 0  // Equal gap on both sides for centering
 
 	// ESC/POS commands
-	cmdInit       = "\x1b\x40"         // ESC @ - initialize printer
-	cmdCenter     = "\x1b\x61\x01"     // ESC a 1 - center align
-	cmdLeft       = "\x1b\x61\x00"     // ESC a 0 - left align
-	cmdRight      = "\x1b\x61\x02"     // ESC a 2 - right align
-	cmdBoldOn     = "\x1b\x45\x01"     // ESC E 1 - bold on
-	cmdBoldOff    = "\x1b\x45\x00"     // ESC E 0 - bold off
-	cmdDoubleSz   = "\x1d\x21\x11"     // GS ! 0x11 - double width+height
-	cmdNormalSz   = "\x1d\x21\x00"     // GS ! 0x00 - normal size
-	cmdFeed       = "\x0a"             // line feed
-	cmdCut        = "\x1d\x56\x42\x03" // GS V 66 3 - full cut
+	cmdInit     = "\x1b\x40"         // ESC @ - initialize printer
+	cmdCenter   = "\x1b\x61\x01"     // ESC a 1 - center align
+	cmdLeft     = "\x1b\x61\x00"     // ESC a 0 - left align
+	cmdRight    = "\x1b\x61\x02"     // ESC a 2 - right align
+	cmdBoldOn   = "\x1b\x45\x01"     // ESC E 1 - bold on
+	cmdBoldOff  = "\x1b\x45\x00"     // ESC E 0 - bold off
+	cmdDoubleSz = "\x1d\x21\x11"     // GS ! 0x11 - double width+height
+	cmdQuadSz   = "\x1d\x21\x22"     // GS ! 0x22 - quad size (3x3)
+	cmdBaseSz   = "\x1b\x21\x10"     // GS ! 0x01 - base 2x size for entire receipt
+	cmdFeed     = "\x0a"             // line feed
+	cmdCut      = "\x1d\x56\x42\x03" // GS V 66 3 - full cut
 )
 
 // Build converts an OrderRequest into raw ESC/POS bytes for an 80mm thermal printer.
 func Build(o order.OrderRequest) []byte {
 	var buf bytes.Buffer
 
-	w := func(s string) { buf.WriteString(s) }
-	nl := func() { w(cmdFeed) }
+	// w writes content with margins on both sides
+	w := func(s string) {
+		// Don't add margins to ESC/POS commands (they start with escape chars)
+		if len(s) > 0 && (s[0] == '\x1b' || s[0] == '\x1d' || s[0] == '\x0a') {
+			buf.WriteString(s)
+		} else {
+			buf.WriteString(margin(s))
+		}
+	}
+	nl := func() { buf.WriteString(cmdFeed) }
 
 	w(cmdInit)
+	w(cmdBaseSz) // Set base DoubleHeight size for entire receipt
 
 	// --- Header ---
 	w(cmdCenter)
 	w(cmdBoldOn)
-	w(cmdDoubleSz)
+	w(cmdQuadSz) // Temporarily larger for header (3x3)
 	serviceLabel := formatServiceType(o.ServiceType)
 	w(serviceLabel)
 	nl()
-	w(cmdNormalSz)
-
-	if o.StoreName != "" {
-		w(o.StoreName)
-		nl()
-	}
 	w(cmdBoldOff)
-
-	// --- Order # and date ---
-	w(cmdLeft)
-	orderNum := fmt.Sprintf("Order#%d", o.OrderID)
-	placedOn := formatDate(o.SubmittedDate)
-	w(leftRight(orderNum, placedOn, lineWidth))
 	nl()
 
 	// --- Customer info ---
 	cust := o.Customer
 	fullName := strings.ToUpper(fmt.Sprintf("%s, %s", cust.LastName, cust.FirstName))
 	if cust.FirstName != "" || cust.LastName != "" {
-		w(fmt.Sprintf("Customer Name: %s", fullName))
+		w(cmdBoldOn)
+		w(cmdDoubleSz)
+		w(fmt.Sprintf("%s", fullName))
+		w(cmdBaseSz)
+		w(cmdBoldOff)
 		nl()
 	}
+	placedOn := formatDate(o.SubmittedDate)
+	w(placedOn)
+	nl()
+
 	if cust.Phone != "" {
 		w(cmdBoldOn)
 		w(fmt.Sprintf("Phone: %s", cust.Phone))
 		w(cmdBoldOff)
 		nl()
 	}
-	if cust.Email != "" {
-		w(fmt.Sprintf("Email: %s", cust.Email))
-		nl()
-	}
+
+	// --- Order # and date ---
+	// w(cmdLeft)
+	// orderNum := fmt.Sprintf("Order No. %d", o.OrderID)
+	// w(orderNum)
+	nl()
 
 	// --- Delivery address ---
 	if o.DeliveryAddress != nil {
@@ -81,10 +93,6 @@ func Build(o order.OrderRequest) []byte {
 			w(cmdBoldOn)
 			w(fmt.Sprintf("Street: %s", da.Street))
 			w(cmdBoldOff)
-			nl()
-		}
-		if da.City != "" || da.State != "" || da.Zip != "" {
-			w(fmt.Sprintf("City/State: %s, %s %s", da.City, da.State, da.Zip))
 			nl()
 		}
 	}
@@ -99,28 +107,23 @@ func Build(o order.OrderRequest) []byte {
 
 	// --- Payments ---
 	w(separator())
-	nl()
 	w(cmdCenter)
-	w(cmdBoldOn)
-	w("PAYMENTS")
-	w(cmdBoldOff)
 	nl()
-	w(cmdLeft)
 
 	for _, p := range o.Payments {
-		w(fmt.Sprintf("Payment Type: %s", p.Type))
-		nl()
-		if p.CardNumber != "" {
-			w(fmt.Sprintf("Card: %s", p.CardNumber))
-			nl()
+		w(cmdBoldOn)
+		w(cmdDoubleSz)
+		if p.Type != "cash" {
+			w(fmt.Sprintf("PAID - %s", p.Type))
+		} else {
+			w(fmt.Sprintf("CASH - $%.2f", o.OrderTotal))
 		}
+		w(cmdBaseSz)
+		w(cmdBoldOff)
 	}
 	nl()
-	w(cmdBoldOn)
-	w(fmt.Sprintf("Balance Owing: $%.2f", o.BalanceOwing))
-	w(cmdBoldOff)
-	nl()
 
+	w(cmdLeft)
 	// --- Items ---
 	w(separator())
 	nl()
@@ -198,8 +201,13 @@ func Build(o order.OrderRequest) []byte {
 	}
 
 	w(cmdBoldOn)
-	w(rightPair("Order Total:", fmt.Sprintf("$%.2f", o.OrderTotal)))
+	w(cmdDoubleSz)
+	w(cmdCenter)
+	nl()
+	w("Order Total:" + fmt.Sprintf("$%.2f", o.OrderTotal))
+
 	w(cmdBoldOff)
+	w(cmdBaseSz)
 	nl()
 
 	// --- Feed and cut ---
@@ -213,6 +221,12 @@ func Build(o order.OrderRequest) []byte {
 
 func separator() string {
 	return strings.Repeat("-", lineWidth)
+}
+
+// margin adds equal spacing on both sides of content for centering
+func margin(s string) string {
+	margins := strings.Repeat(" ", marginSpaces)
+	return margins + s
 }
 
 // leftRight prints left and right strings on the same line padded to width.
@@ -233,44 +247,44 @@ func rightAlign(s string, width int) string {
 
 // rightPair formats "Label:      $X.XX" right-aligned in lineWidth.
 func rightPair(label, value string) string {
-	return leftRight(strings.Repeat(" ", 20)+label, value, lineWidth)
+	return leftRight(strings.Repeat(" ", 19)+label, value, lineWidth)
 }
 
 // columnHeader returns the items table header.
 func columnHeader() string {
-	// Qty(4) + space(1) + Item(37) + Price(6)
-	return fmt.Sprintf("%-4s %-37s %6s", "Qty", "Item", "Price")
+	// Qty(3) + space(1) + Item(29) + Price(7)
+	return fmt.Sprintf("%-3s %-29s %7s", "Qty", "Item", "Price")
 }
 
 // itemLine formats a single item row.
 func itemLine(qty int, name string, price float64) string {
-	maxName := 37
+	maxName := 29
 	if len(name) > maxName {
 		name = name[:maxName]
 	}
-	return fmt.Sprintf("%-4d %-37s %6s", qty, name, fmt.Sprintf("$%.2f", price))
+	return fmt.Sprintf("%-3d %-29s %7s", qty, name, fmt.Sprintf("$%.2f", price))
 }
 
 // modifierLine formats a modifier indented under an item.
 func modifierLine(name string, price float64) string {
-	indent := "     " // 5 spaces (align under item name)
-	maxName := 37
+	indent := "    " // 4 spaces (align under item name)
+	maxName := 29
 	if len(name) > maxName {
 		name = name[:maxName]
 	}
-	return fmt.Sprintf("%s%-37s %6s", indent, name, fmt.Sprintf("$%.2f", price))
+	return fmt.Sprintf("%s%-29s %7s", indent, name, fmt.Sprintf("$%.2f", price))
 }
 
 // formatServiceType returns a human-readable header for the service type.
 func formatServiceType(t string) string {
 	switch strings.ToLower(t) {
 	case "delivery":
-		return "Online Order (Delivery)"
+		return "Delivery"
 	case "pickup":
-		return "Online Order (Pickup)"
+		return "Pickup"
 	default:
 		if t != "" {
-			return "Online Order (" + t + ")"
+			return strings.ToUpper(t)
 		}
 		return "Online Order"
 	}
@@ -286,7 +300,8 @@ func formatDate(s string) string {
 	}
 	for _, f := range formats {
 		if t, err := time.Parse(f, s); err == nil {
-			return t.Format("Mon, Jan 2 2006 @ 3:04 PM")
+			return t.Format("3:04 PM \n Jan 2, 2006")
+			// return t.Format("Mon, Jan 2 2006 @ 3:04 PM")
 		}
 	}
 	return s

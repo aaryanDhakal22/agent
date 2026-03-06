@@ -73,8 +73,16 @@ func (c *Consumer) processMessage(ctx context.Context, msg sqstypes.Message) {
 		Str("body", *msg.Body).
 		Msg("Raw SQS message body")
 
+	var sqsMsg orderdomain.OrderSQSMessage
+	if err := json.Unmarshal([]byte(*msg.Body), &sqsMsg); err != nil {
+		c.logger.Error().
+			Err(err).
+			Str("message_id", aws.ToString(msg.MessageId)).
+			Msg("Failed to unmarshal order from SQS message, skipping")
+		return
+	}
 	var o orderdomain.OrderRequest
-	if err := json.Unmarshal([]byte(*msg.Body), &o); err != nil {
+	if err := json.Unmarshal([]byte(sqsMsg.Payload), &o); err != nil {
 		c.logger.Error().
 			Err(err).
 			Str("message_id", aws.ToString(msg.MessageId)).

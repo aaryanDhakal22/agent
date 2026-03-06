@@ -1,6 +1,13 @@
 package order
 
 // OrderRequest is the aggregate root representing a full order payload received from SQS.
+type OrderSQSMessage struct {
+	ID          string
+	Payload     string
+	DateCreated string
+	CreatedAt   string
+}
+
 type OrderRequest struct {
 	TVer          string `json:"tVer"`
 	OrderID       int    `json:"order_id"`
