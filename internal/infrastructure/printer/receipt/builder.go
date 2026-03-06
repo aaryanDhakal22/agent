@@ -113,7 +113,8 @@ func Build(o order.OrderRequest) []byte {
 	for _, p := range o.Payments {
 		w(cmdBoldOn)
 		w(cmdDoubleSz)
-		if p.Type != "cash" {
+		pType := strings.ToLower(p.Type)
+		if len(pType) > 0 {
 			w(fmt.Sprintf("PAID - %s", p.Type))
 		} else {
 			w(fmt.Sprintf("CASH - $%.2f", o.OrderTotal))

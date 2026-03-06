@@ -89,6 +89,7 @@ func (c *Consumer) processMessage(ctx context.Context, msg sqstypes.Message) {
 			Msg("Failed to unmarshal order from SQS message, skipping")
 		return
 	}
+	c.logger.Debug().Msg(sqsMsg.Payload)
 
 	customerName := o.Customer.FirstName + " " + o.Customer.LastName
 
