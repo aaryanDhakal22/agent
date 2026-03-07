@@ -38,7 +38,8 @@ func Build(o order.OrderRequest) []byte {
 
 	// Print all the data that is going to be printed
 	rLogger.Debug().Int("order_id", o.OrderID).Msg("Printing receipt")
-	rLogger.Debug().Msg(o.String())
+	fmt.Println(o.String())
+	fmt.Printf("%+v\n", o)
 
 	var buf bytes.Buffer
 
@@ -86,6 +87,7 @@ func Build(o order.OrderRequest) []byte {
 		phoneNum := fmt.Sprintf("%s-%s-%s", cust.Phone[:3], cust.Phone[3:6], cust.Phone[6:])
 		w(fmt.Sprintf("Phone: %s", phoneNum))
 		w(cmdBoldOff)
+		w(cmdBaseSz)
 		nl()
 	}
 	w(separator())
@@ -128,6 +130,8 @@ func Build(o order.OrderRequest) []byte {
 		w(cmdBoldOn)
 		w(cmdDoubleSz)
 		pType := strings.ToLower(p.Type)
+		fmt.Printf("pType: %s\n", pType)
+		fmt.Printf("p.Type: %d\n", len(pType))
 
 		if len(pType) > 0 {
 			w(fmt.Sprintf("PAID - %s", p.Type))
