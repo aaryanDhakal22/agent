@@ -90,22 +90,22 @@ func Build(o order.OrderRequest) []byte {
 		w(cmdBaseSz)
 		nl()
 	}
+
+	// -- Placed On ---
 	w(separator())
+	nl()
+	w(cmdBoldOn)
 	placedOn := formatDate(o.SubmittedDate)
 	w(placedOn)
+	w(cmdBoldOff)
 	nl()
-
-	// --- Order # and date ---
-	// w(cmdLeft)
-	// orderNum := fmt.Sprintf("Order No. %d", o.OrderID)
-	// w(orderNum)
-	nl()
-	w(separator())
 
 	// --- Delivery address ---
 	if o.DeliveryAddress != nil {
 		da := o.DeliveryAddress
 		if da.Street != "" {
+			w(separator())
+			nl()
 			w(cmdBoldOn)
 			w(fmt.Sprintf("Street: %s", da.Street))
 			w(cmdBoldOff)
@@ -125,25 +125,20 @@ func Build(o order.OrderRequest) []byte {
 	w(separator())
 	w(cmdCenter)
 	nl()
-
-	for _, p := range o.Payments {
-		w(cmdBoldOn)
-		w(cmdDoubleSz)
-		pType := strings.ToLower(p.Type)
-		fmt.Printf("pType: %s\n", pType)
-		fmt.Printf("p.Type: %d\n", len(pType))
-
-		if len(pType) > 0 {
-			w(fmt.Sprintf("PAID - %s", p.Type))
-		} else {
-			w(fmt.Sprintf("CASH - $%.2f", o.OrderTotal))
-		}
-		w(cmdBaseSz)
-		w(cmdBoldOff)
+	w(cmdBoldOn)
+	w(cmdDoubleSz)
+	rLogger.Debug().Msg(fmt.Sprintf("Payments: %v", o.Payments))
+	if o.Payments == nil {
+		rLogger.Debug().Msg("No payments")
+		w(fmt.Sprintf("CASH - $%.2f", o.OrderTotal))
+	} else {
+		rLogger.Debug().Msg("Payments")
+		w("PAID - CARD")
 	}
-	nl()
 
 	w(cmdLeft)
+	nl()
+
 	// --- Items ---
 	w(separator())
 	nl()
@@ -184,42 +179,34 @@ func Build(o order.OrderRequest) []byte {
 
 	// --- Misc charges ---
 	for _, mc := range o.MiscCharges {
-		label := mc.MiscChargeName
-		if label == "" {
-			label = mc.MiscChargeDesc
+		label := mc.MiscChargeDesc
+		if o.ServiceType != "delivery" && mc.MiscChargeName == "Delivery" {
+			continue
 		}
-		w(rightPair(strings.ToUpper(label[:1])+label[1:]+":", fmt.Sprintf("$%.2f", mc.MiscChargeAmount)))
+		w(rightPair(label+":", fmt.Sprintf("$%.2f", mc.MiscChargeAmount)))
 		nl()
 	}
 
 	// --- Totals ---
 	subtotal := itemsSubtotal
-	for _, mc := range o.MiscCharges {
-		subtotal += mc.MiscChargeAmount
-	}
-
 	w(rightPair("Subtotal:", fmt.Sprintf("$%.2f", subtotal)))
 	nl()
 
 	for _, tax := range o.Taxes {
-		w(rightPair(tax.TaxName+":", fmt.Sprintf("$%.2f", tax.TaxAmount)))
+		w(rightPair(tax.TaxName+" (6.0%):", fmt.Sprintf("$%.2f", tax.TaxAmount)))
 		nl()
 	}
 
-	taxTotal := 0.0
-	for _, t := range o.Taxes {
-		taxTotal += t.TaxAmount
-	}
-	total := subtotal + taxTotal
+	w(cmdBoldOn)
 
-	w(rightPair("Total:", fmt.Sprintf("$%.2f", total)))
+	w(rightPair("Total:", fmt.Sprintf("$%.2f", o.OrderTotal)))
 	nl()
+	w(cmdBoldOff)
 
 	if o.Tip > 0 {
-		w(rightPair("Gratuity:", fmt.Sprintf("$%.2f", o.Tip)))
+		w(rightPair("Tips :", fmt.Sprintf("$%.2f", o.Tip)))
 		nl()
 	}
-
 	w(cmdBoldOn)
 	w(cmdDoubleSz)
 	w(cmdCenter)
@@ -287,12 +274,12 @@ func itemLine(qty int, name string, price float64) string {
 
 // modifierLine formats a modifier indented under an item.
 func modifierLine(name string, price float64) string {
-	indent := "    " // 4 spaces (align under item name)
-	maxName := 29
+	indent := "        " // 8 spaces (align under item name)
+	maxName := 25
 	if len(name) > maxName {
 		name = name[:maxName]
 	}
-	return fmt.Sprintf("%s%-29s %7s", indent, name, fmt.Sprintf("$%.2f", price))
+	return fmt.Sprintf("%s%-25s %7s", indent, name, fmt.Sprintf("$%.2f", price))
 }
 
 // formatServiceType returns a human-readable header for the service type.
