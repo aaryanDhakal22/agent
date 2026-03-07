@@ -19,20 +19,20 @@ const (
 	marginSpaces = 0  // Equal gap on both sides for centering
 
 	// ESC/POS commands
-	cmdInit     = "\x1b\x40"     // ESC @ - initialize printer
-	cmdCenter   = "\x1b\x61\x01" // ESC a 1 - center align
-	cmdLeft     = "\x1b\x61\x00" // ESC a 0 - left align
-	cmdRight    = "\x1b\x61\x02" // ESC a 2 - right align
-	cmdBoldOn   = "\x1b\x45\x01" // ESC E 1 - bold on
-	cmdBoldOff  = "\x1b\x45\x00" // ESC E 0 - bold off
-	cmdDoubleSz = "\x1d\x21\x11" // GS ! 0x11 - double width+height
-	cmdQuadSz   = "\x1d\x21\x22" // GS ! 0x22 - quad size (3x3)
-	cmdBaseSz   = "\x1b\x21\x10" // GS ! 0x01 - base 2x size for entire receipt
-	cmdNormalSz = "\x1d\x21\x00"
-	cmdFeed     = "\x0a"             // line feed
-	cmdCut      = "\x1d\x56\x42\x03" // GS V 66 3 - full cut
-	cmdInvert   = "\x1b\x7b\x01"     // ESC { 1 - invert on (white on black)
-	cmdUninvert = "\x1b\x7b\x00"
+	cmdInit      = "\x1b\x40"     // ESC @ - initialize printer
+	cmdCenter    = "\x1b\x61\x01" // ESC a 1 - center align
+	cmdLeft      = "\x1b\x61\x00" // ESC a 0 - left align
+	cmdRight     = "\x1b\x61\x02" // ESC a 2 - right align
+	cmdBoldOn    = "\x1b\x45\x01" // ESC E 1 - bold on
+	cmdBoldOff   = "\x1b\x45\x00" // ESC E 0 - bold off
+	cmdDoubleSz  = "\x1d\x21\x11" // GS ! 0x11 - double width+height
+	cmdQuadSz    = "\x1d\x21\x22" // GS ! 0x22 - quad size (3x3)
+	cmdBaseSz    = "\x1b\x21\x10" // GS ! 0x01 - base 2x size for entire receipt
+	cmdNormalSz  = "\x1d\x21\x00"
+	cmdFeed      = "\x0a"             // line feed
+	cmdCut       = "\x1d\x56\x42\x03" // GS V 66 3 - full cut
+	cmdInvertOn  = "\x1d\x42\x01"     // GS B 1 - reverse color (white text, black bg)
+	cmdInvertOff = "\x1d\x42\x00"     // GS B 0 - reverse color off
 )
 
 // Build converts an OrderRequest into raw ESC/POS bytes for an 80mm thermal printer.
