@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"quiccpos/agent/internal/domain/order"
+
+	"github.com/rs/zerolog/log"
 )
 
 const (
@@ -32,6 +34,12 @@ const (
 
 // Build converts an OrderRequest into raw ESC/POS bytes for an 80mm thermal printer.
 func Build(o order.OrderRequest) []byte {
+	rLogger := log.With().Str("module", "receipt-builder").Logger()
+
+	// Print all the data that is going to be printed
+	rLogger.Debug().Int("order_id", o.OrderID).Msg("Printing receipt")
+	rLogger.Debug().Msg(o.String())
+
 	var buf bytes.Buffer
 
 	// w writes content with margins on both sides
@@ -69,22 +77,28 @@ func Build(o order.OrderRequest) []byte {
 		w(cmdBoldOff)
 		nl()
 	}
-	placedOn := formatDate(o.SubmittedDate)
-	w(placedOn)
-	nl()
 
 	if cust.Phone != "" {
+		nl()
 		w(cmdBoldOn)
-		w(fmt.Sprintf("Phone: %s", cust.Phone))
+		w(cmdDoubleSz)
+		// Phone number format
+		phoneNum := fmt.Sprintf("%s-%s-%s", cust.Phone[:3], cust.Phone[3:6], cust.Phone[6:])
+		w(fmt.Sprintf("Phone: %s", phoneNum))
 		w(cmdBoldOff)
 		nl()
 	}
+	w(separator())
+	placedOn := formatDate(o.SubmittedDate)
+	w(placedOn)
+	nl()
 
 	// --- Order # and date ---
 	// w(cmdLeft)
 	// orderNum := fmt.Sprintf("Order No. %d", o.OrderID)
 	// w(orderNum)
 	nl()
+	w(separator())
 
 	// --- Delivery address ---
 	if o.DeliveryAddress != nil {
@@ -114,6 +128,7 @@ func Build(o order.OrderRequest) []byte {
 		w(cmdBoldOn)
 		w(cmdDoubleSz)
 		pType := strings.ToLower(p.Type)
+
 		if len(pType) > 0 {
 			w(fmt.Sprintf("PAID - %s", p.Type))
 		} else {
@@ -169,7 +184,7 @@ func Build(o order.OrderRequest) []byte {
 		if label == "" {
 			label = mc.MiscChargeDesc
 		}
-		w(rightPair(label+":", fmt.Sprintf("$%.2f", mc.MiscChargeAmount)))
+		w(rightPair(strings.ToUpper(label[:1])+label[1:]+":", fmt.Sprintf("$%.2f", mc.MiscChargeAmount)))
 		nl()
 	}
 
@@ -301,7 +316,7 @@ func formatDate(s string) string {
 	}
 	for _, f := range formats {
 		if t, err := time.Parse(f, s); err == nil {
-			return t.Format("3:04 PM \n Jan 2, 2006")
+			return t.Format("Jan 2, 2006 ----------  3:04 PM")
 			// return t.Format("Mon, Jan 2 2006 @ 3:04 PM")
 		}
 	}

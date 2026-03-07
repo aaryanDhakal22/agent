@@ -1,5 +1,10 @@
 package order
 
+import (
+	"encoding/json"
+	"fmt"
+)
+
 // OrderRequest is the aggregate root representing a full order payload received from SQS.
 type OrderSQSMessage struct {
 	ID          string
@@ -113,4 +118,13 @@ type Coupon struct {
 	Name    string  `json:"name"`
 	Value   float64 `json:"value"`
 	GroupID string  `json:"group_id"`
+}
+
+func (o OrderRequest) String() string {
+	jsonData, err := json.Marshal(o)
+	if err != nil {
+		fmt.Printf("Error marshalling order: %v", err)
+		return err.Error()
+	}
+	return string(jsonData)
 }
