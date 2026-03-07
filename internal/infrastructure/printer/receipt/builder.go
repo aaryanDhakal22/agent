@@ -71,12 +71,6 @@ func Build(o order.OrderRequest) []byte {
 
 	// --- Header ---
 	w(cmdCenter)
-	w(cmdNormalSz)
-	for _, line := range art {
-		w(line)
-		nl()
-	}
-
 	w(cmdBoldOn)
 	w(cmdQuadSz) // Temporarily larger for header (3x3)
 	serviceLabel := formatServiceType(o.ServiceType)
