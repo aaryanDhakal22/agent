@@ -157,8 +157,11 @@ func Build(o order.OrderRequest) []byte {
 		w(cmdBoldOn)
 		w(itemLine(item.Quantity, item.SizeName, item.Price))
 		w(cmdBoldOff)
+		nl()
+		w(cmdRight)
 		w(item.Name)
 		nl()
+		w(cmdLeft)
 
 		// Modifiers
 		for _, mod := range item.Modifiers {
@@ -280,12 +283,12 @@ func itemLine(qty int, name string, price float64) string {
 
 // modifierLine formats a modifier indented under an item.
 func modifierLine(name string, price float64) string {
-	indent := "        " // 8 spaces (align under item name)
-	maxName := 25
+	indent := "      " // 6 spaces (align under item name)
+	maxName := 27
 	if len(name) > maxName {
 		name = name[:maxName]
 	}
-	return fmt.Sprintf("%s%-25s %7s", indent, name, fmt.Sprintf("$%.2f", price))
+	return fmt.Sprintf("%s%-27s %7s", indent, name, fmt.Sprintf("$%.2f", price))
 }
 
 // formatServiceType returns a human-readable header for the service type.
