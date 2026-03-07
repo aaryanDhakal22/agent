@@ -95,9 +95,9 @@ func Build(o order.OrderRequest) []byte {
 			w(strings.Repeat(" ", len(fullName)+2))
 			nl()
 			deferDate := formatDate(o.DeferredDate)
-			w(strings.Repeat(" ", len(deferDate)+2))
-			w(formatDate(o.DeferredDate))
-			w(strings.Repeat(" ", len(deferDate)+2))
+			w(cmdLeft)
+			w(deferDate)
+			w(cmdCenter)
 			w(cmdInvertOff)
 		}
 		w(cmdBaseSz)
@@ -162,8 +162,10 @@ func Build(o order.OrderRequest) []byte {
 		w("PAID - CARD")
 		w(cmdBaseSz)
 		w(cmdLeft)
-		w(fmt.Sprintf("    %s", o.Payments[0].CardNumber))
-		w(fmt.Sprintf("    %s", o.Payments[0].AuthCode))
+		nl()
+		w(fmt.Sprintf("Card: %s", o.Payments[0].CardNumber))
+		nl()
+		w(fmt.Sprintf("AuthCode: %s", o.Payments[0].AuthCode))
 	}
 	w(cmdBaseSz)
 	w(cmdLeft)
@@ -203,7 +205,10 @@ func Build(o order.OrderRequest) []byte {
 			}
 
 			itemTotal += (mod.Price * float64(mod.Quantity))
-			w(modifierLine(fmt.Sprintf("(x%d) %s", mod.Quantity, modLabel), mod.Price))
+			if mod.Quantity > 1 {
+				modLabel = fmt.Sprintf("(x%d) %s", mod.Quantity, modLabel)
+			}
+			w(modifierLine(modLabel, mod.Price))
 			w(cmdBoldOff)
 			nl()
 		}
