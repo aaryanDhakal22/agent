@@ -66,6 +66,10 @@ func Build(o order.OrderRequest) []byte {
 	w(serviceLabel)
 	nl()
 	w(cmdBoldOff)
+	w(cmdBaseSz)
+	w("Lombardi's Pizza")
+	w("931 Taylor Avenue")
+	w("Towson, MD 21286")
 	nl()
 
 	// --- Customer info ---
@@ -108,7 +112,7 @@ func Build(o order.OrderRequest) []byte {
 			w(separator())
 			nl()
 			w(cmdBoldOn)
-			w(fmt.Sprintf("Street: %s", da.Street))
+			w(fmt.Sprintf("Street: %s,%s ", da.Street, da.Zip))
 			w(cmdBoldOff)
 			nl()
 		}
@@ -135,6 +139,10 @@ func Build(o order.OrderRequest) []byte {
 	} else {
 		rLogger.Debug().Msg("Payments")
 		w("PAID - CARD")
+		w(cmdBaseSz)
+		w(cmdLeft)
+		w(fmt.Sprintf("    %s", o.Payments[0].CardNumber))
+		w(fmt.Sprintf("    %s", o.Payments[0].AuthCode))
 	}
 	w(cmdBaseSz)
 	w(cmdLeft)
@@ -173,7 +181,8 @@ func Build(o order.OrderRequest) []byte {
 				w(cmdBoldOn)
 			}
 
-			w(modifierLine(modLabel, mod.Price))
+			itemTotal += (mod.Price * float64(mod.Quantity))
+			w(modifierLine(fmt.Sprintf("(x%d) %s", mod.Quantity, modLabel), mod.Price))
 			w(cmdBoldOff)
 			nl()
 		}
