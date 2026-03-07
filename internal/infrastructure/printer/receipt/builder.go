@@ -189,7 +189,7 @@ func Build(o order.OrderRequest) []byte {
 	// --- Misc charges ---
 	for _, mc := range o.MiscCharges {
 		label := mc.MiscChargeDesc
-		if o.ServiceType != "delivery" && mc.MiscChargeName == "Delivery" {
+		if o.ServiceType != "delivery" && mc.MiscChargeDesc == "Delivery Fee" {
 			continue
 		}
 		w(rightPair(label+":", fmt.Sprintf("$%.2f", mc.MiscChargeAmount)))
@@ -206,16 +206,12 @@ func Build(o order.OrderRequest) []byte {
 		nl()
 	}
 
-	w(cmdBoldOn)
-
-	w(rightPair("Total:", fmt.Sprintf("$%.2f", o.OrderTotal)))
-	nl()
-	w(cmdBoldOff)
-
 	if o.Tip > 0 {
 		w(rightPair("Tips :", fmt.Sprintf("$%.2f", o.Tip)))
 		nl()
 	}
+	nl()
+
 	w(cmdBoldOn)
 	w(cmdDoubleSz)
 	w(cmdCenter)
@@ -283,12 +279,12 @@ func itemLine(qty int, name string, price float64) string {
 
 // modifierLine formats a modifier indented under an item.
 func modifierLine(name string, price float64) string {
-	indent := "      " // 6 spaces (align under item name)
-	maxName := 27
+	indent := "     " // 5 spaces (align under item name)
+	maxName := 28
 	if len(name) > maxName {
 		name = name[:maxName]
 	}
-	return fmt.Sprintf("%s%-27s %7s", indent, name, fmt.Sprintf("$%.2f", price))
+	return fmt.Sprintf("%s%-28s %7s", indent, name, fmt.Sprintf("$%.2f", price))
 }
 
 // formatServiceType returns a human-readable header for the service type.
