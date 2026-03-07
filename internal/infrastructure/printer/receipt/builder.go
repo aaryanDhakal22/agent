@@ -175,6 +175,7 @@ func Build(o order.OrderRequest) []byte {
 			w(cmdBoldOff)
 			nl()
 		}
+		w(fmt.Sprintf("Note: %s", item.Notes))
 
 		// Item sum
 		w(rightAlign(fmt.Sprintf("Sum: $%.2f", itemTotal), lineWidth))
@@ -200,7 +201,7 @@ func Build(o order.OrderRequest) []byte {
 	nl()
 
 	for _, tax := range o.Taxes {
-		w(rightPair(tax.TaxName+" (6.0%):", fmt.Sprintf("$%.2f", tax.TaxAmount)))
+		w(rightPair(tax.TaxName+":", fmt.Sprintf("$%.2f", tax.TaxAmount)))
 		nl()
 	}
 
