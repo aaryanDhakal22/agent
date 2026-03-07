@@ -158,6 +158,7 @@ func Build(o order.OrderRequest) []byte {
 		w(itemLine(item.Quantity, item.SizeName, item.Price))
 		w(cmdBoldOff)
 		nl()
+		w(cmdLeft)
 		w(fmt.Sprintf("    %s", item.Name))
 		nl()
 
@@ -175,7 +176,10 @@ func Build(o order.OrderRequest) []byte {
 			w(cmdBoldOff)
 			nl()
 		}
-		w(fmt.Sprintf("Note: %s", item.Notes))
+		if item.Notes != "" {
+			w(fmt.Sprintf("    Note: %s", item.Notes))
+			nl()
+		}
 
 		// Item sum
 		w(rightAlign(fmt.Sprintf("Sum: $%.2f", itemTotal), lineWidth))
