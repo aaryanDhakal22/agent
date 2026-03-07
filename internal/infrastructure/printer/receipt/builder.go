@@ -1,4 +1,4 @@
-// filename: receipt.go
+// filename: receipt.gorec
 // breadcrumb: quiccpos/agent/internal/domain/receipt/receipt.go
 
 package receipt
@@ -158,10 +158,8 @@ func Build(o order.OrderRequest) []byte {
 		w(itemLine(item.Quantity, item.SizeName, item.Price))
 		w(cmdBoldOff)
 		nl()
-		w(cmdRight)
-		w(item.Name)
+		w(fmt.Sprintf("    %s", item.Name))
 		nl()
-		w(cmdLeft)
 
 		// Modifiers
 		for _, mod := range item.Modifiers {
