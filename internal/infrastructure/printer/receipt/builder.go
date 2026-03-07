@@ -135,7 +135,7 @@ func Build(o order.OrderRequest) []byte {
 		rLogger.Debug().Msg("Payments")
 		w("PAID - CARD")
 	}
-
+	w(cmdBaseSz)
 	w(cmdLeft)
 	nl()
 
@@ -154,18 +154,24 @@ func Build(o order.OrderRequest) []byte {
 		itemTotal := float64(item.Quantity) * item.Price
 		itemsSubtotal += itemTotal
 
-		// Item name line: qty | name + size | price
-		nameWithSize := item.Name
-		if item.SizeName != "" {
-			nameWithSize += " (" + item.SizeName + ")"
-		}
-		w(itemLine(item.Quantity, nameWithSize, item.Price))
+		w(cmdBoldOn)
+		w(itemLine(item.Quantity, item.SizeName, item.Price))
+		w(cmdBoldOff)
+		w(item.Name)
 		nl()
 
 		// Modifiers
 		for _, mod := range item.Modifiers {
 			modLabel := mod.Name
+			if strings.Contains(mod.Name, "fries") ||
+				strings.Contains(mod.Name, "salad") ||
+				strings.Contains(mod.Name, "Fries") ||
+				strings.Contains(mod.Name, "Salad") {
+				w(cmdBoldOn)
+			}
+
 			w(modifierLine(modLabel, mod.Price))
+			w(cmdBoldOff)
 			nl()
 		}
 
