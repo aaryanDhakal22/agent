@@ -83,9 +83,9 @@ func Build(o order.OrderRequest) []byte {
 	if cust.FirstName != "" || cust.LastName != "" {
 		w(cmdBoldOn)
 		w(cmdDoubleSz)
-		w(cmdInvert)
+		w(cmdInvertOn)
 		w(fmt.Sprintf("%s", fullName))
-		w(cmdUninvert)
+		w(cmdInvertOff)
 		w(cmdBaseSz)
 		w(cmdBoldOff)
 		nl()
