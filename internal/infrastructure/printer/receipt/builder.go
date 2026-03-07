@@ -68,8 +68,11 @@ func Build(o order.OrderRequest) []byte {
 	w(cmdBoldOff)
 	w(cmdBaseSz)
 	w("Lombardi's Pizza")
+	nl()
 	w("931 Taylor Avenue")
+	nl()
 	w("Towson, MD 21286")
+	nl()
 	nl()
 
 	// --- Customer info ---
