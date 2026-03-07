@@ -19,21 +19,33 @@ const (
 	marginSpaces = 0  // Equal gap on both sides for centering
 
 	// ESC/POS commands
-	cmdInit     = "\x1b\x40"         // ESC @ - initialize printer
-	cmdCenter   = "\x1b\x61\x01"     // ESC a 1 - center align
-	cmdLeft     = "\x1b\x61\x00"     // ESC a 0 - left align
-	cmdRight    = "\x1b\x61\x02"     // ESC a 2 - right align
-	cmdBoldOn   = "\x1b\x45\x01"     // ESC E 1 - bold on
-	cmdBoldOff  = "\x1b\x45\x00"     // ESC E 0 - bold off
-	cmdDoubleSz = "\x1d\x21\x11"     // GS ! 0x11 - double width+height
-	cmdQuadSz   = "\x1d\x21\x22"     // GS ! 0x22 - quad size (3x3)
-	cmdBaseSz   = "\x1b\x21\x10"     // GS ! 0x01 - base 2x size for entire receipt
+	cmdInit     = "\x1b\x40"     // ESC @ - initialize printer
+	cmdCenter   = "\x1b\x61\x01" // ESC a 1 - center align
+	cmdLeft     = "\x1b\x61\x00" // ESC a 0 - left align
+	cmdRight    = "\x1b\x61\x02" // ESC a 2 - right align
+	cmdBoldOn   = "\x1b\x45\x01" // ESC E 1 - bold on
+	cmdBoldOff  = "\x1b\x45\x00" // ESC E 0 - bold off
+	cmdDoubleSz = "\x1d\x21\x11" // GS ! 0x11 - double width+height
+	cmdQuadSz   = "\x1d\x21\x22" // GS ! 0x22 - quad size (3x3)
+	cmdBaseSz   = "\x1b\x21\x10" // GS ! 0x01 - base 2x size for entire receipt
+	cmdNormalSz = "\x1d\x21\x00"
 	cmdFeed     = "\x0a"             // line feed
 	cmdCut      = "\x1d\x56\x42\x03" // GS V 66 3 - full cut
 )
 
 // Build converts an OrderRequest into raw ESC/POS bytes for an 80mm thermal printer.
 func Build(o order.OrderRequest) []byte {
+	art := []string{
+		`█   █▀█ █▀▄▀█ █▄▄ ▄▀█ █▀█ █▀▄ █ █▀`,
+		`█▄▄ █▄█ █ ▀ █ █▄█ █▀█ █▀▄ █▄▀ █ ▄█`,
+		``,
+		`██████╗ ██╗███████╗███████╗ █████╗`,
+		`██╔══██╗██║╚══███╔╝╚══███╔╝██╔══██╗`,
+		`██████╔╝██║  ███╔╝   ███╔╝ ███████║`,
+		`██╔═══╝ ██║ ███╔╝   ███╔╝  ██╔══██║`,
+		`██║     ██║███████╗███████╗██║  ██║`,
+		`╚═╝     ╚═╝╚══════╝╚══════╝╚═╝  ╚═╝`,
+	}
 	rLogger := log.With().Str("module", "receipt-builder").Logger()
 
 	// Print all the data that is going to be printed
@@ -59,6 +71,12 @@ func Build(o order.OrderRequest) []byte {
 
 	// --- Header ---
 	w(cmdCenter)
+	w(cmdNormalSz)
+	for _, line := range art {
+		w(line)
+		nl()
+	}
+
 	w(cmdBoldOn)
 	w(cmdQuadSz) // Temporarily larger for header (3x3)
 	serviceLabel := formatServiceType(o.ServiceType)
