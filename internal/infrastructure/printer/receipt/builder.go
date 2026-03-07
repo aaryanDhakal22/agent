@@ -83,9 +83,23 @@ func Build(o order.OrderRequest) []byte {
 	if cust.FirstName != "" || cust.LastName != "" {
 		w(cmdBoldOn)
 		w(cmdDoubleSz)
-		w(cmdInvertOn)
-		w(fmt.Sprintf("%s", fullName))
-		w(cmdInvertOff)
+		if o.DeferredDate != "" {
+
+			w(cmdInvertOn)
+			w(strings.Repeat(" ", len(fullName)+2))
+			nl()
+		}
+		w(fmt.Sprintf(" %s ", fullName))
+		if o.DeferredDate != "" {
+			nl()
+			w(strings.Repeat(" ", len(fullName)+2))
+			nl()
+			deferDate := formatDate(o.DeferredDate)
+			w(strings.Repeat(" ", len(deferDate)+2))
+			w(formatDate(o.DeferredDate))
+			w(strings.Repeat(" ", len(deferDate)+2))
+			w(cmdInvertOff)
+		}
 		w(cmdBaseSz)
 		w(cmdBoldOff)
 		nl()
