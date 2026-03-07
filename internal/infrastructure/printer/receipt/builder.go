@@ -31,6 +31,8 @@ const (
 	cmdNormalSz = "\x1d\x21\x00"
 	cmdFeed     = "\x0a"             // line feed
 	cmdCut      = "\x1d\x56\x42\x03" // GS V 66 3 - full cut
+	cmdInvert   = "\x1b\x7b\x01"     // ESC { 1 - invert on (white on black)
+	cmdUninvert = "\x1b\x7b\x00"
 )
 
 // Build converts an OrderRequest into raw ESC/POS bytes for an 80mm thermal printer.
@@ -81,7 +83,9 @@ func Build(o order.OrderRequest) []byte {
 	if cust.FirstName != "" || cust.LastName != "" {
 		w(cmdBoldOn)
 		w(cmdDoubleSz)
+		w(cmdInvert)
 		w(fmt.Sprintf("%s", fullName))
+		w(cmdUninvert)
 		w(cmdBaseSz)
 		w(cmdBoldOff)
 		nl()

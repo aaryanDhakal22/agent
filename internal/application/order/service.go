@@ -1,8 +1,8 @@
 package order
 
 import (
-	"quiccpos/agent/internal/domain/order"
 	printerApp "quiccpos/agent/internal/application/printer"
+	"quiccpos/agent/internal/domain/order"
 
 	"github.com/rs/zerolog"
 )
