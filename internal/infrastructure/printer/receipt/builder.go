@@ -269,6 +269,17 @@ func Build(o order.OrderRequest) []byte {
 	w(cmdBoldOff)
 	w(cmdBaseSz)
 	nl()
+	nl()
+
+	// -- Final msg---
+	w(cmdBoldOn)
+	w(cmdQuadSz)
+	w(cmdCenter)
+	w("ONLINE ORDER")
+	w(cmdBoldOff)
+	w(cmdBaseSz)
+	w(cmdCut)
+	nl()
 
 	// --- Feed and cut ---
 	for i := 0; i < 4; i++ {
