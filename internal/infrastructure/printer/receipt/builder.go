@@ -266,12 +266,11 @@ func Build(o order.OrderRequest) []byte {
 		w(rightPair("Tips :", fmt.Sprintf("$%.2f", o.Tip)))
 		nl()
 	}
-	nl()
 	w(rightPair("Total:", fmt.Sprintf("$%.2f", o.OrderTotal)))
 
 	nl()
 	w(separator())
-
+	nl()
 	w(cmdBoldOn)
 	w(cmdDoubleSz)
 	w(cmdCenter)
