@@ -85,13 +85,13 @@ func Build(o order.OrderRequest) []byte {
 		deferDate := formatDate(o.DeferredDate)
 		w(strings.Repeat(" ", len(deferDate)+2))
 		w(cmdBoldOn)
+		nl()
 		w("FUTURE")
 		w(cmdBoldOff)
 		nl()
 		w(cmdBaseSz)
 		w(fmt.Sprintf(" %s ", deferDate))
 		nl()
-		w(strings.Repeat(" ", len(deferDate)+2))
 		w(cmdInvertOff)
 	}
 
@@ -99,6 +99,7 @@ func Build(o order.OrderRequest) []byte {
 	cust := o.Customer
 	fullName := strings.ToUpper(fmt.Sprintf("%s, %s", cust.LastName, cust.FirstName))
 	if cust.FirstName != "" || cust.LastName != "" {
+		nl()
 		nl()
 		w(cmdBoldOn)
 		w(cmdDoubleSz)
