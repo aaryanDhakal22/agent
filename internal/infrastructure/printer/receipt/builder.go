@@ -94,6 +94,7 @@ func Build(o order.OrderRequest) []byte {
 			nl()
 			w(strings.Repeat(" ", len(fullName)+2))
 			nl()
+			w(cmdBaseSz)
 			deferDate := formatDate(o.DeferredDate)
 			w(cmdLeft)
 			w(deferDate)
@@ -137,6 +138,7 @@ func Build(o order.OrderRequest) []byte {
 			w(cmdDoubleSz)
 			w(fmt.Sprintf("Street: %s", da.Street))
 			w(cmdBaseSz)
+			nl()
 			w(fmt.Sprintf("Apt: %s", da.Suite))
 			nl()
 			w(fmt.Sprintf("City: %s", da.City))
@@ -144,12 +146,14 @@ func Build(o order.OrderRequest) []byte {
 			w(fmt.Sprintf("Zip: %s", da.Zip))
 			nl()
 			w(cmdBoldOff)
+
 			nl()
 		}
 	}
 
 	// --- Notes ---
 	if o.Notes != "" {
+		w(cmdCenter)
 		w(separator())
 		nl()
 		w(fmt.Sprintf("Notes: %s", o.Notes))
