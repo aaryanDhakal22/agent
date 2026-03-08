@@ -77,38 +77,29 @@ func Build(o order.OrderRequest) []byte {
 	nl()
 	nl()
 
+	// -- Future Order ---
+	if o.DeferredDate != "" {
+		w(cmdInvertOn)
+		w(cmdDoubleSz)
+		w(cmdCenter)
+		w("FUTURE")
+		nl()
+		deferDate := formatDate(o.DeferredDate)
+		w(cmdBaseSz)
+		w(fmt.Sprintf(" %s ", deferDate))
+		nl()
+		w(strings.Repeat(" ", len(deferDate)+2))
+		w(cmdInvertOff)
+	}
+
 	// --- Customer info ---
 	cust := o.Customer
 	fullName := strings.ToUpper(fmt.Sprintf("%s, %s", cust.LastName, cust.FirstName))
 	if cust.FirstName != "" || cust.LastName != "" {
 		w(cmdBoldOn)
 		w(cmdDoubleSz)
-		if o.DeferredDate != "" {
-
-			w(cmdInvertOn)
-			w(strings.Repeat(" ", len(fullName)+2))
-			nl()
-		}
+		w(cmdCenter)
 		w(fmt.Sprintf(" %s ", fullName))
-		if o.DeferredDate != "" {
-			nl()
-			w(strings.Repeat(" ", len(fullName)+2))
-			nl()
-			// Add a gap
-			w(cmdInvertOff)
-			nl()
-
-			w(cmdBaseSz)
-			deferDate := formatDate(o.DeferredDate)
-			w(cmdCenter)
-			w(cmdInvertOn)
-			w(strings.Repeat(" ", len(deferDate)+2))
-			nl()
-			w(deferDate)
-			nl()
-			w(strings.Repeat(" ", len(deferDate)+2))
-			w(cmdInvertOff)
-		}
 		w(cmdBaseSz)
 		w(cmdBoldOff)
 		nl()
