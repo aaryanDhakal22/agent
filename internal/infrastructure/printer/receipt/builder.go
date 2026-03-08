@@ -103,7 +103,9 @@ func Build(o order.OrderRequest) []byte {
 			w(cmdCenter)
 			w(cmdInvertOn)
 			w(strings.Repeat(" ", len(deferDate)+2))
+			nl()
 			w(deferDate)
+			nl()
 			w(strings.Repeat(" ", len(deferDate)+2))
 			w(cmdInvertOff)
 		}
