@@ -83,16 +83,16 @@ func Build(o order.OrderRequest) []byte {
 		w(cmdDoubleSz)
 		w(cmdCenter)
 		deferDate := formatDate(o.DeferredDate)
-		w(strings.Repeat(" ", len(deferDate)+2))
 		w(cmdBoldOn)
+		w("        FUTURE      ")
+		w(cmdInvertOff)
 		nl()
-		w("FUTURE")
-		w(cmdBoldOff)
 		nl()
 		w(cmdBaseSz)
 		w(fmt.Sprintf(" %s ", deferDate))
+		w(cmdBoldOff)
+
 		nl()
-		w(cmdInvertOff)
 	}
 
 	// --- Customer info ---
@@ -139,9 +139,9 @@ func Build(o order.OrderRequest) []byte {
 			nl()
 			w(cmdBoldOn)
 			w(cmdLeft)
-			w(cmdDoubleSz)
-			w(fmt.Sprintf("Street: %s", da.Street))
 			w(cmdBaseSz)
+			w(fmt.Sprintf("Street: %s", da.Street))
+			w(cmdBoldOff)
 			nl()
 			w(fmt.Sprintf("Apt: %s", da.Suite))
 			nl()
@@ -267,12 +267,20 @@ func Build(o order.OrderRequest) []byte {
 		nl()
 	}
 	nl()
+	w(rightPair("Total:", fmt.Sprintf("$%.2f", o.OrderTotal)))
+
+	nl()
+	w(separator())
 
 	w(cmdBoldOn)
 	w(cmdDoubleSz)
 	w(cmdCenter)
 	nl()
-	w("Order Total:" + fmt.Sprintf("$%.2f", o.OrderTotal))
+	if o.Payments == nil {
+		w(fmt.Sprintf("Collect Cash: $%.2f", o.OrderTotal))
+	} else {
+		w("Order Total:" + fmt.Sprintf("$%.2f", o.OrderTotal))
+	}
 
 	w(cmdBoldOff)
 	w(cmdBaseSz)
