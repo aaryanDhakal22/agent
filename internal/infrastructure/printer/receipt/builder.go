@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"quiccpos/agent/internal/domain/order"
 
@@ -89,7 +90,7 @@ func Build(o order.OrderRequest) []byte {
 		nl()
 		nl()
 		w(cmdBaseSz)
-		w(fmt.Sprintf(" %s ", deferDate))
+		w(encase(lineWidth-10, fmt.Sprintf(" %s ", deferDate)))
 		w(cmdBoldOff)
 
 		nl()
@@ -391,4 +392,88 @@ func formatDate(s string) string {
 		}
 	}
 	return s
+}
+
+// encase wraps a string in a box using extended ASCII box-drawing characters.
+// lineWidth defines the inner content width. The string is word-wrapped to fit.
+func encase(lineWidth int, text string) string {
+	// Box-drawing characters
+	const (
+		topLeft     = "┌"
+		topRight    = "┐"
+		bottomLeft  = "└"
+		bottomRight = "┘"
+		horizontal  = "─"
+		vertical    = "│"
+	)
+
+	top := topLeft + strings.Repeat(horizontal, lineWidth+2) + topRight
+	bottom := bottomLeft + strings.Repeat(horizontal, lineWidth+2) + bottomRight
+
+	var sb strings.Builder
+	sb.WriteString(top + "\n")
+
+	for _, line := range wrapText(text, lineWidth) {
+		padded := line + strings.Repeat(" ", lineWidth-utf8.RuneCountInString(line))
+		sb.WriteString(vertical + " " + padded + " " + vertical + "\n")
+	}
+
+	sb.WriteString(bottom)
+	return sb.String()
+}
+
+// wrapText splits text into lines of at most maxWidth runes, breaking on word boundaries.
+func wrapText(text string, maxWidth int) []string {
+	if maxWidth <= 0 {
+		return []string{text}
+	}
+
+	words := strings.Fields(text)
+	if len(words) == 0 {
+		return []string{""}
+	}
+
+	var lines []string
+	current := ""
+
+	for _, word := range words {
+		wordLen := utf8.RuneCountInString(word)
+		curLen := utf8.RuneCountInString(current)
+
+		if curLen == 0 {
+			// Word longer than lineWidth: hard-break it
+			if wordLen > maxWidth {
+				runes := []rune(word)
+				for len(runes) > 0 {
+					chunk := string(runes[:min(maxWidth, len(runes))])
+					runes = runes[min(maxWidth, len(runes)):]
+					if len(runes) == 0 {
+						current = chunk
+					} else {
+						lines = append(lines, chunk)
+					}
+				}
+			} else {
+				current = word
+			}
+		} else if curLen+1+wordLen <= maxWidth {
+			current += " " + word
+		} else {
+			lines = append(lines, current)
+			current = word
+		}
+	}
+
+	if current != "" {
+		lines = append(lines, current)
+	}
+
+	return lines
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }
