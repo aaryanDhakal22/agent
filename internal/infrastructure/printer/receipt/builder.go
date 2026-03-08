@@ -94,11 +94,17 @@ func Build(o order.OrderRequest) []byte {
 			nl()
 			w(strings.Repeat(" ", len(fullName)+2))
 			nl()
+			// Add a gap
+			w(cmdInvertOff)
+			nl()
+
 			w(cmdBaseSz)
 			deferDate := formatDate(o.DeferredDate)
-			w(cmdLeft)
-			w(deferDate)
 			w(cmdCenter)
+			w(cmdInvertOn)
+			w(strings.Repeat(" ", len(deferDate)+2))
+			w(deferDate)
+			w(strings.Repeat(" ", len(deferDate)+2))
 			w(cmdInvertOff)
 		}
 		w(cmdBaseSz)
