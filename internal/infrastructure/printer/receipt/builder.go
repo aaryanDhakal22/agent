@@ -90,7 +90,7 @@ func Build(o order.OrderRequest) []byte {
 		nl()
 		nl()
 		w(cmdBaseSz)
-		w(encase(lineWidth-10, fmt.Sprintf(" %s ", deferDate)))
+		w(fmt.Sprintf(" %s ", deferDate))
 		w(cmdBoldOff)
 
 		nl()
