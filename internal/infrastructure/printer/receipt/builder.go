@@ -76,7 +76,6 @@ func Build(o order.OrderRequest) []byte {
 	nl()
 	w("Towson, MD 21286")
 	nl()
-	nl()
 
 	// -- Future Order ---
 	if o.DeferredDate != "" {
@@ -138,11 +137,12 @@ func Build(o order.OrderRequest) []byte {
 		if da.Street != "" {
 			w(separator())
 			nl()
-			w(cmdBoldOn)
 			w(cmdLeft)
-			w(cmdBaseSz)
-			w(fmt.Sprintf("Street: %s", da.Street))
+			w(cmdDoubleSz)
+			w(cmdBoldOn)
+			w(fmt.Sprintf("St: %s", da.Street))
 			w(cmdBoldOff)
+			w(cmdBaseSz)
 			nl()
 			w(fmt.Sprintf("Apt: %s", da.Suite))
 			nl()
@@ -150,7 +150,6 @@ func Build(o order.OrderRequest) []byte {
 			nl()
 			w(fmt.Sprintf("Zip: %s", da.Zip))
 			nl()
-			w(cmdBoldOff)
 
 			nl()
 		}
