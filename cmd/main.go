@@ -83,7 +83,12 @@ func main() {
 	sqsClient := sqs.NewFromConfig(awsCfg)
 
 	escposPrinter := escpos.New(cfg.PrinterIP, logger)
+	pizzaPrinter := escpos.New(cfg.PizzaPrinterIP, logger)
 	printerService := printerApp.NewService(escposPrinter, logger)
+	pizzaService := printerApp.NewService(pizzaPrinter, logger)
+
+	go pizzaService.KeepCheck()
+
 	orderService := orderApp.NewService(printerService, logger)
 
 	consumer := sqsconsumer.NewConsumer(sqsClient, cfg.SQSQueueURL, orderService, logger)

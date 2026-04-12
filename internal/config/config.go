@@ -11,6 +11,7 @@ type Config struct {
 	AWSSecretAccessKey string
 	SQSQueueURL        string
 	PrinterIP          string
+	PizzaPrinterIP     string
 	LogLevel           string // trace|debug|info|warn|error — default "info"
 	LogOutput          string // console|json|file — default "console"
 }
@@ -22,6 +23,7 @@ func Load() (*Config, error) {
 		AWSSecretAccessKey: os.Getenv("AWS_SECRET_ACCESS_KEY"),
 		SQSQueueURL:        os.Getenv("SQS_QUEUE_URL"),
 		PrinterIP:          os.Getenv("PRINTER_IP"),
+		PizzaPrinterIP:     "192.168.1.116",
 		LogLevel:           os.Getenv("LOG_LEVEL"),
 		LogOutput:          os.Getenv("LOG_OUTPUT"),
 	}

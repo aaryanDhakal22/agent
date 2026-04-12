@@ -1,6 +1,8 @@
 package printer
 
 import (
+	"time"
+
 	"quiccpos/agent/internal/domain/order"
 	"quiccpos/agent/internal/domain/printer"
 	"quiccpos/agent/internal/infrastructure/printer/receipt"
@@ -17,6 +19,18 @@ func NewService(p printer.Printer, logger zerolog.Logger) *Service {
 	return &Service{
 		printer: p,
 		logger:  logger.With().Str("module", "printer-service").Logger(),
+	}
+}
+
+func (s *Service) KeepCheck() error {
+	for {
+		s.logger.Info().Msg("Detecting printer availability : ")
+		if err := s.printer.Detect(); err != nil {
+			s.logger.Error().Err(err).Msg("Printer not reachable, Please check your printer")
+			continue
+		}
+		s.logger.Info().Msg("Printer reachable")
+		time.Sleep(time.Second * 10)
 	}
 }
 

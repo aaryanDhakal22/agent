@@ -3,8 +3,8 @@ package sqsconsumer
 import (
 	"context"
 	"encoding/json"
-
 	"quiccpos/agent/internal/application/order"
+
 	orderdomain "quiccpos/agent/internal/domain/order"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
