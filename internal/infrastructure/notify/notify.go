@@ -27,11 +27,13 @@ func (n *Notifier) Send(message string) error {
 		"message": {message},
 	})
 	if err != nil {
+		fmt.Println(err)
 		return fmt.Errorf("pushover request failed: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
+		fmt.Println(resp.StatusCode)
 		return fmt.Errorf("pushover returned status %d", resp.StatusCode)
 	}
 
