@@ -28,12 +28,12 @@ func NewNotifier(appToken string, userKey string) *Notifier {
 }
 
 func (n *Notifier) Send(message string) error {
-	resp, err := http.PostForm(n.pushoverURL, url.Values{
+	resp, _ := http.PostForm(n.pushoverURL, url.Values{
 		"token":   {n.appToken},
 		"user":    {n.userKey},
 		"message": {message},
 	})
-	if err != nil {
+	if resp.StatusCode != http.StatusOK {
 		var errData NotifierError
 		dec := json.NewDecoder(resp.Body)
 		if err := dec.Decode(&errData); err != nil {
@@ -42,11 +42,6 @@ func (n *Notifier) Send(message string) error {
 		return fmt.Errorf("Pushover error: %+v\n", errData)
 	}
 	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		fmt.Println(resp.StatusCode)
-		return fmt.Errorf("pushover returned status %d", resp.StatusCode)
-	}
 
 	return nil
 }
