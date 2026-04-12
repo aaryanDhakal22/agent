@@ -25,6 +25,7 @@ type ESCPOSPrinter struct {
 func New(ip string, name string, logger zerolog.Logger) *ESCPOSPrinter {
 	return &ESCPOSPrinter{
 		ip:     ip,
+		name:   name,
 		logger: logger.With().Str("module", "escpos-printer").Str("printer_ip", ip).Logger(),
 	}
 }
