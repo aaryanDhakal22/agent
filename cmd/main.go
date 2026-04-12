@@ -84,7 +84,10 @@ func main() {
 	sqsClient := sqs.NewFromConfig(awsCfg)
 	// Create a notification service
 	notifier := notify.NewNotifier(cfg.PushoverAppToken, cfg.PushoverUserKey)
-	notifier.Send("Agent started")
+	err = notifier.Send("Agent started")
+	if err != nil {
+		logger.Fatal().Err(err).Msg("Failed to create notifier")
+	}
 
 	// Initiate auxiliary printers
 	pizzaPrinter := escpos.New(cfg.PizzaPrinterIP, "Pizza", logger)
