@@ -1,10 +1,12 @@
 package printer
 
 import (
+	"fmt"
 	"time"
 
 	"quiccpos/agent/internal/domain/order"
 	"quiccpos/agent/internal/domain/printer"
+	"quiccpos/agent/internal/infrastructure/notify"
 	"quiccpos/agent/internal/infrastructure/printer/receipt"
 
 	"github.com/rs/zerolog"
@@ -22,15 +24,17 @@ func NewService(p printer.Printer, logger zerolog.Logger) *Service {
 	}
 }
 
-func (s *Service) KeepCheck() error {
+func (s *Service) KeepCheck(delay time.Duration, notifier *notify.Notifier) {
 	for {
-		s.logger.Info().Msg("Detecting printer availability : ")
+		s.logger.Debug().Msg("Detecting printer availability : ")
 		if err := s.printer.Detect(); err != nil {
 			s.logger.Error().Err(err).Msg("Printer not reachable, Please check your printer")
+			panicMsg := fmt.Sprintf("The %v-Printer is unreachable.", s.printer.Name())
+			notifier.Send(panicMsg)
 			continue
 		}
-		s.logger.Info().Msg("Printer reachable")
-		time.Sleep(time.Second * 10)
+		s.logger.Debug().Msg("Printer reachable")
+		time.Sleep(delay)
 	}
 }
 

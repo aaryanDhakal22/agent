@@ -11,17 +11,18 @@ import (
 )
 
 const (
-	printerPort    = "9100"
-	detectTimeout  = 3 * time.Second
-	printTimeout   = 10 * time.Second
+	printerPort   = "9100"
+	detectTimeout = 3 * time.Second
+	printTimeout  = 10 * time.Second
 )
 
 type ESCPOSPrinter struct {
 	ip     string
+	name   string
 	logger zerolog.Logger
 }
 
-func New(ip string, logger zerolog.Logger) *ESCPOSPrinter {
+func New(ip string, name string, logger zerolog.Logger) *ESCPOSPrinter {
 	return &ESCPOSPrinter{
 		ip:     ip,
 		logger: logger.With().Str("module", "escpos-printer").Str("printer_ip", ip).Logger(),
@@ -82,4 +83,8 @@ func (p *ESCPOSPrinter) Print(job printer.PrintJob) error {
 		Int("bytes", len(job.Commands)).
 		Msg("Receipt sent to printer successfully")
 	return nil
+}
+
+func (p *ESCPOSPrinter) Name() string {
+	return p.name
 }

@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"time"
 )
 
 type Config struct {
@@ -12,8 +13,14 @@ type Config struct {
 	SQSQueueURL        string
 	PrinterIP          string
 	PizzaPrinterIP     string
+	DesiPrinterIP      string
+	SubPrinterIP       string
+	WingsPrinterIP     string
 	LogLevel           string // trace|debug|info|warn|error — default "info"
 	LogOutput          string // console|json|file — default "console"
+	PrinterDetectDelay time.Duration
+	PushoverAppToken   string
+	PushoverUserKey    string
 }
 
 func Load() (*Config, error) {
@@ -23,9 +30,16 @@ func Load() (*Config, error) {
 		AWSSecretAccessKey: os.Getenv("AWS_SECRET_ACCESS_KEY"),
 		SQSQueueURL:        os.Getenv("SQS_QUEUE_URL"),
 		PrinterIP:          os.Getenv("PRINTER_IP"),
-		PizzaPrinterIP:     "192.168.1.116",
-		LogLevel:           os.Getenv("LOG_LEVEL"),
-		LogOutput:          os.Getenv("LOG_OUTPUT"),
+		PizzaPrinterIP:     os.Getenv("PIZZA_PRINTER_IP"),
+		DesiPrinterIP:      os.Getenv("DESI_PRINTER_IP"),
+		SubPrinterIP:       os.Getenv("SUB_PRINTER_IP"),
+		WingsPrinterIP:     os.Getenv("WINGS_PRINTER_IP"),
+		PrinterDetectDelay: getPrinterDetectDelay(),
+		PushoverAppToken:   os.Getenv("PUSHOVER_APP_TOKEN"),
+		PushoverUserKey:    os.Getenv("PUSHOVER_USER_KEY"),
+
+		LogLevel:  os.Getenv("LOG_LEVEL"),
+		LogOutput: os.Getenv("LOG_OUTPUT"),
 	}
 
 	if cfg.AWSRegion == "" {
@@ -45,4 +59,15 @@ func Load() (*Config, error) {
 	}
 
 	return cfg, nil
+}
+
+func getPrinterDetectDelay() time.Duration {
+	if v := os.Getenv("PRINTER_DETECT_DELAY"); v != "" {
+		d, err := time.ParseDuration(v + "s")
+		if err != nil {
+			return time.Second * 25
+		}
+		return d
+	}
+	return time.Second * 25
 }

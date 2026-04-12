@@ -10,6 +10,7 @@ import (
 	orderApp "quiccpos/agent/internal/application/order"
 	printerApp "quiccpos/agent/internal/application/printer"
 	"quiccpos/agent/internal/config"
+	"quiccpos/agent/internal/infrastructure/notify"
 	"quiccpos/agent/internal/infrastructure/printer/escpos"
 	sqsconsumer "quiccpos/agent/internal/infrastructure/sqs"
 
@@ -81,16 +82,34 @@ func main() {
 	}
 
 	sqsClient := sqs.NewFromConfig(awsCfg)
+	// Create a notification service
+	notifier := notify.NewNotifier(cfg.PushoverAppToken, cfg.PushoverUserKey)
 
-	escposPrinter := escpos.New(cfg.PrinterIP, logger)
-	pizzaPrinter := escpos.New(cfg.PizzaPrinterIP, logger)
-	printerService := printerApp.NewService(escposPrinter, logger)
+	// Initiate auxiliary printers
+	pizzaPrinter := escpos.New(cfg.PizzaPrinterIP, "Pizza", logger)
+	desiPrinter := escpos.New(cfg.DesiPrinterIP, "Desi", logger)
+	subPrinter := escpos.New(cfg.SubPrinterIP, "Sub", logger)
+	wingsPrinter := escpos.New(cfg.WingsPrinterIP, "Wings", logger)
+	onlinePrinter := escpos.New(cfg.PrinterIP, "Online", logger)
+
+	// Create printer services
 	pizzaService := printerApp.NewService(pizzaPrinter, logger)
+	desiService := printerApp.NewService(desiPrinter, logger)
+	subService := printerApp.NewService(subPrinter, logger)
+	wingsService := printerApp.NewService(wingsPrinter, logger)
+	onlineService := printerApp.NewService(onlinePrinter, logger)
 
-	go pizzaService.KeepCheck()
+	// Run checks in parallel
+	go pizzaService.KeepCheck(cfg.PrinterDetectDelay, notifier)
+	go desiService.KeepCheck(cfg.PrinterDetectDelay, notifier)
+	go subService.KeepCheck(cfg.PrinterDetectDelay, notifier)
+	go wingsService.KeepCheck(cfg.PrinterDetectDelay, notifier)
+	go onlineService.KeepCheck(cfg.PrinterDetectDelay, notifier)
 
-	orderService := orderApp.NewService(printerService, logger)
+	// Online order printing
+	orderService := orderApp.NewService(onlineService, logger)
 
+	// Create a consumer for SQS messages
 	consumer := sqsconsumer.NewConsumer(sqsClient, cfg.SQSQueueURL, orderService, logger)
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

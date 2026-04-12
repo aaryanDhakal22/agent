@@ -3,6 +3,7 @@ package printer
 // Printer handles detection and printing to an ESC/POS thermal printer.
 type Printer interface {
 	Detect() error
+	Name() string
 	Print(job PrintJob) error
 }
 
