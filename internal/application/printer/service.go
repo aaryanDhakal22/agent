@@ -26,15 +26,16 @@ func NewService(p printer.Printer, logger zerolog.Logger) *Service {
 
 func (s *Service) KeepCheck(delay time.Duration, notifier *notify.Notifier) {
 	for {
+		time.Sleep(delay)
 		s.logger.Debug().Msg("Detecting printer availability : ")
 		if err := s.printer.Detect(); err != nil {
-			s.logger.Error().Err(err).Msg("Printer not reachable, Please check your printer")
-			panicMsg := fmt.Sprintf("The %v-Printer is unreachable.", s.printer.Name())
+			panicMsg := fmt.Sprintf("The %s Printer is unreachable.", s.printer.Name())
+
+			s.logger.Info().Msg(panicMsg)
 			notifier.Send(panicMsg)
 			continue
 		}
 		s.logger.Debug().Msg("Printer reachable")
-		time.Sleep(delay)
 	}
 }
 
