@@ -41,6 +41,7 @@ func Load() (*Config, error) {
 		LogLevel:  os.Getenv("LOG_LEVEL"),
 		LogOutput: os.Getenv("LOG_OUTPUT"),
 	}
+	fmt.Printf("cfg: %+v\n", cfg)
 
 	if cfg.AWSRegion == "" {
 		return nil, fmt.Errorf("AWS_REGION is required")
