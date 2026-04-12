@@ -85,9 +85,9 @@ func main() {
 	// Create a notification service
 	notifier := notify.NewNotifier(cfg.PushoverAppToken, cfg.PushoverUserKey)
 	err = notifier.Send("Agent started")
-	// if err != nil {
-	// 	logger.Fatal().Err(err).Msg("Failed to create notifier")
-	// }
+	if err != nil {
+		logger.Fatal().Err(err).Msg("Failed to create notifier")
+	}
 
 	// Initiate auxiliary printers
 	pizzaPrinter := escpos.New(cfg.PizzaPrinterIP, "Pizza", logger)
