@@ -33,6 +33,7 @@ func (s *Service) KeepCheck(delay time.Duration, notifier *notify.Notifier) {
 
 			s.logger.Info().Msg(panicMsg)
 			notifier.Send(panicMsg, "printer-error")
+			time.Sleep(delay + (3 * time.Second))
 			continue
 		}
 		s.logger.Debug().Msg("Printer reachable")
