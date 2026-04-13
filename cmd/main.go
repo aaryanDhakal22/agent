@@ -84,7 +84,7 @@ func main() {
 	sqsClient := sqs.NewFromConfig(awsCfg)
 	// Create a notification service
 	notifier := notify.NewNotifier(cfg.PushoverAppToken, cfg.PushoverUserKey)
-	err = notifier.Send("Agent started")
+	err = notifier.Send("Agent started", "classical")
 	if err != nil {
 		logger.Fatal().Err(err).Msg("Failed to create notifier")
 	}
@@ -111,7 +111,7 @@ func main() {
 	go onlineService.KeepCheck(cfg.PrinterDetectDelay, notifier)
 
 	// Online order printing
-	orderService := orderApp.NewService(onlineService, logger)
+	orderService := orderApp.NewService(onlineService, notifier, logger)
 
 	// Create a consumer for SQS messages
 	consumer := sqsconsumer.NewConsumer(sqsClient, cfg.SQSQueueURL, orderService, logger)

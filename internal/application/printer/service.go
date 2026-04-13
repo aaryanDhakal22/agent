@@ -32,7 +32,7 @@ func (s *Service) KeepCheck(delay time.Duration, notifier *notify.Notifier) {
 			panicMsg := fmt.Sprintf("The %s Printer is unreachable.", s.printer.Name())
 
 			s.logger.Info().Msg(panicMsg)
-			notifier.Send(panicMsg)
+			notifier.Send(panicMsg, "printer-error")
 			continue
 		}
 		s.logger.Debug().Msg("Printer reachable")

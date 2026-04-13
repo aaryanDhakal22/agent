@@ -27,11 +27,12 @@ func NewNotifier(appToken string, userKey string) *Notifier {
 	}
 }
 
-func (n *Notifier) Send(message string) error {
+func (n *Notifier) Send(message string, sound string) error {
 	resp, _ := http.PostForm(n.pushoverURL, url.Values{
 		"token":   {n.appToken},
 		"user":    {n.userKey},
 		"message": {message},
+		"sound":   {sound},
 	})
 	if resp.StatusCode != http.StatusOK {
 		var errData NotifierError
