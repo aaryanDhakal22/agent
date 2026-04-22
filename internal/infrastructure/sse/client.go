@@ -150,9 +150,28 @@ func (c *Client) connect(ctx context.Context) error {
 }
 
 // printBacklog fetches recent orders from the main server and prints any that
-// the agent hasn't already handled in this session.
+// arrived while the agent was disconnected.
 func (c *Client) printBacklog(ctx context.Context) {
-	c.logger.Debug().Int("fetch_num", backlogFetchNum).Msg("Fetching recent orders for backlog check")
+	// Use the highest order ID in the store as a session watermark.
+	// If the store is empty we have no reference point for this session
+	// (agent may have restarted or disconnected before receiving any orders),
+	// so skip to avoid reprinting orders from a previous session.
+	entries := c.store.List()
+	if len(entries) == 0 {
+		c.logger.Info().Msg("Store empty — skipping backlog (no session watermark to compare against)")
+		return
+	}
+
+	highestKnownID := 0
+	for _, e := range entries {
+		if e.Order.OrderID > highestKnownID {
+			highestKnownID = e.Order.OrderID
+		}
+	}
+	c.logger.Debug().
+		Int("highest_known_id", highestKnownID).
+		Int("fetch_num", backlogFetchNum).
+		Msg("Session watermark set — fetching recent orders for backlog check")
 
 	orders, err := c.mainClient.FetchRecentOrders(backlogFetchNum)
 	if err != nil {
@@ -162,10 +181,11 @@ func (c *Client) printBacklog(ctx context.Context) {
 
 	c.logger.Debug().Int("fetched", len(orders)).Msg("Backlog orders fetched from main server")
 
-	// Find orders not yet handled (not in store), then print oldest-first.
+	// Only print orders strictly newer than our watermark — anything at or
+	// below highestKnownID was either already printed or predates this session.
 	var missed []order.OrderRequest
 	for _, o := range orders {
-		if !c.store.Has(o.OrderID) {
+		if o.OrderID > highestKnownID {
 			missed = append(missed, o)
 		}
 	}
