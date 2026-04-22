@@ -1,6 +1,17 @@
 services:
   agent:
     build: .
-    env_file: .env
+    environment:
+      - MAIN_SERVER_URL
+      - AGENT_API_KEY
+      - LOG_LEVEL
+      - PRINTER_IP
+      - DESI_PRINTER_IP
+      - PIZZA_PRINTER_IP
+      - SUB_PRINTER_IP
+      - WINGS_PRINTER_IP
+      - PRINTER_DETECT_DELAY
+      - PUSHOVER_APP_TOKEN
+      - PUSHOVER_USER_KEY
     restart: unless-stopped
     network_mode: host
