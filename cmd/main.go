@@ -10,9 +10,12 @@ import (
 	orderApp "quiccpos/agent/internal/application/order"
 	printerApp "quiccpos/agent/internal/application/printer"
 	"quiccpos/agent/internal/config"
+	"quiccpos/agent/internal/infrastructure/mainclient"
 	"quiccpos/agent/internal/infrastructure/notify"
 	"quiccpos/agent/internal/infrastructure/printer/escpos"
 	sseclient "quiccpos/agent/internal/infrastructure/sse"
+	"quiccpos/agent/internal/store"
+	"quiccpos/agent/internal/transport"
 
 	"github.com/rs/zerolog"
 	"gopkg.in/lumberjack.v2"
@@ -55,6 +58,7 @@ func main() {
 	logger.Info().
 		Str("log_level", level.String()).
 		Str("main_server_url", cfg.MainServerURL).
+		Str("http_port", cfg.HTTPPort).
 		Msg("Agent starting")
 
 	notifier := notify.NewNotifier(cfg.PushoverAppToken, cfg.PushoverUserKey)
@@ -82,11 +86,18 @@ func main() {
 
 	orderService := orderApp.NewService(onlineService, notifier, logger)
 
-	sseClient := sseclient.New(cfg.MainServerURL, cfg.AgentAPIKey, orderService, logger)
+	orderStore := store.New()
+	mainClient := mainclient.New(cfg.MainServerURL, cfg.AgentAPIKey, logger)
+	sseClient := sseclient.New(cfg.MainServerURL, cfg.AgentAPIKey, orderService, orderStore, mainClient, logger)
+
+	httpServer := transport.NewServer(orderStore, orderService, cfg.HTTPPort, logger)
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
-	sseClient.Start(ctx)
+	go httpServer.Start(ctx)
+	go sseClient.Start(ctx)
+
+	<-ctx.Done()
 	logger.Info().Msg("Agent shut down")
 }

@@ -9,6 +9,7 @@ import (
 type Config struct {
 	MainServerURL      string
 	AgentAPIKey        string
+	HTTPPort           string
 	PrinterIP          string
 	PizzaPrinterIP     string
 	DesiPrinterIP      string
@@ -25,6 +26,7 @@ func Load() (*Config, error) {
 	cfg := &Config{
 		MainServerURL:      os.Getenv("MAIN_SERVER_URL"),
 		AgentAPIKey:        os.Getenv("AGENT_API_KEY"),
+		HTTPPort:           getEnvDefault("HTTP_PORT", "8080"),
 		PrinterIP:          os.Getenv("PRINTER_IP"),
 		PizzaPrinterIP:     os.Getenv("PIZZA_PRINTER_IP"),
 		DesiPrinterIP:      os.Getenv("DESI_PRINTER_IP"),
@@ -48,6 +50,13 @@ func Load() (*Config, error) {
 	}
 
 	return cfg, nil
+}
+
+func getEnvDefault(key, fallback string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return fallback
 }
 
 func getPrinterDetectDelay() time.Duration {

@@ -4,6 +4,7 @@ services:
     environment:
       - MAIN_SERVER_URL
       - AGENT_API_KEY
+      - HTTP_PORT=8080
       - LOG_LEVEL
       - PRINTER_IP
       - DESI_PRINTER_IP
@@ -14,4 +15,22 @@ services:
       - PUSHOVER_APP_TOKEN
       - PUSHOVER_USER_KEY
     restart: unless-stopped
-    network_mode: host
+    networks:
+      - agent-net
+
+  nginx:
+    image: nginx:alpine
+    ports:
+      - "80:80"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./nginx/index.html:/usr/share/nginx/html/index.html:ro
+    depends_on:
+      - agent
+    restart: unless-stopped
+    networks:
+      - agent-net
+
+networks:
+  agent-net:
+    driver: bridge
