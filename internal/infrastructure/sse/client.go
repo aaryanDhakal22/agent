@@ -3,6 +3,7 @@ package sse
 import (
 	"bufio"
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -26,6 +27,15 @@ const (
 // MainClient fetches recent orders from the main server for backlog recovery.
 type MainClient interface {
 	FetchRecentOrders(num int) ([]order.OrderRequest, error)
+}
+
+// http11Client forces HTTP/1.1 by disabling HTTP/2 negotiation (TLS ALPN).
+// SSE requires a persistent connection — HTTP/2 multiplexed streams are
+// terminated by proxies on idle timeout, causing spurious disconnects.
+var http11Client = &http.Client{
+	Transport: &http.Transport{
+		TLSNextProto: make(map[string]func(string, *tls.Conn) http.RoundTripper),
+	},
 }
 
 type Client struct {
@@ -111,9 +121,9 @@ func (c *Client) connect(ctx context.Context) error {
 	req.Header.Set("Cache-Control", "no-cache")
 	req.Header.Set("X-API-Key", c.apiKey)
 
-	c.logger.Debug().Str("url", url).Msg("Dialing main server")
+	c.logger.Debug().Str("url", url).Msg("Dialing main server (HTTP/1.1 forced)")
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := http11Client.Do(req)
 	if err != nil {
 		return fmt.Errorf("dial: %w", err)
 	}
