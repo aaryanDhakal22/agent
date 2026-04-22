@@ -236,6 +236,8 @@ func (c *Client) readEvents(ctx context.Context, r io.Reader) error {
 	c.logger.Debug().Msg("Starting SSE event loop")
 
 	scanner := bufio.NewScanner(r)
+	// Default 64 KB buffer is too small for large order payloads with many items.
+	scanner.Buffer(make([]byte, 0, 256*1024), 1024*1024) // up to 1 MB per line
 
 	var eventType, dataLine string
 	lineCount := 0
