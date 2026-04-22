@@ -12,26 +12,20 @@ import (
 	"quiccpos/agent/internal/config"
 	"quiccpos/agent/internal/infrastructure/notify"
 	"quiccpos/agent/internal/infrastructure/printer/escpos"
-	sqsconsumer "quiccpos/agent/internal/infrastructure/sqs"
+	sseclient "quiccpos/agent/internal/infrastructure/sse"
 
-	awsconfig "github.com/aws/aws-sdk-go-v2/config"
-	"github.com/aws/aws-sdk-go-v2/credentials"
-	"github.com/aws/aws-sdk-go-v2/service/sqs"
 	"github.com/rs/zerolog"
 	"gopkg.in/lumberjack.v2"
 )
 
 func main() {
-	// Temporary bootstrap logger used before the real logger is configured.
 	bootstrap := zerolog.New(zerolog.ConsoleWriter{Out: os.Stdout}).With().Timestamp().Logger()
 
-	// Load config first with a temporary stdout logger for startup errors.
 	cfg, err := config.Load()
 	if err != nil {
 		bootstrap.Fatal().Err(err).Msg("Failed to load config")
 	}
 
-	// Determine log output writer.
 	var writer io.Writer
 	switch cfg.LogOutput {
 	case "json":
@@ -42,16 +36,15 @@ func main() {
 		}
 		writer = &lumberjack.Logger{
 			Filename:   "log/agent.log",
-			MaxSize:    100, // MB
+			MaxSize:    100,
 			MaxBackups: 10,
-			MaxAge:     30, // days
+			MaxAge:     30,
 			Compress:   true,
 		}
-	default: // "console" or unset
+	default:
 		writer = zerolog.ConsoleWriter{Out: os.Stdout}
 	}
 
-	// Determine log level.
 	level, err := zerolog.ParseLevel(cfg.LogLevel)
 	if err != nil || cfg.LogLevel == "" {
 		level = zerolog.InfoLevel
@@ -61,64 +54,39 @@ func main() {
 	logger := zerolog.New(writer).With().Timestamp().Logger()
 	logger.Info().
 		Str("log_level", level.String()).
-		Str("log_output", func() string {
-			if cfg.LogOutput == "" {
-				return "console"
-			}
-			return cfg.LogOutput
-		}()).
+		Str("main_server_url", cfg.MainServerURL).
 		Msg("Agent starting")
 
-	awsCfg, err := awsconfig.LoadDefaultConfig(context.Background(),
-		awsconfig.WithRegion(cfg.AWSRegion),
-		awsconfig.WithCredentialsProvider(credentials.NewStaticCredentialsProvider(
-			cfg.AWSAccessKeyID,
-			cfg.AWSSecretAccessKey,
-			"",
-		)),
-	)
-	if err != nil {
-		logger.Fatal().Err(err).Msg("Failed to load AWS config")
-	}
-
-	sqsClient := sqs.NewFromConfig(awsCfg)
-	// Create a notification service
 	notifier := notify.NewNotifier(cfg.PushoverAppToken, cfg.PushoverUserKey)
-	err = notifier.Send("Agent started", "classical")
-	if err != nil {
-		logger.Fatal().Err(err).Msg("Failed to create notifier")
+	if err := notifier.Send("Agent started", "classical"); err != nil {
+		logger.Fatal().Err(err).Msg("Failed to send startup notification")
 	}
 
-	// Initiate auxiliary printers
 	pizzaPrinter := escpos.New(cfg.PizzaPrinterIP, "Pizza", logger)
 	desiPrinter := escpos.New(cfg.DesiPrinterIP, "Desi", logger)
 	subPrinter := escpos.New(cfg.SubPrinterIP, "Sub", logger)
 	wingsPrinter := escpos.New(cfg.WingsPrinterIP, "Wings", logger)
 	onlinePrinter := escpos.New(cfg.PrinterIP, "Online", logger)
 
-	// Create printer services
 	pizzaService := printerApp.NewService(pizzaPrinter, logger)
 	desiService := printerApp.NewService(desiPrinter, logger)
 	subService := printerApp.NewService(subPrinter, logger)
 	wingsService := printerApp.NewService(wingsPrinter, logger)
 	onlineService := printerApp.NewService(onlinePrinter, logger)
 
-	// Run checks in parallel
 	go pizzaService.KeepCheck(cfg.PrinterDetectDelay, notifier)
 	go desiService.KeepCheck(cfg.PrinterDetectDelay, notifier)
 	go subService.KeepCheck(cfg.PrinterDetectDelay, notifier)
 	go wingsService.KeepCheck(cfg.PrinterDetectDelay, notifier)
 	go onlineService.KeepCheck(cfg.PrinterDetectDelay, notifier)
 
-	// Online order printing
 	orderService := orderApp.NewService(onlineService, notifier, logger)
 
-	// Create a consumer for SQS messages
-	consumer := sqsconsumer.NewConsumer(sqsClient, cfg.SQSQueueURL, orderService, logger)
+	sseClient := sseclient.New(cfg.MainServerURL, cfg.AgentAPIKey, orderService, logger)
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
-	consumer.Start(ctx)
+	sseClient.Start(ctx)
 	logger.Info().Msg("Agent shut down")
 }
