@@ -22,24 +22,32 @@ import (
 const tracerName = "quiccpos/agent/printer"
 
 type Service struct {
-	printer printer.Printer
-	logger  zerolog.Logger
-	tracer  trace.Tracer
-	meters  observability.Meters
+	printer  printer.Printer
+	registry *Registry
+	logger   zerolog.Logger
+	tracer   trace.Tracer
+	meters   observability.Meters
 }
 
-func NewService(p printer.Printer, logger zerolog.Logger, meters observability.Meters) *Service {
+func NewService(p printer.Printer, registry *Registry, logger zerolog.Logger, meters observability.Meters) *Service {
+	if registry != nil {
+		registry.Register(p.Name())
+	}
 	return &Service{
-		printer: p,
-		logger:  logger.With().Str("module", "printer-service").Str("printer_name", p.Name()).Logger(),
-		tracer:  otel.Tracer(tracerName),
-		meters:  meters,
+		printer:  p,
+		registry: registry,
+		logger:   logger.With().Str("module", "printer-service").Str("printer_name", p.Name()).Logger(),
+		tracer:   otel.Tracer(tracerName),
+		meters:   meters,
 	}
 }
 
-// KeepCheck runs until ctx is cancelled, polling printer reachability every
-// `delay`. Status transitions are both sent to Pushover and recorded as a
-// printer.status gauge point.
+// KeepCheck runs until ctx is cancelled, polling printer reachability. Probes
+// immediately on entry, then every `delay` thereafter, so the Registry has a
+// real status inside ~3s (detect timeout) of agent start rather than having
+// to wait a full delay cycle. Transitions are sent to Pushover and recorded
+// as a printer.status gauge point and in the in-memory Registry that the
+// mobile-facing /api/printers endpoint reads.
 func (s *Service) KeepCheck(ctx context.Context, delay time.Duration, notifier *notify.Notifier) {
 	name := s.printer.Name()
 	nameAttr := attribute.String("printer.name", name)
@@ -47,18 +55,12 @@ func (s *Service) KeepCheck(ctx context.Context, delay time.Duration, notifier *
 	lastUp := false
 
 	for {
-		select {
-		case <-ctx.Done():
-			s.logger.Info().Ctx(ctx).Msg("KeepCheck stopping")
-			return
-		case <-time.After(delay):
-		}
-
 		s.logger.Debug().Ctx(ctx).Msg("Checking printer availability")
 
 		start := time.Now()
 		err := s.printer.Detect(ctx)
-		elapsedMs := float64(time.Since(start).Microseconds()) / 1000.0
+		probedAt := time.Now()
+		elapsedMs := float64(probedAt.Sub(start).Microseconds()) / 1000.0
 		s.meters.PrinterDetectMs.Record(ctx, elapsedMs, metric.WithAttributes(nameAttr))
 
 		up := err == nil
@@ -67,6 +69,10 @@ func (s *Service) KeepCheck(ctx context.Context, delay time.Duration, notifier *
 			statusVal = 1
 		}
 		s.meters.PrinterStatus.Record(ctx, statusVal, metric.WithAttributes(nameAttr))
+
+		if s.registry != nil {
+			s.registry.Record(name, up, err, probedAt)
+		}
 
 		if err != nil {
 			if !lastStatusKnown || lastUp {
@@ -102,6 +108,13 @@ func (s *Service) KeepCheck(ctx context.Context, delay time.Duration, notifier *
 		lastStatusKnown = true
 		lastUp = true
 		s.logger.Debug().Ctx(ctx).Msg("Printer reachable")
+
+		select {
+		case <-ctx.Done():
+			s.logger.Info().Ctx(ctx).Msg("KeepCheck stopping")
+			return
+		case <-time.After(delay):
+		}
 	}
 }
 

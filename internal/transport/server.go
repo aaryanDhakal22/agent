@@ -10,6 +10,7 @@ import (
 	"time"
 
 	orderApp "quiccpos/agent/internal/application/order"
+	printerApp "quiccpos/agent/internal/application/printer"
 	"quiccpos/agent/internal/domain/order"
 	"quiccpos/agent/internal/infra/ssebroker"
 
@@ -26,18 +27,20 @@ const (
 )
 
 type Server struct {
-	service *orderApp.Service
-	broker  *ssebroker.Broker
-	logger  zerolog.Logger
-	port    string
+	service  *orderApp.Service
+	broker   *ssebroker.Broker
+	printers *printerApp.Registry
+	logger   zerolog.Logger
+	port     string
 }
 
-func NewServer(svc *orderApp.Service, broker *ssebroker.Broker, port string, logger zerolog.Logger) *Server {
+func NewServer(svc *orderApp.Service, broker *ssebroker.Broker, printers *printerApp.Registry, port string, logger zerolog.Logger) *Server {
 	return &Server{
-		service: svc,
-		broker:  broker,
-		port:    port,
-		logger:  logger.With().Str("module", "http-server").Logger(),
+		service:  svc,
+		broker:   broker,
+		printers: printers,
+		port:     port,
+		logger:   logger.With().Str("module", "http-server").Logger(),
 	}
 }
 
@@ -55,6 +58,11 @@ func (s *Server) Start(ctx context.Context) {
 	// toggles can join without breaking the shape.
 	mux.HandleFunc("GET /api/settings/auto-accept", s.withCORS(s.handleGetAutoAccept))
 	mux.HandleFunc("PUT /api/settings/auto-accept", s.withCORS(s.handleSetAutoAccept))
+
+	// Printer status routes — read-only cache served by the in-memory
+	// Registry; no TCP probe happens at request time.
+	mux.HandleFunc("GET /api/printers", s.withCORS(s.handleListPrinters))
+	mux.HandleFunc("GET /api/printers/{name}", s.withCORS(s.handleGetPrinter))
 
 	// SSE stream for mobile.
 	mux.HandleFunc("GET /api/events", s.withCORS(s.handleEvents))
@@ -202,6 +210,24 @@ func (s *Server) handleSetAutoAccept(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.writeJSON(w, http.StatusOK, body)
+}
+
+// --- printer status -------------------------------------------------------
+
+// GET /api/printers — snapshot of every registered printer's last probe.
+func (s *Server) handleListPrinters(w http.ResponseWriter, _ *http.Request) {
+	s.writeJSON(w, http.StatusOK, s.printers.All())
+}
+
+// GET /api/printers/{name} — single printer status.
+func (s *Server) handleGetPrinter(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	snap, ok := s.printers.Get(name)
+	if !ok {
+		s.writeError(w, r, http.StatusNotFound, fmt.Errorf("unknown printer %q", name))
+		return
+	}
+	s.writeJSON(w, http.StatusOK, snap)
 }
 
 // --- SSE to mobile --------------------------------------------------------

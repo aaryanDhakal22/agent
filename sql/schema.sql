@@ -21,7 +21,7 @@ CREATE INDEX IF NOT EXISTS idx_orders_state_pending ON orders (arrival_date DESC
 -- the mobile interface flips. The CHECK constraint guarantees only one row.
 CREATE TABLE IF NOT EXISTS settings (
     id          integer     PRIMARY KEY DEFAULT 1,
-    auto_accept boolean     NOT NULL DEFAULT true,
+    auto_accept boolean     NOT NULL DEFAULT false,
     updated_at  timestamptz NOT NULL DEFAULT now(),
     CONSTRAINT settings_singleton CHECK (id = 1)
 );

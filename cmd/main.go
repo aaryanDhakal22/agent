@@ -126,17 +126,19 @@ func main() {
 	}
 
 	// --- Printers ----------------------------------------------------------
+	printerRegistry := printerApp.NewRegistry()
+
 	pizzaPrinter := escpos.New(cfg.PizzaPrinterIP, "Pizza", logger)
 	desiPrinter := escpos.New(cfg.DesiPrinterIP, "Desi", logger)
 	subPrinter := escpos.New(cfg.SubPrinterIP, "Sub", logger)
 	wingsPrinter := escpos.New(cfg.WingsPrinterIP, "Wings", logger)
 	onlinePrinter := escpos.New(cfg.PrinterIP, "Online", logger)
 
-	pizzaService := printerApp.NewService(pizzaPrinter, logger, meters)
-	desiService := printerApp.NewService(desiPrinter, logger, meters)
-	subService := printerApp.NewService(subPrinter, logger, meters)
-	wingsService := printerApp.NewService(wingsPrinter, logger, meters)
-	onlineService := printerApp.NewService(onlinePrinter, logger, meters)
+	pizzaService := printerApp.NewService(pizzaPrinter, printerRegistry, logger, meters)
+	desiService := printerApp.NewService(desiPrinter, printerRegistry, logger, meters)
+	subService := printerApp.NewService(subPrinter, printerRegistry, logger, meters)
+	wingsService := printerApp.NewService(wingsPrinter, printerRegistry, logger, meters)
+	onlineService := printerApp.NewService(onlinePrinter, printerRegistry, logger, meters)
 
 	go pizzaService.KeepCheck(ctx, cfg.PrinterDetectDelay, notifier)
 	go desiService.KeepCheck(ctx, cfg.PrinterDetectDelay, notifier)
@@ -150,7 +152,7 @@ func main() {
 
 	// --- SSE client (main/ → agent) + HTTP server (agent → mobile) --------
 	sseClient := sseclient.New(cfg.MainServerURL, cfg.AgentAPIKey, orderService, logger, meters)
-	httpServer := transport.NewServer(orderService, broker, cfg.HTTPPort, logger)
+	httpServer := transport.NewServer(orderService, broker, printerRegistry, cfg.HTTPPort, logger)
 
 	go httpServer.Start(ctx)
 	go sseClient.Start(ctx)

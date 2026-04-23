@@ -32,9 +32,10 @@ func (r *SettingsRepository) GetAutoAccept(ctx context.Context) (bool, error) {
 	v, err := q.GetAutoAccept(ctx)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			// Initial migration seeds a row; this shouldn't happen but is a
-			// sensible fallback.
-			return true, nil
+			// Initial migration seeds a row; this shouldn't happen, but if it
+			// does, fall back to OFF so the agent never surprises the kitchen
+			// with an unexpected auto-print.
+			return false, nil
 		}
 		return false, fmt.Errorf("get auto_accept: %w", err)
 	}
