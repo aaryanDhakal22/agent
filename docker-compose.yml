@@ -18,6 +18,27 @@ services:
       - PUSHOVER_USER_KEY
       - OTEL_EXPORTER_OTLP_ENDPOINT
       - OTEL_SERVICE_NAME
+      - DATABASE_URL=postgres://agent:agent@postgres:5432/agent?sslmode=disable
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - agent-net
+
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: agent
+      POSTGRES_PASSWORD: agent
+      POSTGRES_DB: agent
+    volumes:
+      - agent-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U agent -d agent"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
     restart: unless-stopped
     networks:
       - agent-net
@@ -34,6 +55,9 @@ services:
     restart: unless-stopped
     networks:
       - agent-net
+
+volumes:
+  agent-pgdata:
 
 networks:
   agent-net:

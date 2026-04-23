@@ -7,8 +7,8 @@ import (
 
 	"quiccpos/agent/internal/domain/order"
 	"quiccpos/agent/internal/domain/printer"
-	"quiccpos/agent/internal/infrastructure/notify"
-	"quiccpos/agent/internal/infrastructure/printer/receipt"
+	"quiccpos/agent/internal/infra/notify"
+	"quiccpos/agent/internal/infra/printer/receipt"
 	"quiccpos/agent/internal/observability"
 
 	"github.com/rs/zerolog"

@@ -9,13 +9,16 @@ import (
 
 	orderApp "quiccpos/agent/internal/application/order"
 	printerApp "quiccpos/agent/internal/application/printer"
+	"quiccpos/agent/internal/application/retention"
 	"quiccpos/agent/internal/config"
-	"quiccpos/agent/internal/infrastructure/mainclient"
-	"quiccpos/agent/internal/infrastructure/notify"
-	"quiccpos/agent/internal/infrastructure/printer/escpos"
-	sseclient "quiccpos/agent/internal/infrastructure/sse"
+	"quiccpos/agent/internal/infra/database"
+	"quiccpos/agent/internal/infra/database/repositories"
+	"quiccpos/agent/internal/infra/ssebroker"
+	"quiccpos/agent/internal/infra/notify"
+	"quiccpos/agent/internal/infra/printer/escpos"
+	sseclient "quiccpos/agent/internal/infra/sse"
+	"quiccpos/agent/internal/migrate"
 	"quiccpos/agent/internal/observability"
-	"quiccpos/agent/internal/store"
 	"quiccpos/agent/internal/transport"
 
 	"github.com/rs/zerolog"
@@ -35,8 +38,8 @@ func main() {
 	}
 
 	// Root context: cancelled on SIGINT/SIGTERM. Every long-running goroutine
-	// — HTTP server, SSE reader, KeepCheck loops, OTEL batch processors —
-	// honors it, so Ctrl-C drains cleanly.
+	// — HTTP server, SSE reader, KeepCheck loops, retention sweeper, OTEL
+	// batch processors — honors it, so Ctrl-C drains cleanly.
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
@@ -99,6 +102,23 @@ func main() {
 		Str("otel_endpoint", cfg.OTELEndpoint).
 		Msg("Agent starting")
 
+	// --- Database (migrate then connect) -----------------------------------
+	logger.Info().Ctx(ctx).Msg("Running database migrations")
+	if err := migrate.Run(ctx, cfg.DatabaseURL); err != nil {
+		logger.Fatal().Err(err).Msg("Failed to run database migrations")
+	}
+	logger.Info().Ctx(ctx).Msg("Database migrations complete")
+
+	pool, err := database.NewPool(ctx, cfg.DatabaseURL)
+	if err != nil {
+		logger.Fatal().Err(err).Msg("Failed to open DB pool")
+	}
+	defer pool.Close()
+	logger.Info().Ctx(ctx).Msg("Connected to database")
+
+	orderRepo := repositories.NewOrderRepository(pool, logger)
+	settingsRepo := repositories.NewSettingsRepository(pool, logger)
+
 	// --- Notifier + startup notification -----------------------------------
 	notifier := notify.NewNotifier(cfg.PushoverAppToken, cfg.PushoverUserKey)
 	if err := notifier.Send(ctx, "Agent started", "classical"); err != nil {
@@ -124,17 +144,17 @@ func main() {
 	go wingsService.KeepCheck(ctx, cfg.PrinterDetectDelay, notifier)
 	go onlineService.KeepCheck(ctx, cfg.PrinterDetectDelay, notifier)
 
-	orderService := orderApp.NewService(onlineService, notifier, logger)
+	// --- Order service + mobile-facing SSE broker --------------------------
+	broker := ssebroker.New()
+	orderService := orderApp.NewService(orderRepo, settingsRepo, onlineService, notifier, broker, logger)
 
-	// --- SSE client + HTTP server -----------------------------------------
-	orderStore := store.New()
-	mainClient := mainclient.New(cfg.MainServerURL, cfg.AgentAPIKey, logger)
-	sseClient := sseclient.New(cfg.MainServerURL, cfg.AgentAPIKey, orderService, orderStore, mainClient, logger, meters)
-
-	httpServer := transport.NewServer(orderStore, orderService, cfg.HTTPPort, logger)
+	// --- SSE client (main/ → agent) + HTTP server (agent → mobile) --------
+	sseClient := sseclient.New(cfg.MainServerURL, cfg.AgentAPIKey, orderService, logger, meters)
+	httpServer := transport.NewServer(orderService, broker, cfg.HTTPPort, logger)
 
 	go httpServer.Start(ctx)
 	go sseClient.Start(ctx)
+	go retention.Run(ctx, orderRepo, logger)
 
 	<-ctx.Done()
 	logger.Info().Msg("Agent shut down")

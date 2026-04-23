@@ -14,7 +14,6 @@ import (
 	orderApp "quiccpos/agent/internal/application/order"
 	"quiccpos/agent/internal/domain/order"
 	"quiccpos/agent/internal/observability"
-	"quiccpos/agent/internal/store"
 
 	"github.com/rs/zerolog"
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
@@ -26,17 +25,11 @@ import (
 )
 
 const (
-	initialBackoff  = 2 * time.Second
-	maxBackoff      = 60 * time.Second
-	backlogFetchNum = 50
+	initialBackoff = 2 * time.Second
+	maxBackoff     = 60 * time.Second
 
 	tracerName = "quiccpos/agent/sse"
 )
-
-// MainClient fetches recent orders from the main server for backlog recovery.
-type MainClient interface {
-	FetchRecentOrders(ctx context.Context, num int) ([]order.OrderRequest, error)
-}
 
 // http11Client forces HTTP/1.1 by disabling HTTP/2 negotiation (TLS ALPN).
 // SSE requires a persistent connection — HTTP/2 multiplexed streams are
@@ -53,8 +46,6 @@ type Client struct {
 	serverURL      string
 	apiKey         string
 	service        *orderApp.Service
-	store          *store.Store
-	mainClient     MainClient
 	logger         zerolog.Logger
 	reconnectCount int
 	tracer         trace.Tracer
@@ -62,13 +53,11 @@ type Client struct {
 	propagator     propagation.TextMapPropagator
 }
 
-func New(serverURL, apiKey string, svc *orderApp.Service, st *store.Store, mc MainClient, logger zerolog.Logger, meters observability.Meters) *Client {
+func New(serverURL, apiKey string, svc *orderApp.Service, logger zerolog.Logger, meters observability.Meters) *Client {
 	return &Client{
 		serverURL:  serverURL,
 		apiKey:     apiKey,
 		service:    svc,
-		store:      st,
-		mainClient: mc,
 		logger:     logger.With().Str("module", "sse-client").Logger(),
 		tracer:     otel.Tracer(tracerName),
 		meters:     meters,
@@ -77,7 +66,9 @@ func New(serverURL, apiKey string, svc *orderApp.Service, st *store.Store, mc Ma
 }
 
 // Start connects to the main server SSE stream and blocks until ctx is cancelled.
-// It reconnects with exponential backoff on any failure.
+// It reconnects with exponential backoff on any failure. There is no backlog
+// recovery on reconnect — orders missed while offline stay in main/ and can be
+// surfaced/reprinted from the mobile interface on demand.
 func (c *Client) Start(ctx context.Context) {
 	c.logger.Info().Ctx(ctx).
 		Str("server_url", c.serverURL).
@@ -154,92 +145,7 @@ func (c *Client) connect(ctx context.Context) error {
 		Int("reconnect_count", c.reconnectCount).
 		Msg("Connected to main server SSE stream")
 
-	// On any reconnect (not the very first connection), fetch and print backlogged orders.
-	if c.reconnectCount > 0 {
-		c.logger.Info().Ctx(ctx).Msg("Reconnected — fetching backlogged orders from main server")
-		c.printBacklog(ctx)
-	} else {
-		c.logger.Info().Ctx(ctx).Msg("First connection established — skipping backlog (no prior session)")
-	}
-
 	return c.readEvents(ctx, resp.Body)
-}
-
-// printBacklog fetches recent orders from the main server and prints any that
-// arrived while the agent was disconnected.
-func (c *Client) printBacklog(ctx context.Context) {
-	entries := c.store.List()
-	if len(entries) == 0 {
-		c.logger.Info().Ctx(ctx).Msg("Store empty — skipping backlog (no session watermark to compare against)")
-		return
-	}
-
-	highestKnownID := 0
-	for _, e := range entries {
-		if e.Order.OrderID > highestKnownID {
-			highestKnownID = e.Order.OrderID
-		}
-	}
-	c.logger.Debug().Ctx(ctx).
-		Int("highest_known_id", highestKnownID).
-		Int("fetch_num", backlogFetchNum).
-		Msg("Session watermark set — fetching recent orders for backlog check")
-
-	orders, err := c.mainClient.FetchRecentOrders(ctx, backlogFetchNum)
-	if err != nil {
-		c.logger.Error().Ctx(ctx).Err(err).Msg("Failed to fetch backlog from main server — skipping backlog print")
-		return
-	}
-
-	c.logger.Debug().Ctx(ctx).Int("fetched", len(orders)).Msg("Backlog orders fetched from main server")
-
-	var missed []order.OrderRequest
-	for _, o := range orders {
-		if o.OrderID > highestKnownID {
-			missed = append(missed, o)
-		}
-	}
-
-	if len(missed) == 0 {
-		c.logger.Info().Ctx(ctx).Msg("No backlogged orders to print — store is up to date")
-		return
-	}
-
-	c.logger.Info().Ctx(ctx).
-		Int("missed", len(missed)).
-		Msg("Backlogged orders found — printing oldest first")
-
-	// Orders from main are newest-first; reverse to print oldest-first.
-	for i, j := 0, len(missed)-1; i < j; i, j = i+1, j-1 {
-		missed[i], missed[j] = missed[j], missed[i]
-	}
-
-	for _, o := range missed {
-		select {
-		case <-ctx.Done():
-			c.logger.Warn().Ctx(ctx).Msg("Context cancelled during backlog print — stopping")
-			return
-		default:
-		}
-
-		c.logger.Info().Ctx(ctx).
-			Int("order_id", o.OrderID).
-			Str("customer", o.Customer.FirstName+" "+o.Customer.LastName).
-			Msg("Printing backlogged order")
-
-		if err := c.service.Handle(ctx, o); err != nil {
-			c.logger.Error().Ctx(ctx).
-				Err(err).
-				Int("order_id", o.OrderID).
-				Msg("Failed to print backlogged order — skipping")
-			continue
-		}
-
-		c.store.Add(o)
-		c.logger.Info().Ctx(ctx).Int("order_id", o.OrderID).Msg("Backlogged order printed and stored")
-	}
-
-	c.logger.Info().Ctx(ctx).Int("printed", len(missed)).Msg("Backlog print complete")
 }
 
 func (c *Client) readEvents(ctx context.Context, r io.Reader) error {
@@ -347,9 +253,9 @@ func (c *Client) handleOrderEvent(parentCtx context.Context, data string) {
 		Int("item_count", len(o.Items)).
 		Msg("Order received via SSE")
 
-	if err := c.service.Handle(ctx, o); err != nil {
+	if err := c.service.OnArrival(ctx, o); err != nil {
 		span.RecordError(err)
-		span.SetStatus(codes.Error, "handle failed")
+		span.SetStatus(codes.Error, "on-arrival failed")
 		c.logger.Error().Ctx(ctx).
 			Err(err).
 			Int("order_id", o.OrderID).
@@ -357,11 +263,4 @@ func (c *Client) handleOrderEvent(parentCtx context.Context, data string) {
 			Msg("Failed to handle SSE order")
 		return
 	}
-
-	c.store.Add(o)
-
-	c.logger.Info().Ctx(ctx).
-		Int("order_id", o.OrderID).
-		Str("customer", customerName).
-		Msg("Order handled and stored successfully")
 }

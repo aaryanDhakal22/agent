@@ -22,6 +22,9 @@ type Config struct {
 	PushoverAppToken   string
 	PushoverUserKey    string
 
+	// Postgres DSN, e.g. "postgres://user:pass@host:5432/agent?sslmode=disable".
+	DatabaseURL string
+
 	// OpenTelemetry
 	OTELEndpoint    string // e.g. "home-server.lan:4317"; empty → noop providers
 	OTELServiceName string // default "quicc-agent"
@@ -44,6 +47,8 @@ func Load() (*Config, error) {
 		LogLevel:           os.Getenv("LOG_LEVEL"),
 		LogOutput:          os.Getenv("LOG_OUTPUT"),
 
+		DatabaseURL: os.Getenv("DATABASE_URL"),
+
 		OTELEndpoint:    os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT"),
 		OTELServiceName: getEnvDefault("OTEL_SERVICE_NAME", "quicc-agent"),
 	}
@@ -56,6 +61,9 @@ func Load() (*Config, error) {
 	}
 	if cfg.PrinterIP == "" {
 		return nil, fmt.Errorf("PRINTER_IP is required")
+	}
+	if cfg.DatabaseURL == "" {
+		return nil, fmt.Errorf("DATABASE_URL is required")
 	}
 
 	return cfg, nil
