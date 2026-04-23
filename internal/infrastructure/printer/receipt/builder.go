@@ -64,7 +64,10 @@ func Build(o order.OrderRequest) []byte {
 	// --- Header ---
 	w(cmdCenter)
 	w(cmdBoldOn)
-	w(cmdQuadSz) // Temporarily larger for header (3x3)
+	w(cmdQuadSz) // Order number at biggest size (3x3)
+	w(fmt.Sprintf("#%d", o.OrderNumber))
+	nl()
+	w(cmdDoubleSz) // Service type one size smaller (2x2)
 	serviceLabel := formatServiceType(o.ServiceType)
 	w(serviceLabel)
 	nl()

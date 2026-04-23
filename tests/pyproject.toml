@@ -1,0 +1,16 @@
+[project]
+name = "quicc-agent-tests"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = [
+    "pytest>=8.3.5",
+    "requests>=2.32.3",
+    "httpx>=0.28.1",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["."]
+markers = [
+    "real_printer: exercises the real ESC/POS printer network (paper may be burned). Opt in with TEST_REAL_PRINTERS=1.",
+    "sse: requires a fake-main SSE server fixture; starts its own listener.",
+]

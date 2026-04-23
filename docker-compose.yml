@@ -2,10 +2,12 @@ services:
   agent:
     build: .
     environment:
+      - APP_ENV
       - MAIN_SERVER_URL
       - AGENT_API_KEY
       - HTTP_PORT=8080
       - LOG_LEVEL
+      - LOG_OUTPUT
       - PRINTER_IP
       - DESI_PRINTER_IP
       - PIZZA_PRINTER_IP
@@ -14,6 +16,8 @@ services:
       - PRINTER_DETECT_DELAY
       - PUSHOVER_APP_TOKEN
       - PUSHOVER_USER_KEY
+      - OTEL_EXPORTER_OTLP_ENDPOINT
+      - OTEL_SERVICE_NAME
     restart: unless-stopped
     networks:
       - agent-net

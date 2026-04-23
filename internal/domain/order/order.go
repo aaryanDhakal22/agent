@@ -16,6 +16,7 @@ type OrderSQSMessage struct {
 type OrderRequest struct {
 	TVer          string `json:"tVer"`
 	OrderID       int    `json:"order_id"`
+	OrderNumber   int    `json:"order_number"`
 	StoreID       int64  `json:"store_id"`
 	VendorStoreID string `json:"vendor_store_id"`
 	StoreName     string `json:"store_name"`

@@ -13,6 +13,7 @@ import (
 	"quiccpos/agent/internal/store"
 
 	"github.com/rs/zerolog"
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 )
 
 type Server struct {
@@ -36,9 +37,16 @@ func (s *Server) Start(ctx context.Context) {
 	mux.HandleFunc("/api/orders", s.withCORS(s.handleGetOrders))
 	mux.HandleFunc("/api/orders/", s.withCORS(s.handleOrderAction))
 
+	// otelhttp wraps the whole mux: auto-creates a server span per request,
+	// extracts any inbound traceparent header, and attaches a context carrying
+	// the span to r.Context() for handlers to use downstream.
+	handler := otelhttp.NewHandler(mux, "agent-http",
+		otelhttp.WithServerName("quicc-agent"),
+	)
+
 	srv := &http.Server{
 		Addr:    fmt.Sprintf(":%s", s.port),
-		Handler: mux,
+		Handler: handler,
 	}
 
 	go func() {
@@ -63,7 +71,7 @@ func (s *Server) handleGetOrders(w http.ResponseWriter, r *http.Request) {
 	}
 
 	entries := s.store.List()
-	s.logger.Debug().Int("count", len(entries)).Msg("Serving order list")
+	s.logger.Debug().Ctx(r.Context()).Int("count", len(entries)).Msg("Serving order list")
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(entries)
@@ -71,7 +79,6 @@ func (s *Server) handleGetOrders(w http.ResponseWriter, r *http.Request) {
 
 // POST /api/orders/{id}/reprint — reprints an order from the store.
 func (s *Server) handleOrderAction(w http.ResponseWriter, r *http.Request) {
-	// Path: /api/orders/{id}/reprint
 	parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
 	if len(parts) != 4 || parts[3] != "reprint" {
 		http.NotFound(w, r)
@@ -89,22 +96,23 @@ func (s *Server) handleOrderAction(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.logger.Info().Int("order_id", id).Msg("Reprint requested")
+	ctx := r.Context()
+	s.logger.Info().Ctx(ctx).Int("order_id", id).Msg("Reprint requested")
 
 	entry, ok := s.store.GetByID(id)
 	if !ok {
-		s.logger.Warn().Int("order_id", id).Msg("Reprint requested for order not in store")
+		s.logger.Warn().Ctx(ctx).Int("order_id", id).Msg("Reprint requested for order not in store")
 		http.Error(w, "order not found in 24h store", http.StatusNotFound)
 		return
 	}
 
-	if err := s.service.Handle(entry.Order); err != nil {
-		s.logger.Error().Err(err).Int("order_id", id).Msg("Reprint failed")
+	if err := s.service.Handle(ctx, entry.Order); err != nil {
+		s.logger.Error().Ctx(ctx).Err(err).Int("order_id", id).Msg("Reprint failed")
 		http.Error(w, "print failed: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 
-	s.logger.Info().Int("order_id", id).Msg("Reprint successful")
+	s.logger.Info().Ctx(ctx).Int("order_id", id).Msg("Reprint successful")
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(map[string]string{"status": "reprinted"})

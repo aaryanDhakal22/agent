@@ -1,6 +1,7 @@
 package mainclient
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -10,6 +11,7 @@ import (
 	"quiccpos/agent/internal/domain/order"
 
 	"github.com/rs/zerolog"
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 )
 
 type Client struct {
@@ -21,19 +23,22 @@ type Client struct {
 
 func New(serverURL, apiKey string, logger zerolog.Logger) *Client {
 	return &Client{
-		serverURL:  strings.TrimRight(serverURL, "/"),
-		apiKey:     apiKey,
-		httpClient: &http.Client{Timeout: 15 * time.Second},
-		logger:     logger.With().Str("module", "main-client").Logger(),
+		serverURL: strings.TrimRight(serverURL, "/"),
+		apiKey:    apiKey,
+		httpClient: &http.Client{
+			Timeout:   15 * time.Second,
+			Transport: otelhttp.NewTransport(http.DefaultTransport),
+		},
+		logger: logger.With().Str("module", "main-client").Logger(),
 	}
 }
 
 // FetchRecentOrders fetches the newest `num` orders from the main server.
-func (c *Client) FetchRecentOrders(num int) ([]order.OrderRequest, error) {
+func (c *Client) FetchRecentOrders(ctx context.Context, num int) ([]order.OrderRequest, error) {
 	url := fmt.Sprintf("%s/api/v1/orders?offset=0&num=%d", c.serverURL, num)
-	c.logger.Debug().Str("url", url).Msg("Fetching recent orders from main server")
+	c.logger.Debug().Ctx(ctx).Str("url", url).Msg("Fetching recent orders from main server")
 
-	req, err := http.NewRequest(http.MethodGet, url, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, fmt.Errorf("build request: %w", err)
 	}
@@ -54,16 +59,16 @@ func (c *Client) FetchRecentOrders(num int) ([]order.OrderRequest, error) {
 		return nil, fmt.Errorf("decode orders: %w", err)
 	}
 
-	c.logger.Debug().Int("count", len(orders)).Msg("Fetched recent orders from main server")
+	c.logger.Debug().Ctx(ctx).Int("count", len(orders)).Msg("Fetched recent orders from main server")
 	return orders, nil
 }
 
 // FetchOrder fetches a single order by ID from the main server.
-func (c *Client) FetchOrder(id int) (*order.OrderRequest, error) {
+func (c *Client) FetchOrder(ctx context.Context, id int) (*order.OrderRequest, error) {
 	url := fmt.Sprintf("%s/api/v1/orders/%d", c.serverURL, id)
-	c.logger.Debug().Int("order_id", id).Str("url", url).Msg("Fetching order from main server")
+	c.logger.Debug().Ctx(ctx).Int("order_id", id).Str("url", url).Msg("Fetching order from main server")
 
-	req, err := http.NewRequest(http.MethodGet, url, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, fmt.Errorf("build request: %w", err)
 	}
@@ -84,6 +89,6 @@ func (c *Client) FetchOrder(id int) (*order.OrderRequest, error) {
 		return nil, fmt.Errorf("decode order: %w", err)
 	}
 
-	c.logger.Debug().Int("order_id", id).Msg("Fetched order from main server")
+	c.logger.Debug().Ctx(ctx).Int("order_id", id).Msg("Fetched order from main server")
 	return &o, nil
 }

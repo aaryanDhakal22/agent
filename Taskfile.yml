@@ -1,0 +1,58 @@
+version: "3"
+
+# Agent Taskfile. Unlike main/, the agent runs directly on the restaurant
+# computer (prod) and the home-network desktop (staging), and can run anywhere
+# in dev. `doppler run --` is used only for test tasks and for starting the
+# agent with the right env (user will create agent-specific Doppler configs).
+
+tasks:
+  default:
+    desc: List tasks
+    cmds:
+      - task --list
+
+  build:
+    desc: Build the agent binary to ./bin/agent
+    cmds:
+      - mkdir -p bin
+      - go build -o bin/agent ./cmd/main.go
+
+  run:
+    desc: Run the agent directly under Doppler (reads env from the selected config)
+    cmds:
+      - doppler run -- go run ./cmd/main.go
+
+  run-no-doppler:
+    desc: Run the agent without Doppler (expects env to be already exported)
+    cmds:
+      - go run ./cmd/main.go
+
+  test:
+    desc: "Run the agent/ pytest suite under Doppler (agent must already be running on AGENT_BASE_URL or HTTP_PORT)"
+    cmds:
+      - doppler run -- uv run --directory tests pytest -v
+
+  test-go:
+    desc: "Run Go tests under Doppler (currently none; kept for future)"
+    cmds:
+      - doppler run -- go test ./...
+
+  test-real-printer:
+    desc: "Run printer-burning tests — requires a real printer network. Opt-in via env flag."
+    env:
+      TEST_REAL_PRINTERS: "1"
+    cmds:
+      - doppler run -- uv run --directory tests pytest -v -m real_printer
+
+  devup:
+    desc: Start the Docker-based dev stack for agent (nginx + agent container)
+    cmds:
+      - doppler run -- docker compose -f ./docker-compose.yml up
+
+  devdown:
+    cmds:
+      - doppler run -- docker compose -f ./docker-compose.yml down
+
+  devupd:
+    cmds:
+      - doppler run -- docker compose -f ./docker-compose.yml up -d

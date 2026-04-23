@@ -7,6 +7,7 @@ import (
 )
 
 type Config struct {
+	AppEnv             string
 	MainServerURL      string
 	AgentAPIKey        string
 	HTTPPort           string
@@ -20,10 +21,15 @@ type Config struct {
 	PrinterDetectDelay time.Duration
 	PushoverAppToken   string
 	PushoverUserKey    string
+
+	// OpenTelemetry
+	OTELEndpoint    string // e.g. "home-server.lan:4317"; empty → noop providers
+	OTELServiceName string // default "quicc-agent"
 }
 
 func Load() (*Config, error) {
 	cfg := &Config{
+		AppEnv:             getEnvDefault("APP_ENV", "dev"),
 		MainServerURL:      os.Getenv("MAIN_SERVER_URL"),
 		AgentAPIKey:        os.Getenv("AGENT_API_KEY"),
 		HTTPPort:           getEnvDefault("HTTP_PORT", "8080"),
@@ -37,6 +43,9 @@ func Load() (*Config, error) {
 		PushoverUserKey:    os.Getenv("PUSHOVER_USER_KEY"),
 		LogLevel:           os.Getenv("LOG_LEVEL"),
 		LogOutput:          os.Getenv("LOG_OUTPUT"),
+
+		OTELEndpoint:    os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT"),
+		OTELServiceName: getEnvDefault("OTEL_SERVICE_NAME", "quicc-agent"),
 	}
 
 	if cfg.MainServerURL == "" {
