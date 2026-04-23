@@ -19,6 +19,13 @@ services:
       - OTEL_EXPORTER_OTLP_ENDPOINT
       - OTEL_SERVICE_NAME
       - DATABASE_URL=postgres://agent:agent@postgres:5432/agent?sslmode=disable
+    # Publish the agent's HTTP port on the host. nginx still proxies /api/
+    # (and serves the web UI on :80); this extra publish lets the mobile
+    # app — or anything else on the LAN — hit the API directly at :8080
+    # without going through nginx. Useful for pytest and for mobile builds
+    # that don't want to depend on the nginx container.
+    ports:
+      - "8080:8080"
     depends_on:
       postgres:
         condition: service_healthy
