@@ -17,6 +17,7 @@ services:
       - PUSHOVER_APP_TOKEN
       - PUSHOVER_USER_KEY
       - OTEL_EXPORTER_OTLP_ENDPOINT
+      - OTEL_EXPORTER_OTLP_HEADERS
       - OTEL_SERVICE_NAME
       - DATABASE_URL=postgres://agent:agent@postgres:5432/agent?sslmode=disable
     # Publish the agent's HTTP port on the host. nginx still proxies /api/
