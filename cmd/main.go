@@ -118,6 +118,7 @@ func main() {
 
 	orderRepo := repositories.NewOrderRepository(pool, logger)
 	settingsRepo := repositories.NewSettingsRepository(pool, logger)
+	printerConfigRepo := repositories.NewPrinterConfigRepository(pool, logger)
 
 	// --- Notifier + startup notification -----------------------------------
 	notifier := notify.NewNotifier(cfg.PushoverAppToken, cfg.PushoverUserKey)
@@ -126,19 +127,54 @@ func main() {
 	}
 
 	// --- Printers ----------------------------------------------------------
+	// Env vars seed the DB if-absent; mobile-set overrides take precedence
+	// and survive restarts. For each known printer we resolve the effective
+	// IP: DB row if present, env-var otherwise (which may be empty → handle
+	// stays unconfigured until mobile sets it).
+	printerSeeds := []struct{ name, envIP string }{
+		{"Online", cfg.PrinterIP},
+		{"Pizza", cfg.PizzaPrinterIP},
+		{"Desi", cfg.DesiPrinterIP},
+		{"Sub", cfg.SubPrinterIP},
+		{"Wings", cfg.WingsPrinterIP},
+	}
+	effectiveIPs := make(map[string]string, len(printerSeeds))
+	for _, seed := range printerSeeds {
+		if seed.envIP != "" {
+			if err := printerConfigRepo.UpsertIfAbsent(ctx, seed.name, seed.envIP); err != nil {
+				logger.Warn().Ctx(ctx).Err(err).Str("printer", seed.name).Msg("Failed to seed printer IP from env")
+			}
+		}
+		pc, ok, err := printerConfigRepo.Get(ctx, seed.name)
+		if err != nil {
+			logger.Warn().Ctx(ctx).Err(err).Str("printer", seed.name).Msg("Failed to read printer IP from DB, falling back to env")
+			effectiveIPs[seed.name] = seed.envIP
+			continue
+		}
+		if ok {
+			effectiveIPs[seed.name] = pc.IP
+		} else {
+			effectiveIPs[seed.name] = seed.envIP
+		}
+	}
+
 	printerRegistry := printerApp.NewRegistry()
 
-	pizzaPrinter := escpos.New(cfg.PizzaPrinterIP, "Pizza", logger)
-	desiPrinter := escpos.New(cfg.DesiPrinterIP, "Desi", logger)
-	subPrinter := escpos.New(cfg.SubPrinterIP, "Sub", logger)
-	wingsPrinter := escpos.New(cfg.WingsPrinterIP, "Wings", logger)
-	onlinePrinter := escpos.New(cfg.PrinterIP, "Online", logger)
+	pizzaPrinter := escpos.New(effectiveIPs["Pizza"], "Pizza", logger)
+	desiPrinter := escpos.New(effectiveIPs["Desi"], "Desi", logger)
+	subPrinter := escpos.New(effectiveIPs["Sub"], "Sub", logger)
+	wingsPrinter := escpos.New(effectiveIPs["Wings"], "Wings", logger)
+	onlinePrinter := escpos.New(effectiveIPs["Online"], "Online", logger)
 
 	pizzaService := printerApp.NewService(pizzaPrinter, printerRegistry, logger, meters)
 	desiService := printerApp.NewService(desiPrinter, printerRegistry, logger, meters)
 	subService := printerApp.NewService(subPrinter, printerRegistry, logger, meters)
 	wingsService := printerApp.NewService(wingsPrinter, printerRegistry, logger, meters)
 	onlineService := printerApp.NewService(onlinePrinter, printerRegistry, logger, meters)
+
+	printerManager := printerApp.NewManager(printerConfigRepo, []*printerApp.Service{
+		pizzaService, desiService, subService, wingsService, onlineService,
+	}, logger)
 
 	go pizzaService.KeepCheck(ctx, cfg.PrinterDetectDelay, notifier)
 	go desiService.KeepCheck(ctx, cfg.PrinterDetectDelay, notifier)
@@ -152,7 +188,7 @@ func main() {
 
 	// --- SSE client (main/ → agent) + HTTP server (agent → mobile) --------
 	sseClient := sseclient.New(cfg.MainServerURL, cfg.AgentAPIKey, orderService, logger, meters)
-	httpServer := transport.NewServer(orderService, broker, printerRegistry, cfg.HTTPPort, logger)
+	httpServer := transport.NewServer(orderService, broker, printerRegistry, printerManager, cfg.HTTPPort, logger)
 
 	go httpServer.Start(ctx)
 	go sseClient.Start(ctx)

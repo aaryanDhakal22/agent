@@ -27,20 +27,29 @@ const (
 )
 
 type Server struct {
-	service  *orderApp.Service
-	broker   *ssebroker.Broker
-	printers *printerApp.Registry
-	logger   zerolog.Logger
-	port     string
+	service        *orderApp.Service
+	broker         *ssebroker.Broker
+	printers       *printerApp.Registry
+	printerManager *printerApp.Manager
+	logger         zerolog.Logger
+	port           string
 }
 
-func NewServer(svc *orderApp.Service, broker *ssebroker.Broker, printers *printerApp.Registry, port string, logger zerolog.Logger) *Server {
+func NewServer(
+	svc *orderApp.Service,
+	broker *ssebroker.Broker,
+	printers *printerApp.Registry,
+	printerManager *printerApp.Manager,
+	port string,
+	logger zerolog.Logger,
+) *Server {
 	return &Server{
-		service:  svc,
-		broker:   broker,
-		printers: printers,
-		port:     port,
-		logger:   logger.With().Str("module", "http-server").Logger(),
+		service:        svc,
+		broker:         broker,
+		printers:       printers,
+		printerManager: printerManager,
+		port:           port,
+		logger:         logger.With().Str("module", "http-server").Logger(),
 	}
 }
 
@@ -59,10 +68,13 @@ func (s *Server) Start(ctx context.Context) {
 	mux.HandleFunc("GET /api/settings/auto-accept", s.withCORS(s.handleGetAutoAccept))
 	mux.HandleFunc("PUT /api/settings/auto-accept", s.withCORS(s.handleSetAutoAccept))
 
-	// Printer status routes — read-only cache served by the in-memory
-	// Registry; no TCP probe happens at request time.
+	// Printer routes. Reads are served from the in-memory Registry (no TCP
+	// probe at request time). The PUT persists a new IP, flips the live
+	// printer handle, and fires an immediate probe so the response reflects
+	// the new address's reachability.
 	mux.HandleFunc("GET /api/printers", s.withCORS(s.handleListPrinters))
 	mux.HandleFunc("GET /api/printers/{name}", s.withCORS(s.handleGetPrinter))
+	mux.HandleFunc("PUT /api/printers/{name}/ip", s.withCORS(s.handleSetPrinterIP))
 
 	// SSE stream for mobile.
 	mux.HandleFunc("GET /api/events", s.withCORS(s.handleEvents))
@@ -227,6 +239,39 @@ func (s *Server) handleGetPrinter(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, r, http.StatusNotFound, fmt.Errorf("unknown printer %q", name))
 		return
 	}
+	s.writeJSON(w, http.StatusOK, snap)
+}
+
+type updatePrinterIPDTO struct {
+	IP string `json:"ip"`
+}
+
+// PUT /api/printers/{name}/ip — replace the printer's IP at runtime. The
+// manager persists it, applies it to the in-memory handle, and runs a
+// synchronous probe so the response body reflects the new status.
+func (s *Server) handleSetPrinterIP(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+
+	var body updatePrinterIPDTO
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		s.writeError(w, r, http.StatusBadRequest, fmt.Errorf("decode body: %w", err))
+		return
+	}
+
+	if err := s.printerManager.UpdateIP(r.Context(), name, body.IP); err != nil {
+		switch {
+		case errors.Is(err, printerApp.ErrUnknownPrinter):
+			s.writeError(w, r, http.StatusNotFound, err)
+		default:
+			// Validation error (empty IP) or persistence failure.
+			s.writeError(w, r, http.StatusBadRequest, err)
+		}
+		return
+	}
+
+	// ProbeNow inside UpdateIP has already populated the registry — return
+	// the fresh snapshot so mobile can show immediate feedback.
+	snap, _ := s.printers.Get(name)
 	s.writeJSON(w, http.StatusOK, snap)
 }
 

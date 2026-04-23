@@ -25,3 +25,12 @@ CREATE TABLE IF NOT EXISTS settings (
     updated_at  timestamptz NOT NULL DEFAULT now(),
     CONSTRAINT settings_singleton CHECK (id = 1)
 );
+
+-- Printer network locations. Env vars seed rows on startup if-absent; mobile
+-- updates via PUT /api/printers/{name}/ip take precedence thereafter and
+-- persist across restarts.
+CREATE TABLE IF NOT EXISTS printer_configs (
+    name       text        PRIMARY KEY,
+    ip         text        NOT NULL,
+    updated_at timestamptz NOT NULL DEFAULT now()
+);

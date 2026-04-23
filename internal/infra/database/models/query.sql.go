@@ -76,6 +76,17 @@ func (q *Queries) GetOrderByIDForUpdate(ctx context.Context, orderID int32) (Ord
 	return i, err
 }
 
+const getPrinterConfig = `-- name: GetPrinterConfig :one
+SELECT name, ip, updated_at FROM printer_configs WHERE name = $1
+`
+
+func (q *Queries) GetPrinterConfig(ctx context.Context, name string) (PrinterConfig, error) {
+	row := q.db.QueryRow(ctx, getPrinterConfig, name)
+	var i PrinterConfig
+	err := row.Scan(&i.Name, &i.Ip, &i.UpdatedAt)
+	return i, err
+}
+
 const listArrivedOrders = `-- name: ListArrivedOrders :many
 SELECT order_id, payload, state, arrival_date, printed_date
 FROM orders
@@ -150,6 +161,30 @@ func (q *Queries) ListOrdersPage(ctx context.Context, arg ListOrdersPageParams) 
 	return items, nil
 }
 
+const listPrinterConfigs = `-- name: ListPrinterConfigs :many
+SELECT name, ip, updated_at FROM printer_configs ORDER BY name
+`
+
+func (q *Queries) ListPrinterConfigs(ctx context.Context) ([]PrinterConfig, error) {
+	rows, err := q.db.Query(ctx, listPrinterConfigs)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []PrinterConfig
+	for rows.Next() {
+		var i PrinterConfig
+		if err := rows.Scan(&i.Name, &i.Ip, &i.UpdatedAt); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const markAccepted = `-- name: MarkAccepted :exec
 UPDATE orders
 SET state        = 'accepted',
@@ -178,6 +213,26 @@ func (q *Queries) SetAutoAccept(ctx context.Context, autoAccept bool) error {
 	return err
 }
 
+const setPrinterIP = `-- name: SetPrinterIP :exec
+INSERT INTO printer_configs (name, ip, updated_at)
+VALUES ($1, $2, now())
+ON CONFLICT (name) DO UPDATE SET
+    ip         = EXCLUDED.ip,
+    updated_at = EXCLUDED.updated_at
+`
+
+type SetPrinterIPParams struct {
+	Name string `json:"name"`
+	Ip   string `json:"ip"`
+}
+
+// Mobile-update path: always overwrite. updated_at moves so mobile can tell
+// how fresh the value is.
+func (q *Queries) SetPrinterIP(ctx context.Context, arg SetPrinterIPParams) error {
+	_, err := q.db.Exec(ctx, setPrinterIP, arg.Name, arg.Ip)
+	return err
+}
+
 const upsertArrivedOrder = `-- name: UpsertArrivedOrder :exec
 INSERT INTO orders (order_id, payload, state, arrival_date)
 VALUES ($1, $2, 'arrived', now())
@@ -194,5 +249,23 @@ type UpsertArrivedOrderParams struct {
 // we leave the existing row (and its state/printed_date) alone.
 func (q *Queries) UpsertArrivedOrder(ctx context.Context, arg UpsertArrivedOrderParams) error {
 	_, err := q.db.Exec(ctx, upsertArrivedOrder, arg.OrderID, arg.Payload)
+	return err
+}
+
+const upsertPrinterConfigIfAbsent = `-- name: UpsertPrinterConfigIfAbsent :exec
+INSERT INTO printer_configs (name, ip)
+VALUES ($1, $2)
+ON CONFLICT (name) DO NOTHING
+`
+
+type UpsertPrinterConfigIfAbsentParams struct {
+	Name string `json:"name"`
+	Ip   string `json:"ip"`
+}
+
+// Env-var seed path: only populate a row if none exists for this printer.
+// Mobile-set values are never overwritten at boot.
+func (q *Queries) UpsertPrinterConfigIfAbsent(ctx context.Context, arg UpsertPrinterConfigIfAbsentParams) error {
+	_, err := q.db.Exec(ctx, upsertPrinterConfigIfAbsent, arg.Name, arg.Ip)
 	return err
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"sync"
 	"time"
 
 	"quiccpos/agent/internal/domain/printer"
@@ -23,7 +24,12 @@ const (
 	tracerName = "quiccpos/agent/escpos"
 )
 
+// ESCPOSPrinter is the network handle for one thermal printer. The IP is
+// mutable at runtime — mobile flips it via the update endpoint — so every
+// read goes through the mutex. Reads happen on the hot paths (Detect, Print),
+// writes are rare (manual IP updates), so an RWMutex is the right shape.
 type ESCPOSPrinter struct {
+	mu     sync.RWMutex
 	ip     string
 	name   string
 	logger zerolog.Logger
@@ -34,19 +40,45 @@ func New(ip string, name string, logger zerolog.Logger) *ESCPOSPrinter {
 	return &ESCPOSPrinter{
 		ip:     ip,
 		name:   name,
-		logger: logger.With().Str("module", "escpos-printer").Str("printer_name", name).Str("printer_ip", ip).Logger(),
+		logger: logger.With().Str("module", "escpos-printer").Str("printer_name", name).Logger(),
 		tracer: otel.Tracer(tracerName),
 	}
 }
 
-// Detect checks whether the printer is reachable on port 9100.
+func (p *ESCPOSPrinter) Name() string { return p.name }
+
+func (p *ESCPOSPrinter) IP() string {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.ip
+}
+
+// SetIP swaps the address used by subsequent Detect / Print calls. In-flight
+// dials aren't interrupted — they complete against the old IP and the new IP
+// takes effect on the next call.
+func (p *ESCPOSPrinter) SetIP(ip string) {
+	p.mu.Lock()
+	old := p.ip
+	p.ip = ip
+	p.mu.Unlock()
+	p.logger.Info().Str("old_ip", old).Str("new_ip", ip).Msg("Printer IP updated")
+}
+
+// Detect checks whether the printer is reachable on port 9100. An empty IP
+// short-circuits as ErrPrinterNotConfigured — without this we'd dial ":9100",
+// which resolves to localhost and can silently succeed if something else is
+// listening there.
 func (p *ESCPOSPrinter) Detect(ctx context.Context) error {
-	addr := net.JoinHostPort(p.ip, printerPort)
+	ip := p.IP()
+	if ip == "" {
+		return fmt.Errorf("%w: %s", printer.ErrPrinterNotConfigured, p.name)
+	}
+	addr := net.JoinHostPort(ip, printerPort)
 
 	ctx, span := p.tracer.Start(ctx, "escpos.detect",
 		trace.WithAttributes(
 			attribute.String("printer.name", p.name),
-			attribute.String("printer.ip", p.ip),
+			attribute.String("printer.ip", ip),
 			attribute.String("net.peer.addr", addr),
 		),
 	)
@@ -68,12 +100,16 @@ func (p *ESCPOSPrinter) Detect(ctx context.Context) error {
 
 // Print sends the ESC/POS command bytes to the printer over TCP.
 func (p *ESCPOSPrinter) Print(ctx context.Context, job printer.PrintJob) error {
-	addr := net.JoinHostPort(p.ip, printerPort)
+	ip := p.IP()
+	if ip == "" {
+		return fmt.Errorf("%w: %s", printer.ErrPrinterNotConfigured, p.name)
+	}
+	addr := net.JoinHostPort(ip, printerPort)
 
 	ctx, span := p.tracer.Start(ctx, "escpos.write",
 		trace.WithAttributes(
 			attribute.String("printer.name", p.name),
-			attribute.String("printer.ip", p.ip),
+			attribute.String("printer.ip", ip),
 			attribute.Int("bytes.total", len(job.Commands)),
 		),
 	)
@@ -106,8 +142,4 @@ func (p *ESCPOSPrinter) Print(ctx context.Context, job printer.PrintJob) error {
 
 	p.logger.Info().Ctx(ctx).Str("addr", addr).Int("bytes", n).Msg("Receipt sent to printer")
 	return nil
-}
-
-func (p *ESCPOSPrinter) Name() string {
-	return p.name
 }

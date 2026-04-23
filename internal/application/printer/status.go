@@ -9,7 +9,12 @@ import (
 // StatusSnapshot is what the mobile interface sees when it polls. Timestamps
 // are pointers so "never probed" vs. "probed at t=0" is distinguishable.
 type StatusSnapshot struct {
-	Name        string     `json:"name"`
+	Name string `json:"name"`
+	// IP is the address that was used for the most recent probe. Empty string
+	// means the printer has no IP configured yet (mobile hasn't set one and
+	// no env-var seed exists) — in that case Up is false and LastError
+	// explains it.
+	IP          string     `json:"ip"`
 	Up          bool       `json:"up"`
 	LastChecked *time.Time `json:"last_checked,omitempty"`
 	// LastError carries the most recent failure string. Cleared the first time
@@ -45,16 +50,19 @@ func (r *Registry) Register(name string) {
 	}
 }
 
-// Record updates the snapshot after a probe. `at` is when the probe finished.
-// Transition edges are inferred by comparing `up` against the last known
-// state, so UpSince/DownSince only move when the status actually flips.
-func (r *Registry) Record(name string, up bool, probeErr error, at time.Time) {
+// Record updates the snapshot after a probe. `at` is when the probe finished;
+// `ip` is the address that was just probed (so mobile sees the IP in use
+// without needing a separate read). Transition edges are inferred by
+// comparing `up` against the last known state, so UpSince/DownSince only move
+// when the status actually flips.
+func (r *Registry) Record(name, ip string, up bool, probeErr error, at time.Time) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
 	prev, existed := r.entries[name]
 	snap := prev
 	snap.Name = name
+	snap.IP = ip
 	snap.Up = up
 	t := at
 	snap.LastChecked = &t

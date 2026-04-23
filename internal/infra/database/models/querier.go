@@ -17,20 +17,28 @@ type Querier interface {
 	// Row-level lock so the accept path is serialized against concurrent calls
 	// (e.g. mobile double-tap). Used inside the accept transaction.
 	GetOrderByIDForUpdate(ctx context.Context, orderID int32) (Order, error)
+	GetPrinterConfig(ctx context.Context, name string) (PrinterConfig, error)
 	// Pending-acceptance queue. Used by mobile to populate the "awaiting you" list
 	// when it connects or reconnects to the SSE stream.
 	ListArrivedOrders(ctx context.Context) ([]Order, error)
 	// Newest-first, for mobile history view.
 	ListOrdersPage(ctx context.Context, arg ListOrdersPageParams) ([]Order, error)
+	ListPrinterConfigs(ctx context.Context) ([]PrinterConfig, error)
 	// First-time accept: sets state + printed_date. COALESCE preserves any earlier
 	// printed_date (so this is safe even if called twice, though the state check
 	// below ordinarily prevents that).
 	MarkAccepted(ctx context.Context, orderID int32) error
 	SetAutoAccept(ctx context.Context, autoAccept bool) error
+	// Mobile-update path: always overwrite. updated_at moves so mobile can tell
+	// how fresh the value is.
+	SetPrinterIP(ctx context.Context, arg SetPrinterIPParams) error
 	// Inserts a freshly-arrived order. Idempotent against duplicate SSE redelivery —
 	// if the order_id already exists (e.g. mobile reconnected and main/ resends),
 	// we leave the existing row (and its state/printed_date) alone.
 	UpsertArrivedOrder(ctx context.Context, arg UpsertArrivedOrderParams) error
+	// Env-var seed path: only populate a row if none exists for this printer.
+	// Mobile-set values are never overwritten at boot.
+	UpsertPrinterConfigIfAbsent(ctx context.Context, arg UpsertPrinterConfigIfAbsentParams) error
 }
 
 var _ Querier = (*Queries)(nil)

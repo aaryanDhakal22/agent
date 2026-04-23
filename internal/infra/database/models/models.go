@@ -61,6 +61,12 @@ type Order struct {
 	PrintedDate pgtype.Timestamptz `json:"printed_date"`
 }
 
+type PrinterConfig struct {
+	Name      string             `json:"name"`
+	Ip        string             `json:"ip"`
+	UpdatedAt pgtype.Timestamptz `json:"updated_at"`
+}
+
 type Setting struct {
 	ID         int32              `json:"id"`
 	AutoAccept bool               `json:"auto_accept"`

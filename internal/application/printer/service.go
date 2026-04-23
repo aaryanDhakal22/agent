@@ -71,7 +71,7 @@ func (s *Service) KeepCheck(ctx context.Context, delay time.Duration, notifier *
 		s.meters.PrinterStatus.Record(ctx, statusVal, metric.WithAttributes(nameAttr))
 
 		if s.registry != nil {
-			s.registry.Record(name, up, err, probedAt)
+			s.registry.Record(name, s.printer.IP(), up, err, probedAt)
 		}
 
 		if err != nil {
@@ -166,4 +166,51 @@ func (s *Service) Print(ctx context.Context, o order.OrderRequest) error {
 // Name exposes the underlying printer's name for telemetry labels.
 func (s *Service) Name() string {
 	return s.printer.Name()
+}
+
+// Printer returns the underlying printer handle so callers (namely the
+// Manager) can flip the IP. Intentionally returns the interface, not the
+// concrete type — keeps the domain boundary honest.
+func (s *Service) Printer() printer.Printer {
+	return s.printer
+}
+
+// ProbeNow runs a single Detect + Registry.Record cycle, outside the
+// KeepCheck loop. Used by the mobile-initiated IP update flow to give
+// immediate feedback ("did that new IP work?") rather than waiting up to
+// PRINTER_DETECT_DELAY for the next scheduled probe. Intentionally does not
+// send Pushover notifications — those are for unattended transitions, not
+// actions the user just took.
+func (s *Service) ProbeNow(ctx context.Context) {
+	name := s.printer.Name()
+	nameAttr := attribute.String("printer.name", name)
+
+	ctx, span := s.tracer.Start(ctx, "printer.probe_now",
+		trace.WithAttributes(nameAttr),
+	)
+	defer span.End()
+
+	start := time.Now()
+	err := s.printer.Detect(ctx)
+	probedAt := time.Now()
+	elapsedMs := float64(probedAt.Sub(start).Microseconds()) / 1000.0
+	s.meters.PrinterDetectMs.Record(ctx, elapsedMs, metric.WithAttributes(nameAttr))
+
+	up := err == nil
+	statusVal := int64(0)
+	if up {
+		statusVal = 1
+	}
+	s.meters.PrinterStatus.Record(ctx, statusVal, metric.WithAttributes(nameAttr))
+
+	if s.registry != nil {
+		s.registry.Record(name, s.printer.IP(), up, err, probedAt)
+	}
+
+	if err != nil {
+		span.RecordError(err)
+		s.logger.Warn().Ctx(ctx).Err(err).Msg("ProbeNow: printer unreachable")
+		return
+	}
+	s.logger.Info().Ctx(ctx).Msg("ProbeNow: printer reachable")
 }

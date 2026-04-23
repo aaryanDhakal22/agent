@@ -56,3 +56,25 @@ VALUES (1, $1, now())
 ON CONFLICT (id) DO UPDATE SET
     auto_accept = EXCLUDED.auto_accept,
     updated_at  = EXCLUDED.updated_at;
+
+-- name: UpsertPrinterConfigIfAbsent :exec
+-- Env-var seed path: only populate a row if none exists for this printer.
+-- Mobile-set values are never overwritten at boot.
+INSERT INTO printer_configs (name, ip)
+VALUES ($1, $2)
+ON CONFLICT (name) DO NOTHING;
+
+-- name: SetPrinterIP :exec
+-- Mobile-update path: always overwrite. updated_at moves so mobile can tell
+-- how fresh the value is.
+INSERT INTO printer_configs (name, ip, updated_at)
+VALUES ($1, $2, now())
+ON CONFLICT (name) DO UPDATE SET
+    ip         = EXCLUDED.ip,
+    updated_at = EXCLUDED.updated_at;
+
+-- name: GetPrinterConfig :one
+SELECT name, ip, updated_at FROM printer_configs WHERE name = $1;
+
+-- name: ListPrinterConfigs :many
+SELECT name, ip, updated_at FROM printer_configs ORDER BY name;
