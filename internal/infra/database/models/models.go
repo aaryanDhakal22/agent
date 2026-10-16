@@ -5,70 +5,96 @@
 package models
 
 import (
-	"database/sql/driver"
-	"fmt"
-
-	"github.com/jackc/pgx/v5/pgtype"
+	"database/sql"
 )
 
-type OrderState string
-
-const (
-	OrderStateArrived  OrderState = "arrived"
-	OrderStateAccepted OrderState = "accepted"
-)
-
-func (e *OrderState) Scan(src interface{}) error {
-	switch s := src.(type) {
-	case []byte:
-		*e = OrderState(s)
-	case string:
-		*e = OrderState(s)
-	default:
-		return fmt.Errorf("unsupported scan type for OrderState: %T", src)
-	}
-	return nil
+type Batch struct {
+	ID       int64          `json:"id"`
+	OpenedAt string         `json:"opened_at"`
+	ClosedAt sql.NullString `json:"closed_at"`
 }
 
-type NullOrderState struct {
-	OrderState OrderState `json:"order_state"`
-	Valid      bool       `json:"valid"` // Valid is true if OrderState is not NULL
+type Driver struct {
+	ID             string         `json:"id"`
+	Name           string         `json:"name"`
+	Active         bool           `json:"active"`
+	Position       int64          `json:"position"`
+	Status         string         `json:"status"`
+	LastReturnedAt sql.NullString `json:"last_returned_at"`
+	CreatedAt      string         `json:"created_at"`
 }
 
-// Scan implements the Scanner interface.
-func (ns *NullOrderState) Scan(value interface{}) error {
-	if value == nil {
-		ns.OrderState, ns.Valid = "", false
-		return nil
-	}
-	ns.Valid = true
-	return ns.OrderState.Scan(value)
+type DriverShift struct {
+	ID         string         `json:"id"`
+	DriverID   string         `json:"driver_id"`
+	DriverName string         `json:"driver_name"`
+	BatchID    int64          `json:"batch_id"`
+	ClockIn    string         `json:"clock_in"`
+	ClockOut   sql.NullString `json:"clock_out"`
+	AutoOut    bool           `json:"auto_out"`
 }
 
-// Value implements the driver Valuer interface.
-func (ns NullOrderState) Value() (driver.Value, error) {
-	if !ns.Valid {
-		return nil, nil
-	}
-	return string(ns.OrderState), nil
+type FloorEvent struct {
+	ID        string         `json:"id"`
+	OrderID   sql.NullString `json:"order_id"`
+	Type      string         `json:"type"`
+	Payload   string         `json:"payload"`
+	At        string         `json:"at"`
+	SyncedAt  sql.NullString `json:"synced_at"`
+	Attempts  int64          `json:"attempts"`
+	LastError string         `json:"last_error"`
 }
 
 type Order struct {
-	OrderID     int32              `json:"order_id"`
-	Payload     []byte             `json:"payload"`
-	State       OrderState         `json:"state"`
-	ArrivalDate pgtype.Timestamptz `json:"arrival_date"`
-	PrintedDate pgtype.Timestamptz `json:"printed_date"`
+	ID               string         `json:"id"`
+	TenantID         string         `json:"tenant_id"`
+	LocationID       string         `json:"location_id"`
+	Source           string         `json:"source"`
+	SourceEventID    string         `json:"source_event_id"`
+	Snapshot         string         `json:"snapshot"`
+	State            string         `json:"state"`
+	ArrivalDate      string         `json:"arrival_date"`
+	PrintedDate      sql.NullString `json:"printed_date"`
+	BatchID          int64          `json:"batch_id"`
+	KitchenNumber    sql.NullInt64  `json:"kitchen_number"`
+	PrepMinutes      sql.NullInt64  `json:"prep_minutes"`
+	EstimatedReadyAt sql.NullString `json:"estimated_ready_at"`
+	AcceptedAt       sql.NullString `json:"accepted_at"`
+	ReadyAt          sql.NullString `json:"ready_at"`
+	OutAt            sql.NullString `json:"out_at"`
+	DeliveredAt      sql.NullString `json:"delivered_at"`
+	DriverID         sql.NullString `json:"driver_id"`
+	DriverName       string         `json:"driver_name"`
+	LastAlertAt      sql.NullString `json:"last_alert_at"`
+	CancelledAt      sql.NullString `json:"cancelled_at"`
 }
 
-type PrinterConfig struct {
-	Name      string             `json:"name"`
-	Ip        string             `json:"ip"`
-	UpdatedAt pgtype.Timestamptz `json:"updated_at"`
+type PairedDevice struct {
+	ID         string         `json:"id"`
+	Name       string         `json:"name"`
+	KeyHash    string         `json:"key_hash"`
+	KeyPrefix  string         `json:"key_prefix"`
+	CreatedAt  string         `json:"created_at"`
+	LastSeenAt sql.NullString `json:"last_seen_at"`
+	RevokedAt  sql.NullString `json:"revoked_at"`
 }
 
 type Setting struct {
-	ID         int32              `json:"id"`
-	AutoAccept bool               `json:"auto_accept"`
-	UpdatedAt  pgtype.Timestamptz `json:"updated_at"`
+	ID                int64  `json:"id"`
+	AutoAccept        bool   `json:"auto_accept"`
+	StoreApiKey       string `json:"store_api_key"`
+	UpdatedAt         string `json:"updated_at"`
+	SessionSecret     string `json:"session_secret"`
+	UiPasswordHash    string `json:"ui_password_hash"`
+	UiPasswordHint    string `json:"ui_password_hint"`
+	KitchenNext       int64  `json:"kitchen_next"`
+	LastPrepMinutes   int64  `json:"last_prep_minutes"`
+	DriverResetTime   string `json:"driver_reset_time"`
+	LastDriverResetAt string `json:"last_driver_reset_at"`
+}
+
+type StoreConfig struct {
+	ID        int64  `json:"id"`
+	Context   string `json:"context"`
+	UpdatedAt string `json:"updated_at"`
 }

@@ -1,131 +1,151 @@
+// Package order is the agent's domain model for orders. Everything here
+// mirrors main/'s canonical wire shape (internal/transport/sse/envelope.go
+// + internal/domain/order/snapshot.go in main). The agent does NOT have an
+// anti-corruption layer over main's events — main is the source of truth,
+// and we lift the same canonical shape into this codebase so reads and
+// writes use the same fields end-to-end.
+//
+// Naming convention: JSON keys here must match what main/'s Snapshot emits.
+// If main adds a field, this file is one of the places that has to grow.
 package order
 
 import (
-	"encoding/json"
 	"fmt"
+	"time"
+
+	"github.com/google/uuid"
 )
 
-// OrderRequest is the aggregate root representing a full order payload received from SQS.
-type OrderSQSMessage struct {
-	ID          string
-	Payload     string
-	DateCreated string
-	CreatedAt   string
+// Snapshot is the wire-and-storage shape of an order inside the agent.
+// Identical JSON shape to main/'s order.Snapshot. We persist the full JSON
+// body in `orders.snapshot` and rebuild this struct on read.
+type Snapshot struct {
+	ID            string           `json:"id"`          // UUID
+	TenantID      string           `json:"tenant_id"`   // UUID
+	LocationID    string           `json:"location_id"` // UUID
+	Source        string           `json:"source"`
+	SourceEventID string           `json:"source_event_id"`
+	Status        string           `json:"status"`
+	Currency      string           `json:"currency"`
+	Money         Money            `json:"money"`
+	Customer      Customer         `json:"customer"`
+	Fulfillment   Fulfillment      `json:"fulfillment"`
+	Items         []LineItem       `json:"items"`
+	Payments      []PaymentSummary `json:"payments,omitempty"`
+	Notes         string           `json:"notes,omitempty"`
+	PlacedAt      time.Time        `json:"placed_at"`
+	ReceivedAt    time.Time        `json:"received_at"`
+	SourceMeta    map[string]any   `json:"source_metadata,omitempty"`
+
+	// Floor fields main mirrors back from the agent's floor events (absent on
+	// a fresh order). The agent fills KitchenNumber from its own state before
+	// printing so it lands on every ticket.
+	KitchenNumber    *int64     `json:"kitchen_order_number,omitempty"`
+	EstimatedReadyAt *time.Time `json:"estimated_ready_at,omitempty"`
+	DriverName       string     `json:"driver_name,omitempty"`
 }
 
-type OrderRequest struct {
-	TVer          string `json:"tVer"`
-	OrderID       int    `json:"order_id"`
-	OrderNumber   int    `json:"order_number"`
-	StoreID       int64  `json:"store_id"`
-	VendorStoreID string `json:"vendor_store_id"`
-	StoreName     string `json:"store_name"`
-	ServiceType   string `json:"service_type"`
-	SubmittedDate string `json:"submitted_date"`
-	PrintDate     string `json:"print_date"`
-	DeferredDate  string `json:"deferred_date"`
-
-	MiscCharges []MiscCharge `json:"misc_charges"`
-	Tip         float64      `json:"tip"`
-	Taxes       []Tax        `json:"taxes"`
-
-	IsTaxExempt  bool    `json:"is_tax_exempt"`
-	OrderTotal   float64 `json:"order_total"`
-	BalanceOwing float64 `json:"balance_owing"`
-	Notes        string  `json:"notes"`
-
-	Customer         Customer          `json:"customer"`
-	DeliveryAddress  *DeliveryAddress  `json:"delivery_address,omitempty"`
-	DeliveryProvider *DeliveryProvider `json:"delivery_provider,omitempty"`
-
-	Payments []Payment `json:"payments"`
-	Items    []Item    `json:"items"`
-	Coupons  []Coupon  `json:"coupons"`
+type Money struct {
+	Subtotal  int64      `json:"subtotal_cents"`
+	Tax       int64      `json:"tax_cents"`
+	Tip       int64      `json:"tip_cents"`
+	Fees      []Fee      `json:"fees,omitempty"`
+	Discounts []Discount `json:"discounts,omitempty"`
+	Total     int64      `json:"total_cents"`
 }
 
-type MiscCharge struct {
-	MiscChargeName   string  `json:"misc_charge_name"`
-	MiscChargeDesc   string  `json:"misc_charge_desc"`
-	MiscChargeAmount float64 `json:"misc_charge_amount"`
+type Fee struct {
+	Type   string `json:"type"`
+	Label  string `json:"label,omitempty"`
+	Amount int64  `json:"amount_cents"`
 }
 
-type Tax struct {
-	TaxName   string  `json:"tax_name"`
-	TaxAmount float64 `json:"tax_amount"`
+type Discount struct {
+	Type   string `json:"type"`
+	Code   string `json:"code,omitempty"`
+	Label  string `json:"label,omitempty"`
+	Amount int64  `json:"amount_cents"`
 }
 
 type Customer struct {
-	FirstName string `json:"first_name"`
-	LastName  string `json:"last_name"`
-	Company   string `json:"company"`
-	Phone     string `json:"phone"`
-	Ext       string `json:"ext"`
-	Email     string `json:"email"`
+	DisplayName string `json:"display_name,omitempty"`
+	Email       string `json:"email,omitempty"`
+	Phone       string `json:"phone,omitempty"`
 }
 
-type DeliveryAddress struct {
-	Street       string `json:"street"`
-	CrossStreets string `json:"cross_streets"`
-	Suite        string `json:"suite"`
-	Buz          string `json:"buz"`
-	City         string `json:"city"`
-	State        string `json:"state"`
-	Zip          string `json:"zip"`
+type Fulfillment struct {
+	Type       string     `json:"type"` // dine_in | pickup | delivery
+	Address    *Address   `json:"address,omitempty"`
+	PromisedAt *time.Time `json:"promised_at,omitempty"`
+	TableID    string     `json:"table_id,omitempty"`
 }
 
-type DeliveryProvider struct {
-	ProviderName string `json:"provider_name"`
-	Status       string `json:"status"`
-	DeliveryID   string `json:"delivery_id"`
-	TrackingURL  string `json:"tracking_url"`
-	PickupDate   string `json:"pickup_date"`
+type Address struct {
+	Line1      string `json:"line1,omitempty"`
+	Line2      string `json:"line2,omitempty"`
+	City       string `json:"city,omitempty"`
+	State      string `json:"state,omitempty"`
+	PostalCode string `json:"postal_code,omitempty"`
+	Country    string `json:"country,omitempty"`
+	Notes      string `json:"notes,omitempty"`
 }
 
-type Payment struct {
-	Type          string  `json:"type"`
-	Amount        float64 `json:"amount"`
-	CardNumber    string  `json:"card_number"`
-	CardHolder    string  `json:"card_holder"`
-	AuthCode      string  `json:"auth_code"`
-	TransactionID string  `json:"transaction_id"`
-	Token         string  `json:"token"`
-}
-
-type Item struct {
+type LineItem struct {
+	ID        string     `json:"id"`
+	Position  int        `json:"position"`
+	SKU       string     `json:"sku,omitempty"`
 	Name      string     `json:"name"`
-	SizeID    int        `json:"size_id"`
-	SizeName  string     `json:"size_name"`
+	Size      string     `json:"size,omitempty"`
 	Quantity  int        `json:"quantity"`
-	Price     float64    `json:"price"`
-	PLU       string     `json:"plu"`
-	Who       string     `json:"who"`
-	GroupID   string     `json:"group_id"`
-	Notes     string     `json:"notes"`
-	Modifiers []Modifier `json:"modifiers"`
+	UnitPrice int64      `json:"unit_price_cents"`
+	LineTotal int64      `json:"line_total_cents"`
+	Notes     string     `json:"notes,omitempty"`
+	Children  []LineItem `json:"children,omitempty"`
+
+	// Kitchen routing stamped by main at ingest (top-level items only):
+	// the station printer this line prints on, and how it was matched.
+	MenuItemID string `json:"menu_item_id,omitempty"`
+	PrinterID  string `json:"printer_id,omitempty"`
+	Routing    string `json:"routing,omitempty"` // matched | unmatched | unassigned | "" (pre-routing)
 }
 
-type Modifier struct {
-	Side     string  `json:"side"`
-	Name     string  `json:"name"`
-	Quantity int     `json:"quantity"`
-	PLU      string  `json:"plu"`
-	Price    float64 `json:"price"`
-	Action   string  `json:"action"`
+// Routing values (LineItem.Routing).
+const (
+	RoutingMatched    = "matched"
+	RoutingUnmatched  = "unmatched"
+	RoutingUnassigned = "unassigned"
+)
+
+// PaymentSummary mirrors main/'s PaymentSummary. method ∈ {card, cash, other}.
+type PaymentSummary struct {
+	Method      string `json:"method"`
+	AmountCents int64  `json:"amount_cents"`
+	Last4       string `json:"last4,omitempty"`
+	AuthCode    string `json:"auth_code,omitempty"`
 }
 
-type Coupon struct {
-	Serial  string  `json:"serial"`
-	PLU     string  `json:"plu"`
-	Name    string  `json:"name"`
-	Value   float64 `json:"value"`
-	GroupID string  `json:"group_id"`
+// MustParseID returns the snapshot id as a uuid.UUID. The wire shape uses
+// strings; callers that need to put the id in a pgtype.UUID convert through
+// this helper. Empty / invalid ids surface as uuid.Nil — callers should
+// validate before persisting.
+func (s Snapshot) MustParseID() uuid.UUID {
+	u, _ := uuid.Parse(s.ID)
+	return u
 }
 
-func (o OrderRequest) String() string {
-	jsonData, err := json.Marshal(o)
-	if err != nil {
-		fmt.Printf("Error marshalling order: %v", err)
-		return err.Error()
-	}
-	return string(jsonData)
+func (s Snapshot) MustParseTenantID() uuid.UUID {
+	u, _ := uuid.Parse(s.TenantID)
+	return u
+}
+
+func (s Snapshot) MustParseLocationID() uuid.UUID {
+	u, _ := uuid.Parse(s.LocationID)
+	return u
+}
+
+// String returns a debugging-friendly summary. Avoid in hot paths — it's only
+// for log statements that want some shape on the snapshot.
+func (s Snapshot) String() string {
+	return fmt.Sprintf("Snapshot{id=%s vendor=%s items=%d total_cents=%d}",
+		s.ID, s.SourceEventID, len(s.Items), s.Money.Total)
 }

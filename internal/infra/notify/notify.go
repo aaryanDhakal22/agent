@@ -3,6 +3,7 @@ package notify
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -13,9 +14,13 @@ import (
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 )
 
+// Notifier sends Pushover notifications to two audiences: the owner
+// (userKey — everything) and, optionally, the restaurant's boss (bossKey —
+// floor problems only). See Send vs SendFloor.
 type Notifier struct {
 	appToken    string
 	userKey     string
+	bossKey     string
 	pushoverURL string
 	httpClient  *http.Client
 }
@@ -27,10 +32,11 @@ type NotifierError struct {
 	Request string   `json:"request"`
 }
 
-func NewNotifier(appToken string, userKey string) *Notifier {
+func NewNotifier(appToken, userKey, bossKey string) *Notifier {
 	return &Notifier{
 		appToken:    appToken,
 		userKey:     userKey,
+		bossKey:     bossKey,
 		pushoverURL: "https://api.pushover.net/1/messages.json",
 		httpClient: &http.Client{
 			Timeout:   10 * time.Second,
@@ -39,13 +45,38 @@ func NewNotifier(appToken string, userKey string) *Notifier {
 	}
 }
 
-// Send posts a Pushover notification. The ctx controls cancellation and
-// provides the parent span for the outgoing HTTP call; otelhttp will create
-// a child HTTP-client span automatically.
+// Send notifies the owner only — system events (agent started, sync trouble).
+// The ctx controls cancellation and provides the parent span for the
+// outgoing HTTP call; otelhttp creates a child HTTP-client span.
 func (n *Notifier) Send(ctx context.Context, message, sound string) error {
+	return n.post(ctx, n.userKey, message, sound)
+}
+
+// SendFloor notifies the owner AND the boss (when PUSHOVER_BOSS_KEY is set) —
+// problems on the restaurant floor: an order nobody accepted, nothing printed,
+// a rerouted ticket, unmatched items, a printer down / back up.
+func (n *Notifier) SendFloor(ctx context.Context, message, sound string) error {
+	var errs []error
+	for _, key := range n.floorKeys() {
+		if err := n.post(ctx, key, message, sound); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
+}
+
+func (n *Notifier) floorKeys() []string {
+	keys := []string{n.userKey}
+	if n.bossKey != "" && n.bossKey != n.userKey {
+		keys = append(keys, n.bossKey)
+	}
+	return keys
+}
+
+func (n *Notifier) post(ctx context.Context, user, message, sound string) error {
 	form := url.Values{
 		"token":   {n.appToken},
-		"user":    {n.userKey},
+		"user":    {user},
 		"message": {message},
 		"sound":   {sound},
 	}

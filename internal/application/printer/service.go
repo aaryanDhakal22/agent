@@ -8,7 +8,6 @@ import (
 	"quiccpos/agent/internal/domain/order"
 	"quiccpos/agent/internal/domain/printer"
 	"quiccpos/agent/internal/infra/notify"
-	"quiccpos/agent/internal/infra/printer/receipt"
 	"quiccpos/agent/internal/observability"
 
 	"github.com/rs/zerolog"
@@ -79,7 +78,7 @@ func (s *Service) KeepCheck(ctx context.Context, delay time.Duration, notifier *
 				msg := fmt.Sprintf("The %s Printer is unreachable.", name)
 				s.logger.Warn().Ctx(ctx).Err(err).Msg(msg)
 				if notifier != nil {
-					if nerr := notifier.Send(ctx, msg, "printer-error"); nerr != nil {
+					if nerr := notifier.SendFloor(ctx, msg, "printer-error"); nerr != nil {
 						s.logger.Warn().Ctx(ctx).Err(nerr).Msg("Pushover notify failed")
 					}
 				}
@@ -100,7 +99,7 @@ func (s *Service) KeepCheck(ctx context.Context, delay time.Duration, notifier *
 			msg := fmt.Sprintf("The %s Printer is back online.", name)
 			s.logger.Info().Ctx(ctx).Msg(msg)
 			if notifier != nil {
-				if nerr := notifier.Send(ctx, msg, "classical"); nerr != nil {
+				if nerr := notifier.SendFloor(ctx, msg, "classical"); nerr != nil {
 					s.logger.Warn().Ctx(ctx).Err(nerr).Msg("Pushover notify failed")
 				}
 			}
@@ -118,31 +117,35 @@ func (s *Service) KeepCheck(ctx context.Context, delay time.Duration, notifier *
 	}
 }
 
-// Print builds ESC/POS commands from the order and sends them to the printer.
-func (s *Service) Print(ctx context.Context, o order.OrderRequest) error {
+// PrintWith lets callers override the receipt builder — useful in tests and
+// in cmd/main.go where the store_config-aware builder is wired in.
+func (s *Service) PrintWith(ctx context.Context, snap order.Snapshot, build ReceiptBuilder) error {
 	name := s.printer.Name()
 	nameAttr := attribute.String("printer.name", name)
 
 	ctx, span := s.tracer.Start(ctx, "printer.print",
 		trace.WithAttributes(
 			nameAttr,
-			attribute.Int("order.id", o.OrderID),
-			attribute.String("order.service_type", o.ServiceType),
+			attribute.String("order.id", snap.ID),
+			attribute.String("order.fulfillment_type", snap.Fulfillment.Type),
 		),
 	)
 	defer span.End()
 
-	s.logger.Info().Ctx(ctx).Int("order_id", o.OrderID).Msg("Detecting printer availability before print")
+	s.logger.Info().Ctx(ctx).Str("order_id", snap.ID).Msg("Detecting printer availability before print")
 	if err := s.printer.Detect(ctx); err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "detect failed")
 		s.meters.OrdersPrinted.Add(ctx, 1, metric.WithAttributes(nameAttr, attribute.String("result", "detect_failed")))
-		s.logger.Error().Ctx(ctx).Err(err).Int("order_id", o.OrderID).Msg("Printer not reachable, skipping print")
-		return err
+		s.logger.Error().Ctx(ctx).Err(err).Str("order_id", snap.ID).Msg("Printer not reachable, skipping print")
+		// Tag the error so the dispatcher can classify a whole-order print
+		// failure as "no_printer" (unreachable) vs "write_error". errors.Is
+		// still resolves the underlying detect error for existing callers.
+		return fmt.Errorf("%w: %w", ErrPrinterUnreachable, err)
 	}
 
-	s.logger.Debug().Ctx(ctx).Int("order_id", o.OrderID).Msg("Building receipt commands")
-	commands := receipt.Build(o)
+	s.logger.Debug().Ctx(ctx).Str("order_id", snap.ID).Msg("Building receipt commands")
+	commands := build(snap)
 	span.SetAttributes(attribute.Int("receipt.bytes", len(commands)))
 
 	start := time.Now()
@@ -154,12 +157,12 @@ func (s *Service) Print(ctx context.Context, o order.OrderRequest) error {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "print failed")
 		s.meters.OrdersPrinted.Add(ctx, 1, metric.WithAttributes(nameAttr, attribute.String("result", "error")))
-		s.logger.Error().Ctx(ctx).Err(err).Int("order_id", o.OrderID).Msg("Failed to print receipt")
+		s.logger.Error().Ctx(ctx).Err(err).Str("order_id", snap.ID).Msg("Failed to print receipt")
 		return err
 	}
 
 	s.meters.OrdersPrinted.Add(ctx, 1, metric.WithAttributes(nameAttr, attribute.String("result", "ok")))
-	s.logger.Info().Ctx(ctx).Int("order_id", o.OrderID).Msg("Receipt printed successfully")
+	s.logger.Info().Ctx(ctx).Str("order_id", snap.ID).Msg("Receipt printed successfully")
 	return nil
 }
 

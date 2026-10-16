@@ -7,97 +7,551 @@ package models
 
 import (
 	"context"
-
-	"github.com/jackc/pgx/v5/pgtype"
+	"database/sql"
 )
 
-const deleteOlderThan = `-- name: DeleteOlderThan :execrows
-DELETE FROM orders
-WHERE arrival_date < $1
+const cancelOrder = `-- name: CancelOrder :exec
+UPDATE orders SET state = 'cancelled', cancelled_at = ? WHERE id = ? AND state = 'arrived'
 `
 
-func (q *Queries) DeleteOlderThan(ctx context.Context, arrivalDate pgtype.Timestamptz) (int64, error) {
-	result, err := q.db.Exec(ctx, deleteOlderThan, arrivalDate)
+type CancelOrderParams struct {
+	CancelledAt sql.NullString `json:"cancelled_at"`
+	ID          string         `json:"id"`
+}
+
+// Close-batch: an order nobody accepted is cancelled (never printed, no kitchen number).
+func (q *Queries) CancelOrder(ctx context.Context, arg CancelOrderParams) error {
+	_, err := q.db.ExecContext(ctx, cancelOrder, arg.CancelledAt, arg.ID)
+	return err
+}
+
+const claimAccept = `-- name: ClaimAccept :execrows
+UPDATE orders
+SET state              = 'accepted',
+    printed_date       = COALESCE(printed_date, ?1),
+    accepted_at        = ?1,
+    prep_minutes       = ?2,
+    estimated_ready_at = ?3,
+    kitchen_number     = COALESCE(kitchen_number, ?4)
+WHERE id = ?5 AND state = 'arrived'
+`
+
+type ClaimAcceptParams struct {
+	Now              sql.NullString `json:"now"`
+	PrepMinutes      sql.NullInt64  `json:"prep_minutes"`
+	EstimatedReadyAt sql.NullString `json:"estimated_ready_at"`
+	KitchenNumber    sql.NullInt64  `json:"kitchen_number"`
+	ID               string         `json:"id"`
+}
+
+// Claims an arrived order for acceptance (0 rows = missing or already taken).
+// The kitchen number is kept across a revert + re-accept.
+func (q *Queries) ClaimAccept(ctx context.Context, arg ClaimAcceptParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, claimAccept,
+		arg.Now,
+		arg.PrepMinutes,
+		arg.EstimatedReadyAt,
+		arg.KitchenNumber,
+		arg.ID,
+	)
 	if err != nil {
 		return 0, err
 	}
-	return result.RowsAffected(), nil
+	return result.RowsAffected()
+}
+
+const clearProvisioning = `-- name: ClearProvisioning :exec
+UPDATE settings
+SET store_api_key = '', ui_password_hash = '', ui_password_hint = '',
+    updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+WHERE id = 1
+`
+
+// Unlink / definitive revoke: drop the store key AND the local password + hint
+// in one statement, back to the blank "paste a token" state.
+func (q *Queries) ClearProvisioning(ctx context.Context) error {
+	_, err := q.db.ExecContext(ctx, clearProvisioning)
+	return err
+}
+
+const clockOutDriver = `-- name: ClockOutDriver :execrows
+UPDATE drivers SET status = 'off' WHERE id = ? AND status = 'available'
+`
+
+func (q *Queries) ClockOutDriver(ctx context.Context, id string) (int64, error) {
+	result, err := q.db.ExecContext(ctx, clockOutDriver, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const closeBatch = `-- name: CloseBatch :exec
+UPDATE batches SET closed_at = ? WHERE id = ?
+`
+
+type CloseBatchParams struct {
+	ClosedAt sql.NullString `json:"closed_at"`
+	ID       int64          `json:"id"`
+}
+
+func (q *Queries) CloseBatch(ctx context.Context, arg CloseBatchParams) error {
+	_, err := q.db.ExecContext(ctx, closeBatch, arg.ClosedAt, arg.ID)
+	return err
+}
+
+const closeShift = `-- name: CloseShift :exec
+UPDATE driver_shifts SET clock_out = ?, auto_out = ? WHERE id = ?
+`
+
+type CloseShiftParams struct {
+	ClockOut sql.NullString `json:"clock_out"`
+	AutoOut  bool           `json:"auto_out"`
+	ID       string         `json:"id"`
+}
+
+func (q *Queries) CloseShift(ctx context.Context, arg CloseShiftParams) error {
+	_, err := q.db.ExecContext(ctx, closeShift, arg.ClockOut, arg.AutoOut, arg.ID)
+	return err
+}
+
+const countDeliveriesInBatch = `-- name: CountDeliveriesInBatch :many
+SELECT driver_id, count(*) AS deliveries FROM orders
+WHERE batch_id = ? AND driver_id IS NOT NULL
+GROUP BY driver_id
+`
+
+type CountDeliveriesInBatchRow struct {
+	DriverID   sql.NullString `json:"driver_id"`
+	Deliveries int64          `json:"deliveries"`
+}
+
+func (q *Queries) CountDeliveriesInBatch(ctx context.Context, batchID int64) ([]CountDeliveriesInBatchRow, error) {
+	rows, err := q.db.QueryContext(ctx, countDeliveriesInBatch, batchID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []CountDeliveriesInBatchRow
+	for rows.Next() {
+		var i CountDeliveriesInBatchRow
+		if err := rows.Scan(&i.DriverID, &i.Deliveries); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const countUnsyncedFloorEvents = `-- name: CountUnsyncedFloorEvents :one
+SELECT count(*) FROM floor_events WHERE synced_at IS NULL
+`
+
+func (q *Queries) CountUnsyncedFloorEvents(ctx context.Context) (int64, error) {
+	row := q.db.QueryRowContext(ctx, countUnsyncedFloorEvents)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
+const createDriver = `-- name: CreateDriver :exec
+INSERT INTO drivers (id, name, position) VALUES (?, ?, ?)
+`
+
+type CreateDriverParams struct {
+	ID       string `json:"id"`
+	Name     string `json:"name"`
+	Position int64  `json:"position"`
+}
+
+func (q *Queries) CreateDriver(ctx context.Context, arg CreateDriverParams) error {
+	_, err := q.db.ExecContext(ctx, createDriver, arg.ID, arg.Name, arg.Position)
+	return err
+}
+
+const createPairedDevice = `-- name: CreatePairedDevice :exec
+
+INSERT INTO paired_devices (id, name, key_hash, key_prefix) VALUES (?, ?, ?, ?)
+`
+
+type CreatePairedDeviceParams struct {
+	ID        string `json:"id"`
+	Name      string `json:"name"`
+	KeyHash   string `json:"key_hash"`
+	KeyPrefix string `json:"key_prefix"`
+}
+
+// Paired devices (counter tablets) -------------------------------------------
+func (q *Queries) CreatePairedDevice(ctx context.Context, arg CreatePairedDeviceParams) error {
+	_, err := q.db.ExecContext(ctx, createPairedDevice,
+		arg.ID,
+		arg.Name,
+		arg.KeyHash,
+		arg.KeyPrefix,
+	)
+	return err
+}
+
+const deactivateDriver = `-- name: DeactivateDriver :execrows
+UPDATE drivers SET active = false WHERE id = ? AND active
+`
+
+func (q *Queries) DeactivateDriver(ctx context.Context, id string) (int64, error) {
+	result, err := q.db.ExecContext(ctx, deactivateDriver, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const deleteOldClosedBatches = `-- name: DeleteOldClosedBatches :exec
+DELETE FROM batches
+WHERE closed_at IS NOT NULL
+  AND id NOT IN (
+      SELECT id FROM batches WHERE closed_at IS NOT NULL ORDER BY id DESC LIMIT ?
+  )
+`
+
+func (q *Queries) DeleteOldClosedBatches(ctx context.Context, limit int64) error {
+	_, err := q.db.ExecContext(ctx, deleteOldClosedBatches, limit)
+	return err
+}
+
+const deleteOldSyncedFloorEvents = `-- name: DeleteOldSyncedFloorEvents :execrows
+DELETE FROM floor_events WHERE synced_at IS NOT NULL AND synced_at < ?
+`
+
+func (q *Queries) DeleteOldSyncedFloorEvents(ctx context.Context, syncedAt sql.NullString) (int64, error) {
+	result, err := q.db.ExecContext(ctx, deleteOldSyncedFloorEvents, syncedAt)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const deleteOrdersOutsideKeptBatches = `-- name: DeleteOrdersOutsideKeptBatches :execrows
+DELETE FROM orders
+WHERE batch_id NOT IN (SELECT id FROM batches WHERE closed_at IS NULL)
+  AND batch_id NOT IN (
+      SELECT id FROM batches WHERE closed_at IS NOT NULL ORDER BY id DESC LIMIT ?
+  )
+`
+
+// Batch retention: keep the open batch plus the newest N closed batches.
+func (q *Queries) DeleteOrdersOutsideKeptBatches(ctx context.Context, limit int64) (int64, error) {
+	result, err := q.db.ExecContext(ctx, deleteOrdersOutsideKeptBatches, limit)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const finishOrder = `-- name: FinishOrder :exec
+UPDATE orders
+SET state = ?, accepted_at = ?, ready_at = ?, delivered_at = ?
+WHERE id = ?
+`
+
+type FinishOrderParams struct {
+	State       string         `json:"state"`
+	AcceptedAt  sql.NullString `json:"accepted_at"`
+	ReadyAt     sql.NullString `json:"ready_at"`
+	DeliveredAt sql.NullString `json:"delivered_at"`
+	ID          string         `json:"id"`
+}
+
+// Close-batch auto-finish: force an order to its terminal state.
+func (q *Queries) FinishOrder(ctx context.Context, arg FinishOrderParams) error {
+	_, err := q.db.ExecContext(ctx, finishOrder,
+		arg.State,
+		arg.AcceptedAt,
+		arg.ReadyAt,
+		arg.DeliveredAt,
+		arg.ID,
+	)
+	return err
 }
 
 const getAutoAccept = `-- name: GetAutoAccept :one
+
 SELECT auto_accept FROM settings WHERE id = 1
 `
 
+// Settings -----------------------------------------------------------------
 func (q *Queries) GetAutoAccept(ctx context.Context) (bool, error) {
-	row := q.db.QueryRow(ctx, getAutoAccept)
+	row := q.db.QueryRowContext(ctx, getAutoAccept)
 	var auto_accept bool
 	err := row.Scan(&auto_accept)
 	return auto_accept, err
 }
 
+const getDriver = `-- name: GetDriver :one
+SELECT id, name, active, position, status, last_returned_at, created_at FROM drivers WHERE id = ?
+`
+
+func (q *Queries) GetDriver(ctx context.Context, id string) (Driver, error) {
+	row := q.db.QueryRowContext(ctx, getDriver, id)
+	var i Driver
+	err := row.Scan(
+		&i.ID,
+		&i.Name,
+		&i.Active,
+		&i.Position,
+		&i.Status,
+		&i.LastReturnedAt,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
+const getDriverReset = `-- name: GetDriverReset :one
+SELECT driver_reset_time, last_driver_reset_at FROM settings WHERE id = 1
+`
+
+type GetDriverResetRow struct {
+	DriverResetTime   string `json:"driver_reset_time"`
+	LastDriverResetAt string `json:"last_driver_reset_at"`
+}
+
+func (q *Queries) GetDriverReset(ctx context.Context) (GetDriverResetRow, error) {
+	row := q.db.QueryRowContext(ctx, getDriverReset)
+	var i GetDriverResetRow
+	err := row.Scan(&i.DriverResetTime, &i.LastDriverResetAt)
+	return i, err
+}
+
+const getFloorSettings = `-- name: GetFloorSettings :one
+SELECT kitchen_next, last_prep_minutes FROM settings WHERE id = 1
+`
+
+type GetFloorSettingsRow struct {
+	KitchenNext     int64 `json:"kitchen_next"`
+	LastPrepMinutes int64 `json:"last_prep_minutes"`
+}
+
+func (q *Queries) GetFloorSettings(ctx context.Context) (GetFloorSettingsRow, error) {
+	row := q.db.QueryRowContext(ctx, getFloorSettings)
+	var i GetFloorSettingsRow
+	err := row.Scan(&i.KitchenNext, &i.LastPrepMinutes)
+	return i, err
+}
+
+const getOpenBatch = `-- name: GetOpenBatch :one
+
+SELECT id, opened_at, closed_at FROM batches WHERE closed_at IS NULL ORDER BY id DESC LIMIT 1
+`
+
+// Batches -------------------------------------------------------------------
+func (q *Queries) GetOpenBatch(ctx context.Context) (Batch, error) {
+	row := q.db.QueryRowContext(ctx, getOpenBatch)
+	var i Batch
+	err := row.Scan(&i.ID, &i.OpenedAt, &i.ClosedAt)
+	return i, err
+}
+
+const getOpenShift = `-- name: GetOpenShift :one
+SELECT id, driver_id, driver_name, batch_id, clock_in, clock_out, auto_out FROM driver_shifts WHERE driver_id = ? AND clock_out IS NULL ORDER BY clock_in DESC LIMIT 1
+`
+
+func (q *Queries) GetOpenShift(ctx context.Context, driverID string) (DriverShift, error) {
+	row := q.db.QueryRowContext(ctx, getOpenShift, driverID)
+	var i DriverShift
+	err := row.Scan(
+		&i.ID,
+		&i.DriverID,
+		&i.DriverName,
+		&i.BatchID,
+		&i.ClockIn,
+		&i.ClockOut,
+		&i.AutoOut,
+	)
+	return i, err
+}
+
 const getOrderByID = `-- name: GetOrderByID :one
-SELECT order_id, payload, state, arrival_date, printed_date
-FROM orders
-WHERE order_id = $1
+SELECT id, tenant_id, location_id, source, source_event_id, snapshot, state, arrival_date, printed_date, batch_id, kitchen_number, prep_minutes, estimated_ready_at, accepted_at, ready_at, out_at, delivered_at, driver_id, driver_name, last_alert_at, cancelled_at FROM orders WHERE id = ?
 `
 
-func (q *Queries) GetOrderByID(ctx context.Context, orderID int32) (Order, error) {
-	row := q.db.QueryRow(ctx, getOrderByID, orderID)
+func (q *Queries) GetOrderByID(ctx context.Context, id string) (Order, error) {
+	row := q.db.QueryRowContext(ctx, getOrderByID, id)
 	var i Order
 	err := row.Scan(
-		&i.OrderID,
-		&i.Payload,
+		&i.ID,
+		&i.TenantID,
+		&i.LocationID,
+		&i.Source,
+		&i.SourceEventID,
+		&i.Snapshot,
 		&i.State,
 		&i.ArrivalDate,
 		&i.PrintedDate,
+		&i.BatchID,
+		&i.KitchenNumber,
+		&i.PrepMinutes,
+		&i.EstimatedReadyAt,
+		&i.AcceptedAt,
+		&i.ReadyAt,
+		&i.OutAt,
+		&i.DeliveredAt,
+		&i.DriverID,
+		&i.DriverName,
+		&i.LastAlertAt,
+		&i.CancelledAt,
 	)
 	return i, err
 }
 
-const getOrderByIDForUpdate = `-- name: GetOrderByIDForUpdate :one
-SELECT order_id, payload, state, arrival_date, printed_date
-FROM orders
-WHERE order_id = $1
-FOR UPDATE
+const getPairedDeviceByHash = `-- name: GetPairedDeviceByHash :one
+SELECT id, name, key_hash, key_prefix, created_at, last_seen_at, revoked_at FROM paired_devices WHERE key_hash = ? AND revoked_at IS NULL
 `
 
-// Row-level lock so the accept path is serialized against concurrent calls
-// (e.g. mobile double-tap). Used inside the accept transaction.
-func (q *Queries) GetOrderByIDForUpdate(ctx context.Context, orderID int32) (Order, error) {
-	row := q.db.QueryRow(ctx, getOrderByIDForUpdate, orderID)
-	var i Order
+func (q *Queries) GetPairedDeviceByHash(ctx context.Context, keyHash string) (PairedDevice, error) {
+	row := q.db.QueryRowContext(ctx, getPairedDeviceByHash, keyHash)
+	var i PairedDevice
 	err := row.Scan(
-		&i.OrderID,
-		&i.Payload,
-		&i.State,
-		&i.ArrivalDate,
-		&i.PrintedDate,
+		&i.ID,
+		&i.Name,
+		&i.KeyHash,
+		&i.KeyPrefix,
+		&i.CreatedAt,
+		&i.LastSeenAt,
+		&i.RevokedAt,
 	)
 	return i, err
 }
 
-const getPrinterConfig = `-- name: GetPrinterConfig :one
-SELECT name, ip, updated_at FROM printer_configs WHERE name = $1
+const getSessionSecret = `-- name: GetSessionSecret :one
+SELECT session_secret FROM settings WHERE id = 1
 `
 
-func (q *Queries) GetPrinterConfig(ctx context.Context, name string) (PrinterConfig, error) {
-	row := q.db.QueryRow(ctx, getPrinterConfig, name)
-	var i PrinterConfig
-	err := row.Scan(&i.Name, &i.Ip, &i.UpdatedAt)
+func (q *Queries) GetSessionSecret(ctx context.Context) (string, error) {
+	row := q.db.QueryRowContext(ctx, getSessionSecret)
+	var session_secret string
+	err := row.Scan(&session_secret)
+	return session_secret, err
+}
+
+const getStoreAPIKey = `-- name: GetStoreAPIKey :one
+SELECT store_api_key FROM settings WHERE id = 1
+`
+
+func (q *Queries) GetStoreAPIKey(ctx context.Context) (string, error) {
+	row := q.db.QueryRowContext(ctx, getStoreAPIKey)
+	var store_api_key string
+	err := row.Scan(&store_api_key)
+	return store_api_key, err
+}
+
+const getStoreConfig = `-- name: GetStoreConfig :one
+
+SELECT context, updated_at FROM store_config WHERE id = 1
+`
+
+type GetStoreConfigRow struct {
+	Context   string `json:"context"`
+	UpdatedAt string `json:"updated_at"`
+}
+
+// Store config (starter pack from main/'s SSE handshake) --------------------
+func (q *Queries) GetStoreConfig(ctx context.Context) (GetStoreConfigRow, error) {
+	row := q.db.QueryRowContext(ctx, getStoreConfig)
+	var i GetStoreConfigRow
+	err := row.Scan(&i.Context, &i.UpdatedAt)
 	return i, err
+}
+
+const getUIPassword = `-- name: GetUIPassword :one
+SELECT ui_password_hash, ui_password_hint FROM settings WHERE id = 1
+`
+
+type GetUIPasswordRow struct {
+	UiPasswordHash string `json:"ui_password_hash"`
+	UiPasswordHint string `json:"ui_password_hint"`
+}
+
+func (q *Queries) GetUIPassword(ctx context.Context) (GetUIPasswordRow, error) {
+	row := q.db.QueryRowContext(ctx, getUIPassword)
+	var i GetUIPasswordRow
+	err := row.Scan(&i.UiPasswordHash, &i.UiPasswordHint)
+	return i, err
+}
+
+const insertFloorEvent = `-- name: InsertFloorEvent :exec
+
+INSERT INTO floor_events (id, order_id, type, payload, at) VALUES (?, ?, ?, ?, ?)
+`
+
+type InsertFloorEventParams struct {
+	ID      string         `json:"id"`
+	OrderID sql.NullString `json:"order_id"`
+	Type    string         `json:"type"`
+	Payload string         `json:"payload"`
+	At      string         `json:"at"`
+}
+
+// Floor events (sync outbox to main) -------------------------------------------
+func (q *Queries) InsertFloorEvent(ctx context.Context, arg InsertFloorEventParams) error {
+	_, err := q.db.ExecContext(ctx, insertFloorEvent,
+		arg.ID,
+		arg.OrderID,
+		arg.Type,
+		arg.Payload,
+		arg.At,
+	)
+	return err
+}
+
+const listActiveDrivers = `-- name: ListActiveDrivers :many
+
+SELECT id, name, active, position, status, last_returned_at, created_at FROM drivers WHERE active ORDER BY position ASC, created_at ASC
+`
+
+// Drivers -------------------------------------------------------------------
+func (q *Queries) ListActiveDrivers(ctx context.Context) ([]Driver, error) {
+	rows, err := q.db.QueryContext(ctx, listActiveDrivers)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Driver
+	for rows.Next() {
+		var i Driver
+		if err := rows.Scan(
+			&i.ID,
+			&i.Name,
+			&i.Active,
+			&i.Position,
+			&i.Status,
+			&i.LastReturnedAt,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const listArrivedOrders = `-- name: ListArrivedOrders :many
-SELECT order_id, payload, state, arrival_date, printed_date
-FROM orders
+SELECT id, tenant_id, location_id, source, source_event_id, snapshot, state, arrival_date, printed_date, batch_id, kitchen_number, prep_minutes, estimated_ready_at, accepted_at, ready_at, out_at, delivered_at, driver_id, driver_name, last_alert_at, cancelled_at FROM orders
 WHERE state = 'arrived'
 ORDER BY arrival_date ASC
 `
 
-// Pending-acceptance queue. Used by mobile to populate the "awaiting you" list
-// when it connects or reconnects to the SSE stream.
 func (q *Queries) ListArrivedOrders(ctx context.Context) ([]Order, error) {
-	rows, err := q.db.Query(ctx, listArrivedOrders)
+	rows, err := q.db.QueryContext(ctx, listArrivedOrders)
 	if err != nil {
 		return nil, err
 	}
@@ -106,15 +560,312 @@ func (q *Queries) ListArrivedOrders(ctx context.Context) ([]Order, error) {
 	for rows.Next() {
 		var i Order
 		if err := rows.Scan(
-			&i.OrderID,
-			&i.Payload,
+			&i.ID,
+			&i.TenantID,
+			&i.LocationID,
+			&i.Source,
+			&i.SourceEventID,
+			&i.Snapshot,
 			&i.State,
 			&i.ArrivalDate,
 			&i.PrintedDate,
+			&i.BatchID,
+			&i.KitchenNumber,
+			&i.PrepMinutes,
+			&i.EstimatedReadyAt,
+			&i.AcceptedAt,
+			&i.ReadyAt,
+			&i.OutAt,
+			&i.DeliveredAt,
+			&i.DriverID,
+			&i.DriverName,
+			&i.LastAlertAt,
+			&i.CancelledAt,
 		); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listAvailableDrivers = `-- name: ListAvailableDrivers :many
+SELECT id, name, active, position, status, last_returned_at, created_at FROM drivers WHERE active AND status = 'available'
+`
+
+func (q *Queries) ListAvailableDrivers(ctx context.Context) ([]Driver, error) {
+	rows, err := q.db.QueryContext(ctx, listAvailableDrivers)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Driver
+	for rows.Next() {
+		var i Driver
+		if err := rows.Scan(
+			&i.ID,
+			&i.Name,
+			&i.Active,
+			&i.Position,
+			&i.Status,
+			&i.LastReturnedAt,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listBatchLeftovers = `-- name: ListBatchLeftovers :many
+SELECT id, tenant_id, location_id, source, source_event_id, snapshot, state, arrival_date, printed_date, batch_id, kitchen_number, prep_minutes, estimated_ready_at, accepted_at, ready_at, out_at, delivered_at, driver_id, driver_name, last_alert_at, cancelled_at FROM orders
+WHERE batch_id = ?
+  AND NOT (state IN ('delivered', 'cancelled')
+           OR (state = 'ready'
+               AND COALESCE(json_extract(snapshot, '$.fulfillment.type'), '') <> 'delivery'))
+ORDER BY arrival_date ASC
+`
+
+// Orders of a batch that aren't finished: finished = delivered or cancelled,
+// or ready for a non-delivery order.
+func (q *Queries) ListBatchLeftovers(ctx context.Context, batchID int64) ([]Order, error) {
+	rows, err := q.db.QueryContext(ctx, listBatchLeftovers, batchID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Order
+	for rows.Next() {
+		var i Order
+		if err := rows.Scan(
+			&i.ID,
+			&i.TenantID,
+			&i.LocationID,
+			&i.Source,
+			&i.SourceEventID,
+			&i.Snapshot,
+			&i.State,
+			&i.ArrivalDate,
+			&i.PrintedDate,
+			&i.BatchID,
+			&i.KitchenNumber,
+			&i.PrepMinutes,
+			&i.EstimatedReadyAt,
+			&i.AcceptedAt,
+			&i.ReadyAt,
+			&i.OutAt,
+			&i.DeliveredAt,
+			&i.DriverID,
+			&i.DriverName,
+			&i.LastAlertAt,
+			&i.CancelledAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listBatches = `-- name: ListBatches :many
+SELECT b.id, b.opened_at, b.closed_at,
+       (SELECT count(*) FROM orders o WHERE o.batch_id = b.id) AS order_count
+FROM batches b
+ORDER BY b.id DESC
+LIMIT ?
+`
+
+type ListBatchesRow struct {
+	ID         int64          `json:"id"`
+	OpenedAt   string         `json:"opened_at"`
+	ClosedAt   sql.NullString `json:"closed_at"`
+	OrderCount int64          `json:"order_count"`
+}
+
+func (q *Queries) ListBatches(ctx context.Context, limit int64) ([]ListBatchesRow, error) {
+	rows, err := q.db.QueryContext(ctx, listBatches, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListBatchesRow
+	for rows.Next() {
+		var i ListBatchesRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.OpenedAt,
+			&i.ClosedAt,
+			&i.OrderCount,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listOnDeliveryByDriver = `-- name: ListOnDeliveryByDriver :many
+SELECT id, tenant_id, location_id, source, source_event_id, snapshot, state, arrival_date, printed_date, batch_id, kitchen_number, prep_minutes, estimated_ready_at, accepted_at, ready_at, out_at, delivered_at, driver_id, driver_name, last_alert_at, cancelled_at FROM orders
+WHERE state = 'on_delivery' AND driver_id = ?
+ORDER BY out_at ASC
+`
+
+func (q *Queries) ListOnDeliveryByDriver(ctx context.Context, driverID sql.NullString) ([]Order, error) {
+	rows, err := q.db.QueryContext(ctx, listOnDeliveryByDriver, driverID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Order
+	for rows.Next() {
+		var i Order
+		if err := rows.Scan(
+			&i.ID,
+			&i.TenantID,
+			&i.LocationID,
+			&i.Source,
+			&i.SourceEventID,
+			&i.Snapshot,
+			&i.State,
+			&i.ArrivalDate,
+			&i.PrintedDate,
+			&i.BatchID,
+			&i.KitchenNumber,
+			&i.PrepMinutes,
+			&i.EstimatedReadyAt,
+			&i.AcceptedAt,
+			&i.ReadyAt,
+			&i.OutAt,
+			&i.DeliveredAt,
+			&i.DriverID,
+			&i.DriverName,
+			&i.LastAlertAt,
+			&i.CancelledAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listOpenShifts = `-- name: ListOpenShifts :many
+SELECT id, driver_id, driver_name, batch_id, clock_in, clock_out, auto_out FROM driver_shifts WHERE clock_out IS NULL
+`
+
+func (q *Queries) ListOpenShifts(ctx context.Context) ([]DriverShift, error) {
+	rows, err := q.db.QueryContext(ctx, listOpenShifts)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []DriverShift
+	for rows.Next() {
+		var i DriverShift
+		if err := rows.Scan(
+			&i.ID,
+			&i.DriverID,
+			&i.DriverName,
+			&i.BatchID,
+			&i.ClockIn,
+			&i.ClockOut,
+			&i.AutoOut,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listOrdersByBatch = `-- name: ListOrdersByBatch :many
+SELECT id, tenant_id, location_id, source, source_event_id, snapshot, state, arrival_date, printed_date, batch_id, kitchen_number, prep_minutes, estimated_ready_at, accepted_at, ready_at, out_at, delivered_at, driver_id, driver_name, last_alert_at, cancelled_at FROM orders
+WHERE batch_id = ?
+ORDER BY arrival_date DESC
+LIMIT ? OFFSET ?
+`
+
+type ListOrdersByBatchParams struct {
+	BatchID int64 `json:"batch_id"`
+	Limit   int64 `json:"limit"`
+	Offset  int64 `json:"offset"`
+}
+
+func (q *Queries) ListOrdersByBatch(ctx context.Context, arg ListOrdersByBatchParams) ([]Order, error) {
+	rows, err := q.db.QueryContext(ctx, listOrdersByBatch, arg.BatchID, arg.Limit, arg.Offset)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Order
+	for rows.Next() {
+		var i Order
+		if err := rows.Scan(
+			&i.ID,
+			&i.TenantID,
+			&i.LocationID,
+			&i.Source,
+			&i.SourceEventID,
+			&i.Snapshot,
+			&i.State,
+			&i.ArrivalDate,
+			&i.PrintedDate,
+			&i.BatchID,
+			&i.KitchenNumber,
+			&i.PrepMinutes,
+			&i.EstimatedReadyAt,
+			&i.AcceptedAt,
+			&i.ReadyAt,
+			&i.OutAt,
+			&i.DeliveredAt,
+			&i.DriverID,
+			&i.DriverName,
+			&i.LastAlertAt,
+			&i.CancelledAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
@@ -123,20 +874,18 @@ func (q *Queries) ListArrivedOrders(ctx context.Context) ([]Order, error) {
 }
 
 const listOrdersPage = `-- name: ListOrdersPage :many
-SELECT order_id, payload, state, arrival_date, printed_date
-FROM orders
+SELECT id, tenant_id, location_id, source, source_event_id, snapshot, state, arrival_date, printed_date, batch_id, kitchen_number, prep_minutes, estimated_ready_at, accepted_at, ready_at, out_at, delivered_at, driver_id, driver_name, last_alert_at, cancelled_at FROM orders
 ORDER BY arrival_date DESC
-LIMIT $1 OFFSET $2
+LIMIT ? OFFSET ?
 `
 
 type ListOrdersPageParams struct {
-	Limit  int32 `json:"limit"`
-	Offset int32 `json:"offset"`
+	Limit  int64 `json:"limit"`
+	Offset int64 `json:"offset"`
 }
 
-// Newest-first, for mobile history view.
 func (q *Queries) ListOrdersPage(ctx context.Context, arg ListOrdersPageParams) ([]Order, error) {
-	rows, err := q.db.Query(ctx, listOrdersPage, arg.Limit, arg.Offset)
+	rows, err := q.db.QueryContext(ctx, listOrdersPage, arg.Limit, arg.Offset)
 	if err != nil {
 		return nil, err
 	}
@@ -145,39 +894,88 @@ func (q *Queries) ListOrdersPage(ctx context.Context, arg ListOrdersPageParams) 
 	for rows.Next() {
 		var i Order
 		if err := rows.Scan(
-			&i.OrderID,
-			&i.Payload,
+			&i.ID,
+			&i.TenantID,
+			&i.LocationID,
+			&i.Source,
+			&i.SourceEventID,
+			&i.Snapshot,
 			&i.State,
 			&i.ArrivalDate,
 			&i.PrintedDate,
+			&i.BatchID,
+			&i.KitchenNumber,
+			&i.PrepMinutes,
+			&i.EstimatedReadyAt,
+			&i.AcceptedAt,
+			&i.ReadyAt,
+			&i.OutAt,
+			&i.DeliveredAt,
+			&i.DriverID,
+			&i.DriverName,
+			&i.LastAlertAt,
+			&i.CancelledAt,
 		); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
 	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
 	return items, nil
 }
 
-const listPrinterConfigs = `-- name: ListPrinterConfigs :many
-SELECT name, ip, updated_at FROM printer_configs ORDER BY name
+const listOverdueArrived = `-- name: ListOverdueArrived :many
+SELECT id, tenant_id, location_id, source, source_event_id, snapshot, state, arrival_date, printed_date, batch_id, kitchen_number, prep_minutes, estimated_ready_at, accepted_at, ready_at, out_at, delivered_at, driver_id, driver_name, last_alert_at, cancelled_at FROM orders
+WHERE state = 'arrived'
+  AND arrival_date <= ?1
+  AND (last_alert_at IS NULL OR last_alert_at <= ?1)
+ORDER BY arrival_date ASC
 `
 
-func (q *Queries) ListPrinterConfigs(ctx context.Context) ([]PrinterConfig, error) {
-	rows, err := q.db.Query(ctx, listPrinterConfigs)
+// Arrived orders older than the cutoff that haven't been alerted since the cutoff.
+func (q *Queries) ListOverdueArrived(ctx context.Context, cutoff string) ([]Order, error) {
+	rows, err := q.db.QueryContext(ctx, listOverdueArrived, cutoff)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var items []PrinterConfig
+	var items []Order
 	for rows.Next() {
-		var i PrinterConfig
-		if err := rows.Scan(&i.Name, &i.Ip, &i.UpdatedAt); err != nil {
+		var i Order
+		if err := rows.Scan(
+			&i.ID,
+			&i.TenantID,
+			&i.LocationID,
+			&i.Source,
+			&i.SourceEventID,
+			&i.Snapshot,
+			&i.State,
+			&i.ArrivalDate,
+			&i.PrintedDate,
+			&i.BatchID,
+			&i.KitchenNumber,
+			&i.PrepMinutes,
+			&i.EstimatedReadyAt,
+			&i.AcceptedAt,
+			&i.ReadyAt,
+			&i.OutAt,
+			&i.DeliveredAt,
+			&i.DriverID,
+			&i.DriverName,
+			&i.LastAlertAt,
+			&i.CancelledAt,
+		); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
@@ -185,87 +983,558 @@ func (q *Queries) ListPrinterConfigs(ctx context.Context) ([]PrinterConfig, erro
 	return items, nil
 }
 
-const markAccepted = `-- name: MarkAccepted :exec
-UPDATE orders
-SET state        = 'accepted',
-    printed_date = COALESCE(printed_date, now())
-WHERE order_id = $1
+const listPairedDevices = `-- name: ListPairedDevices :many
+SELECT id, name, key_hash, key_prefix, created_at, last_seen_at, revoked_at FROM paired_devices ORDER BY created_at DESC
 `
 
-// First-time accept: sets state + printed_date. COALESCE preserves any earlier
-// printed_date (so this is safe even if called twice, though the state check
-// below ordinarily prevents that).
-func (q *Queries) MarkAccepted(ctx context.Context, orderID int32) error {
-	_, err := q.db.Exec(ctx, markAccepted, orderID)
+func (q *Queries) ListPairedDevices(ctx context.Context) ([]PairedDevice, error) {
+	rows, err := q.db.QueryContext(ctx, listPairedDevices)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []PairedDevice
+	for rows.Next() {
+		var i PairedDevice
+		if err := rows.Scan(
+			&i.ID,
+			&i.Name,
+			&i.KeyHash,
+			&i.KeyPrefix,
+			&i.CreatedAt,
+			&i.LastSeenAt,
+			&i.RevokedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listShiftsSince = `-- name: ListShiftsSince :many
+SELECT id, driver_id, driver_name, batch_id, clock_in, clock_out, auto_out FROM driver_shifts WHERE clock_in >= ? ORDER BY clock_in DESC
+`
+
+func (q *Queries) ListShiftsSince(ctx context.Context, clockIn string) ([]DriverShift, error) {
+	rows, err := q.db.QueryContext(ctx, listShiftsSince, clockIn)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []DriverShift
+	for rows.Next() {
+		var i DriverShift
+		if err := rows.Scan(
+			&i.ID,
+			&i.DriverID,
+			&i.DriverName,
+			&i.BatchID,
+			&i.ClockIn,
+			&i.ClockOut,
+			&i.AutoOut,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listUnsyncedFloorEvents = `-- name: ListUnsyncedFloorEvents :many
+SELECT id, order_id, type, payload, at, synced_at, attempts, last_error FROM floor_events WHERE synced_at IS NULL ORDER BY rowid ASC LIMIT ?
+`
+
+func (q *Queries) ListUnsyncedFloorEvents(ctx context.Context, limit int64) ([]FloorEvent, error) {
+	rows, err := q.db.QueryContext(ctx, listUnsyncedFloorEvents, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []FloorEvent
+	for rows.Next() {
+		var i FloorEvent
+		if err := rows.Scan(
+			&i.ID,
+			&i.OrderID,
+			&i.Type,
+			&i.Payload,
+			&i.At,
+			&i.SyncedAt,
+			&i.Attempts,
+			&i.LastError,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const markAlerted = `-- name: MarkAlerted :exec
+UPDATE orders SET last_alert_at = ? WHERE id = ?
+`
+
+type MarkAlertedParams struct {
+	LastAlertAt sql.NullString `json:"last_alert_at"`
+	ID          string         `json:"id"`
+}
+
+func (q *Queries) MarkAlerted(ctx context.Context, arg MarkAlertedParams) error {
+	_, err := q.db.ExecContext(ctx, markAlerted, arg.LastAlertAt, arg.ID)
 	return err
+}
+
+const markDelivered = `-- name: MarkDelivered :execrows
+UPDATE orders SET state = 'delivered', delivered_at = ?
+WHERE id = ? AND state = 'on_delivery'
+`
+
+type MarkDeliveredParams struct {
+	DeliveredAt sql.NullString `json:"delivered_at"`
+	ID          string         `json:"id"`
+}
+
+func (q *Queries) MarkDelivered(ctx context.Context, arg MarkDeliveredParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, markDelivered, arg.DeliveredAt, arg.ID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const markFloorEventFailed = `-- name: MarkFloorEventFailed :exec
+UPDATE floor_events SET attempts = attempts + 1, last_error = ? WHERE id = ?
+`
+
+type MarkFloorEventFailedParams struct {
+	LastError string `json:"last_error"`
+	ID        string `json:"id"`
+}
+
+func (q *Queries) MarkFloorEventFailed(ctx context.Context, arg MarkFloorEventFailedParams) error {
+	_, err := q.db.ExecContext(ctx, markFloorEventFailed, arg.LastError, arg.ID)
+	return err
+}
+
+const markFloorEventSynced = `-- name: MarkFloorEventSynced :exec
+UPDATE floor_events SET synced_at = ?, last_error = '' WHERE id = ?
+`
+
+type MarkFloorEventSyncedParams struct {
+	SyncedAt sql.NullString `json:"synced_at"`
+	ID       string         `json:"id"`
+}
+
+func (q *Queries) MarkFloorEventSynced(ctx context.Context, arg MarkFloorEventSyncedParams) error {
+	_, err := q.db.ExecContext(ctx, markFloorEventSynced, arg.SyncedAt, arg.ID)
+	return err
+}
+
+const markOnDelivery = `-- name: MarkOnDelivery :execrows
+UPDATE orders
+SET state = 'on_delivery', out_at = ?, driver_id = ?, driver_name = ?
+WHERE id = ? AND state = 'ready'
+  AND json_extract(snapshot, '$.fulfillment.type') = 'delivery'
+`
+
+type MarkOnDeliveryParams struct {
+	OutAt      sql.NullString `json:"out_at"`
+	DriverID   sql.NullString `json:"driver_id"`
+	DriverName string         `json:"driver_name"`
+	ID         string         `json:"id"`
+}
+
+func (q *Queries) MarkOnDelivery(ctx context.Context, arg MarkOnDeliveryParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, markOnDelivery,
+		arg.OutAt,
+		arg.DriverID,
+		arg.DriverName,
+		arg.ID,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const markReady = `-- name: MarkReady :execrows
+UPDATE orders SET state = 'ready', ready_at = ?
+WHERE id = ? AND state = 'accepted'
+`
+
+type MarkReadyParams struct {
+	ReadyAt sql.NullString `json:"ready_at"`
+	ID      string         `json:"id"`
+}
+
+func (q *Queries) MarkReady(ctx context.Context, arg MarkReadyParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, markReady, arg.ReadyAt, arg.ID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const nextDriverPosition = `-- name: NextDriverPosition :one
+SELECT CAST(COALESCE(MAX(position), 0) + 1 AS INTEGER) AS next_position FROM drivers
+`
+
+func (q *Queries) NextDriverPosition(ctx context.Context) (int64, error) {
+	row := q.db.QueryRowContext(ctx, nextDriverPosition)
+	var next_position int64
+	err := row.Scan(&next_position)
+	return next_position, err
+}
+
+const nextKitchenNumber = `-- name: NextKitchenNumber :one
+UPDATE settings SET kitchen_next = kitchen_next + 1 WHERE id = 1 RETURNING kitchen_next
+`
+
+// Allocates a kitchen number: returns the post-increment value (caller subtracts 1).
+func (q *Queries) NextKitchenNumber(ctx context.Context) (int64, error) {
+	row := q.db.QueryRowContext(ctx, nextKitchenNumber)
+	var kitchen_next int64
+	err := row.Scan(&kitchen_next)
+	return kitchen_next, err
+}
+
+const openBatch = `-- name: OpenBatch :one
+INSERT INTO batches (opened_at) VALUES (?) RETURNING id, opened_at, closed_at
+`
+
+func (q *Queries) OpenBatch(ctx context.Context, openedAt string) (Batch, error) {
+	row := q.db.QueryRowContext(ctx, openBatch, openedAt)
+	var i Batch
+	err := row.Scan(&i.ID, &i.OpenedAt, &i.ClosedAt)
+	return i, err
+}
+
+const openShift = `-- name: OpenShift :exec
+
+INSERT INTO driver_shifts (id, driver_id, driver_name, batch_id, clock_in) VALUES (?, ?, ?, ?, ?)
+`
+
+type OpenShiftParams struct {
+	ID         string `json:"id"`
+	DriverID   string `json:"driver_id"`
+	DriverName string `json:"driver_name"`
+	BatchID    int64  `json:"batch_id"`
+	ClockIn    string `json:"clock_in"`
+}
+
+// Driver shifts ----------------------------------------------------------------
+func (q *Queries) OpenShift(ctx context.Context, arg OpenShiftParams) error {
+	_, err := q.db.ExecContext(ctx, openShift,
+		arg.ID,
+		arg.DriverID,
+		arg.DriverName,
+		arg.BatchID,
+		arg.ClockIn,
+	)
+	return err
+}
+
+const renameDriver = `-- name: RenameDriver :execrows
+UPDATE drivers SET name = ? WHERE id = ? AND active
+`
+
+type RenameDriverParams struct {
+	Name string `json:"name"`
+	ID   string `json:"id"`
+}
+
+func (q *Queries) RenameDriver(ctx context.Context, arg RenameDriverParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, renameDriver, arg.Name, arg.ID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const resetDriversAvailable = `-- name: ResetDriversAvailable :exec
+UPDATE drivers SET status = 'available' WHERE status = 'out'
+`
+
+// Close batch: drivers out on a run are back in the queue (clocked-out stay off).
+func (q *Queries) ResetDriversAvailable(ctx context.Context) error {
+	_, err := q.db.ExecContext(ctx, resetDriversAvailable)
+	return err
+}
+
+const resetKitchenNumber = `-- name: ResetKitchenNumber :exec
+UPDATE settings SET kitchen_next = 1100 WHERE id = 1
+`
+
+func (q *Queries) ResetKitchenNumber(ctx context.Context) error {
+	_, err := q.db.ExecContext(ctx, resetKitchenNumber)
+	return err
+}
+
+const revertAccept = `-- name: RevertAccept :exec
+UPDATE orders
+SET state              = 'arrived',
+    printed_date       = NULL,
+    accepted_at        = NULL,
+    estimated_ready_at = NULL
+WHERE id = ? AND state = 'accepted'
+`
+
+// Undoes a claim whose tickets printed nowhere, so the order can be re-accepted.
+func (q *Queries) RevertAccept(ctx context.Context, id string) error {
+	_, err := q.db.ExecContext(ctx, revertAccept, id)
+	return err
+}
+
+const revokeAllPairedDevices = `-- name: RevokeAllPairedDevices :exec
+UPDATE paired_devices SET revoked_at = ? WHERE revoked_at IS NULL
+`
+
+func (q *Queries) RevokeAllPairedDevices(ctx context.Context, revokedAt sql.NullString) error {
+	_, err := q.db.ExecContext(ctx, revokeAllPairedDevices, revokedAt)
+	return err
+}
+
+const revokePairedDevice = `-- name: RevokePairedDevice :execrows
+UPDATE paired_devices SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL
+`
+
+type RevokePairedDeviceParams struct {
+	RevokedAt sql.NullString `json:"revoked_at"`
+	ID        string         `json:"id"`
+}
+
+func (q *Queries) RevokePairedDevice(ctx context.Context, arg RevokePairedDeviceParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, revokePairedDevice, arg.RevokedAt, arg.ID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
 
 const setAutoAccept = `-- name: SetAutoAccept :exec
 INSERT INTO settings (id, auto_accept, updated_at)
-VALUES (1, $1, now())
+VALUES (1, ?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 ON CONFLICT (id) DO UPDATE SET
-    auto_accept = EXCLUDED.auto_accept,
-    updated_at  = EXCLUDED.updated_at
+    auto_accept = excluded.auto_accept,
+    updated_at  = excluded.updated_at
 `
 
 func (q *Queries) SetAutoAccept(ctx context.Context, autoAccept bool) error {
-	_, err := q.db.Exec(ctx, setAutoAccept, autoAccept)
+	_, err := q.db.ExecContext(ctx, setAutoAccept, autoAccept)
 	return err
 }
 
-const setPrinterIP = `-- name: SetPrinterIP :exec
-INSERT INTO printer_configs (name, ip, updated_at)
-VALUES ($1, $2, now())
-ON CONFLICT (name) DO UPDATE SET
-    ip         = EXCLUDED.ip,
-    updated_at = EXCLUDED.updated_at
+const setDriverOut = `-- name: SetDriverOut :exec
+UPDATE drivers SET status = 'out' WHERE id = ?
 `
 
-type SetPrinterIPParams struct {
-	Name string `json:"name"`
-	Ip   string `json:"ip"`
-}
-
-// Mobile-update path: always overwrite. updated_at moves so mobile can tell
-// how fresh the value is.
-func (q *Queries) SetPrinterIP(ctx context.Context, arg SetPrinterIPParams) error {
-	_, err := q.db.Exec(ctx, setPrinterIP, arg.Name, arg.Ip)
+func (q *Queries) SetDriverOut(ctx context.Context, id string) error {
+	_, err := q.db.ExecContext(ctx, setDriverOut, id)
 	return err
 }
 
-const upsertArrivedOrder = `-- name: UpsertArrivedOrder :exec
-INSERT INTO orders (order_id, payload, state, arrival_date)
-VALUES ($1, $2, 'arrived', now())
-ON CONFLICT (order_id) DO NOTHING
+const setDriverPosition = `-- name: SetDriverPosition :exec
+UPDATE drivers SET position = ? WHERE id = ?
+`
+
+type SetDriverPositionParams struct {
+	Position int64  `json:"position"`
+	ID       string `json:"id"`
+}
+
+func (q *Queries) SetDriverPosition(ctx context.Context, arg SetDriverPositionParams) error {
+	_, err := q.db.ExecContext(ctx, setDriverPosition, arg.Position, arg.ID)
+	return err
+}
+
+const setDriverResetTime = `-- name: SetDriverResetTime :exec
+UPDATE settings SET driver_reset_time = ? WHERE id = 1
+`
+
+func (q *Queries) SetDriverResetTime(ctx context.Context, driverResetTime string) error {
+	_, err := q.db.ExecContext(ctx, setDriverResetTime, driverResetTime)
+	return err
+}
+
+const setDriverReturned = `-- name: SetDriverReturned :exec
+UPDATE drivers
+SET status = 'available', last_returned_at = ?, position = ?
+WHERE id = ?
+`
+
+type SetDriverReturnedParams struct {
+	LastReturnedAt sql.NullString `json:"last_returned_at"`
+	Position       int64          `json:"position"`
+	ID             string         `json:"id"`
+}
+
+// Back from a run: available again, at the back of the queue.
+func (q *Queries) SetDriverReturned(ctx context.Context, arg SetDriverReturnedParams) error {
+	_, err := q.db.ExecContext(ctx, setDriverReturned, arg.LastReturnedAt, arg.Position, arg.ID)
+	return err
+}
+
+const setDriverStatus = `-- name: SetDriverStatus :execrows
+UPDATE drivers SET status = ?1, position = ?2
+WHERE id = ?3 AND active AND status = ?4
+`
+
+type SetDriverStatusParams struct {
+	NewStatus string `json:"new_status"`
+	Position  int64  `json:"position"`
+	ID        string `json:"id"`
+	OldStatus string `json:"old_status"`
+}
+
+func (q *Queries) SetDriverStatus(ctx context.Context, arg SetDriverStatusParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, setDriverStatus,
+		arg.NewStatus,
+		arg.Position,
+		arg.ID,
+		arg.OldStatus,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const setLastDriverReset = `-- name: SetLastDriverReset :exec
+UPDATE settings SET last_driver_reset_at = ? WHERE id = 1
+`
+
+func (q *Queries) SetLastDriverReset(ctx context.Context, lastDriverResetAt string) error {
+	_, err := q.db.ExecContext(ctx, setLastDriverReset, lastDriverResetAt)
+	return err
+}
+
+const setLastPrepMinutes = `-- name: SetLastPrepMinutes :exec
+UPDATE settings SET last_prep_minutes = ? WHERE id = 1
+`
+
+func (q *Queries) SetLastPrepMinutes(ctx context.Context, lastPrepMinutes int64) error {
+	_, err := q.db.ExecContext(ctx, setLastPrepMinutes, lastPrepMinutes)
+	return err
+}
+
+const setSessionSecret = `-- name: SetSessionSecret :exec
+UPDATE settings
+SET session_secret = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+WHERE id = 1
+`
+
+func (q *Queries) SetSessionSecret(ctx context.Context, sessionSecret string) error {
+	_, err := q.db.ExecContext(ctx, setSessionSecret, sessionSecret)
+	return err
+}
+
+const setStoreAPIKey = `-- name: SetStoreAPIKey :exec
+INSERT INTO settings (id, store_api_key, updated_at)
+VALUES (1, ?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+ON CONFLICT (id) DO UPDATE SET
+    store_api_key = excluded.store_api_key,
+    updated_at    = excluded.updated_at
+`
+
+func (q *Queries) SetStoreAPIKey(ctx context.Context, storeApiKey string) error {
+	_, err := q.db.ExecContext(ctx, setStoreAPIKey, storeApiKey)
+	return err
+}
+
+const setUIPassword = `-- name: SetUIPassword :exec
+UPDATE settings
+SET ui_password_hash = ?, ui_password_hint = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+WHERE id = 1
+`
+
+type SetUIPasswordParams struct {
+	UiPasswordHash string `json:"ui_password_hash"`
+	UiPasswordHint string `json:"ui_password_hint"`
+}
+
+func (q *Queries) SetUIPassword(ctx context.Context, arg SetUIPasswordParams) error {
+	_, err := q.db.ExecContext(ctx, setUIPassword, arg.UiPasswordHash, arg.UiPasswordHint)
+	return err
+}
+
+const touchPairedDevice = `-- name: TouchPairedDevice :exec
+UPDATE paired_devices SET last_seen_at = ? WHERE id = ?
+`
+
+type TouchPairedDeviceParams struct {
+	LastSeenAt sql.NullString `json:"last_seen_at"`
+	ID         string         `json:"id"`
+}
+
+func (q *Queries) TouchPairedDevice(ctx context.Context, arg TouchPairedDeviceParams) error {
+	_, err := q.db.ExecContext(ctx, touchPairedDevice, arg.LastSeenAt, arg.ID)
+	return err
+}
+
+const upsertArrivedOrder = `-- name: UpsertArrivedOrder :execrows
+
+INSERT INTO orders (id, tenant_id, location_id, source, source_event_id, snapshot, state, batch_id)
+VALUES (?, ?, ?, ?, ?, ?, 'arrived',
+        (SELECT id FROM batches WHERE closed_at IS NULL ORDER BY id DESC LIMIT 1))
+ON CONFLICT (id) DO NOTHING
 `
 
 type UpsertArrivedOrderParams struct {
-	OrderID int32  `json:"order_id"`
-	Payload []byte `json:"payload"`
+	ID            string `json:"id"`
+	TenantID      string `json:"tenant_id"`
+	LocationID    string `json:"location_id"`
+	Source        string `json:"source"`
+	SourceEventID string `json:"source_event_id"`
+	Snapshot      string `json:"snapshot"`
 }
 
-// Inserts a freshly-arrived order. Idempotent against duplicate SSE redelivery —
-// if the order_id already exists (e.g. mobile reconnected and main/ resends),
-// we leave the existing row (and its state/printed_date) alone.
-func (q *Queries) UpsertArrivedOrder(ctx context.Context, arg UpsertArrivedOrderParams) error {
-	_, err := q.db.Exec(ctx, upsertArrivedOrder, arg.OrderID, arg.Payload)
-	return err
+// Orders -------------------------------------------------------------------
+// Idempotent: SSE redelivery (or a reconnect-backlog replay) for the same
+// canonical id is a no-op so we don't reset state to 'arrived'. The order joins
+// the currently open batch; arrival_date falls back to the column DEFAULT.
+func (q *Queries) UpsertArrivedOrder(ctx context.Context, arg UpsertArrivedOrderParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, upsertArrivedOrder,
+		arg.ID,
+		arg.TenantID,
+		arg.LocationID,
+		arg.Source,
+		arg.SourceEventID,
+		arg.Snapshot,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
 
-const upsertPrinterConfigIfAbsent = `-- name: UpsertPrinterConfigIfAbsent :exec
-INSERT INTO printer_configs (name, ip)
-VALUES ($1, $2)
-ON CONFLICT (name) DO NOTHING
+const upsertStoreConfig = `-- name: UpsertStoreConfig :exec
+INSERT INTO store_config (id, context, updated_at)
+VALUES (1, ?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+ON CONFLICT (id) DO UPDATE SET
+    context    = excluded.context,
+    updated_at = excluded.updated_at
 `
 
-type UpsertPrinterConfigIfAbsentParams struct {
-	Name string `json:"name"`
-	Ip   string `json:"ip"`
-}
-
-// Env-var seed path: only populate a row if none exists for this printer.
-// Mobile-set values are never overwritten at boot.
-func (q *Queries) UpsertPrinterConfigIfAbsent(ctx context.Context, arg UpsertPrinterConfigIfAbsentParams) error {
-	_, err := q.db.Exec(ctx, upsertPrinterConfigIfAbsent, arg.Name, arg.Ip)
+func (q *Queries) UpsertStoreConfig(ctx context.Context, argContext string) error {
+	_, err := q.db.ExecContext(ctx, upsertStoreConfig, argContext)
 	return err
 }

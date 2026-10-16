@@ -1,0 +1,740 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Quicc POS — Agent</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #0f0f0f; color: #e8e8e8; min-height: 100vh; }
+    header { background: #1a1a1a; border-bottom: 1px solid #2a2a2a; padding: 14px 24px; display: flex; align-items: center; justify-content: space-between; position: sticky; top: 0; z-index: 10; }
+    header h1 { font-size: 1.05rem; font-weight: 600; color: #fff; }
+    .muted { color: #888; font-size: 0.8rem; }
+    main { max-width: 960px; margin: 0 auto; padding: 20px 16px; }
+    button { cursor: pointer; border-radius: 6px; border: 1px solid #3a3a3a; background: #2a2a2a; color: #e8e8e8; padding: 7px 14px; font-size: 0.82rem; }
+    button:hover { background: #333; }
+    button:disabled { opacity: 0.4; cursor: default; }
+    button.primary { background: #2a4a2a; border-color: #3a5a3a; }
+    button.primary:hover { background: #345a34; }
+    button.danger { background: #4a2a2a; border-color: #5a3a3a; }
+    input, select { background: #0f0f0f; color: #e8e8e8; border: 1px solid #3a3a3a; border-radius: 6px; padding: 8px 10px; font-size: 0.85rem; }
+    label { display: block; font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.05em; color: #888; margin-bottom: 4px; }
+    .card { background: #1a1a1a; border: 1px solid #2a2a2a; border-radius: 10px; padding: 16px 18px; margin-bottom: 14px; }
+    .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+    .grow { flex: 1; }
+    .tabs { display: flex; gap: 8px; margin-bottom: 18px; }
+    .tabs button.active { background: #1a3a5c; border-color: #1a3a5c; color: #cfe6ff; }
+    .order-head { display: flex; justify-content: space-between; align-items: baseline; }
+    .oid { font-size: 0.72rem; color: #888; text-transform: uppercase; letter-spacing: 0.05em; }
+    .name { font-weight: 600; color: #fff; }
+    .total { font-weight: 700; }
+    .badge { font-size: 0.68rem; padding: 2px 7px; border-radius: 4px; background: #2a2a2a; color: #9ab; text-transform: uppercase; }
+    .actions { display: flex; gap: 8px; margin-top: 10px; }
+    .hidden { display: none; }
+    .dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; background: #666; margin-right: 6px; vertical-align: middle; transition: background 0.2s; }
+    .dot.green { background: #33a852; box-shadow: 0 0 6px #33a85288; }
+    .dot.amber { background: #d09a2c; }
+    .dot.red { background: #cc4b4b; box-shadow: 0 0 6px #cc4b4b88; }
+    #sse-wrap { display: inline-flex; align-items: center; }
+    #toast { position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); background: #1a3a1f; border: 1px solid #2a5a2f; color: #cfeed0; padding: 10px 16px; border-radius: 8px; font-size: 0.85rem; opacity: 0; transition: opacity 0.2s; }
+    #toast.err { background: #3a1a1a; border-color: #5a2a2a; color: #eecccc; }
+    #toast.show { opacity: 1; }
+    .pager { display: flex; gap: 10px; align-items: center; justify-content: center; margin-top: 12px; }
+    .prow { display: flex; gap: 8px; margin-bottom: 8px; }
+    h3 { font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.06em; color: #9ab; margin: 18px 0 8px; }
+    .kn { font-size: 1.4rem; font-weight: 800; color: #fff; margin-right: 8px; }
+    .card.arrived { border-color: #8a5a1a; background: #22190e; }
+    .card.flash { animation: flash 1s ease-in-out infinite alternate; }
+    @keyframes flash { from { border-color: #8a5a1a; } to { border-color: #f0a030; } }
+    .late { color: #f08a7a; font-weight: 600; }
+    .floorbar { display: flex; gap: 14px; align-items: center; flex-wrap: wrap; margin-bottom: 6px; }
+    .items { font-size: 0.85rem; margin-top: 6px; line-height: 1.45; color: #ccc; }
+    #flash { position: fixed; inset: 0; background: #0b2a4a; color: #fff; display: flex; flex-direction: column; align-items: center; justify-content: center; z-index: 50; cursor: pointer; }
+    #flash .who { font-size: 7rem; font-weight: 900; letter-spacing: 0.04em; }
+  </style>
+</head>
+<body>
+
+<header>
+  <h1>Quicc POS <span class="muted">— Agent</span></h1>
+  <div class="row">
+    <span id="sse-wrap" class="muted" title="Checking connection to main…"><span id="sse-dot" class="dot"></span><span id="sse-label"></span></span>
+    <span id="tenant" class="muted"></span>
+    <button id="logout-btn" class="hidden" onclick="logout()">Log out</button>
+  </div>
+</header>
+
+<main>
+  <!-- Auth: state-driven (paste token → create password → unlock) -->
+  <div id="auth" class="card hidden" style="max-width:380px;margin:80px auto">
+    <!-- unconfigured: paste the admin-minted token -->
+    <div id="auth-setup" class="hidden">
+      <h2 style="margin-bottom:8px">Set up this device</h2>
+      <div class="muted" style="margin-bottom:14px;line-height:1.4">
+        Paste the agent token from the manager dashboard
+        (<strong>Locations → Create agent</strong>). This links the device to your
+        restaurant location.
+      </div>
+      <label>Agent token</label>
+      <textarea id="setup-token" rows="3" placeholder="qpos_…"
+        style="width:100%;background:#0f0f0f;color:#e8e8e8;border:1px solid #3a3a3a;border-radius:6px;padding:8px 10px;font-family:monospace;font-size:0.8rem"></textarea>
+      <button id="setup-token-btn" class="primary" style="width:100%;margin-top:12px" onclick="submitToken()">Link device</button>
+      <div id="setup-err" class="muted" style="color:#e88;margin-top:10px"></div>
+    </div>
+
+    <!-- needs_password: choose a local password -->
+    <div id="auth-newpass" class="hidden">
+      <h2 style="margin-bottom:8px">Create a password</h2>
+      <div class="muted" style="margin-bottom:14px;line-height:1.4">
+        Device linked ✓ — choose a password to open this dashboard. From now on
+        you only need the password (it's LAN-only + password-gated).
+      </div>
+      <div style="margin-bottom:10px"><label>New password</label><input id="np-pass" type="password" style="width:100%" autocomplete="new-password" /></div>
+      <div style="margin-bottom:10px"><label>Confirm password</label><input id="np-confirm" type="password" style="width:100%" autocomplete="new-password" /></div>
+      <div style="margin-bottom:14px"><label>Password hint (optional)</label><input id="np-hint" style="width:100%" placeholder="a reminder for later" /></div>
+      <button id="np-btn" class="primary" style="width:100%" onclick="submitNewPassword()">Set password &amp; open</button>
+      <div id="np-err" class="muted" style="color:#e88;margin-top:10px"></div>
+    </div>
+
+    <!-- locked: unlock with the password -->
+    <div id="auth-login" class="hidden">
+      <h2 style="margin-bottom:14px">Enter password</h2>
+      <div style="margin-bottom:14px"><label>Password</label><input id="login-pass" type="password" style="width:100%" autocomplete="current-password" onkeydown="if(event.key==='Enter')unlock()" /></div>
+      <button id="login-btn" class="primary" style="width:100%" onclick="unlock()">Unlock</button>
+      <div style="margin-top:10px"><span id="hint-link" class="muted hidden" style="cursor:pointer;text-decoration:underline;color:#9ab" onclick="showHint()">Forgot? Show hint</span></div>
+      <div id="login-hint" class="muted hidden" style="margin-top:8px;color:#9ab"></div>
+      <div id="login-err" class="muted" style="color:#e88;margin-top:10px"></div>
+    </div>
+  </div>
+
+  <!-- App -->
+  <div id="app" class="hidden">
+    <div class="tabs">
+      <button data-tab="live" class="active" onclick="switchTab('live')">Live</button>
+      <button data-tab="drivers" onclick="switchTab('drivers')">Drivers</button>
+      <button data-tab="history" onclick="switchTab('history')">History</button>
+      <button data-tab="config" onclick="switchTab('config')">Store config</button>
+      <button data-tab="settings" onclick="switchTab('settings')">Settings</button>
+    </div>
+
+    <!-- Live: the backup floor screen (the counter tablet is the primary one) -->
+    <section id="tab-live">
+      <div class="floorbar">
+        <span id="live-status" class="muted">Loading…</span>
+        <span class="grow"></span>
+        <label style="margin:0">Prep</label><select id="prep"></select>
+        <button onclick="loadLive()">Refresh</button>
+        <button class="danger" onclick="closeBatch(false)">Close batch</button>
+      </div>
+      <h3>Waiting to accept</h3><div id="l-arrived"></div>
+      <h3>In the kitchen</h3><div id="l-accepted"></div>
+      <h3>Ready for delivery</h3>
+      <div id="l-deliv"></div>
+      <div class="row" id="l-assign" style="margin:4px 0 10px">
+        <select id="assign-driver"></select>
+        <button class="primary" onclick="assignSelected()">Send selected out</button>
+      </div>
+      <h3>Out with drivers</h3><div id="l-out"></div>
+      <h3>Done this batch</h3><div id="l-done"></div>
+    </section>
+
+    <!-- Drivers -->
+    <section id="tab-drivers" class="hidden">
+      <div class="card">
+        <div class="muted" style="margin-bottom:10px">Clock a driver in to put them in the queue (the first available driver is next up; a driver who returns goes to the back). Clock out to take them off. Everyone is clocked out daily at <b id="drv-reset">10:00</b> (change in Settings).</div>
+        <div id="drv-list"></div>
+        <div class="row" style="margin-top:12px">
+          <input id="drv-name" placeholder="Driver name" class="grow" onkeydown="if(event.key==='Enter')addDriver()" />
+          <button class="primary" onclick="addDriver()">Add driver</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- History -->
+    <section id="tab-history" class="hidden">
+      <div class="card">
+        <div class="row">
+          <div class="grow"><label>Search</label><input id="h-q" class="grow" style="width:100%" placeholder="customer or event id" /></div>
+          <div><label>Status</label><input id="h-status" placeholder="any" /></div>
+          <div><label>Sort</label>
+            <select id="h-sort"><option value="desc">Newest</option><option value="asc">Oldest</option></select>
+          </div>
+        </div>
+        <div class="row" style="margin-top:10px">
+          <div><label>From</label><input id="h-from" type="datetime-local" /></div>
+          <div><label>To</label><input id="h-to" type="datetime-local" /></div>
+          <div style="align-self:flex-end"><button class="primary" onclick="histReset()">Apply</button></div>
+        </div>
+      </div>
+      <div id="hist-list"></div>
+      <div class="pager">
+        <button id="h-prev" onclick="histPage(-1)">Prev</button>
+        <span id="h-page" class="muted">page 1</span>
+        <button id="h-next" onclick="histPage(1)">Next</button>
+      </div>
+    </section>
+
+    <!-- Store config -->
+    <section id="tab-config" class="hidden">
+      <div class="card">
+        <div class="muted" style="margin-bottom:12px">
+          Read-only. The store details and printers are managed by the store manager in the
+          main dashboard (<b>/app/store</b>); changes arrive here automatically.
+        </div>
+        <div class="row">
+          <div class="grow"><label>Store name</label><div id="c-name"></div></div>
+          <div><label>Phone</label><div id="c-phone"></div></div>
+        </div>
+        <div class="row" style="margin-top:10px">
+          <div class="grow"><label>Address</label><div id="c-addr"></div></div>
+        </div>
+        <div style="margin-top:16px">
+          <label>Printers</label>
+          <div id="c-printers"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Settings -->
+    <section id="tab-settings" class="hidden">
+      <div class="card">
+        <label>Connection to main</label>
+        <div id="set-conn" class="muted" style="margin:6px 0 18px">—</div>
+
+        <label>Auto-accept orders</label>
+        <div class="row" style="margin:6px 0 4px">
+          <input type="checkbox" id="set-autoaccept" onchange="toggleAutoAccept()" style="width:auto" />
+          <span class="muted">Print &amp; accept incoming orders automatically (with the last prep time used).</span>
+        </div>
+      </div>
+
+      <div class="card">
+        <label>Daily driver clock-out</label>
+        <div class="row" style="margin-top:6px">
+          <input id="set-reset" type="time" style="width:auto" />
+          <button onclick="saveReset()">Save</button>
+          <span class="muted">Everyone still clocked in is clocked out at this time each day (drivers on a run: when they return).</span>
+        </div>
+      </div>
+
+      <div class="card">
+        <label>Counter tablets</label>
+        <div class="muted" style="margin:6px 0 10px;line-height:1.4">
+          Pair the tablet app: tap <b>Pair tablet</b>, then type this agent's address and the 6-digit code into the app (valid 5 minutes).
+        </div>
+        <div class="row"><button class="primary" onclick="pairCode()">Pair tablet</button><span id="pair-code" style="font-size:1.6rem;font-weight:800;letter-spacing:0.2em"></span><span id="pair-exp" class="muted"></span></div>
+        <div id="dev-list" style="margin-top:12px"></div>
+      </div>
+
+      <div class="card">
+        <label>Change password</label>
+        <div style="margin:8px 0"><input id="cp-current" type="password" placeholder="Current password" style="width:100%" autocomplete="current-password" /></div>
+        <div style="margin:8px 0"><input id="cp-new" type="password" placeholder="New password" style="width:100%" autocomplete="new-password" /></div>
+        <div style="margin:8px 0"><input id="cp-confirm" type="password" placeholder="Confirm new password" style="width:100%" autocomplete="new-password" /></div>
+        <div style="margin:8px 0 12px"><input id="cp-hint" placeholder="Password hint (optional)" style="width:100%" /></div>
+        <button class="primary" onclick="changePassword()">Update password</button>
+        <div id="cp-msg" class="muted" style="margin-top:10px"></div>
+      </div>
+
+      <div class="card">
+        <label style="color:#e88">Danger zone</label>
+        <div class="muted" style="margin:6px 0 10px;line-height:1.4">
+          Unlinking permanently revokes this device's token on the server and
+          wipes its local password. You'll set the device up again from scratch —
+          paste a new token, then choose a password.
+        </div>
+        <button class="danger" onclick="unlinkDevice()">Unlink device</button>
+        <div id="set-err" class="muted" style="color:#e88;margin-top:10px"></div>
+      </div>
+    </section>
+  </div>
+</main>
+
+<div id="toast"></div>
+<div id="flash" class="hidden" onclick="this.classList.add('hidden')"><div class="muted" style="font-size:1.4rem;color:#cfe6ff">YOUR RUN</div><div class="who" id="flash-who"></div><div id="flash-orders" style="font-size:1.4rem;margin-top:12px"></div></div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+let histOffset = 0;
+const HIST_NUM = 20;
+
+function esc(s) { return String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+function money(cents) { return '$' + ((cents || 0) / 100).toFixed(2); }
+function toast(msg, isErr) { const t = $('toast'); t.textContent = msg; t.className = 'show' + (isErr ? ' err' : ''); setTimeout(() => t.className = '', 2500); }
+
+async function api(path, opts = {}) {
+  const res = await fetch(path, { headers: { 'Content-Type': 'application/json' }, ...opts });
+  // 401 = session expired OR key revoked. Re-check /api/session so we land on the
+  // right screen: login (session gone, key intact) vs setup (key revoked).
+  if (res.status === 401) { refreshSession(); throw new Error('login required'); }
+  return res;
+}
+
+// --- auth / state machine -----------------------------------------------
+async function boot() {
+  await refreshSession();
+  setInterval(pollStatus, 5000);   // keep the header light + state fresh
+}
+
+// refreshSession reads the provisioning state and shows the matching screen.
+async function refreshSession() {
+  try {
+    const s = await (await fetch('/api/session')).json();
+    applyStatus(s);
+    showState(s);
+  } catch { showAuth('login'); }
+}
+
+// pollStatus refreshes the header light and, if a background revoke reset us
+// (ready → unconfigured/locked), bounces the screen so we don't sit on a dead app.
+async function pollStatus() {
+  try {
+    const s = await (await fetch('/api/session')).json();
+    applyStatus(s);
+    if (s.state !== 'ready' && !$('app').classList.contains('hidden')) showState(s);
+  } catch { /* keep last */ }
+}
+
+// showState maps the server's provisioning state onto the right screen.
+function showState(s) {
+  switch (s.state) {
+    case 'ready':          showApp(); break;
+    case 'needs_password': showAuth('newpass'); break;
+    case 'unconfigured':   showAuth('setup'); break;
+    default:               // locked
+      showAuth('login');
+      $('hint-link').classList.toggle('hidden', !s.has_hint);
+  }
+}
+
+// applyStatus paints the green/amber/red "connected to main" dot.
+function applyStatus(s) {
+  const dot = $('sse-dot'), label = $('sse-label'), wrap = $('sse-wrap');
+  let cls = '', text = '', title = '';
+  const since = s.sse_connected_since ? new Date(s.sse_connected_since * 1000).toLocaleTimeString() : '';
+  switch (s.sse_state) {
+    case 'connected':
+      cls = 'green'; text = 'Connected to main'; title = 'SSE connected' + (since ? ' since ' + since : ''); break;
+    case 'connecting':
+      cls = 'amber'; text = 'Connecting…';
+      title = 'Connecting to main' + (s.sse_reconnects ? ' (' + s.sse_reconnects + ' attempts)' : '') + (s.sse_last_error ? ' — ' + s.sse_last_error : ''); break;
+    case 'rejected':
+      cls = 'red'; text = 'Token revoked'; title = s.sse_last_error || 'Token revoked by main — re-provision the device'; break;
+    default:
+      cls = ''; text = 'Not linked'; title = 'No token yet — set up the device';
+  }
+  dot.className = 'dot ' + cls; label.textContent = text; wrap.title = title;
+}
+
+// showAuth reveals one of the three auth panels (setup | newpass | login).
+function showAuth(panel) {
+  $('app').classList.add('hidden'); $('auth').classList.remove('hidden'); $('logout-btn').classList.add('hidden');
+  ['setup', 'newpass', 'login'].forEach(p => $('auth-' + p).classList.toggle('hidden', p !== panel));
+  $('login-hint').classList.add('hidden');
+}
+
+function showApp() {
+  $('auth').classList.add('hidden'); $('app').classList.remove('hidden'); $('logout-btn').classList.remove('hidden');
+  loadLive();
+  startEvents();
+  // Populate the header with the linked store name (cosmetic; session-gated GET).
+  fetch('/api/store-config').then(r => r.ok ? r.json() : null).then(c => { if (c && c.location) $('tenant').textContent = c.location.name || ''; }).catch(() => {});
+}
+
+// submitToken — provision an unconfigured device with the admin-minted token.
+async function submitToken() {
+  $('setup-err').textContent = '';
+  const token = $('setup-token').value.trim();
+  if (!token) { $('setup-err').textContent = 'Paste the token first.'; return; }
+  const btn = $('setup-token-btn'); btn.disabled = true; btn.textContent = 'Linking…';
+  try {
+    const res = await fetch('/api/setup/token', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ token }) });
+    if (!res.ok) { const b = await res.json().catch(() => ({})); throw new Error(b.error || ('link failed (' + res.status + ')')); }
+    $('setup-token').value = '';
+    await refreshSession();   // → create-password
+  } catch (e) { $('setup-err').textContent = e.message; }
+  finally { btn.disabled = false; btn.textContent = 'Link device'; }
+}
+
+// submitNewPassword — set the initial local password after linking.
+async function submitNewPassword() {
+  $('np-err').textContent = '';
+  const password = $('np-pass').value, conf = $('np-confirm').value, hint = $('np-hint').value.trim();
+  if (!password) { $('np-err').textContent = 'Choose a password.'; return; }
+  if (password !== conf) { $('np-err').textContent = "The passwords don't match."; return; }
+  try {
+    const res = await fetch('/api/setup/password', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ password, confirm: conf, hint }) });
+    if (!res.ok) { const b = await res.json().catch(() => ({})); throw new Error(b.error || ('failed (' + res.status + ')')); }
+    $('np-pass').value = $('np-confirm').value = $('np-hint').value = '';
+    await refreshSession();   // → app
+    pollStatus();
+  } catch (e) { $('np-err').textContent = e.message; }
+}
+
+// unlock — open the app with the local password.
+async function unlock() {
+  $('login-err').textContent = '';
+  const password = $('login-pass').value;
+  try {
+    const res = await fetch('/api/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ password }) });
+    if (!res.ok) { const b = await res.json().catch(() => ({})); throw new Error(b.error || ('login failed (' + res.status + ')')); }
+    $('login-pass').value = '';
+    await refreshSession();   // → app
+    pollStatus();
+  } catch (e) { $('login-err').textContent = e.message; }
+}
+
+async function showHint() {
+  try {
+    const b = await (await fetch('/api/hint')).json();
+    $('login-hint').textContent = b.hint ? ('Hint: ' + b.hint) : 'No hint was set.';
+  } catch { $('login-hint').textContent = 'Could not load the hint.'; }
+  $('login-hint').classList.remove('hidden');
+}
+
+async function logout() { await fetch('/api/logout', { method: 'POST' }); refreshSession(); }
+
+function switchTab(tab) {
+  document.querySelectorAll('.tabs button').forEach(b => b.classList.toggle('active', b.dataset.tab === tab));
+  ['live', 'drivers', 'history', 'config', 'settings'].forEach(t => $('tab-' + t).classList.toggle('hidden', t !== tab));
+  if (tab === 'live') loadLive();
+  if (tab === 'drivers') loadDrivers();
+  if (tab === 'history') { histOffset = 0; loadHistory(); }
+  if (tab === 'config') loadConfig();
+  if (tab === 'settings') { loadSettings(); loadDevices(); api('/api/settings/driver-reset').then(r => r.json()).then(rs => $('set-reset').value = rs.time).catch(() => {}); }
+}
+
+// --- settings -----------------------------------------------------------
+async function loadSettings() {
+  $('set-err').textContent = ''; $('cp-msg').textContent = '';
+  try {
+    const s = await (await fetch('/api/session')).json();
+    const label = { connected: '🟢 Connected to main', connecting: '🟠 Connecting…', rejected: '🔴 Token revoked', unconfigured: '⚪ Not linked' }[s.sse_state] || s.sse_state;
+    $('set-conn').textContent = label + (s.sse_connected_since ? ' · since ' + new Date(s.sse_connected_since * 1000).toLocaleTimeString() : '');
+  } catch { $('set-conn').textContent = 'unknown'; }
+  try {
+    const a = await (await api('/api/settings/auto-accept')).json();
+    $('set-autoaccept').checked = !!a.auto_accept;
+  } catch { /* leave unchecked */ }
+}
+async function toggleAutoAccept() {
+  try {
+    const res = await api('/api/settings/auto-accept', { method: 'PUT', body: JSON.stringify({ auto_accept: $('set-autoaccept').checked }) });
+    if (!res.ok) throw new Error('save failed');
+    toast('Saved');
+  } catch (e) { toast(e.message, true); $('set-autoaccept').checked = !$('set-autoaccept').checked; }
+}
+async function changePassword() {
+  $('cp-msg').textContent = '';
+  const current = $('cp-current').value, nw = $('cp-new').value, conf = $('cp-confirm').value, hint = $('cp-hint').value.trim();
+  if (!nw) { $('cp-msg').textContent = 'Choose a new password.'; return; }
+  if (nw !== conf) { $('cp-msg').textContent = "The passwords don't match."; return; }
+  try {
+    const res = await api('/api/settings/password', { method: 'POST', body: JSON.stringify({ current, new: nw, confirm: conf, hint }) });
+    if (!res.ok) { const b = await res.json().catch(() => ({})); throw new Error(b.error || 'update failed'); }
+    $('cp-current').value = $('cp-new').value = $('cp-confirm').value = $('cp-hint').value = '';
+    toast('Password updated');
+  } catch (e) { $('cp-msg').textContent = e.message; }
+}
+async function unlinkDevice() {
+  if (!confirm("Unlink this device? Its token is revoked on the server and the local password is wiped — you'll set it up again from scratch.")) return;
+  $('set-err').textContent = '';
+  try {
+    const res = await api('/api/settings/unlink', { method: 'POST' });
+    if (!res.ok) { const b = await res.json().catch(() => ({})); throw new Error(b.error || ('unlink failed (' + res.status + ')')); }
+    toast('Device unlinked');
+    refreshSession();   // token + password gone → setup screen
+  } catch (e) { $('set-err').textContent = e.message; }
+}
+
+// --- rendering ----------------------------------------------------------
+// normalize a local StoredOrder ({order, status}) or a flat history snapshot.
+function normalize(entry, isLocal) {
+  const snap = isLocal ? entry.order : entry;
+  const state = isLocal ? (entry.status && entry.status.state) : entry.status;
+  return { snap, state };
+}
+function orderCard(entry, isLocal) {
+  const { snap, state } = normalize(entry, isLocal);
+  const name = (snap.customer && snap.customer.display_name) || 'Order';
+  const total = snap.money && snap.money.total_cents;
+  const ftype = (snap.fulfillment && snap.fulfillment.type) || snap.source || '';
+  const items = (snap.items || []).length;
+  const div = document.createElement('div');
+  div.className = 'card';
+  div.innerHTML =
+    '<div class="order-head"><div><span class="oid">#' + esc((snap.id || '').slice(0, 8)) + '</span> ' +
+    '<span class="name">' + esc(name) + '</span> <span class="badge">' + esc(ftype) + '</span></div>' +
+    '<span class="total">' + money(total) + '</span></div>' +
+    '<div class="muted" style="margin-top:6px">' + items + ' item(s)' + (state ? ' · ' + esc(state) : '') + '</div>' +
+    '<div class="actions"></div>';
+  const actions = div.querySelector('.actions');
+  const reprint = document.createElement('button');
+  reprint.textContent = 'Reprint';
+  const resend = document.createElement('button');
+  resend.textContent = 'Resend';
+  if (isLocal) {
+    reprint.onclick = () => act(reprint, 'POST', '/api/orders/' + snap.id + '/reprint');
+    resend.onclick = () => act(resend, 'POST', '/api/orders/' + snap.id + '/resend');
+  } else {
+    reprint.onclick = () => act(reprint, 'POST', '/api/print', snap);
+    resend.onclick = () => act(resend, 'POST', '/api/resend', snap);
+  }
+  actions.append(reprint, resend);
+  return div;
+}
+async function act(btn, method, path, body, after) {
+  btn.disabled = true; const orig = btn.textContent; btn.textContent = '…';
+  try {
+    const res = await api(path, { method, body: body ? JSON.stringify(body) : undefined });
+    if (!res.ok) { const b = await res.json().catch(() => ({})); throw new Error(res.status === 502 ? 'Printer problem — nothing printed: ' + (b.error || '') : (b.error || res.status)); }
+    toast('Done'); btn.textContent = '✓';
+    if (after) after();
+  } catch (e) { toast(e.message, true); btn.textContent = 'Failed'; }
+  finally { setTimeout(() => { btn.disabled = false; btn.textContent = orig; }, 1500); }
+}
+
+// --- live floor ---------------------------------------------------------
+let floor = null, drivers = [];
+function ago(t) { if (!t) return ''; const m = Math.round((Date.now() - new Date(t)) / 60000); return m < 1 ? 'just now' : m + ' min ago'; }
+function hhmm(t) { return t ? new Date(t).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) : ''; }
+function itemsHtml(snap) {
+  return (snap.items || []).map(i => esc(i.quantity + ' x ' + i.name + (i.size ? ' (' + i.size + ')' : ''))).join('<br>');
+}
+function floorCard(so, kind) {
+  const snap = so.order, st = so.status;
+  const div = document.createElement('div');
+  div.className = 'card' + (kind === 'arrived' ? ' arrived flash' : '');
+  const kn = st.kitchen_number ? '<span class="kn">' + st.kitchen_number + '</span>' : '';
+  const name = (snap.customer && snap.customer.display_name) || 'Order';
+  const ftype = (snap.fulfillment && snap.fulfillment.type) || '';
+  let meta = '#' + esc(snap.source_event_id) + ' · arrived ' + ago(st.arrival_date);
+  if (st.estimated_ready_at && kind === 'accepted') {
+    const late = new Date(st.estimated_ready_at) < new Date();
+    meta += ' · <span class="' + (late ? 'late' : '') + '">ready by ' + hhmm(st.estimated_ready_at) + '</span>';
+  }
+  if (st.driver_name) meta += ' · driver ' + esc(st.driver_name) + ' (out ' + ago(st.out_at) + ')';
+  div.innerHTML =
+    '<div class="order-head"><div>' + kn + (kind === 'deliv' ? '<input type="checkbox" class="dsel" value="' + snap.id + '" style="width:auto;margin-right:8px">' : '') +
+    '<span class="name">' + esc(name) + '</span> <span class="badge">' + esc(ftype) + '</span></div>' +
+    '<span class="total">' + money(snap.money && snap.money.total_cents) + '</span></div>' +
+    '<div class="muted" style="margin-top:4px">' + meta + '</div>' +
+    '<div class="items">' + itemsHtml(snap) + '</div><div class="actions"></div>';
+  const actions = div.querySelector('.actions');
+  const btn = (label, cls, fn) => { const b = document.createElement('button'); b.textContent = label; if (cls) b.className = cls; b.onclick = () => fn(b); actions.append(b); };
+  if (kind === 'arrived') btn('Accept', 'primary', b => act(b, 'POST', '/api/orders/' + snap.id + '/accept', { prep_minutes: Number($('prep').value) }, loadLive));
+  if (kind === 'accepted') btn('Ready', 'primary', b => act(b, 'POST', '/api/orders/' + snap.id + '/ready', null, loadLive));
+  btn('Reprint', '', b => act(b, 'POST', '/api/orders/' + snap.id + '/reprint'));
+  if (kind === 'arrived') btn('Resend', '', b => act(b, 'POST', '/api/orders/' + snap.id + '/resend'));
+  return div;
+}
+function fill(id, rows, kind, empty) {
+  const el = $(id); el.innerHTML = '';
+  if (!rows.length) { el.innerHTML = '<div class="muted">' + empty + '</div>'; return; }
+  rows.forEach(r => el.appendChild(floorCard(r, kind)));
+}
+async function loadLive() {
+  try {
+    floor = await (await api('/api/floor')).json();
+    drivers = await (await api('/api/drivers')).json();
+    const rows = await (await api('/api/orders?batch=current&limit=200')).json();
+    const isDel = so => so.order.fulfillment && so.order.fulfillment.type === 'delivery';
+    const by = st => rows.filter(r => r.status.state === st);
+    const arrived = by('arrived').reverse();
+    fill('l-arrived', arrived, 'arrived', 'Nothing waiting.');
+    fill('l-accepted', by('accepted').reverse(), 'accepted', 'Nothing cooking.');
+    const deliv = by('ready').filter(isDel).reverse();
+    fill('l-deliv', deliv, 'deliv', 'No deliveries waiting for a driver.');
+    $('l-assign').classList.toggle('hidden', !deliv.length);
+    fill('l-out', by('on_delivery'), 'out', 'No drivers out.');
+    fill('l-done', rows.filter(r => r.status.state === 'delivered' || r.status.state === 'cancelled' || (r.status.state === 'ready' && !isDel(r))), 'done', '—');
+    const ps = $('prep'), keep = ps.value || floor.last_prep_minutes;
+    ps.innerHTML = floor.prep_choices.map(m => '<option value="' + m + '">' + m + ' min</option>').join('');
+    ps.value = String(keep);
+    $('assign-driver').innerHTML = drivers.filter(d => d.status === 'available').map(d => '<option value="' + d.id + '">' + esc(d.name) + '</option>').join('') || '<option value="">no driver clocked in</option>';
+    const openH = (Date.now() - new Date(floor.batch.opened_at)) / 3600000;
+    const since = 'open since ' + new Date(floor.batch.opened_at).toLocaleString([], { weekday: 'short', hour: 'numeric', minute: '2-digit' });
+    $('live-status').innerHTML = 'Batch ' + floor.batch.id + ' · <span class="' + (openH > 24 ? 'late' : '') + '">' + since +
+      (openH > 24 ? ' — over a day, close it?' : '') + '</span> · next kitchen # ' + floor.kitchen_next + ' · ' + rows.length + ' order(s)' +
+      (floor.unsynced_events ? ' · ' + floor.unsynced_events + ' change(s) waiting to sync to main' : '');
+    renderOut();
+  } catch (e) { $('live-status').textContent = e.message; }
+}
+// "Out with drivers": one card per driver with a "Returned" button.
+function renderOut() {
+  const out = drivers.filter(d => d.status === 'out');
+  if (!out.length) return;
+  const el = $('l-out'); el.innerHTML = '';
+  out.forEach(d => {
+    const div = document.createElement('div'); div.className = 'card';
+    div.innerHTML = '<div class="order-head"><span class="name">' + esc(d.name) + '</span><span class="muted">' + d.deliveries + ' run(s) this batch</span></div><div class="actions"></div>';
+    const b = document.createElement('button'); b.className = 'primary'; b.textContent = 'Returned';
+    b.onclick = () => act(b, 'POST', '/api/drivers/' + d.id + '/returned', null, loadLive);
+    div.querySelector('.actions').append(b); el.append(div);
+  });
+}
+async function assignSelected() {
+  const ids = [...document.querySelectorAll('.dsel:checked')].map(c => c.value);
+  const driver = $('assign-driver').value;
+  if (!ids.length) return toast('Tick the deliveries to send out', true);
+  if (!driver) return toast('No driver clocked in — clock one in on the Drivers tab', true);
+  const res = await api('/api/deliveries/assign', { method: 'POST', body: JSON.stringify({ driver_id: driver, order_ids: ids }) });
+  if (!res.ok) { const b = await res.json().catch(() => ({})); return toast(b.error || 'failed', true); }
+  toast('Sent out'); loadLive();
+}
+async function closeBatch(force) {
+  if (!force && !confirm('Close this batch? Kitchen numbers restart at 1100.')) return;
+  const res = await api('/api/batch/close', { method: 'POST', body: JSON.stringify({ force }) });
+  const b = await res.json().catch(() => ({}));
+  if (res.status === 409 && b.code === 'batch_has_leftovers') {
+    const list = b.leftovers.map(so => '#' + so.order.source_event_id + ' ' + ((so.order.customer && so.order.customer.display_name) || '') + ' (' + so.status.state + ')').join('\n');
+    if (confirm(b.leftovers.length + ' order(s) are not finished:\n\n' + list + '\n\nClose anyway? Orders in progress are marked finished; orders nobody accepted are CANCELLED.')) return closeBatch(true);
+    return;
+  }
+  if (!res.ok) return toast(b.error || 'close failed', true);
+  toast('Batch ' + b.closed.id + ' closed'); loadLive();
+}
+
+// Live updates from the agent's own SSE (same-origin, session cookie).
+let es = null;
+function startEvents() {
+  if (es) return;
+  es = new EventSource('/api/events');
+  const reload = () => { if (!$('tab-live').classList.contains('hidden')) loadLive(); if (!$('tab-drivers').classList.contains('hidden')) loadDrivers(); };
+  ['order.arrived', 'order.escalated'].forEach(t => es.addEventListener(t, () => { beep(); reload(); }));
+  ['order.updated', 'drivers.updated', 'batch.closed'].forEach(t => es.addEventListener(t, reload));
+  es.addEventListener('drivers.dispatched', e => {
+    const d = JSON.parse(e.data);
+    $('flash-who').textContent = d.driver.name;
+    $('flash-orders').textContent = d.orders.map(o => '#' + (o.status.kitchen_number || o.order.source_event_id)).join('  ');
+    $('flash').classList.remove('hidden');
+    setTimeout(() => $('flash').classList.add('hidden'), 8000);
+  });
+  es.onerror = () => { es.close(); es = null; setTimeout(startEvents, 5000); };
+}
+function beep() {
+  try {
+    const ctx = new (window.AudioContext || window.webkitAudioContext)(), o = ctx.createOscillator(), g = ctx.createGain();
+    o.frequency.value = 880; o.connect(g); g.connect(ctx.destination); g.gain.value = 0.2; o.start(); o.stop(ctx.currentTime + 0.4);
+  } catch { /* audio blocked until the page is clicked */ }
+}
+
+// --- drivers ------------------------------------------------------------
+async function loadDrivers() {
+  try {
+    drivers = await (await api('/api/drivers')).json();
+    api('/api/settings/driver-reset').then(r => r.json()).then(rs => { $('drv-reset').textContent = rs.time; if ($('set-reset')) $('set-reset').value = rs.time; }).catch(() => {});
+    const el = $('drv-list'); el.innerHTML = '';
+    if (!drivers.length) { el.innerHTML = '<div class="muted">No drivers yet.</div>'; return; }
+    drivers.forEach((d, i) => {
+      const row = document.createElement('div'); row.className = 'prow'; row.style.alignItems = 'center';
+      const st = { off: 'clocked out', available: 'in queue', out: 'on a run' }[d.status] || d.status;
+      row.innerHTML = '<b style="width:22px">' + (i + 1) + '</b><input class="grow" value="' + esc(d.name) + '">' +
+        '<span class="badge">' + esc(st) + '</span><span class="muted">' + (d.clocked_in_at ? 'in since ' + hhmm(d.clocked_in_at) + ' · ' : '') + d.deliveries + ' run(s)</span>';
+      const mk = (t, fn, cls) => { const b = document.createElement('button'); b.textContent = t; if (cls) b.className = cls; b.onclick = fn; row.append(b); };
+      if (d.status === 'off') mk('Clock in', () => clock(d, 'clock-in'), 'primary');
+      if (d.status === 'available') mk('Clock out', () => clock(d, 'clock-out'));
+      mk('↑', () => moveDriver(i, -1)); mk('↓', () => moveDriver(i, 1));
+      mk('Save', async () => { const r = await api('/api/drivers/' + d.id, { method: 'PATCH', body: JSON.stringify({ name: row.querySelector('input').value }) }); r.ok ? toast('Saved') : toast('save failed', true); loadDrivers(); });
+      mk('Remove', async () => { if (!confirm('Remove ' + d.name + '?')) return; await api('/api/drivers/' + d.id, { method: 'DELETE' }); loadDrivers(); }, 'danger');
+      el.append(row);
+    });
+  } catch (e) { toast(e.message, true); }
+}
+async function clock(d, what) {
+  const r = await api('/api/drivers/' + d.id + '/' + what, { method: 'POST' });
+  if (!r.ok) { const b = await r.json().catch(() => ({})); toast(b.error || 'failed', true); }
+  loadDrivers();
+}
+async function moveDriver(i, dir) {
+  const ids = drivers.map(d => d.id), j = i + dir;
+  if (j < 0 || j >= ids.length) return;
+  [ids[i], ids[j]] = [ids[j], ids[i]];
+  await api('/api/drivers/reorder', { method: 'POST', body: JSON.stringify({ ids }) });
+  loadDrivers();
+}
+async function addDriver() {
+  const name = $('drv-name').value.trim(); if (!name) return;
+  const r = await api('/api/drivers', { method: 'POST', body: JSON.stringify({ name }) });
+  if (!r.ok) { const b = await r.json().catch(() => ({})); return toast(b.error || 'failed', true); }
+  $('drv-name').value = ''; loadDrivers();
+}
+
+// --- tablet pairing -----------------------------------------------------
+async function saveReset() {
+  const r = await api('/api/settings/driver-reset', { method: 'PUT', body: JSON.stringify({ time: $('set-reset').value }) });
+  if (!r.ok) { const b = await r.json().catch(() => ({})); return toast(b.error || 'save failed', true); }
+  toast('Saved');
+}
+async function pairCode() {
+  const r = await api('/api/pairing/code', { method: 'POST' });
+  const b = await r.json();
+  $('pair-code').textContent = b.code;
+  $('pair-exp').textContent = 'valid until ' + hhmm(b.expires_at);
+}
+async function loadDevices() {
+  try {
+    const ds = await (await api('/api/devices')).json();
+    const el = $('dev-list'); el.innerHTML = '';
+    if (!ds.length) { el.innerHTML = '<div class="muted">No tablets paired yet.</div>'; return; }
+    ds.forEach(d => {
+      const row = document.createElement('div'); row.className = 'prow'; row.style.alignItems = 'center';
+      row.innerHTML = '<b class="grow">' + esc(d.name) + '</b><span class="muted">' + esc(d.key_prefix) + '… · ' +
+        (d.revoked_at ? 'revoked' : (d.last_seen_at ? 'seen ' + ago(d.last_seen_at) : 'never used')) + '</span>';
+      if (!d.revoked_at) {
+        const b = document.createElement('button'); b.className = 'danger'; b.textContent = 'Revoke';
+        b.onclick = async () => { if (!confirm('Revoke ' + d.name + '? It will need to pair again.')) return; await api('/api/devices/' + d.id + '/revoke', { method: 'POST' }); loadDevices(); };
+        row.append(b);
+      }
+      el.append(row);
+    });
+  } catch (e) { toast(e.message, true); }
+}
+
+// --- history ------------------------------------------------------------
+function histReset() { histOffset = 0; loadHistory(); }
+function histPage(dir) { histOffset = Math.max(0, histOffset + dir * HIST_NUM); loadHistory(); }
+function isoOrEmpty(v) { return v ? new Date(v).toISOString() : ''; }
+async function loadHistory() {
+  const p = new URLSearchParams();
+  p.set('offset', histOffset); p.set('num', HIST_NUM);
+  if ($('h-q').value.trim()) p.set('q', $('h-q').value.trim());
+  if ($('h-status').value.trim()) p.set('status', $('h-status').value.trim());
+  if ($('h-sort').value) p.set('sort', $('h-sort').value);
+  if ($('h-from').value) p.set('from', isoOrEmpty($('h-from').value));
+  if ($('h-to').value) p.set('to', isoOrEmpty($('h-to').value));
+  const list = $('hist-list'); list.innerHTML = '<div class="muted">Loading…</div>';
+  try {
+    const res = await api('/api/history?' + p.toString());
+    if (!res.ok) { const b = await res.json().catch(() => ({})); throw new Error(b.error || res.status); }
+    const rows = await res.json();
+    list.innerHTML = '';
+    if (!rows || !rows.length) list.innerHTML = '<div class="muted">No matching orders.</div>';
+    else rows.forEach(r => list.appendChild(orderCard(r, false)));
+    $('h-page').textContent = 'page ' + (histOffset / HIST_NUM + 1);
+    $('h-prev').disabled = histOffset === 0;
+    $('h-next').disabled = !rows || rows.length < HIST_NUM;
+  } catch (e) { list.innerHTML = '<div class="muted" style="color:#e88">' + esc(e.message) + '</div>'; }
+}
+
+// --- store config -------------------------------------------------------
+async function loadConfig() {
+  try {
+    const res = await api('/api/store-config');
+    if (!res.ok) { const b = await res.json().catch(() => ({})); throw new Error(b.error || res.status); }
+    const cfg = await res.json();
+    const loc = cfg.location || {};
+    $('c-name').textContent = loc.name || '—';
+    $('c-phone').textContent = loc.phone || '—';
+    $('c-addr').textContent = [loc.address_line1, loc.address_line2].filter(Boolean).join(', ') || '—';
+    const printers = cfg.printers || [];
+    $('c-printers').innerHTML = printers.length
+      ? printers.map(p => '<div class="prow"><b>' + esc(p.name) + '</b><span class="muted">' + esc(p.ip) + '</span>' + (p.is_receipt ? '<span class="badge">receipt printer</span>' : '<span class="badge">kitchen station</span>') + '</div>').join('')
+      : '<div class="muted">No printers configured — add them in /app/store.</div>';
+  } catch (e) { toast(e.message, true); }
+}
+
+boot();
+</script>
+</body>
+</html>

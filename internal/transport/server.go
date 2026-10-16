@@ -7,15 +7,21 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"sync"
 	"time"
 
 	orderApp "quiccpos/agent/internal/application/order"
 	printerApp "quiccpos/agent/internal/application/printer"
+	"quiccpos/agent/internal/application/sseclient"
+	"quiccpos/agent/internal/domain/device"
 	"quiccpos/agent/internal/domain/order"
+	"quiccpos/agent/internal/infra/mainclient"
 	"quiccpos/agent/internal/infra/ssebroker"
 
+	"github.com/google/uuid"
 	"github.com/rs/zerolog"
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
+	"go.opentelemetry.io/otel/trace"
 )
 
 const (
@@ -27,67 +33,77 @@ const (
 )
 
 type Server struct {
-	service        *orderApp.Service
-	broker         *ssebroker.Broker
-	printers       *printerApp.Registry
-	printerManager *printerApp.Manager
-	logger         zerolog.Logger
-	port           string
+	service       *orderApp.Service
+	broker        *ssebroker.Broker
+	printers      *printerApp.Registry
+	settings      order.SettingsRepository
+	sseController *sseclient.Controller
+	mainClient    *mainclient.Client
+	session       *sessionManager
+	devices       device.Repository
+	pairing       *pairingCodes
+	touchMu       sync.Mutex
+	touched       map[string]time.Time
+	logins        loginThrottle
+	version       string
+	commit        string
+	logger        zerolog.Logger
+	port          string
 }
 
 func NewServer(
 	svc *orderApp.Service,
 	broker *ssebroker.Broker,
 	printers *printerApp.Registry,
-	printerManager *printerApp.Manager,
+	settings order.SettingsRepository,
+	sseController *sseclient.Controller,
+	mainClient *mainclient.Client,
+	session *sessionManager,
+	devices device.Repository,
 	port string,
+	version string,
+	commit string,
 	logger zerolog.Logger,
 ) *Server {
 	return &Server{
-		service:        svc,
-		broker:         broker,
-		printers:       printers,
-		printerManager: printerManager,
-		port:           port,
-		logger:         logger.With().Str("module", "http-server").Logger(),
+		service:       svc,
+		broker:        broker,
+		printers:      printers,
+		settings:      settings,
+		sseController: sseController,
+		mainClient:    mainClient,
+		session:       session,
+		devices:       devices,
+		pairing:       &pairingCodes{},
+		touched:       map[string]time.Time{},
+		version:       version,
+		commit:        commit,
+		port:          port,
+		logger:        logger.With().Str("module", "http-server").Logger(),
 	}
+}
+
+// NewSessionManager exposes session-manager construction to cmd/main.go, which
+// resolves the PERSISTED signing secret (load-or-create in the settings row) and
+// passes it in so sessions survive restarts.
+func NewSessionManager(secret []byte, persist func(hexSecret string) error) *sessionManager {
+	m := newSessionManager(secret)
+	m.persist = persist
+	return m
 }
 
 func (s *Server) Start(ctx context.Context) {
 	mux := http.NewServeMux()
 
-	// Order routes
-	mux.HandleFunc("GET /api/orders", s.withCORS(s.handleListOrders))
-	mux.HandleFunc("GET /api/orders/arrived", s.withCORS(s.handleListArrived))
-	mux.HandleFunc("GET /api/orders/{id}", s.withCORS(s.handleGetOrder))
-	mux.HandleFunc("POST /api/orders/{id}/accept", s.withCORS(s.handleAccept))
-	mux.HandleFunc("POST /api/orders/{id}/reprint", s.withCORS(s.handleReprint))
-
-	// Settings routes — only auto-accept today. Kept under /api/settings so new
-	// toggles can join without breaking the shape.
-	mux.HandleFunc("GET /api/settings/auto-accept", s.withCORS(s.handleGetAutoAccept))
-	mux.HandleFunc("PUT /api/settings/auto-accept", s.withCORS(s.handleSetAutoAccept))
-
-	// Printer routes. Reads are served from the in-memory Registry (no TCP
-	// probe at request time). The PUT persists a new IP, flips the live
-	// printer handle, and fires an immediate probe so the response reflects
-	// the new address's reachability.
-	mux.HandleFunc("GET /api/printers", s.withCORS(s.handleListPrinters))
-	mux.HandleFunc("GET /api/printers/{name}", s.withCORS(s.handleGetPrinter))
-	mux.HandleFunc("PUT /api/printers/{name}/ip", s.withCORS(s.handleSetPrinterIP))
-
-	// SSE stream for mobile.
-	mux.HandleFunc("GET /api/events", s.withCORS(s.handleEvents))
-
-	// OPTIONS for CORS preflight on any route.
-	mux.HandleFunc("OPTIONS /", s.withCORS(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusNoContent)
-	}))
+	// Every route comes from the single-source-of-truth table in routes.go, which
+	// also feeds GET /__routes. Add/edit routes there, not here.
+	s.register(mux)
 
 	// otelhttp wraps the whole mux: auto-creates a server span per request,
 	// extracts any inbound traceparent header, and attaches a context carrying
-	// the span to r.Context() for handlers to use downstream.
-	handler := otelhttp.NewHandler(mux, "agent-http",
+	// the span to r.Context() for handlers to use downstream. traceIDHeader
+	// sits inside otelhttp so the span already exists when it runs.
+	handler := otelhttp.NewHandler(traceIDHeader(mux), "agent-http",
 		otelhttp.WithServerName("quicc-agent"),
 	)
 
@@ -110,12 +126,39 @@ func (s *Server) Start(ctx context.Context) {
 	}
 }
 
+// traceIDHeader echoes the request's trace id as an X-Trace-Id response
+// header, mirroring online/ and main/'s Echo middleware so operators can
+// paste any response's trace id straight into Tempo.
+func traceIDHeader(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if sc := trace.SpanContextFromContext(r.Context()); sc.IsValid() {
+			w.Header().Set("X-Trace-Id", sc.TraceID().String())
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
 // --- order handlers -------------------------------------------------------
 
-// GET /api/orders?offset=0&limit=50 — paginated history (newest-first).
+// GET /api/orders?batch=current|all|<id>&offset=0&limit=50 — newest-first;
+// defaults to the open batch.
 func (s *Server) handleListOrders(w http.ResponseWriter, r *http.Request) {
 	offset, limit := parsePaging(r)
-	orders, err := s.service.ListPage(r.Context(), offset, limit)
+	all, batch, ok := parseBatch(r)
+	if !ok {
+		s.writeJSON(w, http.StatusBadRequest, errCodeMap("batch must be current, all or a batch id", "bad_request"))
+		return
+	}
+	var orders []order.StoredOrder
+	var err error
+	if all {
+		orders, err = s.service.ListPage(r.Context(), offset, limit)
+	} else {
+		orders, err = s.service.ListByBatch(r.Context(), batch, offset, limit)
+	}
+	if orders == nil {
+		orders = []order.StoredOrder{}
+	}
 	if err != nil {
 		s.writeError(w, r, http.StatusInternalServerError, err)
 		return
@@ -129,6 +172,9 @@ func (s *Server) handleListArrived(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		s.writeError(w, r, http.StatusInternalServerError, err)
 		return
+	}
+	if orders == nil {
+		orders = []order.StoredOrder{}
 	}
 	s.writeJSON(w, http.StatusOK, orders)
 }
@@ -152,26 +198,30 @@ func (s *Server) handleGetOrder(w http.ResponseWriter, r *http.Request) {
 	s.writeJSON(w, http.StatusOK, so)
 }
 
-// POST /api/orders/{id}/accept — mobile accept. DB + print atomic; on printer
-// failure the order stays arrived for retry.
+// POST /api/orders/{id}/accept {prep_minutes?} — claim (kitchen number +
+// prep estimate), print, revert if nothing printed (502).
 func (s *Server) handleAccept(w http.ResponseWriter, r *http.Request) {
 	id, err := parseID(r)
 	if err != nil {
 		s.writeError(w, r, http.StatusBadRequest, err)
 		return
 	}
-	so, err := s.service.Accept(r.Context(), id)
+	var req struct {
+		PrepMinutes *int `json:"prep_minutes"`
+	}
+	if err := decodeBody(r, &req); err != nil {
+		s.floorErr(w, r, err)
+		return
+	}
+	so, err := s.service.Accept(r.Context(), id, req.PrepMinutes)
 	if err != nil {
-		switch {
-		case errors.Is(err, order.ErrNotFound):
-			s.writeError(w, r, http.StatusNotFound, err)
-		case errors.Is(err, order.ErrAlreadyAccepted):
-			s.writeError(w, r, http.StatusConflict, err)
-		default:
-			// Printer failures also land here — surface them as 502 so mobile
-			// can show "printer offline" rather than a generic 500.
-			s.writeError(w, r, http.StatusBadGateway, err)
+		if errors.Is(err, orderApp.ErrNothingPrinted) {
+			// The printers are the problem — the tablet shows "printer problem,
+			// NOT accepted" and staff retry.
+			s.writeJSON(w, http.StatusBadGateway, errCodeMap(err.Error(), "nothing_printed"))
+			return
 		}
+		s.floorErr(w, r, err) // 400 / 404 / 409 already_accepted / 500
 		return
 	}
 	s.writeJSON(w, http.StatusOK, so)
@@ -224,6 +274,16 @@ func (s *Server) handleSetAutoAccept(w http.ResponseWriter, r *http.Request) {
 	s.writeJSON(w, http.StatusOK, body)
 }
 
+// --- version --------------------------------------------------------------
+
+func (s *Server) handleVersion(w http.ResponseWriter, _ *http.Request) {
+	s.writeJSON(w, http.StatusOK, map[string]string{
+		"service": "quicc-agent",
+		"version": s.version,
+		"commit":  s.commit,
+	})
+}
+
 // --- printer status -------------------------------------------------------
 
 // GET /api/printers — snapshot of every registered printer's last probe.
@@ -239,39 +299,6 @@ func (s *Server) handleGetPrinter(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, r, http.StatusNotFound, fmt.Errorf("unknown printer %q", name))
 		return
 	}
-	s.writeJSON(w, http.StatusOK, snap)
-}
-
-type updatePrinterIPDTO struct {
-	IP string `json:"ip"`
-}
-
-// PUT /api/printers/{name}/ip — replace the printer's IP at runtime. The
-// manager persists it, applies it to the in-memory handle, and runs a
-// synchronous probe so the response body reflects the new status.
-func (s *Server) handleSetPrinterIP(w http.ResponseWriter, r *http.Request) {
-	name := r.PathValue("name")
-
-	var body updatePrinterIPDTO
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		s.writeError(w, r, http.StatusBadRequest, fmt.Errorf("decode body: %w", err))
-		return
-	}
-
-	if err := s.printerManager.UpdateIP(r.Context(), name, body.IP); err != nil {
-		switch {
-		case errors.Is(err, printerApp.ErrUnknownPrinter):
-			s.writeError(w, r, http.StatusNotFound, err)
-		default:
-			// Validation error (empty IP) or persistence failure.
-			s.writeError(w, r, http.StatusBadRequest, err)
-		}
-		return
-	}
-
-	// ProbeNow inside UpdateIP has already populated the registry — return
-	// the fresh snapshot so mobile can show immediate feedback.
-	snap, _ := s.printers.Get(name)
 	s.writeJSON(w, http.StatusOK, snap)
 }
 
@@ -331,11 +358,11 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 
 // --- helpers --------------------------------------------------------------
 
-func parseID(r *http.Request) (int, error) {
+func parseID(r *http.Request) (uuid.UUID, error) {
 	raw := r.PathValue("id")
-	id, err := strconv.Atoi(raw)
+	id, err := uuid.Parse(raw)
 	if err != nil {
-		return 0, fmt.Errorf("invalid order id %q", raw)
+		return uuid.Nil, fmt.Errorf("invalid order id %q", raw)
 	}
 	return id, nil
 }
@@ -368,11 +395,18 @@ func (s *Server) writeError(w http.ResponseWriter, r *http.Request, status int, 
 	s.writeJSON(w, status, map[string]string{"error": err.Error()})
 }
 
+// errCodeMap builds a {error, code} body. The human message is safe to show;
+// the stable code lets the web UI branch (invalid_token, password_mismatch, …).
+func errCodeMap(msg, code string) map[string]string {
+	return map[string]string{"error": msg, "code": code}
+}
+
 func (s *Server) withCORS(h http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, "+deviceKeyHeader)
+		w.Header().Set("Access-Control-Expose-Headers", "X-Trace-Id")
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)
 			return

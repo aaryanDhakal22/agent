@@ -2,25 +2,49 @@ version: "3"
 
 # Agent Taskfile. Unlike main/, the agent runs directly on the restaurant
 # computer (prod) and the home-network desktop (staging), and can run anywhere
-# in dev. `doppler run --` is used only for test tasks and for starting the
-# agent with the right env (user will create agent-specific Doppler configs).
+# in dev. Secret-bearing tasks inject DOPPLER_TOKEN from the gitignored
+# {{.DOPPLER_TOKEN_FILE}} (a dev service token) — no `doppler login` /
+# `doppler setup`, same pattern as main/ and online/.
+
+vars:
+  DOPPLER_TOKEN_FILE: .doppler-dev-agent
 
 tasks:
   default:
     desc: List tasks
     cmds:
-      - task --list
+      - "{{.TASK_EXE}} --list"
 
   build:
-    desc: Build the agent binary to ./bin/agent
+    desc: Build the agent binary to ./bin/agent (host arch)
     cmds:
       - mkdir -p bin
       - go build -o bin/agent ./cmd/main.go
 
+  build-arm64:
+    desc: "Cross-compile the static linux/arm64 binary the Pi runs (CGO-free)"
+    env:
+      CGO_ENABLED: "0"
+      GOOS: linux
+      GOARCH: arm64
+    cmds:
+      - mkdir -p bin
+      - >-
+        go build -trimpath
+        -ldflags "-w -s -X main.version=$(cat VERSION 2>/dev/null || echo dev) -X main.commit=$(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
+        -o bin/agent-linux-arm64 ./cmd/main.go
+
   run:
     desc: Run the agent directly under Doppler (reads env from the selected config)
     cmds:
-      - doppler run -- go run ./cmd/main.go
+      - DOPPLER_TOKEN=$(cat {{.DOPPLER_TOKEN_FILE}}) doppler run -- go run ./cmd/main.go
+
+  dev:
+    desc: "Hot-reload dev run via Air (near-zero rebuild). SQLite at sql/agent.db."
+    env:
+      AGENT_DB_PATH: sql/agent.db
+    cmds:
+      - DOPPLER_TOKEN=$(cat {{.DOPPLER_TOKEN_FILE}}) doppler run -- air
 
   run-no-doppler:
     desc: Run the agent without Doppler (expects env to be already exported)
@@ -28,31 +52,67 @@ tasks:
       - go run ./cmd/main.go
 
   test:
-    desc: "Run the agent/ pytest suite under Doppler (agent must already be running on AGENT_BASE_URL or HTTP_PORT)"
+    desc: "Run the agent/ pytest suite (dev main must be up). Spawns its own throwaway agents (temp DB, spare port) — the roster agents are untouched."
     cmds:
-      - doppler run -- uv run --directory tests pytest -v
+      - DOPPLER_TOKEN=$(cat {{.DOPPLER_TOKEN_FILE}}) doppler run -- uv run --directory tests pytest -v
+
+  test-quick:
+    desc: "agent/ pytest minus the slow tests (e.g. the ~30s revoke-detection wait)"
+    cmds:
+      - DOPPLER_TOKEN=$(cat {{.DOPPLER_TOKEN_FILE}}) doppler run -- uv run --directory tests pytest -v -m "not slow"
 
   test-go:
-    desc: "Run Go tests under Doppler (currently none; kept for future)"
+    desc: "Run Go unit tests (SQLite repo round-trips, OTEL resource, transport) — no secrets needed"
     cmds:
-      - doppler run -- go test ./...
+      - go test ./...
+
+  sqlc:
+    desc: "Regenerate sqlc models from sql/schema.sql + sql/query.sql (keep schema.sql mirroring the goose migrations)"
+    dir: sql
+    cmds:
+      - sqlc generate -f sqlc.yaml
 
   test-real-printer:
     desc: "Run printer-burning tests — requires a real printer network. Opt-in via env flag."
     env:
       TEST_REAL_PRINTERS: "1"
     cmds:
-      - doppler run -- uv run --directory tests pytest -v -m real_printer
+      - DOPPLER_TOKEN=$(cat {{.DOPPLER_TOKEN_FILE}}) doppler run -- uv run --directory tests pytest -v -m real_printer
 
-  devup:
-    desc: Start the Docker-based dev stack for agent (nginx + agent container)
-    cmds:
-      - doppler run -- docker compose -f ./docker-compose.yml up
+  # ──────────────────────────────────────────────────────────────────────
+  # Versioning — see ../scripts/version.sh
+  # ──────────────────────────────────────────────────────────────────────
 
-  devdown:
+  version-current:
+    desc: Show the current version (./VERSION)
+    silent: true
     cmds:
-      - doppler run -- docker compose -f ./docker-compose.yml down
+      - ../scripts/version.sh current
 
-  devupd:
+  version-describe:
+    desc: VERSION + git describe diagnostics
+    silent: true
     cmds:
-      - doppler run -- docker compose -f ./docker-compose.yml up -d
+      - ../scripts/version.sh describe
+
+  version-init:
+    desc: "Create initial v0.1.0 (or override): task version-init -- 0.2.0"
+    cmds:
+      - ../scripts/version.sh init {{.CLI_ARGS}}
+
+  version-bump:
+    desc: "Bump and tag: task version-bump -- patch|minor|major"
+    cmds:
+      - ../scripts/version.sh bump {{.CLI_ARGS}}
+
+  version-tag:
+    desc: "(Re-)tag the current VERSION without bumping. Pass -f to overwrite."
+    cmds:
+      - ../scripts/version.sh tag {{.CLI_ARGS}}
+
+  release:
+    desc: "Bump (default patch) and push a v* tag — CI builds an immutable arm64 release you download to the Pi. task release -- minor"
+    cmds:
+      - ../scripts/version.sh bump {{- if .CLI_ARGS }} {{.CLI_ARGS}}{{- else }} patch{{- end }}
+      - git push origin HEAD
+      - git push origin --tags
