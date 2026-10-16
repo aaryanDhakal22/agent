@@ -15,18 +15,22 @@ type Querier interface {
 	// Claims an arrived order for acceptance (0 rows = missing or already taken).
 	// The kitchen number is kept across a revert + re-accept.
 	ClaimAccept(ctx context.Context, arg ClaimAcceptParams) (int64, error)
+	ClearAcceptPending(ctx context.Context, id string) error
 	// Unlink / definitive revoke: drop the store key AND the local password + hint
 	// in one statement, back to the blank "paste a token" state.
 	ClearProvisioning(ctx context.Context) error
 	ClockOutDriver(ctx context.Context, id string) (int64, error)
 	CloseBatch(ctx context.Context, arg CloseBatchParams) error
 	CloseShift(ctx context.Context, arg CloseShiftParams) error
+	CountAllDrivers(ctx context.Context) (int64, error)
+	CountAllOrders(ctx context.Context) (int64, error)
 	CountDeliveriesInBatch(ctx context.Context, batchID int64) ([]CountDeliveriesInBatchRow, error)
 	CountUnsyncedFloorEvents(ctx context.Context) (int64, error)
 	CreateDriver(ctx context.Context, arg CreateDriverParams) error
 	// Paired devices (counter tablets) -------------------------------------------
 	CreatePairedDevice(ctx context.Context, arg CreatePairedDeviceParams) error
 	DeactivateDriver(ctx context.Context, id string) (int64, error)
+	DeleteAllBatches(ctx context.Context) error
 	DeleteOldClosedBatches(ctx context.Context, limit int64) error
 	DeleteOldSyncedFloorEvents(ctx context.Context, syncedAt sql.NullString) (int64, error)
 	// Batch retention: keep the open batch plus the newest N closed batches.
@@ -41,7 +45,9 @@ type Querier interface {
 	GetDriverReset(ctx context.Context) (GetDriverResetRow, error)
 	GetFloorPrefs(ctx context.Context) (GetFloorPrefsRow, error)
 	GetFloorSettings(ctx context.Context) (GetFloorSettingsRow, error)
+	GetLastBackup(ctx context.Context) (string, error)
 	GetLastReturn(ctx context.Context) (GetLastReturnRow, error)
+	GetLinkInfo(ctx context.Context) (GetLinkInfoRow, error)
 	// Batches -------------------------------------------------------------------
 	GetOpenBatch(ctx context.Context) (Batch, error)
 	GetOpenShift(ctx context.Context, driverID string) (DriverShift, error)
@@ -52,6 +58,7 @@ type Querier interface {
 	// Store config (starter pack from main/'s SSE handshake) --------------------
 	GetStoreConfig(ctx context.Context) (GetStoreConfigRow, error)
 	GetUIPassword(ctx context.Context) (GetUIPasswordRow, error)
+	InsertBatchWithID(ctx context.Context, arg InsertBatchWithIDParams) error
 	// Floor events (sync outbox to main) -------------------------------------------
 	InsertFloorEvent(ctx context.Context, arg InsertFloorEventParams) error
 	// Drivers -------------------------------------------------------------------
@@ -64,6 +71,8 @@ type Querier interface {
 	// or ready for a non-delivery order.
 	ListBatchLeftovers(ctx context.Context, batchID int64) ([]Order, error)
 	ListBatches(ctx context.Context, limit int64) ([]ListBatchesRow, error)
+	// Claimed but never recorded: the agent stopped between claim and record.
+	ListInterruptedAccepts(ctx context.Context) ([]string, error)
 	ListOnDeliveryByDriver(ctx context.Context, driverID sql.NullString) ([]Order, error)
 	ListOpenShifts(ctx context.Context) ([]DriverShift, error)
 	ListOrdersByBatch(ctx context.Context, arg ListOrdersByBatchParams) ([]Order, error)
@@ -91,6 +100,9 @@ type Querier interface {
 	// Close batch: drivers out on a run are back in the queue (clocked-out stay off).
 	ResetDriversAvailable(ctx context.Context) error
 	ResetKitchenNumber(ctx context.Context) error
+	RestoreDriver(ctx context.Context, arg RestoreDriverParams) error
+	RestoreOrder(ctx context.Context, arg RestoreOrderParams) error
+	RestoreShift(ctx context.Context, arg RestoreShiftParams) error
 	// Undoes a claim whose tickets printed nowhere, so the order can be re-accepted.
 	RevertAccept(ctx context.Context, id string) error
 	RevokeAllPairedDevices(ctx context.Context, revokedAt sql.NullString) error
@@ -106,9 +118,14 @@ type Querier interface {
 	SetDriverReturned(ctx context.Context, arg SetDriverReturnedParams) error
 	SetDriverStatus(ctx context.Context, arg SetDriverStatusParams) (int64, error)
 	SetFloorPrefs(ctx context.Context, arg SetFloorPrefsParams) error
+	SetKitchenCounters(ctx context.Context, arg SetKitchenCountersParams) error
+	SetLastBackup(ctx context.Context, lastBackupAt string) error
 	SetLastDriverReset(ctx context.Context, lastDriverResetAt string) error
 	SetLastPrepMinutes(ctx context.Context, lastPrepMinutes int64) error
 	SetLastReturn(ctx context.Context, arg SetLastReturnParams) error
+	// Link + restore (00008) --------------------------------------------------------
+	SetLinkInfo(ctx context.Context, arg SetLinkInfoParams) error
+	SetManagerPasswordHash(ctx context.Context, uiPasswordHash string) error
 	SetSessionSecret(ctx context.Context, sessionSecret string) error
 	SetStoreAPIKey(ctx context.Context, storeApiKey string) error
 	SetUIPassword(ctx context.Context, arg SetUIPasswordParams) error

@@ -13,6 +13,7 @@ import (
 	"quiccpos/agent/internal/application/appupdate"
 	orderApp "quiccpos/agent/internal/application/order"
 	printerApp "quiccpos/agent/internal/application/printer"
+	"quiccpos/agent/internal/application/recovery"
 	"quiccpos/agent/internal/application/sseclient"
 	"quiccpos/agent/internal/domain/device"
 	"quiccpos/agent/internal/domain/order"
@@ -51,6 +52,9 @@ type Server struct {
 	logger        zerolog.Logger
 	port          string
 	apps          *appupdate.Updater
+	recovery      *recovery.Service
+	onLinked      func(*recovery.Outcome)
+	linkMu        sync.Mutex
 }
 
 // SetAppUpdater wires the tablet-app release cache (/api/app/*).

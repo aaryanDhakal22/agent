@@ -67,19 +67,31 @@
 <main>
   <!-- Auth: state-driven (paste token → create password → unlock) -->
   <div id="auth" class="card hidden" style="max-width:380px;margin:80px auto">
-    <!-- unconfigured: paste the admin-minted token -->
+    <!-- unconfigured: link with the store manager login (or paste a token) -->
     <div id="auth-setup" class="hidden">
-      <h2 style="margin-bottom:8px">Set up this device</h2>
+      <h2 style="margin-bottom:8px">Set up this Pi</h2>
+      <div id="link-box">
+        <div class="muted" style="margin-bottom:14px;line-height:1.4">
+          Sign in with the <strong>store manager login</strong>. The Pi links to your
+          restaurant and brings back the open batch, drivers and settings.
+        </div>
+        <div style="margin-bottom:10px"><label>Username</label><input id="link-user" style="width:100%" autocomplete="username" autocapitalize="off" /></div>
+        <div style="margin-bottom:14px"><label>Password</label><input id="link-pass" type="password" style="width:100%" autocomplete="current-password" onkeydown="if(event.key==='Enter')submitLink()" /></div>
+        <button id="link-btn" class="primary" style="width:100%" onclick="submitLink()">Link this Pi</button>
+        <div id="link-err" class="muted" style="color:#e88;margin-top:10px"></div>
+        <div style="margin-top:14px"><span class="muted" style="cursor:pointer;text-decoration:underline;color:#9ab" onclick="$('token-box').classList.toggle('hidden')">Use an agent token instead</span></div>
+      </div>
+      <div id="token-box" class="hidden" style="margin-top:14px">
       <div class="muted" style="margin-bottom:14px;line-height:1.4">
         Paste the agent token from the manager dashboard
-        (<strong>Locations → Create agent</strong>). This links the device to your
-        restaurant location.
+        (<strong>Locations → Create agent</strong>).
       </div>
       <label>Agent token</label>
       <textarea id="setup-token" rows="3" placeholder="qpos_…"
         style="width:100%;background:#0f0f0f;color:#e8e8e8;border:1px solid #3a3a3a;border-radius:6px;padding:8px 10px;font-family:monospace;font-size:0.8rem"></textarea>
       <button id="setup-token-btn" class="primary" style="width:100%;margin-top:12px" onclick="submitToken()">Link device</button>
       <div id="setup-err" class="muted" style="color:#e88;margin-top:10px"></div>
+      </div>
     </div>
 
     <!-- needs_password: choose a local password -->
@@ -98,7 +110,8 @@
 
     <!-- locked: unlock with the password -->
     <div id="auth-login" class="hidden">
-      <h2 style="margin-bottom:14px">Enter password</h2>
+      <h2 id="login-title" style="margin-bottom:14px">Enter password</h2>
+      <div id="login-user-row" class="hidden" style="margin-bottom:10px"><label>Username</label><input id="login-user" style="width:100%" autocomplete="username" autocapitalize="off" /></div>
       <div style="margin-bottom:14px"><label>Password</label><input id="login-pass" type="password" style="width:100%" autocomplete="current-password" onkeydown="if(event.key==='Enter')unlock()" /></div>
       <button id="login-btn" class="primary" style="width:100%" onclick="unlock()">Unlock</button>
       <div style="margin-top:10px"><span id="hint-link" class="muted hidden" style="cursor:pointer;text-decoration:underline;color:#9ab" onclick="showHint()">Forgot? Show hint</span></div>
@@ -313,10 +326,16 @@ function showState(s) {
   switch (s.state) {
     case 'ready':          showApp(); break;
     case 'needs_password': showAuth('newpass'); break;
-    case 'unconfigured':   showAuth('setup'); break;
+    case 'unconfigured':
+      showAuth('setup');
+      $('link-box').classList.toggle('hidden', s.link_available === false);
+      if (s.link_available === false) $('token-box').classList.remove('hidden');
+      break;
     default:               // locked
       showAuth('login');
       $('hint-link').classList.toggle('hidden', !s.has_hint);
+      $('login-user-row').classList.toggle('hidden', !s.manager_login);
+      $('login-title').textContent = s.manager_login ? 'Store manager login' : 'Enter password';
   }
 }
 
@@ -369,6 +388,26 @@ async function submitToken() {
   finally { btn.disabled = false; btn.textContent = 'Link device'; }
 }
 
+// submitLink — link a blank Pi with the store manager login (restores the
+// open batch from main; this browser is signed in afterwards).
+async function submitLink() {
+  $('link-err').textContent = '';
+  const username = $('link-user').value.trim(), password = $('link-pass').value;
+  if (!username || !password) { $('link-err').textContent = 'Type the username and password.'; return; }
+  const btn = $('link-btn'); btn.disabled = true; btn.textContent = 'Linking… (restoring the batch)';
+  try {
+    const res = await fetch('/api/setup/link', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username, password }) });
+    const b = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(b.error || ('link failed (' + res.status + ')'));
+    $('link-pass').value = '';
+    const r = b.restored;
+    if (r) alert('Linked to ' + (b.tenant || 'your store') + '. Restored ' + r.orders + ' orders (' + r.waiting + ' waiting), ' + r.drivers + ' drivers. Next kitchen # ' + r.kitchen_next + '.');
+    await refreshSession();
+    pollStatus();
+  } catch (e) { $('link-err').textContent = e.message; }
+  finally { btn.disabled = false; btn.textContent = 'Link this Pi'; }
+}
+
 // submitNewPassword — set the initial local password after linking.
 async function submitNewPassword() {
   $('np-err').textContent = '';
@@ -387,9 +426,9 @@ async function submitNewPassword() {
 // unlock — open the app with the local password.
 async function unlock() {
   $('login-err').textContent = '';
-  const password = $('login-pass').value;
+  const password = $('login-pass').value, username = $('login-user').value.trim();
   try {
-    const res = await fetch('/api/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ password }) });
+    const res = await fetch('/api/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username, password }) });
     if (!res.ok) { const b = await res.json().catch(() => ({})); throw new Error(b.error || ('login failed (' + res.status + ')')); }
     $('login-pass').value = '';
     await refreshSession();   // → app

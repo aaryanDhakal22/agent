@@ -100,3 +100,30 @@ func Hook(parent context.Context, fetch Fetcher, svc Arriver, batches Batches, l
 		log.Info().Int("checked", n).Msg("Catch-up after reconnect done")
 	}
 }
+
+// Reconcile runs a quiet pass every interval while the stream is connected —
+// the safety net under main's ack-driven redelivery (an order main thinks is
+// delivered but the agent never stored shows up here within a minute).
+func Reconcile(ctx context.Context, every time.Duration, fetch Fetcher, svc Arriver, batches Batches, connected func() bool, logger zerolog.Logger) {
+	log := logger.With().Str("module", "reconcile").Logger()
+	t := time.NewTicker(every)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
+		if connected != nil && !connected() {
+			continue
+		}
+		rctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		n, err := Run(rctx, fetch, svc, batches, time.Now(), log)
+		cancel()
+		if err != nil {
+			log.Debug().Err(err).Msg("reconciliation pass failed")
+			continue
+		}
+		log.Debug().Int("checked", n).Msg("reconciliation pass done")
+	}
+}

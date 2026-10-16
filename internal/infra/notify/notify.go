@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
@@ -18,6 +19,7 @@ import (
 // (userKey — everything) and, optionally, the restaurant's boss (bossKey —
 // floor problems only). See Send vs SendFloor.
 type Notifier struct {
+	mu          sync.RWMutex
 	appToken    string
 	userKey     string
 	bossKey     string
@@ -45,11 +47,29 @@ func NewNotifier(appToken, userKey, bossKey string) *Notifier {
 	}
 }
 
+// SetKeys swaps the Pushover app token + recipients at runtime (a manager-
+// login link hands them over; no restart needed).
+func (n *Notifier) SetKeys(appToken, userKey, bossKey string) {
+	n.mu.Lock()
+	n.appToken, n.userKey, n.bossKey = appToken, userKey, bossKey
+	n.mu.Unlock()
+}
+
+// Configured reports whether Send/SendFloor would page anyone.
+func (n *Notifier) Configured() bool {
+	n.mu.RLock()
+	defer n.mu.RUnlock()
+	return n.appToken != "" && n.userKey != ""
+}
+
 // Send notifies the owner only — system events (agent started, sync trouble).
 // The ctx controls cancellation and provides the parent span for the
 // outgoing HTTP call; otelhttp creates a child HTTP-client span.
 func (n *Notifier) Send(ctx context.Context, message, sound string) error {
-	return n.post(ctx, n.userKey, message, sound)
+	n.mu.RLock()
+	user := n.userKey
+	n.mu.RUnlock()
+	return n.post(ctx, user, message, sound)
 }
 
 // SendFloor notifies the owner AND the boss (when PUSHOVER_BOSS_KEY is set) —
@@ -66,6 +86,8 @@ func (n *Notifier) SendFloor(ctx context.Context, message, sound string) error {
 }
 
 func (n *Notifier) floorKeys() []string {
+	n.mu.RLock()
+	defer n.mu.RUnlock()
 	keys := []string{n.userKey}
 	if n.bossKey != "" && n.bossKey != n.userKey {
 		keys = append(keys, n.bossKey)
@@ -74,8 +96,14 @@ func (n *Notifier) floorKeys() []string {
 }
 
 func (n *Notifier) post(ctx context.Context, user, message, sound string) error {
+	n.mu.RLock()
+	token := n.appToken
+	n.mu.RUnlock()
+	if token == "" || user == "" {
+		return nil // not configured (yet): an unlinked agent has no keys
+	}
 	form := url.Values{
-		"token":   {n.appToken},
+		"token":   {token},
 		"user":    {user},
 		"message": {message},
 		"sound":   {sound},

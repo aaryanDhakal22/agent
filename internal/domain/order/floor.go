@@ -80,6 +80,10 @@ type OrderStatusEvent struct {
 	DriverName       string     `json:"driver_name,omitempty"`
 	Auto             bool       `json:"auto,omitempty"` // set by Close batch's auto-finish / auto-cancel
 	At               time.Time  `json:"at"`
+	// The agent's whole status + batch, stored by main so a replacement Pi
+	// (swapped SD card) can restore the open batch exactly.
+	BatchID     int64   `json:"batch_id,omitempty"`
+	AgentStatus *Status `json:"agent_status,omitempty"`
 }
 
 // DriversRosterEvent is the payload of a drivers.roster floor event (the whole
@@ -299,6 +303,9 @@ type FloorRepository interface {
 	// RecordAccepted writes the order.status=accepted floor event (after the
 	// tickets printed — a reverted claim never reaches main).
 	RecordAccepted(ctx context.Context, so StoredOrder) error
+	// ListInterruptedAccepts: orders claimed for accept whose accept was never
+	// recorded (the agent stopped mid-accept).
+	ListInterruptedAccepts(ctx context.Context) ([]string, error)
 
 	// Sync outbox.
 	ListUnsyncedEvents(ctx context.Context, limit int) ([]FloorEvent, error)

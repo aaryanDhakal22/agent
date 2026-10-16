@@ -62,7 +62,10 @@ func recordOrderStatus(ctx context.Context, q *models.Queries, so order.StoredOr
 		DriverName:       so.Status.DriverName,
 		Auto:             auto,
 		At:               at.UTC().Truncate(time.Millisecond),
+		BatchID:          so.Status.BatchID,
 	}
+	st := so.Status
+	ev.AgentStatus = &st
 	return insertEvent(ctx, q, ev.EventID, so.Order.ID, ev.Type, at, ev)
 }
 
@@ -99,7 +102,19 @@ func (r *OrderRepository) RecordAccepted(ctx context.Context, so order.StoredOrd
 	if so.Status.AcceptedAt != nil {
 		at = *so.Status.AcceptedAt
 	}
-	return recordOrderStatus(ctx, models.New(r.db), so, false, at)
+	return r.withTx(ctx, func(q *models.Queries) error {
+		if err := recordOrderStatus(ctx, q, so, false, at); err != nil {
+			return err
+		}
+		return q.ClearAcceptPending(ctx, so.Order.ID)
+	})
+}
+
+// ListInterruptedAccepts — see order.FloorRepository.
+func (r *OrderRepository) ListInterruptedAccepts(ctx context.Context) (ids []string, err error) {
+	ctx, _, end := dbSpan(ctx, "floor.list_interrupted_accepts")
+	defer end(&err)
+	return models.New(r.db).ListInterruptedAccepts(ctx)
 }
 
 // MarkReady: accepted → ready.

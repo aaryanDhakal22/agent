@@ -140,3 +140,45 @@ func (r *SettingsRepository) ClearProvisioning(ctx context.Context) (err error) 
 	}
 	return nil
 }
+
+// GetLinkInfo — see order.SettingsRepository.
+func (r *SettingsRepository) GetLinkInfo(ctx context.Context) (li order.LinkInfo, err error) {
+	row, err := models.New(r.db).GetLinkInfo(ctx)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return li, nil
+		}
+		return li, err
+	}
+	return order.LinkInfo{
+		Secrets: order.Secrets{PushoverAppToken: row.SecretPushoverAppToken, PushoverUserKey: row.SecretPushoverUserKey,
+			PushoverBossKey: row.SecretPushoverBossKey, OTLPEndpoint: row.SecretOtlpEndpoint, OTLPHeaders: row.SecretOtlpHeaders},
+		ManagerUsername: row.ManagerUsername, DeviceID: row.DeviceID,
+	}, nil
+}
+
+// SetLinkInfo — see order.SettingsRepository.
+func (r *SettingsRepository) SetLinkInfo(ctx context.Context, li order.LinkInfo, passwordHash, hint string) error {
+	return models.New(r.db).SetLinkInfo(ctx, models.SetLinkInfoParams{
+		SecretPushoverAppToken: li.Secrets.PushoverAppToken, SecretPushoverUserKey: li.Secrets.PushoverUserKey,
+		SecretPushoverBossKey: li.Secrets.PushoverBossKey, SecretOtlpEndpoint: li.Secrets.OTLPEndpoint,
+		SecretOtlpHeaders: li.Secrets.OTLPHeaders, ManagerUsername: li.ManagerUsername, DeviceID: li.DeviceID,
+		UiPasswordHash: passwordHash, UiPasswordHint: hint,
+	})
+}
+
+func (r *SettingsRepository) SetUIPasswordHash(ctx context.Context, hash string) error {
+	return models.New(r.db).SetManagerPasswordHash(ctx, hash)
+}
+
+func (r *SettingsRepository) GetLastBackup(ctx context.Context) (string, error) {
+	v, err := models.New(r.db).GetLastBackup(ctx)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	return v, err
+}
+
+func (r *SettingsRepository) SetLastBackup(ctx context.Context, at string) error {
+	return models.New(r.db).SetLastBackup(ctx, at)
+}

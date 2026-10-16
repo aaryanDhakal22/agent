@@ -18,15 +18,20 @@ import (
 	"syscall"
 	"time"
 
+	"quiccpos/agent/internal/application/acker"
 	"quiccpos/agent/internal/application/appupdate"
+	"quiccpos/agent/internal/application/backup"
 	"quiccpos/agent/internal/application/catchup"
 	"quiccpos/agent/internal/application/driverreset"
 	"quiccpos/agent/internal/application/escalation"
 	"quiccpos/agent/internal/application/floorsync"
+	"quiccpos/agent/internal/application/health"
 	orderApp "quiccpos/agent/internal/application/order"
 	printerApp "quiccpos/agent/internal/application/printer"
+	"quiccpos/agent/internal/application/recovery"
 	"quiccpos/agent/internal/application/retention"
 	ssecontroller "quiccpos/agent/internal/application/sseclient"
+	"quiccpos/agent/internal/application/statesync"
 	"quiccpos/agent/internal/config"
 	"quiccpos/agent/internal/domain/order"
 	domainprinter "quiccpos/agent/internal/domain/printer"
@@ -65,6 +70,25 @@ func main() {
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
+
+	// --- Database (before telemetry: a linked Pi's secrets live in it) ------
+	// SQLite can't create the file's directory (default ~/.quicc on a fresh Pi).
+	if err := os.MkdirAll(filepath.Dir(cfg.AgentDBPath), 0o700); err != nil {
+		bootstrap.Fatal().Err(err).Msg("Failed to create the database directory")
+	}
+	if err := migrate.Run(ctx, cfg.AgentDBPath); err != nil {
+		bootstrap.Fatal().Err(err).Msg("Failed to run database migrations")
+	}
+	db, err := database.Open(ctx, cfg.AgentDBPath)
+	if err != nil {
+		bootstrap.Fatal().Err(err).Msg("Failed to open SQLite database")
+	}
+	defer db.Close()
+	// Secrets main handed over at link time fill whatever the environment
+	// leaves empty (env always wins: dev/staging Doppler keep working).
+	if li, err := repositories.NewSettingsRepository(db, bootstrap).GetLinkInfo(ctx); err == nil {
+		applyLinkedSecrets(cfg, li.Secrets)
+	}
 
 	// --- Observability ----------------------------------------------------
 	shutdownOtel, err := observability.Setup(ctx, observability.Config{
@@ -119,24 +143,7 @@ func main() {
 		Str("http_port", cfg.HTTPPort).
 		Str("otel_endpoint", cfg.OTELEndpoint).
 		Msg("Agent starting")
-
-	// --- Database ---------------------------------------------------------
-	logger.Info().Ctx(ctx).Str("db_path", cfg.AgentDBPath).Msg("Running database migrations")
-	// SQLite can't create the file's directory (default ~/.quicc on a fresh Pi).
-	if err := os.MkdirAll(filepath.Dir(cfg.AgentDBPath), 0o700); err != nil {
-		logger.Fatal().Err(err).Msg("Failed to create the database directory")
-	}
-	if err := migrate.Run(ctx, cfg.AgentDBPath); err != nil {
-		logger.Fatal().Err(err).Msg("Failed to run database migrations")
-	}
-	logger.Info().Ctx(ctx).Msg("Database migrations complete")
-
-	db, err := database.Open(ctx, cfg.AgentDBPath)
-	if err != nil {
-		logger.Fatal().Err(err).Msg("Failed to open SQLite database")
-	}
-	defer db.Close()
-	logger.Info().Ctx(ctx).Msg("Connected to database")
+	logger.Info().Ctx(ctx).Str("db_path", cfg.AgentDBPath).Msg("Database ready (migrations applied)")
 
 	orderRepo := repositories.NewOrderRepository(db, logger)
 	settingsRepo := repositories.NewSettingsRepository(db, logger)
@@ -195,6 +202,10 @@ func main() {
 		return receipt.BuildDriverReport(rep, sc, from, time.Now())
 	})
 
+	if n := orderService.RecoverInterruptedAccepts(ctx); n > 0 {
+		logger.Warn().Ctx(ctx).Int("orders", n).Msg("Orders whose accept was interrupted will ring again")
+	}
+
 	// --- Store_config SSE handshake sink ----------------------------------
 	sink := &storeConfigApplier{
 		repo:       storeConfigRepo,
@@ -224,6 +235,46 @@ func main() {
 
 	sseCtrl := ssecontroller.New(ctx, cfg.MainServerURL, orderService, sink, registry, logger, meters)
 	rpcPoster.key = sseCtrl.CurrentKey
+
+	// Delivery guarantee: every stored order (new or a redelivery) is acked
+	// to main, which re-sends anything unacked after 10 s.
+	orderAcker := acker.New(registry.Report, sseCtrl.Configured, logger)
+	orderService.OnStored(orderAcker.Ack)
+	go orderAcker.Run(ctx)
+
+	// Floor state for a replacement Pi (agent.state) + the heartbeat.
+	stateSync := statesync.New(orderRepo.AgentState, registry.Report, sseCtrl.Configured, logger)
+	go stateSync.Run(ctx)
+	heartbeat := health.New(health.Inputs{
+		DeviceID: func(rc context.Context) string {
+			li, _ := settingsRepo.GetLinkInfo(rc)
+			return li.DeviceID
+		},
+		SSE: func() (bool, int64) {
+			st := sseCtrl.Status()
+			return st.Connected, st.Reconnects
+		},
+		AcksPending: orderAcker.Pending,
+		FloorBacklog: func(rc context.Context) int64 {
+			n, _ := orderRepo.CountUnsyncedEvents(rc)
+			return n
+		},
+		Printers: func() (up, down int) {
+			for _, p := range printerRegistry.All() {
+				if p.Up {
+					up++
+				} else {
+					down++
+				}
+			}
+			return up, down
+		},
+		LastBackup: func(rc context.Context) string {
+			at, _ := settingsRepo.GetLastBackup(rc)
+			return at
+		},
+	}, registry.Report, sseCtrl.Configured, cfg.AgentDBPath, version, logger)
+	go heartbeat.Run(ctx, 5*time.Minute)
 
 	// Auto-reset on a definitive revoke: if main rejects our token (401 — the
 	// device was revoked/hard-deleted on main), wipe the local provisioning
@@ -269,10 +320,25 @@ func main() {
 	appUpdater := appupdate.New(filepath.Join(filepath.Dir(cfg.AgentDBPath), "apk"), orderRepo, mainClient, sseCtrl.CurrentKey, logger)
 	appUpdater.Load(ctx)
 	go appUpdater.Run(ctx, 5*time.Minute)
+	recoverySvc := recovery.New(settingsRepo, orderRepo, mainClient, logger)
+	recoverySvc.OnSecrets = func(sec order.Secrets) {
+		if cfg.PushoverAppToken == "" && cfg.PushoverUserKey == "" {
+			notifier.SetKeys(sec.PushoverAppToken, sec.PushoverUserKey, sec.PushoverBossKey)
+		}
+	}
 	sseCtrl.OnConnected(func() {
-		catchupHook()
+		stateSync.Reset()
+		heartbeat.Wake()
 		appUpdater.Wake()
+		if _, err := recoverySvc.RefreshManagerHash(ctx); err != nil {
+			logger.Debug().Err(err).Msg("manager login refresh failed")
+		}
+		catchupHook()
 	})
+	// Reconciliation: a quiet catch-up pass every minute while connected.
+	go catchup.Reconcile(ctx, time.Minute, func(rc context.Context, path, rawQuery string) (int, []byte, error) {
+		return mainClient.Get(rc, sseCtrl.CurrentKey(), path, rawQuery)
+	}, orderService, orderRepo, func() bool { return sseCtrl.Status().Connected }, logger)
 	mainClient.SetOnUnauthorized(wipeProvisioning)
 
 	// … and the agent pushes it proactively: on every store_config apply (the
@@ -339,7 +405,35 @@ func main() {
 		}
 		return mainClient.PostRPC(rc, k, body)
 	}, logger, meters)
-	orderService.OnFloorEvent(floorSender.Wake)
+	orderService.OnFloorEvent(func() {
+		floorSender.Wake()
+		stateSync.Wake()
+	})
+
+	storeTZ := func() *time.Location {
+		sc, _ := storeCtx.Load().(storeconfig.StoreContext)
+		if l, err := time.LoadLocation(sc.Location.Timezone); err == nil && sc.Location.Timezone != "" {
+			return l
+		}
+		return time.Local
+	}
+	nightly := backup.New(db, cfg.AgentDBPath, func(rc context.Context, path string, body []byte, ct string) (int, []byte, error) {
+		return mainClient.Upload(rc, sseCtrl.CurrentKey(), path, body, ct)
+	}, settingsRepo, sseCtrl.Configured, storeTZ, logger)
+	go nightly.Run(ctx)
+
+	// Manager-login link (headless SD swap). A Pi that was linked without
+	// telemetry restarts once so the OTEL exporters pick up the endpoint.
+	restart := atomic.Bool{}
+	httpServer.SetRecovery(recoverySvc, func(out *recovery.Outcome) {
+		stateSync.Reset()
+		if os.Getenv("AGENT_SELF_RESTART") == "1" && cfg.OTELEndpoint == "" && out.Secrets.OTLPEndpoint != "" {
+			logger.Info().Msg("linked: restarting in 3 s to start telemetry")
+			time.Sleep(3 * time.Second)
+			restart.Store(true)
+			cancel()
+		}
+	})
 
 	resetAccess := httpServer.ResetAccess
 	onWipe.Store(&resetAccess)
@@ -347,16 +441,29 @@ func main() {
 	go retention.Run(ctx, orderRepo, cfg.KeepBatches, logger, meters)
 	go floorSender.Run(ctx)
 	go escalation.Run(ctx, orderService, logger)
-	go driverreset.Run(ctx, orderService, func() *time.Location {
-		sc, _ := storeCtx.Load().(storeconfig.StoreContext)
-		if l, err := time.LoadLocation(sc.Location.Timezone); err == nil && sc.Location.Timezone != "" {
-			return l
-		}
-		return time.Local
-	}, logger)
+	go driverreset.Run(ctx, orderService, storeTZ, logger)
 
 	<-ctx.Done()
 	logger.Info().Msg("Agent shut down")
+	if restart.Load() {
+		_ = shutdownOtel(context.Background())
+		db.Close()
+		os.Exit(75) // systemd Restart=always brings it back with the new settings
+	}
+}
+
+// applyLinkedSecrets fills empty config from the secrets a manager-login link
+// stored (env wins).
+func applyLinkedSecrets(cfg *config.Config, sec order.Secrets) {
+	if cfg.OTELEndpoint == "" && sec.OTLPEndpoint != "" {
+		cfg.OTELEndpoint = sec.OTLPEndpoint
+		if os.Getenv("OTEL_EXPORTER_OTLP_HEADERS") == "" && sec.OTLPHeaders != "" {
+			_ = os.Setenv("OTEL_EXPORTER_OTLP_HEADERS", sec.OTLPHeaders)
+		}
+	}
+	if cfg.PushoverAppToken == "" && cfg.PushoverUserKey == "" {
+		cfg.PushoverAppToken, cfg.PushoverUserKey, cfg.PushoverBossKey = sec.PushoverAppToken, sec.PushoverUserKey, sec.PushoverBossKey
+	}
 }
 
 // rpcReplyPoster sends duplex-channel envelopes to main using the agent's

@@ -641,3 +641,33 @@ func TestCloseBatchClocksOutDriversWhoWereOutDuringTheReset(t *testing.T) {
 		t.Fatalf("Sam's shift began before the reset — close batch clocks him out, got %s", ds[0].Status)
 	}
 }
+
+// TestInterruptedAcceptIsFound: a claim without a recorded accept (the agent
+// died mid-print) is listed for the startup sweep; a recorded one isn't, and
+// neither is a restored order.
+func TestInterruptedAcceptIsFound(t *testing.T) {
+	ctx := context.Background()
+	r := newFloorRepo(t)
+	done := accept(t, r, arrive(t, r, "pickup")) // claim + record
+	cut := arrive(t, r, "pickup")
+	if _, err := r.ClaimAccept(ctx, uuid.MustParse(cut.Order.ID), 20); err != nil {
+		t.Fatal(err)
+	}
+	ids, err := r.ListInterruptedAccepts(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ids) != 1 || ids[0] != cut.Order.ID {
+		t.Fatalf("interrupted %v, want only %s (not %s)", ids, cut.Order.ID, done.Order.ID)
+	}
+	if err := r.RevertAccept(ctx, uuid.MustParse(cut.Order.ID)); err != nil {
+		t.Fatal(err)
+	}
+	if ids, _ := r.ListInterruptedAccepts(ctx); len(ids) != 0 {
+		t.Fatalf("after revert: %v", ids)
+	}
+	got, _ := r.GetByID(ctx, uuid.MustParse(cut.Order.ID))
+	if got.Status.State != order.StateArrived || got.Status.KitchenNumber == nil {
+		t.Fatalf("reverted order %+v (kitchen number is kept for the re-accept)", got.Status)
+	}
+}

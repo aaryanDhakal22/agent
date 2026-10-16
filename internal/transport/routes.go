@@ -43,8 +43,9 @@ func (s *Server) routes() []routeDef {
 		// (setup/token only when unconfigured, setup/password only when
 		// needs_password) so they can't be driven out of order.
 		{"POST", "/api/setup/token", "none", "Provision: verify + link an admin-minted token", s.handleSetupToken},
+		{"POST", "/api/setup/link", "none", "Provision: link a blank Pi with the store manager login (restores the open batch, pairs the calling tablet)", s.handleSetupLink},
 		{"POST", "/api/setup/password", "none", "Provision: set the local UI password (+optional hint), issue a session", s.handleSetupPassword},
-		{"POST", "/api/login", "none", "Unlock the web UI with the local password", s.handleLogin},
+		{"POST", "/api/login", "none", "Unlock the web UI with the local password (or the manager login on a linked Pi)", s.handleLogin},
 		{"POST", "/api/logout", "none", "Clear the web-UI session cookie", s.handleLogout},
 		{"GET", "/api/hint", "none", "The password hint (for the login 'Hint?' link)", s.handleHint},
 		{"GET", "/api/session", "none", "Provisioning state (unconfigured|needs_password|locked|ready) + SSE health", s.handleSession},

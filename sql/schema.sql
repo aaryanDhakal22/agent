@@ -31,6 +31,8 @@ CREATE TABLE orders (
     last_alert_at      text,
     -- 00005_cancelled: never-accepted orders cancelled by Close batch.
     cancelled_at       text,
+    -- 00009_accept_pending: claimed for accept, not yet recorded.
+    accept_pending     integer NOT NULL DEFAULT 0,
     CHECK (state IN ('arrived', 'accepted', 'ready', 'on_delivery', 'delivered', 'cancelled'))
 );
 CREATE INDEX idx_orders_arrival_date ON orders (arrival_date DESC);
@@ -107,6 +109,16 @@ CREATE TABLE settings (
     last_return_position  integer NOT NULL DEFAULT 0,
     last_return_at        text    NOT NULL DEFAULT '',
     app_release           text    NOT NULL DEFAULT '',
+    -- 00008_link_restore: secrets from main (manager-login link), the manager
+    -- username, this agent's device id, the last nightly backup upload.
+    secret_pushover_app_token text NOT NULL DEFAULT '',
+    secret_pushover_user_key  text NOT NULL DEFAULT '',
+    secret_pushover_boss_key  text NOT NULL DEFAULT '',
+    secret_otlp_endpoint      text NOT NULL DEFAULT '',
+    secret_otlp_headers       text NOT NULL DEFAULT '',
+    manager_username          text NOT NULL DEFAULT '',
+    device_id                 text NOT NULL DEFAULT '',
+    last_backup_at            text NOT NULL DEFAULT '',
     CHECK (id = 1)
 );
 

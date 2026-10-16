@@ -67,6 +67,7 @@ type Order struct {
 	DriverName       string         `json:"driver_name"`
 	LastAlertAt      sql.NullString `json:"last_alert_at"`
 	CancelledAt      sql.NullString `json:"cancelled_at"`
+	AcceptPending    int64          `json:"accept_pending"`
 }
 
 type PairedDevice struct {
@@ -80,23 +81,31 @@ type PairedDevice struct {
 }
 
 type Setting struct {
-	ID                 int64  `json:"id"`
-	AutoAccept         bool   `json:"auto_accept"`
-	StoreApiKey        string `json:"store_api_key"`
-	UpdatedAt          string `json:"updated_at"`
-	SessionSecret      string `json:"session_secret"`
-	UiPasswordHash     string `json:"ui_password_hash"`
-	UiPasswordHint     string `json:"ui_password_hint"`
-	KitchenNext        int64  `json:"kitchen_next"`
-	LastPrepMinutes    int64  `json:"last_prep_minutes"`
-	DriverResetTime    string `json:"driver_reset_time"`
-	LastDriverResetAt  string `json:"last_driver_reset_at"`
-	GreenTillMinutes   int64  `json:"green_till_minutes"`
-	TipTaxBps          int64  `json:"tip_tax_bps"`
-	LastReturnDriverID string `json:"last_return_driver_id"`
-	LastReturnPosition int64  `json:"last_return_position"`
-	LastReturnAt       string `json:"last_return_at"`
-	AppRelease         string `json:"app_release"`
+	ID                     int64  `json:"id"`
+	AutoAccept             bool   `json:"auto_accept"`
+	StoreApiKey            string `json:"store_api_key"`
+	UpdatedAt              string `json:"updated_at"`
+	SessionSecret          string `json:"session_secret"`
+	UiPasswordHash         string `json:"ui_password_hash"`
+	UiPasswordHint         string `json:"ui_password_hint"`
+	KitchenNext            int64  `json:"kitchen_next"`
+	LastPrepMinutes        int64  `json:"last_prep_minutes"`
+	DriverResetTime        string `json:"driver_reset_time"`
+	LastDriverResetAt      string `json:"last_driver_reset_at"`
+	GreenTillMinutes       int64  `json:"green_till_minutes"`
+	TipTaxBps              int64  `json:"tip_tax_bps"`
+	LastReturnDriverID     string `json:"last_return_driver_id"`
+	LastReturnPosition     int64  `json:"last_return_position"`
+	LastReturnAt           string `json:"last_return_at"`
+	AppRelease             string `json:"app_release"`
+	SecretPushoverAppToken string `json:"secret_pushover_app_token"`
+	SecretPushoverUserKey  string `json:"secret_pushover_user_key"`
+	SecretPushoverBossKey  string `json:"secret_pushover_boss_key"`
+	SecretOtlpEndpoint     string `json:"secret_otlp_endpoint"`
+	SecretOtlpHeaders      string `json:"secret_otlp_headers"`
+	ManagerUsername        string `json:"manager_username"`
+	DeviceID               string `json:"device_id"`
+	LastBackupAt           string `json:"last_backup_at"`
 }
 
 type StoreConfig struct {

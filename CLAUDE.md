@@ -324,6 +324,31 @@ nginx :80) — the switch is in `../CUTOVER.md`; never run both agents at once.
   (sha256-checked) to `<db dir>/apk/`, serves `/api/app/latest` + `/api/app/apk`.
   Version codes are Unix seconds.
 
+## Headless recovery + delivery guarantee (2026-10-16)
+
+- **Manager-login link** (`application/recovery`, `POST /api/setup/link`): the
+  normal provisioning path now. main mints the key, revokes older agents and
+  hands secrets + the manager bcrypt hash; the open batch is restored
+  (`RecoveryRepository.Restore`, one tx, blank DB only) **before** the key is
+  stored. The Tailscale key goes to `/var/lib/quicc-agent/tailscale.key`, never
+  the DB. Linked agents unlock the web UI with the manager login
+  (`settings.manager_username`; hash refreshed from main on connect and once on
+  a failed login); local password change answers 409 `manager_login`.
+- **Secrets in SQLite** (`settings.secret_*`) are applied at startup **before**
+  `observability.Setup` (that's why the DB now opens first) — env always wins.
+- **Acks** (`application/acker`): `orderService.OnStored` fires for new AND
+  duplicate arrivals; main re-sends until acked. **Reconciliation**:
+  `catchup.Reconcile` every 60 s while connected.
+- **State + health** (`application/statesync`, `application/health`): RPC reports
+  `agent.state` / `agent.health`; `OnFloorEvent` wakes both floor sync and
+  state sync. **Nightly backup** (`application/backup`): `VACUUM INTO` → main.
+- **`accept_pending`** (migration `00009`): set by ClaimAccept, cleared with the
+  accepted floor event in one tx (`RecordAccepted`); `RecoverInterruptedAccepts`
+  at startup reverts leftovers to `arrived` (they ring again).
+- Tests: `repositories/recovery_repo_test.go` (swap at repo level),
+  `tests/test_link.py`; the full mid-shift swap is the root `tests/test_swap.py`
+  and the delivery torture is `task test-torture` (root).
+
 ## Printing (station tickets + receipt)
 
 main stamps `printer_id` + `routing` on each line item at ingest; the agent

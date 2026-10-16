@@ -52,6 +52,7 @@ type Service struct {
 	// onFloorEvent is called after every committed floor change so the sync
 	// sender pushes it to main right away (set via OnFloorEvent).
 	onFloorEvent func()
+	onStored     func(orderID string)
 	// Driver-report printing (SetDocumentPrinting).
 	printDoc    DocPrinter
 	buildReport ReportBuilder
@@ -214,6 +215,32 @@ func (s *Service) Accept(ctx context.Context, id uuid.UUID, prepMinutes *int) (*
 	s.alertPrintIssues(ctx, so.Order, out, true)
 	s.publishUpdated(*so)
 	return so, nil
+}
+
+// RecoverInterruptedAccepts runs once at startup: an order claimed for accept
+// whose accept was never recorded (power cut / crash mid-print) goes back to
+// arrived so it rings again — better a second ticket than none. Returns how
+// many were put back.
+func (s *Service) RecoverInterruptedAccepts(ctx context.Context) int {
+	ids, err := s.repo.ListInterruptedAccepts(ctx)
+	if err != nil {
+		s.logger.Error().Ctx(ctx).Err(err).Msg("Interrupted-accept check failed")
+		return 0
+	}
+	n := 0
+	for _, raw := range ids {
+		id, err := uuid.Parse(raw)
+		if err != nil {
+			continue
+		}
+		if err := s.repo.RevertAccept(ctx, id); err != nil {
+			s.logger.Error().Ctx(ctx).Err(err).Str("order_id", raw).Msg("Failed to put an interrupted accept back")
+			continue
+		}
+		n++
+		s.logger.Warn().Ctx(ctx).Str("order_id", raw).Msg("Accept was interrupted (agent stopped mid-print) — order rings again")
+	}
+	return n
 }
 
 // ErrBadRequest marks caller-input errors (mapped to 400 by the transport).
@@ -394,8 +421,16 @@ func (s *Service) storeArrived(ctx context.Context, snap order.Snapshot) (bool, 
 		result = "duplicate"
 	}
 	s.meters.OrdersStored.Add(ctx, 1, metric.WithAttributes(attribute.String("result", result)))
+	// Ack every stored order — a redelivery too (main re-sends until acked).
+	if s.onStored != nil {
+		s.onStored(snap.ID)
+	}
 	return inserted, nil
 }
+
+// OnStored registers the hook run after an order is safely stored (new or
+// already held) — cmd/main.go wires the acker.
+func (s *Service) OnStored(fn func(orderID string)) { s.onStored = fn }
 
 func (s *Service) broadcastArrived(ctx context.Context, so order.StoredOrder) {
 	if s.broker == nil {

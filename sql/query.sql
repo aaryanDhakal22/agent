@@ -37,7 +37,8 @@ SET state              = 'accepted',
     accepted_at        = sqlc.arg(now),
     prep_minutes       = sqlc.arg(prep_minutes),
     estimated_ready_at = sqlc.arg(estimated_ready_at),
-    kitchen_number     = COALESCE(kitchen_number, sqlc.arg(kitchen_number))
+    kitchen_number     = COALESCE(kitchen_number, sqlc.arg(kitchen_number)),
+    accept_pending     = 1
 WHERE id = sqlc.arg(id) AND state = 'arrived';
 
 -- name: RevertAccept :exec
@@ -46,8 +47,16 @@ UPDATE orders
 SET state              = 'arrived',
     printed_date       = NULL,
     accepted_at        = NULL,
-    estimated_ready_at = NULL
+    estimated_ready_at = NULL,
+    accept_pending     = 0
 WHERE id = ? AND state = 'accepted';
+
+-- name: ClearAcceptPending :exec
+UPDATE orders SET accept_pending = 0 WHERE id = ?;
+
+-- name: ListInterruptedAccepts :many
+-- Claimed but never recorded: the agent stopped between claim and record.
+SELECT id FROM orders WHERE state = 'accepted' AND accept_pending = 1;
 
 -- name: MarkReady :execrows
 UPDATE orders SET state = 'ready', ready_at = ?
@@ -342,6 +351,8 @@ UPDATE settings SET last_prep_minutes = ? WHERE id = 1;
 -- in one statement, back to the blank "paste a token" state.
 UPDATE settings
 SET store_api_key = '', ui_password_hash = '', ui_password_hint = '',
+    secret_pushover_app_token = '', secret_pushover_user_key = '', secret_pushover_boss_key = '',
+    secret_otlp_endpoint = '', secret_otlp_headers = '', manager_username = '', device_id = '',
     updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
 WHERE id = 1;
 
@@ -356,3 +367,53 @@ VALUES (1, ?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 ON CONFLICT (id) DO UPDATE SET
     context    = excluded.context,
     updated_at = excluded.updated_at;
+
+-- Link + restore (00008) --------------------------------------------------------
+
+-- name: SetLinkInfo :exec
+UPDATE settings
+SET secret_pushover_app_token = ?, secret_pushover_user_key = ?, secret_pushover_boss_key = ?,
+    secret_otlp_endpoint = ?, secret_otlp_headers = ?,
+    manager_username = ?, device_id = ?, ui_password_hash = ?, ui_password_hint = ?
+WHERE id = 1;
+
+-- name: GetLinkInfo :one
+SELECT secret_pushover_app_token, secret_pushover_user_key, secret_pushover_boss_key,
+       secret_otlp_endpoint, secret_otlp_headers, manager_username, device_id
+FROM settings WHERE id = 1;
+
+-- name: SetManagerPasswordHash :exec
+UPDATE settings SET ui_password_hash = ? WHERE id = 1;
+
+-- name: GetLastBackup :one
+SELECT last_backup_at FROM settings WHERE id = 1;
+
+-- name: SetLastBackup :exec
+UPDATE settings SET last_backup_at = ? WHERE id = 1;
+
+-- name: CountAllOrders :one
+SELECT count(*) FROM orders;
+
+-- name: CountAllDrivers :one
+SELECT count(*) FROM drivers;
+
+-- name: DeleteAllBatches :exec
+DELETE FROM batches;
+
+-- name: InsertBatchWithID :exec
+INSERT INTO batches (id, opened_at) VALUES (?, ?);
+
+-- name: RestoreOrder :exec
+INSERT INTO orders (id, tenant_id, location_id, source, source_event_id, snapshot, state, arrival_date,
+                    printed_date, batch_id, kitchen_number, prep_minutes, estimated_ready_at, accepted_at,
+                    ready_at, out_at, delivered_at, driver_id, driver_name, cancelled_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+
+-- name: RestoreDriver :exec
+INSERT INTO drivers (id, name, active, position, status, last_returned_at) VALUES (?, ?, true, ?, ?, ?);
+
+-- name: RestoreShift :exec
+INSERT INTO driver_shifts (id, driver_id, driver_name, batch_id, clock_in) VALUES (?, ?, ?, ?, ?);
+
+-- name: SetKitchenCounters :exec
+UPDATE settings SET kitchen_next = ?, last_prep_minutes = ? WHERE id = 1;

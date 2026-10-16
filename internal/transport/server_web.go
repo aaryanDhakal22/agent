@@ -1,16 +1,16 @@
 package transport
 
 import (
-	"net"
-	"sync"
 	"context"
-	"time"
-	"strconv"
 	"encoding/json"
 	"errors"
 	"io/fs"
+	"net"
 	"net/http"
+	"strconv"
 	"strings"
+	"sync"
+	"time"
 
 	"quiccpos/agent/internal/domain/order"
 	"quiccpos/agent/internal/transport/web"
@@ -179,6 +179,7 @@ func (s *Server) handleSetupPassword(w http.ResponseWriter, r *http.Request) {
 }
 
 type passwordLoginDTO struct {
+	Username string `json:"username"`
 	Password string `json:"password"`
 }
 
@@ -212,7 +213,17 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		s.writeJSON(w, http.StatusTooManyRequests, errCodeMap("Too many wrong passwords — wait a minute and try again.", "too_many_attempts"))
 		return
 	}
-	if bcrypt.CompareHashAndPassword([]byte(hash), []byte(body.Password)) != nil {
+	ok := s.loginUsernameOK(r, body.Username) && bcrypt.CompareHashAndPassword([]byte(hash), []byte(body.Password)) == nil
+	if !ok && s.recovery != nil {
+		// The manager may have changed the password in main since the last
+		// sync: refresh the hash once (online only) and try again.
+		if changed, _ := s.recovery.RefreshManagerHash(ctx); changed {
+			if h, _, err := s.settings.GetUIPassword(ctx); err == nil {
+				ok = s.loginUsernameOK(r, body.Username) && bcrypt.CompareHashAndPassword([]byte(h), []byte(body.Password)) == nil
+			}
+		}
+	}
+	if !ok {
 		s.logins.fail(ip, time.Now())
 		s.writeJSON(w, http.StatusUnauthorized, errCodeMap("Incorrect password.", "invalid_password"))
 		return
@@ -242,6 +253,10 @@ func (s *Server) handleHint(w http.ResponseWriter, r *http.Request) {
 // password after verifying the current one. The optional hint is replaced too.
 func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
+	if li, err := s.settings.GetLinkInfo(ctx); err == nil && li.ManagerUsername != "" {
+		s.writeJSON(w, http.StatusConflict, errCodeMap("This Pi unlocks with the store manager login — change that password in the manager dashboard (Store → Login).", "manager_login"))
+		return
+	}
 	hash, _, err := s.settings.GetUIPassword(ctx)
 	if err != nil {
 		s.writeError(w, r, http.StatusInternalServerError, err)
@@ -355,9 +370,12 @@ func (s *Server) handleSession(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	li, _ := s.settings.GetLinkInfo(ctx)
 	s.writeJSON(w, http.StatusOK, map[string]any{
 		"state":               state,
 		"has_hint":            hint != "",
+		"manager_login":       li.ManagerUsername != "",
+		"link_available":      s.recovery != nil,
 		"sse_state":           sseState,
 		"sse_connected":       st.Connected,
 		"sse_reconnects":      st.Reconnects,

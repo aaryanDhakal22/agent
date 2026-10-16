@@ -60,6 +60,14 @@ func (c *Client) Download(ctx context.Context, key, path, rawQuery string) (int,
 	return c.doWith(&http.Client{Transport: c.http.Transport}, ctx, http.MethodGet, key, path, rawQuery, nil)
 }
 
+// Upload POSTs a large binary body (a nightly SQLite backup) with the long
+// download timeout.
+func (c *Client) Upload(ctx context.Context, key, path string, body []byte, contentType string) (int, []byte, error) {
+	ctx, cancel := context.WithTimeout(ctx, downloadTimeout)
+	defer cancel()
+	return c.doWithType(&http.Client{Transport: c.http.Transport}, ctx, http.MethodPost, key, path, "", body, contentType)
+}
+
 // Get proxies an authenticated GET to main, returning the upstream status and
 // raw body so the agent handler can relay both verbatim. path is a main-side
 // path like "/api/v1/orders"; rawQuery is the already-encoded query string.
@@ -91,6 +99,10 @@ func (c *Client) do(ctx context.Context, method, key, path, rawQuery string, bod
 }
 
 func (c *Client) doWith(hc *http.Client, ctx context.Context, method, key, path, rawQuery string, body []byte) (int, []byte, error) {
+	return c.doWithType(hc, ctx, method, key, path, rawQuery, body, "application/json")
+}
+
+func (c *Client) doWithType(hc *http.Client, ctx context.Context, method, key, path, rawQuery string, body []byte, contentType string) (int, []byte, error) {
 	url := c.baseURL + path
 	if rawQuery != "" {
 		url += "?" + rawQuery
@@ -105,7 +117,7 @@ func (c *Client) doWith(hc *http.Client, ctx context.Context, method, key, path,
 	}
 	req.Header.Set(storeAPIKeyHeader, key)
 	if body != nil {
-		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Content-Type", contentType)
 	}
 
 	resp, err := hc.Do(req)
