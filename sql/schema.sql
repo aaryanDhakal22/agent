@@ -99,6 +99,14 @@ CREATE TABLE settings (
     -- 00006_driver_shifts: daily driver clock-out time (location-local HH:MM).
     driver_reset_time    text NOT NULL DEFAULT '10:00',
     last_driver_reset_at text NOT NULL DEFAULT '',
+    -- 00007_floor_settings: ticket lateness + driver-report tip tax, the last
+    -- driver return (undo), and the cached tablet app release (JSON).
+    green_till_minutes    integer NOT NULL DEFAULT 20,
+    tip_tax_bps           integer NOT NULL DEFAULT 600,
+    last_return_driver_id text    NOT NULL DEFAULT '',
+    last_return_position  integer NOT NULL DEFAULT 0,
+    last_return_at        text    NOT NULL DEFAULT '',
+    app_release           text    NOT NULL DEFAULT '',
     CHECK (id = 1)
 );
 

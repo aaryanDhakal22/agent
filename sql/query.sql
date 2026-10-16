@@ -204,6 +204,43 @@ UPDATE settings SET driver_reset_time = ? WHERE id = 1;
 -- name: SetLastDriverReset :exec
 UPDATE settings SET last_driver_reset_at = ? WHERE id = 1;
 
+-- name: GetFloorPrefs :one
+SELECT green_till_minutes, tip_tax_bps FROM settings WHERE id = 1;
+
+-- name: SetFloorPrefs :exec
+UPDATE settings SET green_till_minutes = ?, tip_tax_bps = ? WHERE id = 1;
+
+-- name: SetLastReturn :exec
+UPDATE settings SET last_return_driver_id = ?, last_return_position = ?, last_return_at = ? WHERE id = 1;
+
+-- name: GetLastReturn :one
+SELECT last_return_driver_id, last_return_position, last_return_at FROM settings WHERE id = 1;
+
+-- name: SetDriverOutAt :execrows
+-- Undo a mistaken return: back out on the run, at its old queue position.
+UPDATE drivers SET status = 'out', position = ? WHERE id = ? AND active AND status = 'available';
+
+-- name: GetAppRelease :one
+SELECT app_release FROM settings WHERE id = 1;
+
+-- name: SetAppRelease :exec
+UPDATE settings SET app_release = ? WHERE id = 1;
+
+-- name: GetBatch :one
+SELECT * FROM batches WHERE id = ?;
+
+-- name: ListBatchDeliveries :many
+-- Driver report: delivered orders of a batch that went out with a driver.
+SELECT * FROM orders
+WHERE batch_id = ? AND state = 'delivered' AND driver_id IS NOT NULL
+ORDER BY delivered_at ASC, kitchen_number ASC;
+
+-- name: ListShiftsOverlapping :many
+-- Driver report: shifts that overlap a batch window (opened_at .. closed_at).
+SELECT * FROM driver_shifts
+WHERE clock_in <= sqlc.arg(window_end) AND (clock_out IS NULL OR clock_out >= sqlc.arg(window_start))
+ORDER BY clock_in ASC;
+
 -- name: CountDeliveriesInBatch :many
 SELECT driver_id, count(*) AS deliveries FROM orders
 WHERE batch_id = ? AND driver_id IS NOT NULL

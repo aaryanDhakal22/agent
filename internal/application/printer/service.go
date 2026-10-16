@@ -166,6 +166,27 @@ func (s *Service) PrintWith(ctx context.Context, snap order.Snapshot, build Rece
 	return nil
 }
 
+// PrintBytes prints a prepared ESC/POS job that isn't an order (a driver
+// report): detect, then write. label names the job in logs and spans.
+func (s *Service) PrintBytes(ctx context.Context, label string, commands []byte) error {
+	nameAttr := attribute.String("printer.name", s.printer.Name())
+	ctx, span := s.tracer.Start(ctx, "printer.print_document",
+		trace.WithAttributes(nameAttr, attribute.String("job", label), attribute.Int("receipt.bytes", len(commands))))
+	defer span.End()
+	if err := s.printer.Detect(ctx); err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "detect failed")
+		return fmt.Errorf("%w: %w", ErrPrinterUnreachable, err)
+	}
+	if err := s.printer.Print(ctx, printer.PrintJob{Commands: commands}); err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "print failed")
+		return err
+	}
+	s.logger.Info().Ctx(ctx).Str("job", label).Msg("Document printed")
+	return nil
+}
+
 // Name exposes the underlying printer's name for telemetry labels.
 func (s *Service) Name() string {
 	return s.printer.Name()

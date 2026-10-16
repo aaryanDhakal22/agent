@@ -3,10 +3,15 @@ package transport
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
+	"math"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strconv"
 	"time"
 
+	"quiccpos/agent/internal/application/appupdate"
 	orderApp "quiccpos/agent/internal/application/order"
 	"quiccpos/agent/internal/domain/device"
 	"quiccpos/agent/internal/domain/order"
@@ -290,6 +295,94 @@ func (s *Server) handleCloseBatch(w http.ResponseWriter, r *http.Request) {
 	s.writeJSON(w, http.StatusOK, map[string]any{"closed": closed, "opened": opened.Batch, "auto_finished": finished})
 }
 
+// POST /api/drivers/{id}/undo-return — 409 invalid_state when it isn't the
+// latest return, is older than 10 min, or the driver moved on since.
+func (s *Server) handleUndoReturn(w http.ResponseWriter, r *http.Request) {
+	d, err := s.service.UndoReturn(r.Context(), r.PathValue("id"))
+	if err != nil {
+		s.floorErr(w, r, err)
+		return
+	}
+	s.writeJSON(w, http.StatusOK, d)
+}
+
+// batchParam reads the {id} path value ("current" or 0 = the open batch).
+func batchParam(r *http.Request) (int64, error) {
+	v := r.PathValue("id")
+	if v == "current" || v == "open" {
+		return 0, nil
+	}
+	id, err := strconv.ParseInt(v, 10, 64)
+	if err != nil || id < 0 {
+		return 0, fmt.Errorf("%w: batch id must be a number or 'current'", orderApp.ErrBadRequest)
+	}
+	return id, nil
+}
+
+// GET /api/batches/{id}/driver-reports
+func (s *Server) handleDriverReports(w http.ResponseWriter, r *http.Request) {
+	id, err := batchParam(r)
+	if err != nil {
+		s.floorErr(w, r, err)
+		return
+	}
+	reps, err := s.service.DriverReports(r.Context(), id)
+	if err != nil {
+		s.floorErr(w, r, err)
+		return
+	}
+	if reps == nil {
+		reps = []order.DriverReport{}
+	}
+	s.writeJSON(w, http.StatusOK, reps)
+}
+
+// POST /api/batches/{id}/driver-reports/print → {printed:[...], failed:[...]};
+// 502 nothing_printed when no slip printed at all.
+func (s *Server) handlePrintDriverReports(w http.ResponseWriter, r *http.Request) {
+	id, err := batchParam(r)
+	if err != nil {
+		s.floorErr(w, r, err)
+		return
+	}
+	res, err := s.service.PrintDriverReports(r.Context(), id)
+	if err != nil {
+		s.floorErr(w, r, err)
+		return
+	}
+	printed, failed := []orderApp.ReportPrint{}, []orderApp.ReportPrint{}
+	for _, p := range res {
+		if p.Err != "" {
+			failed = append(failed, p)
+		} else {
+			printed = append(printed, p)
+		}
+	}
+	if len(res) > 0 && len(printed) == 0 {
+		s.writeJSON(w, http.StatusBadGateway, map[string]any{"error": "no driver report printed", "code": "nothing_printed", "failed": failed})
+		return
+	}
+	s.writeJSON(w, http.StatusOK, map[string]any{"printed": printed, "failed": failed})
+}
+
+// PUT /api/settings/floor {green_till_minutes, tip_tax_percent} (session).
+func (s *Server) handleSetFloorPrefs(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		GreenTillMinutes int64   `json:"green_till_minutes"`
+		TipTaxPercent    float64 `json:"tip_tax_percent"`
+	}
+	if err := decodeBody(r, &req); err != nil {
+		s.floorErr(w, r, err)
+		return
+	}
+	p := order.FloorPrefs{GreenTillMinutes: req.GreenTillMinutes, TipTaxBps: int64(math.Round(req.TipTaxPercent * 100))}
+	if err := s.service.SetFloorPrefs(r.Context(), p); err != nil {
+		s.floorErr(w, r, err)
+		return
+	}
+	s.writeJSON(w, http.StatusOK, map[string]any{"green_till_minutes": p.GreenTillMinutes, "tip_tax_percent": float64(p.TipTaxBps) / 100})
+}
+
 // parseBatch reads ?batch=current|all|<id> (default current).
 func parseBatch(r *http.Request) (all bool, id int64, ok bool) {
 	switch v := r.URL.Query().Get("batch"); v {
@@ -301,4 +394,38 @@ func parseBatch(r *http.Request) (all bool, id int64, ok bool) {
 		n, err := strconv.ParseInt(v, 10, 64)
 		return false, n, err == nil && n > 0
 	}
+}
+
+// GET /api/app/latest — the cached Quibase release, or 204.
+func (s *Server) handleAppLatest(w http.ResponseWriter, r *http.Request) {
+	var cur *appupdate.Release
+	if s.apps != nil {
+		cur = s.apps.Current()
+	}
+	if cur == nil {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	s.writeJSON(w, http.StatusOK, cur)
+}
+
+// GET /api/app/apk — the cached APK (Range supported).
+func (s *Server) handleAppAPK(w http.ResponseWriter, r *http.Request) {
+	var cur *appupdate.Release
+	if s.apps != nil {
+		cur = s.apps.Current()
+	}
+	if cur == nil {
+		s.writeJSON(w, http.StatusNotFound, errCodeMap("no app release cached", "not_found"))
+		return
+	}
+	f, err := os.Open(s.apps.Path(*cur))
+	if err != nil {
+		s.writeJSON(w, http.StatusNotFound, errCodeMap("cached APK missing", "not_found"))
+		return
+	}
+	defer f.Close()
+	w.Header().Set("Content-Type", "application/vnd.android.package-archive")
+	w.Header().Set("X-Sha256", cur.SHA256)
+	http.ServeContent(w, r, filepath.Base(f.Name()), cur.CreatedAt, f)
 }

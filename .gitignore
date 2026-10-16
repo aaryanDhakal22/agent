@@ -55,3 +55,6 @@ Thumbs.db
 # Python test caches.
 __pycache__/
 *.pyc
+
+# Quibase APKs cached by dev roster agents (next to their DBs)
+sql/apk/

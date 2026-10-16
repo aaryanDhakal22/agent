@@ -33,11 +33,15 @@ type Querier interface {
 	DeleteOrdersOutsideKeptBatches(ctx context.Context, limit int64) (int64, error)
 	// Close-batch auto-finish: force an order to its terminal state.
 	FinishOrder(ctx context.Context, arg FinishOrderParams) error
+	GetAppRelease(ctx context.Context) (string, error)
 	// Settings -----------------------------------------------------------------
 	GetAutoAccept(ctx context.Context) (bool, error)
+	GetBatch(ctx context.Context, id int64) (Batch, error)
 	GetDriver(ctx context.Context, id string) (Driver, error)
 	GetDriverReset(ctx context.Context) (GetDriverResetRow, error)
+	GetFloorPrefs(ctx context.Context) (GetFloorPrefsRow, error)
 	GetFloorSettings(ctx context.Context) (GetFloorSettingsRow, error)
+	GetLastReturn(ctx context.Context) (GetLastReturnRow, error)
 	// Batches -------------------------------------------------------------------
 	GetOpenBatch(ctx context.Context) (Batch, error)
 	GetOpenShift(ctx context.Context, driverID string) (DriverShift, error)
@@ -54,6 +58,8 @@ type Querier interface {
 	ListActiveDrivers(ctx context.Context) ([]Driver, error)
 	ListArrivedOrders(ctx context.Context) ([]Order, error)
 	ListAvailableDrivers(ctx context.Context) ([]Driver, error)
+	// Driver report: delivered orders of a batch that went out with a driver.
+	ListBatchDeliveries(ctx context.Context, batchID int64) ([]Order, error)
 	// Orders of a batch that aren't finished: finished = delivered or cancelled,
 	// or ready for a non-delivery order.
 	ListBatchLeftovers(ctx context.Context, batchID int64) ([]Order, error)
@@ -65,6 +71,8 @@ type Querier interface {
 	// Arrived orders older than the cutoff that haven't been alerted since the cutoff.
 	ListOverdueArrived(ctx context.Context, cutoff string) ([]Order, error)
 	ListPairedDevices(ctx context.Context) ([]PairedDevice, error)
+	// Driver report: shifts that overlap a batch window (opened_at .. closed_at).
+	ListShiftsOverlapping(ctx context.Context, arg ListShiftsOverlappingParams) ([]DriverShift, error)
 	ListShiftsSince(ctx context.Context, clockIn string) ([]DriverShift, error)
 	ListUnsyncedFloorEvents(ctx context.Context, limit int64) ([]FloorEvent, error)
 	MarkAlerted(ctx context.Context, arg MarkAlertedParams) error
@@ -87,15 +95,20 @@ type Querier interface {
 	RevertAccept(ctx context.Context, id string) error
 	RevokeAllPairedDevices(ctx context.Context, revokedAt sql.NullString) error
 	RevokePairedDevice(ctx context.Context, arg RevokePairedDeviceParams) (int64, error)
+	SetAppRelease(ctx context.Context, appRelease string) error
 	SetAutoAccept(ctx context.Context, autoAccept bool) error
 	SetDriverOut(ctx context.Context, id string) error
+	// Undo a mistaken return: back out on the run, at its old queue position.
+	SetDriverOutAt(ctx context.Context, arg SetDriverOutAtParams) (int64, error)
 	SetDriverPosition(ctx context.Context, arg SetDriverPositionParams) error
 	SetDriverResetTime(ctx context.Context, driverResetTime string) error
 	// Back from a run: available again, at the back of the queue.
 	SetDriverReturned(ctx context.Context, arg SetDriverReturnedParams) error
 	SetDriverStatus(ctx context.Context, arg SetDriverStatusParams) (int64, error)
+	SetFloorPrefs(ctx context.Context, arg SetFloorPrefsParams) error
 	SetLastDriverReset(ctx context.Context, lastDriverResetAt string) error
 	SetLastPrepMinutes(ctx context.Context, lastPrepMinutes int64) error
+	SetLastReturn(ctx context.Context, arg SetLastReturnParams) error
 	SetSessionSecret(ctx context.Context, sessionSecret string) error
 	SetStoreAPIKey(ctx context.Context, storeApiKey string) error
 	SetUIPassword(ctx context.Context, arg SetUIPasswordParams) error

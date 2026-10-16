@@ -52,6 +52,9 @@ type Service struct {
 	// onFloorEvent is called after every committed floor change so the sync
 	// sender pushes it to main right away (set via OnFloorEvent).
 	onFloorEvent func()
+	// Driver-report printing (SetDocumentPrinting).
+	printDoc    DocPrinter
+	buildReport ReportBuilder
 }
 
 func NewService(

@@ -278,6 +278,17 @@ func (q *Queries) FinishOrder(ctx context.Context, arg FinishOrderParams) error 
 	return err
 }
 
+const getAppRelease = `-- name: GetAppRelease :one
+SELECT app_release FROM settings WHERE id = 1
+`
+
+func (q *Queries) GetAppRelease(ctx context.Context) (string, error) {
+	row := q.db.QueryRowContext(ctx, getAppRelease)
+	var app_release string
+	err := row.Scan(&app_release)
+	return app_release, err
+}
+
 const getAutoAccept = `-- name: GetAutoAccept :one
 
 SELECT auto_accept FROM settings WHERE id = 1
@@ -289,6 +300,17 @@ func (q *Queries) GetAutoAccept(ctx context.Context) (bool, error) {
 	var auto_accept bool
 	err := row.Scan(&auto_accept)
 	return auto_accept, err
+}
+
+const getBatch = `-- name: GetBatch :one
+SELECT id, opened_at, closed_at FROM batches WHERE id = ?
+`
+
+func (q *Queries) GetBatch(ctx context.Context, id int64) (Batch, error) {
+	row := q.db.QueryRowContext(ctx, getBatch, id)
+	var i Batch
+	err := row.Scan(&i.ID, &i.OpenedAt, &i.ClosedAt)
+	return i, err
 }
 
 const getDriver = `-- name: GetDriver :one
@@ -326,6 +348,22 @@ func (q *Queries) GetDriverReset(ctx context.Context) (GetDriverResetRow, error)
 	return i, err
 }
 
+const getFloorPrefs = `-- name: GetFloorPrefs :one
+SELECT green_till_minutes, tip_tax_bps FROM settings WHERE id = 1
+`
+
+type GetFloorPrefsRow struct {
+	GreenTillMinutes int64 `json:"green_till_minutes"`
+	TipTaxBps        int64 `json:"tip_tax_bps"`
+}
+
+func (q *Queries) GetFloorPrefs(ctx context.Context) (GetFloorPrefsRow, error) {
+	row := q.db.QueryRowContext(ctx, getFloorPrefs)
+	var i GetFloorPrefsRow
+	err := row.Scan(&i.GreenTillMinutes, &i.TipTaxBps)
+	return i, err
+}
+
 const getFloorSettings = `-- name: GetFloorSettings :one
 SELECT kitchen_next, last_prep_minutes FROM settings WHERE id = 1
 `
@@ -339,6 +377,23 @@ func (q *Queries) GetFloorSettings(ctx context.Context) (GetFloorSettingsRow, er
 	row := q.db.QueryRowContext(ctx, getFloorSettings)
 	var i GetFloorSettingsRow
 	err := row.Scan(&i.KitchenNext, &i.LastPrepMinutes)
+	return i, err
+}
+
+const getLastReturn = `-- name: GetLastReturn :one
+SELECT last_return_driver_id, last_return_position, last_return_at FROM settings WHERE id = 1
+`
+
+type GetLastReturnRow struct {
+	LastReturnDriverID string `json:"last_return_driver_id"`
+	LastReturnPosition int64  `json:"last_return_position"`
+	LastReturnAt       string `json:"last_return_at"`
+}
+
+func (q *Queries) GetLastReturn(ctx context.Context) (GetLastReturnRow, error) {
+	row := q.db.QueryRowContext(ctx, getLastReturn)
+	var i GetLastReturnRow
+	err := row.Scan(&i.LastReturnDriverID, &i.LastReturnPosition, &i.LastReturnAt)
 	return i, err
 }
 
@@ -616,6 +671,58 @@ func (q *Queries) ListAvailableDrivers(ctx context.Context) ([]Driver, error) {
 			&i.Status,
 			&i.LastReturnedAt,
 			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listBatchDeliveries = `-- name: ListBatchDeliveries :many
+SELECT id, tenant_id, location_id, source, source_event_id, snapshot, state, arrival_date, printed_date, batch_id, kitchen_number, prep_minutes, estimated_ready_at, accepted_at, ready_at, out_at, delivered_at, driver_id, driver_name, last_alert_at, cancelled_at FROM orders
+WHERE batch_id = ? AND state = 'delivered' AND driver_id IS NOT NULL
+ORDER BY delivered_at ASC, kitchen_number ASC
+`
+
+// Driver report: delivered orders of a batch that went out with a driver.
+func (q *Queries) ListBatchDeliveries(ctx context.Context, batchID int64) ([]Order, error) {
+	rows, err := q.db.QueryContext(ctx, listBatchDeliveries, batchID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Order
+	for rows.Next() {
+		var i Order
+		if err := rows.Scan(
+			&i.ID,
+			&i.TenantID,
+			&i.LocationID,
+			&i.Source,
+			&i.SourceEventID,
+			&i.Snapshot,
+			&i.State,
+			&i.ArrivalDate,
+			&i.PrintedDate,
+			&i.BatchID,
+			&i.KitchenNumber,
+			&i.PrepMinutes,
+			&i.EstimatedReadyAt,
+			&i.AcceptedAt,
+			&i.ReadyAt,
+			&i.OutAt,
+			&i.DeliveredAt,
+			&i.DriverID,
+			&i.DriverName,
+			&i.LastAlertAt,
+			&i.CancelledAt,
 		); err != nil {
 			return nil, err
 		}
@@ -1018,6 +1125,49 @@ func (q *Queries) ListPairedDevices(ctx context.Context) ([]PairedDevice, error)
 	return items, nil
 }
 
+const listShiftsOverlapping = `-- name: ListShiftsOverlapping :many
+SELECT id, driver_id, driver_name, batch_id, clock_in, clock_out, auto_out FROM driver_shifts
+WHERE clock_in <= ?1 AND (clock_out IS NULL OR clock_out >= ?2)
+ORDER BY clock_in ASC
+`
+
+type ListShiftsOverlappingParams struct {
+	WindowEnd   string         `json:"window_end"`
+	WindowStart sql.NullString `json:"window_start"`
+}
+
+// Driver report: shifts that overlap a batch window (opened_at .. closed_at).
+func (q *Queries) ListShiftsOverlapping(ctx context.Context, arg ListShiftsOverlappingParams) ([]DriverShift, error) {
+	rows, err := q.db.QueryContext(ctx, listShiftsOverlapping, arg.WindowEnd, arg.WindowStart)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []DriverShift
+	for rows.Next() {
+		var i DriverShift
+		if err := rows.Scan(
+			&i.ID,
+			&i.DriverID,
+			&i.DriverName,
+			&i.BatchID,
+			&i.ClockIn,
+			&i.ClockOut,
+			&i.AutoOut,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listShiftsSince = `-- name: ListShiftsSince :many
 SELECT id, driver_id, driver_name, batch_id, clock_in, clock_out, auto_out FROM driver_shifts WHERE clock_in >= ? ORDER BY clock_in DESC
 `
@@ -1330,6 +1480,15 @@ func (q *Queries) RevokePairedDevice(ctx context.Context, arg RevokePairedDevice
 	return result.RowsAffected()
 }
 
+const setAppRelease = `-- name: SetAppRelease :exec
+UPDATE settings SET app_release = ? WHERE id = 1
+`
+
+func (q *Queries) SetAppRelease(ctx context.Context, appRelease string) error {
+	_, err := q.db.ExecContext(ctx, setAppRelease, appRelease)
+	return err
+}
+
 const setAutoAccept = `-- name: SetAutoAccept :exec
 INSERT INTO settings (id, auto_accept, updated_at)
 VALUES (1, ?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
@@ -1350,6 +1509,24 @@ UPDATE drivers SET status = 'out' WHERE id = ?
 func (q *Queries) SetDriverOut(ctx context.Context, id string) error {
 	_, err := q.db.ExecContext(ctx, setDriverOut, id)
 	return err
+}
+
+const setDriverOutAt = `-- name: SetDriverOutAt :execrows
+UPDATE drivers SET status = 'out', position = ? WHERE id = ? AND active AND status = 'available'
+`
+
+type SetDriverOutAtParams struct {
+	Position int64  `json:"position"`
+	ID       string `json:"id"`
+}
+
+// Undo a mistaken return: back out on the run, at its old queue position.
+func (q *Queries) SetDriverOutAt(ctx context.Context, arg SetDriverOutAtParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, setDriverOutAt, arg.Position, arg.ID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
 
 const setDriverPosition = `-- name: SetDriverPosition :exec
@@ -1418,6 +1595,20 @@ func (q *Queries) SetDriverStatus(ctx context.Context, arg SetDriverStatusParams
 	return result.RowsAffected()
 }
 
+const setFloorPrefs = `-- name: SetFloorPrefs :exec
+UPDATE settings SET green_till_minutes = ?, tip_tax_bps = ? WHERE id = 1
+`
+
+type SetFloorPrefsParams struct {
+	GreenTillMinutes int64 `json:"green_till_minutes"`
+	TipTaxBps        int64 `json:"tip_tax_bps"`
+}
+
+func (q *Queries) SetFloorPrefs(ctx context.Context, arg SetFloorPrefsParams) error {
+	_, err := q.db.ExecContext(ctx, setFloorPrefs, arg.GreenTillMinutes, arg.TipTaxBps)
+	return err
+}
+
 const setLastDriverReset = `-- name: SetLastDriverReset :exec
 UPDATE settings SET last_driver_reset_at = ? WHERE id = 1
 `
@@ -1433,6 +1624,21 @@ UPDATE settings SET last_prep_minutes = ? WHERE id = 1
 
 func (q *Queries) SetLastPrepMinutes(ctx context.Context, lastPrepMinutes int64) error {
 	_, err := q.db.ExecContext(ctx, setLastPrepMinutes, lastPrepMinutes)
+	return err
+}
+
+const setLastReturn = `-- name: SetLastReturn :exec
+UPDATE settings SET last_return_driver_id = ?, last_return_position = ?, last_return_at = ? WHERE id = 1
+`
+
+type SetLastReturnParams struct {
+	LastReturnDriverID string `json:"last_return_driver_id"`
+	LastReturnPosition int64  `json:"last_return_position"`
+	LastReturnAt       string `json:"last_return_at"`
+}
+
+func (q *Queries) SetLastReturn(ctx context.Context, arg SetLastReturnParams) error {
+	_, err := q.db.ExecContext(ctx, setLastReturn, arg.LastReturnDriverID, arg.LastReturnPosition, arg.LastReturnAt)
 	return err
 }
 

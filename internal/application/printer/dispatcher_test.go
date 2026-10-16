@@ -197,3 +197,28 @@ func TestKnownDownFallbacksAreTriedLast(t *testing.T) {
 		t.Log("front never tried (fine: everything printed before reaching it)")
 	}
 }
+
+func TestPrintDocument_ReceiptPrinterThenFailover(t *testing.T) {
+	d, fk := newTestDispatcher(t)
+	build := func(from string) []byte { return []byte("report:" + from) }
+	res, err := d.PrintDocument(context.Background(), "driver-report", build)
+	if err != nil || res.PrintedOn != "Front" || res.ReroutedFrom != "" {
+		t.Fatalf("res=%+v err=%v", res, err)
+	}
+	if jobs(fk["Front"]) != "report:" {
+		t.Fatalf("front = %q", jobs(fk["Front"]))
+	}
+
+	fk["Front"].down = true
+	res, err = d.PrintDocument(context.Background(), "driver-report", build)
+	if err != nil || res.PrintedOn != "Pizza" || res.ReroutedFrom != "Front" || jobs(fk["Pizza"]) != "report:Front" {
+		t.Fatalf("failover res=%+v err=%v pizza=%q", res, err, jobs(fk["Pizza"]))
+	}
+
+	for _, f := range fk {
+		f.down = true
+	}
+	if _, err := d.PrintDocument(context.Background(), "driver-report", build); err == nil {
+		t.Fatal("expected an error with every printer down")
+	}
+}

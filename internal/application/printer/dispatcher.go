@@ -196,10 +196,41 @@ func (d *Dispatcher) printTicket(ctx context.Context, snap order.Snapshot, t pri
 		return res, ErrNoPrintersAvailable
 	}
 
-	// Candidates: the target, then the receipt printer, then the rest — with
-	// fallbacks the health check last saw down moved to the very end (still
-	// tried: the probe may be stale), so a dead station doesn't cost a dial
-	// timeout per ticket.
+	candidates := d.candidates(target, roster)
+
+	var lastErr error
+	for i, sl := range candidates {
+		if ctx.Err() != nil {
+			lastErr = fmt.Errorf("print time budget used up: %w", ctx.Err())
+			break
+		}
+		tk := t
+		if i > 0 {
+			tk.ReroutedFrom = target.entry.Name
+		}
+		err := sl.svc.PrintWith(ctx, snap, func(s order.Snapshot) []byte { return d.build(s, tk) })
+		if err == nil {
+			res.PrintedOn = sl.entry.Name
+			res.ReroutedFrom = tk.ReroutedFrom
+			if i > 0 {
+				d.logger.Warn().Ctx(ctx).Str("order_id", snap.ID).Str("intended", target.entry.Name).
+					Str("printed_on", sl.entry.Name).Str("kind", string(t.Kind)).Msg("ticket rerouted — intended printer failed")
+			}
+			return res, nil
+		}
+		lastErr = err
+		d.logger.Warn().Ctx(ctx).Err(err).Str("order_id", snap.ID).Str("printer", sl.entry.Name).
+			Str("kind", string(t.Kind)).Msg("printer failed for ticket; trying next")
+	}
+	res.Err = lastErr.Error()
+	return res, lastErr
+}
+
+// candidates orders the printers to try for a job aimed at target: the
+// target, then the receipt printer, then the rest — with fallbacks the health
+// check last saw down moved to the very end (still tried: the probe may be
+// stale), so a dead station doesn't cost a dial timeout per ticket.
+func (d *Dispatcher) candidates(target rosterSlot, roster []rosterSlot) []rosterSlot {
 	var up, down []rosterSlot
 	for _, sl := range roster {
 		if sl.entry.ID == target.entry.ID {
@@ -225,32 +256,49 @@ func (d *Dispatcher) printTicket(ctx context.Context, snap order.Snapshot, t pri
 		}
 		return out
 	}
-	candidates := append([]rosterSlot{target}, receiptFirst(up)...)
-	candidates = append(candidates, receiptFirst(down)...)
+	out := append([]rosterSlot{target}, receiptFirst(up)...)
+	return append(out, receiptFirst(down)...)
+}
 
+// PrintDocument prints a non-order slip (e.g. a driver report) on the receipt
+// printer (the first printer if none is flagged), failing over like a ticket.
+// build gets the name of the printer it was meant for when it printed on a
+// fallback ("" otherwise). label identifies the job in logs and spans.
+func (d *Dispatcher) PrintDocument(ctx context.Context, label string, build func(reroutedFrom string) []byte) (printer.TicketResult, error) {
+	ctx, cancel := context.WithTimeout(ctx, printBudget)
+	defer cancel()
+	d.mu.RLock()
+	roster := append([]rosterSlot(nil), d.roster...)
+	d.mu.RUnlock()
+	res := printer.TicketResult{Kind: printer.TicketReceipt}
+	if len(roster) == 0 {
+		res.Err = ErrNoPrintersAvailable.Error()
+		return res, ErrNoPrintersAvailable
+	}
+	target := roster[0]
+	for _, sl := range roster {
+		if sl.entry.IsReceipt {
+			target = sl
+			break
+		}
+	}
 	var lastErr error
-	for i, sl := range candidates {
+	for i, sl := range d.candidates(target, roster) {
 		if ctx.Err() != nil {
 			lastErr = fmt.Errorf("print time budget used up: %w", ctx.Err())
 			break
 		}
-		tk := t
+		from := ""
 		if i > 0 {
-			tk.ReroutedFrom = target.entry.Name
+			from = target.entry.Name
 		}
-		err := sl.svc.PrintWith(ctx, snap, func(s order.Snapshot) []byte { return d.build(s, tk) })
-		if err == nil {
-			res.PrintedOn = sl.entry.Name
-			res.ReroutedFrom = tk.ReroutedFrom
-			if i > 0 {
-				d.logger.Warn().Ctx(ctx).Str("order_id", snap.ID).Str("intended", target.entry.Name).
-					Str("printed_on", sl.entry.Name).Str("kind", string(t.Kind)).Msg("ticket rerouted — intended printer failed")
-			}
-			return res, nil
+		if err := sl.svc.PrintBytes(ctx, label, build(from)); err != nil {
+			lastErr = err
+			d.logger.Warn().Ctx(ctx).Err(err).Str("job", label).Str("printer", sl.entry.Name).Msg("printer failed for document; trying next")
+			continue
 		}
-		lastErr = err
-		d.logger.Warn().Ctx(ctx).Err(err).Str("order_id", snap.ID).Str("printer", sl.entry.Name).
-			Str("kind", string(t.Kind)).Msg("printer failed for ticket; trying next")
+		res.PrintedOn, res.ReroutedFrom = sl.entry.Name, from
+		return res, nil
 	}
 	res.Err = lastErr.Error()
 	return res, lastErr

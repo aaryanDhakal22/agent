@@ -304,6 +304,26 @@ nginx :80) — the switch is in `../CUTOVER.md`; never run both agents at once.
   names are cut by characters, not bytes; floor sync isolates an event main
   rejects with 400/413 instead of retrying the batch forever.
 
+## Driver reports, undo-return, settings, app cache (2026-10-16)
+
+- **Driver reports** (`application/order/reports.go`, repo `DriverReports`,
+  `receipt/report.go`): one slip per driver who delivered in, or was clocked in
+  during, a batch. Cash = the order's *cash* payments (card = paid to the store);
+  tips A/T = all tips × (1 − `tip_tax_bps`); owed = cash − tips A/T (negative →
+  "STORE OWES DRIVER"). Printed by `Dispatcher.PrintDocument` (receipt printer,
+  failover) **in the background after Close batch** and on demand via
+  `POST /api/batches/{id}/driver-reports/print`. Golden: `testdata/driver_report.golden`.
+- **Undo return**: `DriverReturned` remembers the driver + old queue position
+  (`settings.last_return_*`); `UndoReturn` (latest only, ≤10 min, still
+  available) sets them `out` again. Orders stay delivered (main is forward-only).
+- **Floor prefs** (`settings.green_till_minutes`, `tip_tax_bps`, migration
+  `00007_floor_settings`): web-UI `PUT /api/settings/floor`, exposed in
+  `/api/floor`, SSE `floor.updated`.
+- **Quibase cache** (`application/appupdate`): polls main's
+  `/store/v1/agent/app/latest` on SSE connect + every 5 min, downloads newer APKs
+  (sha256-checked) to `<db dir>/apk/`, serves `/api/app/latest` + `/api/app/apk`.
+  Version codes are Unix seconds.
+
 ## Printing (station tickets + receipt)
 
 main stamps `printer_id` + `routing` on each line item at ingest; the agent

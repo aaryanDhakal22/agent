@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
+	"strings"
 	"time"
 
 	"quiccpos/agent/internal/domain/order"
@@ -212,6 +214,10 @@ func (r *OrderRepository) DriverReturned(ctx context.Context, driverID string) (
 		}
 		pos, err := q.NextDriverPosition(ctx)
 		if err != nil {
+			return err
+		}
+		// Remember the return so a mistaken tap can be undone (UndoReturn).
+		if err := q.SetLastReturn(ctx, models.SetLastReturnParams{LastReturnDriverID: d.ID, LastReturnPosition: d.Position, LastReturnAt: fmtTS(now)}); err != nil {
 			return err
 		}
 		if err := q.SetDriverReturned(ctx, models.SetDriverReturnedParams{LastReturnedAt: nullTS(now), Position: pos, ID: d.ID}); err != nil {
@@ -804,4 +810,149 @@ func (r *OrderRepository) TrimBatches(ctx context.Context, keepClosed int, synce
 		return err
 	})
 	return n, err
+}
+
+// UndoReturn — see order.FloorRepository.
+func (r *OrderRepository) UndoReturn(ctx context.Context, driverID string, now time.Time) (d *order.Driver, err error) {
+	ctx, _, end := dbSpan(ctx, "drivers.undo_return")
+	defer end(&err)
+	err = r.withTx(ctx, func(q *models.Queries) error {
+		last, err := q.GetLastReturn(ctx)
+		if err != nil {
+			return err
+		}
+		at, err := optTS(sql.NullString{String: last.LastReturnAt, Valid: last.LastReturnAt != ""})
+		if err != nil {
+			return err
+		}
+		if last.LastReturnDriverID != driverID || at == nil || now.Sub(*at) > order.UndoReturnWindow {
+			return order.ErrInvalidState // not the latest return, or too late
+		}
+		n, err := q.SetDriverOutAt(ctx, models.SetDriverOutAtParams{Position: last.LastReturnPosition, ID: driverID})
+		if err != nil {
+			return err
+		}
+		if n == 0 {
+			return order.ErrInvalidState // sent out again, clocked out or removed since
+		}
+		if err := q.SetLastReturn(ctx, models.SetLastReturnParams{}); err != nil {
+			return err
+		}
+		return recordRoster(ctx, q, now)
+	})
+	if err != nil {
+		return nil, err
+	}
+	return r.driverByID(ctx, driverID)
+}
+
+func (r *OrderRepository) FloorPrefs(ctx context.Context) (order.FloorPrefs, error) {
+	row, err := models.New(r.db).GetFloorPrefs(ctx)
+	if err != nil {
+		return order.DefaultFloorPrefs, err
+	}
+	return order.FloorPrefs{GreenTillMinutes: row.GreenTillMinutes, TipTaxBps: row.TipTaxBps}, nil
+}
+
+func (r *OrderRepository) SetFloorPrefs(ctx context.Context, p order.FloorPrefs) error {
+	return models.New(r.db).SetFloorPrefs(ctx, models.SetFloorPrefsParams{GreenTillMinutes: p.GreenTillMinutes, TipTaxBps: p.TipTaxBps})
+}
+
+// DriverReports — see order.FloorRepository.
+func (r *OrderRepository) DriverReports(ctx context.Context, batchID int64) (out []order.DriverReport, err error) {
+	ctx, _, end := dbSpan(ctx, "floor.driver_reports")
+	defer end(&err)
+	q := models.New(r.db)
+	var b models.Batch
+	if batchID == 0 {
+		ob, err := q.GetOpenBatch(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("open batch: %w", err)
+		}
+		b = models.Batch{ID: ob.ID, OpenedAt: ob.OpenedAt}
+	} else if b, err = q.GetBatch(ctx, batchID); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, order.ErrNotFound
+		}
+		return nil, err
+	}
+	opened, err := parseTS(b.OpenedAt)
+	if err != nil {
+		return nil, err
+	}
+	closed, err := optTS(b.ClosedAt)
+	if err != nil {
+		return nil, err
+	}
+
+	byDriver := map[string]*order.DriverReport{}
+	get := func(id, name string) *order.DriverReport {
+		rep := byDriver[id]
+		if rep == nil {
+			rep = &order.DriverReport{BatchID: b.ID, BatchOpenedAt: opened, BatchClosedAt: closed,
+				DriverID: id, DriverName: name, Lines: []order.DriverReportLine{}}
+			byDriver[id] = rep
+		}
+		if rep.DriverName == "" {
+			rep.DriverName = name
+		}
+		return rep
+	}
+
+	rows, err := q.ListBatchDeliveries(ctx, b.ID)
+	if err != nil {
+		return nil, err
+	}
+	orders, err := mapRows(rows)
+	if err != nil {
+		return nil, err
+	}
+	for _, so := range orders {
+		rep := get(so.Status.DriverID, so.Status.DriverName)
+		rep.Lines = append(rep.Lines, order.NewDriverReportLine(so))
+	}
+
+	// Drivers clocked in during the batch with no deliveries still get a slip.
+	windowEnd := fmtTS(time.Now())
+	if closed != nil {
+		windowEnd = fmtTS(*closed)
+	}
+	shifts, err := q.ListShiftsOverlapping(ctx, models.ListShiftsOverlappingParams{
+		WindowEnd: windowEnd, WindowStart: sql.NullString{String: b.OpenedAt, Valid: true},
+	})
+	if err != nil {
+		return nil, err
+	}
+	for _, sh := range shifts {
+		get(sh.DriverID, sh.DriverName)
+	}
+
+	// Prefer the driver's current name (a rename after the run).
+	if ds, err := q.ListActiveDrivers(ctx); err == nil {
+		for _, d := range ds {
+			if rep := byDriver[d.ID]; rep != nil {
+				rep.DriverName = d.Name
+			}
+		}
+	}
+	out = make([]order.DriverReport, 0, len(byDriver))
+	for _, rep := range byDriver {
+		out = append(out, *rep)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if !strings.EqualFold(out[i].DriverName, out[j].DriverName) {
+			return strings.ToLower(out[i].DriverName) < strings.ToLower(out[j].DriverName)
+		}
+		return out[i].DriverID < out[j].DriverID
+	})
+	return out, nil
+}
+
+// GetAppRelease / SetAppRelease persist the cached tablet-app release (JSON).
+func (r *OrderRepository) GetAppRelease(ctx context.Context) (string, error) {
+	return models.New(r.db).GetAppRelease(ctx)
+}
+
+func (r *OrderRepository) SetAppRelease(ctx context.Context, raw string) error {
+	return models.New(r.db).SetAppRelease(ctx, raw)
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -140,6 +141,107 @@ type FloorSettings struct {
 	LastPrepMinutes int64 `json:"last_prep_minutes"`
 }
 
+// FloorPrefs are store settings edited in the agent web UI.
+type FloorPrefs struct {
+	// GreenTillMinutes: a kitchen ticket stays green this long after the
+	// order arrived, then shades to fully red at twice that.
+	GreenTillMinutes int64 `json:"green_till_minutes"`
+	// TipTaxBps is taken off drivers' tips on the driver report (600 = 6%).
+	TipTaxBps int64 `json:"tip_tax_bps"`
+}
+
+// DefaultFloorPrefs are the migration defaults.
+var DefaultFloorPrefs = FloorPrefs{GreenTillMinutes: 20, TipTaxBps: 600}
+
+// UndoReturnWindow is how long a driver's return can be undone.
+const UndoReturnWindow = 10 * time.Minute
+
+// DriverReport is one driver's slip for a batch: every delivery they took and
+// what they owe. Cash = what the driver collected on cash orders (card orders
+// are paid to the store and never count). The driver keeps all tips (cash and
+// card) minus the tip tax, so Owed = Cash - TipAfterTax; negative means the
+// store owes the driver. Delivery fees are paid weekly — only the count shows.
+type DriverReport struct {
+	BatchID          int64              `json:"batch_id"`
+	BatchOpenedAt    time.Time          `json:"batch_opened_at"`
+	BatchClosedAt    *time.Time         `json:"batch_closed_at,omitempty"`
+	DriverID         string             `json:"driver_id"`
+	DriverName       string             `json:"driver_name"`
+	Lines            []DriverReportLine `json:"lines"`
+	Deliveries       int                `json:"deliveries"`
+	CashCents        int64              `json:"cash_cents"`
+	TipCents         int64              `json:"tip_cents"`
+	TipTaxBps        int64              `json:"tip_tax_bps"`
+	TipAfterTaxCents int64              `json:"tip_after_tax_cents"`
+	OwedCents        int64              `json:"owed_cents"`
+}
+
+// DriverReportLine is one delivery on a driver report.
+type DriverReportLine struct {
+	OrderID       string     `json:"order_id"`
+	KitchenNumber *int64     `json:"kitchen_number,omitempty"`
+	Customer      string     `json:"customer"` // "Erik D."
+	Address       string     `json:"address"`
+	TipCents      int64      `json:"tip_cents"`
+	Cash          bool       `json:"cash"`
+	CashCents     int64      `json:"cash_cents"` // collected in cash (0 for card)
+	TotalCents    int64      `json:"total_cents"`
+	DeliveredAt   *time.Time `json:"delivered_at,omitempty"`
+}
+
+// NewDriverReportLine builds a report line from a delivered order.
+func NewDriverReportLine(so StoredOrder) DriverReportLine {
+	snap := so.Order
+	l := DriverReportLine{
+		OrderID:       snap.ID,
+		KitchenNumber: so.Status.KitchenNumber,
+		Customer:      ShortCustomerName(snap.Customer.DisplayName),
+		TipCents:      snap.Money.Tip,
+		TotalCents:    snap.Money.Total,
+		DeliveredAt:   so.Status.DeliveredAt,
+	}
+	if a := snap.Fulfillment.Address; a != nil {
+		l.Address = strings.TrimSpace(a.Line1)
+		if l2 := strings.TrimSpace(a.Line2); l2 != "" {
+			l.Address += ", " + l2
+		}
+	}
+	for _, p := range snap.Payments {
+		if strings.EqualFold(p.Method, "cash") {
+			l.Cash = true
+			l.CashCents += p.AmountCents
+		}
+	}
+	return l
+}
+
+// Finish fills the report's totals with the store's tip tax.
+func (r *DriverReport) Finish(tipTaxBps int64) {
+	r.Deliveries = len(r.Lines)
+	r.CashCents, r.TipCents = 0, 0
+	for _, l := range r.Lines {
+		r.CashCents += l.CashCents
+		r.TipCents += l.TipCents
+	}
+	r.TipTaxBps = tipTaxBps
+	r.TipAfterTaxCents = (r.TipCents*(10000-tipTaxBps) + 5000) / 10000
+	r.OwedCents = r.CashCents - r.TipAfterTaxCents
+}
+
+// ShortCustomerName turns "Erik Davis" into "Erik D." (a single word stays
+// as is; empty becomes "Customer").
+func ShortCustomerName(display string) string {
+	parts := strings.Fields(display)
+	switch len(parts) {
+	case 0:
+		return "Customer"
+	case 1:
+		return parts[0]
+	}
+	last := []rune(parts[len(parts)-1])
+	return parts[0] + " " + strings.ToUpper(string(last[0])) + "."
+}
+
 // FloorRepository persists floor transitions. Every mutating method writes the
 // matching floor event(s) in the same transaction.
 type FloorRepository interface {
@@ -177,6 +279,17 @@ type FloorRepository interface {
 	// anyone out (first start, or after the time setting changes).
 	MarkDriverReset(ctx context.Context, at time.Time) error
 	ListShifts(ctx context.Context, since time.Time) ([]Shift, error)
+	// UndoReturn puts the driver whose return was the last one recorded back
+	// out on the run at their old queue position (within UndoReturnWindow,
+	// while still available). Their orders stay delivered.
+	UndoReturn(ctx context.Context, driverID string, now time.Time) (*Driver, error)
+
+	FloorPrefs(ctx context.Context) (FloorPrefs, error)
+	SetFloorPrefs(ctx context.Context, p FloorPrefs) error
+	// DriverReports returns one report per driver who delivered in, or was
+	// clocked in during, the batch (0 = the open batch), sorted by name.
+	// Totals are not filled (see DriverReport.Finish).
+	DriverReports(ctx context.Context, batchID int64) ([]DriverReport, error)
 
 	// Escalation: arrived orders waiting since before cutoff and not alerted
 	// since cutoff; MarkAlerted stamps last_alert_at.

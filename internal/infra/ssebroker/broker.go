@@ -133,6 +133,12 @@ func (b *Broker) PublishBatchClosed(closed, opened order.Batch) {
 	b.publishJSON("batch.closed", map[string]any{"closed": closed, "opened": opened})
 }
 
+// PublishFloorChanged tells clients the floor settings changed (they refetch
+// /api/floor).
+func (b *Broker) PublishFloorChanged() {
+	b.publishJSON("floor.updated", map[string]any{})
+}
+
 func (b *Broker) publishJSON(typ string, v any) {
 	data, err := json.Marshal(v)
 	if err != nil {

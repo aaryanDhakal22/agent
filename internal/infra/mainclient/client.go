@@ -48,6 +48,18 @@ func New(baseURL string) *Client {
 // time, after the SSE controller exists.
 func (c *Client) SetOnUnauthorized(f func(key string)) { c.onUnauthorized = f }
 
+// downloadTimeout bounds a large download (a tablet-app APK over the
+// restaurant's internet).
+const downloadTimeout = 5 * time.Minute
+
+// Download is Get for large bodies (an APK): same auth + 401 hook, longer
+// timeout.
+func (c *Client) Download(ctx context.Context, key, path, rawQuery string) (int, []byte, error) {
+	ctx, cancel := context.WithTimeout(ctx, downloadTimeout)
+	defer cancel()
+	return c.doWith(&http.Client{Transport: c.http.Transport}, ctx, http.MethodGet, key, path, rawQuery, nil)
+}
+
 // Get proxies an authenticated GET to main, returning the upstream status and
 // raw body so the agent handler can relay both verbatim. path is a main-side
 // path like "/api/v1/orders"; rawQuery is the already-encoded query string.
@@ -75,6 +87,10 @@ func (c *Client) RevokeSelf(ctx context.Context, key string) (int, error) {
 }
 
 func (c *Client) do(ctx context.Context, method, key, path, rawQuery string, body []byte) (int, []byte, error) {
+	return c.doWith(c.http, ctx, method, key, path, rawQuery, body)
+}
+
+func (c *Client) doWith(hc *http.Client, ctx context.Context, method, key, path, rawQuery string, body []byte) (int, []byte, error) {
 	url := c.baseURL + path
 	if rawQuery != "" {
 		url += "?" + rawQuery
@@ -92,7 +108,7 @@ func (c *Client) do(ctx context.Context, method, key, path, rawQuery string, bod
 		req.Header.Set("Content-Type", "application/json")
 	}
 
-	resp, err := c.http.Do(req)
+	resp, err := hc.Do(req)
 	if err != nil {
 		// Transport/connection failure (main unreachable) — NOT a 401, so it never
 		// triggers a wipe. Callers surface it as "connecting"/bad-gateway.

@@ -80,17 +80,23 @@ type PairedDevice struct {
 }
 
 type Setting struct {
-	ID                int64  `json:"id"`
-	AutoAccept        bool   `json:"auto_accept"`
-	StoreApiKey       string `json:"store_api_key"`
-	UpdatedAt         string `json:"updated_at"`
-	SessionSecret     string `json:"session_secret"`
-	UiPasswordHash    string `json:"ui_password_hash"`
-	UiPasswordHint    string `json:"ui_password_hint"`
-	KitchenNext       int64  `json:"kitchen_next"`
-	LastPrepMinutes   int64  `json:"last_prep_minutes"`
-	DriverResetTime   string `json:"driver_reset_time"`
-	LastDriverResetAt string `json:"last_driver_reset_at"`
+	ID                 int64  `json:"id"`
+	AutoAccept         bool   `json:"auto_accept"`
+	StoreApiKey        string `json:"store_api_key"`
+	UpdatedAt          string `json:"updated_at"`
+	SessionSecret      string `json:"session_secret"`
+	UiPasswordHash     string `json:"ui_password_hash"`
+	UiPasswordHint     string `json:"ui_password_hint"`
+	KitchenNext        int64  `json:"kitchen_next"`
+	LastPrepMinutes    int64  `json:"last_prep_minutes"`
+	DriverResetTime    string `json:"driver_reset_time"`
+	LastDriverResetAt  string `json:"last_driver_reset_at"`
+	GreenTillMinutes   int64  `json:"green_till_minutes"`
+	TipTaxBps          int64  `json:"tip_tax_bps"`
+	LastReturnDriverID string `json:"last_return_driver_id"`
+	LastReturnPosition int64  `json:"last_return_position"`
+	LastReturnAt       string `json:"last_return_at"`
+	AppRelease         string `json:"app_release"`
 }
 
 type StoreConfig struct {

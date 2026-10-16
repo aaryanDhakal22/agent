@@ -31,6 +31,10 @@ type Floor struct {
 	UnsyncedEvents  int64       `json:"unsynced_events"`
 	// DriverResetTime is when drivers are clocked out daily (location HH:MM).
 	DriverResetTime string `json:"driver_reset_time"`
+	// GreenTillMinutes: tickets stay green this long after arrival (then
+	// shade to red at 2x). TipTaxPercent is taken off drivers' tips.
+	GreenTillMinutes int64   `json:"green_till_minutes"`
+	TipTaxPercent    float64 `json:"tip_tax_percent"`
 }
 
 func (s *Service) span(ctx context.Context, name string, attrs ...attribute.KeyValue) (context.Context, trace.Span) {
@@ -61,8 +65,10 @@ func (s *Service) Floor(ctx context.Context) (*Floor, error) {
 	}
 	n, _ := s.repo.CountUnsyncedEvents(ctx)
 	rs, _ := s.repo.GetDriverReset(ctx)
+	prefs := s.FloorPrefs(ctx)
 	return &Floor{Batch: *b, KitchenNext: fs.KitchenNext, LastPrepMinutes: fs.LastPrepMinutes,
-		PrepChoices: PrepChoices, UnsyncedEvents: n, DriverResetTime: rs.Time}, nil
+		PrepChoices: PrepChoices, UnsyncedEvents: n, DriverResetTime: rs.Time,
+		GreenTillMinutes: prefs.GreenTillMinutes, TipTaxPercent: float64(prefs.TipTaxBps) / 100}, nil
 }
 
 // Ready marks an accepted order ready (terminal for pickup / dine-in).
@@ -143,6 +149,7 @@ func (s *Service) CloseBatch(ctx context.Context, force bool) (*order.Batch, []o
 		}
 	}
 	s.publishDrivers(ctx)
+	s.printReportsAfterClose(ctx, closed.ID)
 	return closed, finished, nil
 }
 

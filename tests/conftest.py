@@ -189,10 +189,20 @@ class AgentProc:
             "LOG_LEVEL": "debug",
             "OTEL_EXPORTER_OTLP_ENDPOINT": "",  # no-op telemetry
         }
+        self._binary, self._env = binary, env
         self.proc = subprocess.Popen([str(binary)], cwd=self.dir, env=env, stdout=self.log, stderr=subprocess.STDOUT)
         wait_until(lambda: requests.get(f"{self.base}/api/version", timeout=1).status_code == 200,
                    timeout=20, what="throwaway agent to serve")
         self.http = requests.Session()  # keeps the web-UI session cookie
+
+    def restart(self) -> None:
+        """Stop and start the same agent (same DB + port); the web session
+        survives (persisted signing secret)."""
+        self.proc.terminate()
+        self.proc.wait(timeout=10)
+        self.proc = subprocess.Popen([str(self._binary)], cwd=self.dir, env=self._env, stdout=self.log, stderr=subprocess.STDOUT)
+        wait_until(lambda: requests.get(f"{self.base}/api/version", timeout=1).status_code == 200,
+                   timeout=20, what="restarted agent to serve")
 
     def session(self) -> dict:
         return requests.get(f"{self.base}/api/session", timeout=5).json()

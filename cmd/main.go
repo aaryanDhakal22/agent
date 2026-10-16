@@ -18,6 +18,7 @@ import (
 	"syscall"
 	"time"
 
+	"quiccpos/agent/internal/application/appupdate"
 	"quiccpos/agent/internal/application/catchup"
 	"quiccpos/agent/internal/application/driverreset"
 	"quiccpos/agent/internal/application/escalation"
@@ -187,6 +188,12 @@ func main() {
 	// --- Order service + mobile-facing SSE broker -------------------------
 	broker := ssebroker.New()
 	orderService := orderApp.NewService(orderRepo, settingsRepo, printFn, notifier, broker, logger, meters)
+	// Driver reports print on the receipt printer (failover like a ticket),
+	// formatted with the live store context (timezone + store name).
+	orderService.SetDocumentPrinting(dispatcher.PrintDocument, func(rep order.DriverReport, from string) []byte {
+		sc, _ := storeCtx.Load().(storeconfig.StoreContext)
+		return receipt.BuildDriverReport(rep, sc, from, time.Now())
+	})
 
 	// --- Store_config SSE handshake sink ----------------------------------
 	sink := &storeConfigApplier{
@@ -254,9 +261,18 @@ func main() {
 	sseCtrl.OnRejected(wipeProvisioning)
 	// Orders whose SSE frame was lost when the stream dropped: fetch them
 	// from main after every reconnect (OnArrival skips ones we already hold).
-	sseCtrl.OnConnected(catchup.Hook(ctx, func(rc context.Context, path, rawQuery string) (int, []byte, error) {
+	catchupHook := catchup.Hook(ctx, func(rc context.Context, path, rawQuery string) (int, []byte, error) {
 		return mainClient.Get(rc, sseCtrl.CurrentKey(), path, rawQuery)
-	}, orderService, orderRepo, logger))
+	}, orderService, orderRepo, logger)
+	// Quibase releases: cached next to the DB, re-checked on every reconnect
+	// and every 5 minutes; tablets download them over the LAN.
+	appUpdater := appupdate.New(filepath.Join(filepath.Dir(cfg.AgentDBPath), "apk"), orderRepo, mainClient, sseCtrl.CurrentKey, logger)
+	appUpdater.Load(ctx)
+	go appUpdater.Run(ctx, 5*time.Minute)
+	sseCtrl.OnConnected(func() {
+		catchupHook()
+		appUpdater.Wake()
+	})
 	mainClient.SetOnUnauthorized(wipeProvisioning)
 
 	// … and the agent pushes it proactively: on every store_config apply (the
@@ -311,6 +327,7 @@ func main() {
 		return settingsRepo.SetSessionSecret(context.Background(), hexSecret)
 	})
 	httpServer := transport.NewServer(orderService, broker, printerRegistry, settingsRepo, sseCtrl, mainClient, session, deviceRepo, cfg.HTTPPort, version, commit, logger)
+	httpServer.SetAppUpdater(appUpdater)
 
 	// Floor sync: every committed floor change wakes the sender, which pushes
 	// the floor_events outbox to main as `floor.events` (retrying with backoff

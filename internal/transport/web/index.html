@@ -124,6 +124,8 @@
         <span class="grow"></span>
         <label style="margin:0">Prep</label><select id="prep"></select>
         <button onclick="loadLive()">Refresh</button>
+        <select id="rep-batch" title="Batch for driver reports"></select>
+        <button onclick="printReports()">Print driver reports</button>
         <button class="danger" onclick="closeBatch(false)">Close batch</button>
       </div>
       <h3>Waiting to accept</h3><div id="l-arrived"></div>
@@ -218,12 +220,23 @@
       </div>
 
       <div class="card">
+        <label>Kitchen tickets &amp; driver reports</label>
+        <div class="row" style="margin-top:6px">
+          <span>Tickets green for</span><input id="set-green" type="number" min="1" max="240" style="width:5em" /><span>min</span>
+          <span style="margin-left:14px">Tip tax</span><input id="set-tiptax" type="number" min="0" max="50" step="0.25" style="width:5em" /><span>%</span>
+          <button onclick="saveFloorPrefs()">Save</button>
+        </div>
+        <div class="muted" style="margin-top:6px">Tablet tickets shade from green to red between this time and twice it after an order arrives. The tip tax is taken off drivers' tips on their report.</div>
+      </div>
+
+      <div class="card">
         <label>Counter tablets</label>
         <div class="muted" style="margin:6px 0 10px;line-height:1.4">
           Pair the tablet app: tap <b>Pair tablet</b>, then type this agent's address and the 6-digit code into the app (valid 5 minutes).
         </div>
         <div class="row"><button class="primary" onclick="pairCode()">Pair tablet</button><span id="pair-code" style="font-size:1.6rem;font-weight:800;letter-spacing:0.2em"></span><span id="pair-exp" class="muted"></span></div>
         <div id="dev-list" style="margin-top:12px"></div>
+        <div id="app-release" class="muted" style="margin-top:10px"></div>
       </div>
 
       <div class="card">
@@ -401,7 +414,7 @@ function switchTab(tab) {
   if (tab === 'drivers') loadDrivers();
   if (tab === 'history') { histOffset = 0; loadHistory(); }
   if (tab === 'config') loadConfig();
-  if (tab === 'settings') { loadSettings(); loadDevices(); api('/api/settings/driver-reset').then(r => r.json()).then(rs => $('set-reset').value = rs.time).catch(() => {}); }
+  if (tab === 'settings') { loadSettings(); loadDevices(); api('/api/settings/driver-reset').then(r => r.json()).then(rs => $('set-reset').value = rs.time).catch(() => {}); loadFloorPrefs(); }
 }
 
 // --- settings -----------------------------------------------------------
@@ -534,6 +547,7 @@ function fill(id, rows, kind, empty) {
   rows.forEach(r => el.appendChild(floorCard(r, kind)));
 }
 async function loadLive() {
+  loadReportBatches();
   try {
     floor = await (await api('/api/floor')).json();
     drivers = await (await api('/api/drivers')).json();
@@ -582,6 +596,40 @@ async function assignSelected() {
   if (!res.ok) { const b = await res.json().catch(() => ({})); return toast(b.error || 'failed', true); }
   toast('Sent out'); loadLive();
 }
+async function loadReportBatches() {
+  try {
+    const bs = await (await api('/api/batches')).json();
+    const sel = $('rep-batch'); const keep = sel.value;
+    sel.innerHTML = bs.map(b => '<option value="' + b.id + '">' + (b.closed_at ? 'Batch ' + b.id + ' (closed)' : 'Batch ' + b.id + ' (open)') + '</option>').join('');
+    if (keep && bs.some(b => String(b.id) === keep)) sel.value = keep;
+  } catch { /* keep the old list */ }
+}
+async function printReports() {
+  const id = $('rep-batch').value || 'current';
+  const res = await api('/api/batches/' + id + '/driver-reports/print', { method: 'POST' });
+  const b = await res.json().catch(() => ({}));
+  if (!res.ok) return toast(b.error || 'printer problem — nothing printed', true);
+  if (!b.printed.length && !b.failed.length) return toast('No drivers in batch ' + id);
+  toast('Printed ' + b.printed.length + ' report(s)' + (b.failed.length ? ' — ' + b.failed.length + ' FAILED' : ''), b.failed.length > 0);
+}
+async function loadFloorPrefs() {
+  try {
+    const f = await (await api('/api/floor')).json();
+    $('set-green').value = f.green_till_minutes; $('set-tiptax').value = f.tip_tax_percent;
+  } catch { /* leave blank */ }
+  try {
+    const r = await api('/api/app/latest');
+    $('app-release').textContent = r.status === 200
+      ? (b => 'Quibase update ready for tablets: v' + b.version_name + ' (' + b.version_code + ')')(await r.json())
+      : 'No Quibase update cached yet.';
+  } catch { $('app-release').textContent = ''; }
+}
+async function saveFloorPrefs() {
+  const r = await api('/api/settings/floor', { method: 'PUT', body: JSON.stringify({
+    green_till_minutes: parseInt($('set-green').value, 10), tip_tax_percent: parseFloat($('set-tiptax').value) }) });
+  if (!r.ok) { const b = await r.json().catch(() => ({})); return toast(b.error || 'save failed', true); }
+  toast('Saved');
+}
 async function closeBatch(force) {
   if (!force && !confirm('Close this batch? Kitchen numbers restart at 1100.')) return;
   const res = await api('/api/batch/close', { method: 'POST', body: JSON.stringify({ force }) });
@@ -592,7 +640,7 @@ async function closeBatch(force) {
     return;
   }
   if (!res.ok) return toast(b.error || 'close failed', true);
-  toast('Batch ' + b.closed.id + ' closed'); loadLive();
+  toast('Batch ' + b.closed.id + ' closed — printing driver reports'); loadLive();
 }
 
 // Live updates from the agent's own SSE (same-origin, session cookie).

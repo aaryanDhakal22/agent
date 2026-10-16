@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"quiccpos/agent/internal/application/appupdate"
 	orderApp "quiccpos/agent/internal/application/order"
 	printerApp "quiccpos/agent/internal/application/printer"
 	"quiccpos/agent/internal/application/sseclient"
@@ -49,7 +50,11 @@ type Server struct {
 	commit        string
 	logger        zerolog.Logger
 	port          string
+	apps          *appupdate.Updater
 }
+
+// SetAppUpdater wires the tablet-app release cache (/api/app/*).
+func (s *Server) SetAppUpdater(u *appupdate.Updater) { s.apps = u }
 
 func NewServer(
 	svc *orderApp.Service,
