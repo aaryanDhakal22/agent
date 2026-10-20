@@ -8,8 +8,8 @@ import (
 
 	printerApp "quiccpos/agent/internal/application/printer"
 	"quiccpos/agent/internal/domain/order"
-	"quiccpos/agent/internal/infra/ssebroker"
 	"quiccpos/agent/internal/infra/notify"
+	"quiccpos/agent/internal/infra/ssebroker"
 
 	"github.com/rs/zerolog"
 	"go.opentelemetry.io/otel"
@@ -119,6 +119,52 @@ func (s *Service) OnArrival(ctx context.Context, o order.OrderRequest) error {
 		},
 	})
 	return nil
+}
+
+// Recover handles an order the SSE stream missed, found by the catch-up
+// reconciler. It acts only if this call stored the order (false = already
+// here, e.g. SSE delivered it meanwhile — nothing is done). print=true takes
+// the normal arrival path (auto-accept prints); print=false only puts it on
+// the mobile list as arrived, so a stale ticket never prints by itself.
+func (s *Service) Recover(ctx context.Context, o order.OrderRequest, print bool) (bool, error) {
+	ctx, span := s.tracer.Start(ctx, "order.recover",
+		trace.WithAttributes(
+			attribute.Int("order.id", o.OrderID),
+			attribute.Bool("recover.print", print),
+		),
+	)
+	defer span.End()
+
+	inserted, err := s.repo.InsertArrived(ctx, o)
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "persist failed")
+		return false, fmt.Errorf("persist recovered: %w", err)
+	}
+	span.SetAttributes(attribute.Bool("recover.inserted", inserted))
+	if !inserted {
+		return false, nil
+	}
+
+	if print {
+		autoAccept, err := s.settings.GetAutoAccept(ctx)
+		if err != nil {
+			s.logger.Warn().Ctx(ctx).Err(err).Msg("Failed to read auto-accept setting, defaulting to manual")
+			autoAccept = false
+		}
+		if autoAccept {
+			if _, err := s.Accept(ctx, o.OrderID); err == nil {
+				return true, nil
+			}
+			s.logger.Error().Ctx(ctx).Int("order_id", o.OrderID).Msg("Auto-accept of recovered order failed — order remains arrived")
+		}
+	}
+
+	s.broadcastArrived(ctx, order.StoredOrder{
+		Order:  o,
+		Status: order.Status{State: order.StateArrived},
+	})
+	return true, nil
 }
 
 // Accept transitions an order from arrived to accepted. The DB update and the

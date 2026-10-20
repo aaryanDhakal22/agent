@@ -13,6 +13,10 @@ type Repository interface {
 	// are silently ignored — the existing row is preserved.
 	UpsertArrived(ctx context.Context, o OrderRequest) error
 
+	// InsertArrived is UpsertArrived for the catch-up path: it reports whether
+	// this call created the row (false = the order was already stored).
+	InsertArrived(ctx context.Context, o OrderRequest) (bool, error)
+
 	// GetByID returns the stored order with its current status. Returns
 	// ErrNotFound if no row matches.
 	GetByID(ctx context.Context, id int) (*StoredOrder, error)

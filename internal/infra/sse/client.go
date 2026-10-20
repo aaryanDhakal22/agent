@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	orderApp "quiccpos/agent/internal/application/order"
@@ -27,6 +28,13 @@ import (
 const (
 	initialBackoff = 2 * time.Second
 	maxBackoff     = 60 * time.Second
+	// main/ writes a keepalive comment every 15s. Nothing at all for this long
+	// (headers included) means the stream is dead or half-open: drop it and
+	// reconnect instead of waiting on it forever.
+	idleTimeout = 45 * time.Second
+	// A connection that stayed up this long resets the backoff, so one bad
+	// night doesn't leave every later reconnect waiting the full minute.
+	stableAfter = 30 * time.Second
 
 	tracerName = "quiccpos/agent/sse"
 )
@@ -48,6 +56,8 @@ type Client struct {
 	service        *orderApp.Service
 	logger         zerolog.Logger
 	reconnectCount int
+	idleTimeout    time.Duration
+	onConnect      func()
 	tracer         trace.Tracer
 	meters         observability.Meters
 	propagator     propagation.TextMapPropagator
@@ -55,20 +65,26 @@ type Client struct {
 
 func New(serverURL, apiKey string, svc *orderApp.Service, logger zerolog.Logger, meters observability.Meters) *Client {
 	return &Client{
-		serverURL:  serverURL,
-		apiKey:     apiKey,
-		service:    svc,
-		logger:     logger.With().Str("module", "sse-client").Logger(),
-		tracer:     otel.Tracer(tracerName),
-		meters:     meters,
-		propagator: otel.GetTextMapPropagator(),
+		serverURL:   serverURL,
+		apiKey:      apiKey,
+		service:     svc,
+		idleTimeout: idleTimeout,
+		logger:      logger.With().Str("module", "sse-client").Logger(),
+		tracer:      otel.Tracer(tracerName),
+		meters:      meters,
+		propagator:  otel.GetTextMapPropagator(),
 	}
 }
 
+// OnConnect registers f to run each time the stream (re)connects — the
+// catch-up reconciler uses it to fetch whatever was missed while offline.
+// f must not block.
+func (c *Client) OnConnect(f func()) { c.onConnect = f }
+
 // Start connects to the main server SSE stream and blocks until ctx is cancelled.
-// It reconnects with exponential backoff on any failure. There is no backlog
-// recovery on reconnect — orders missed while offline stay in main/ and can be
-// surfaced/reprinted from the mobile interface on demand.
+// It reconnects with exponential backoff on any failure. main/ has no replay:
+// orders broadcast while the stream was down are recovered by the catch-up
+// reconciler (internal/application/catchup), triggered via OnConnect.
 func (c *Client) Start(ctx context.Context) {
 	c.logger.Info().Ctx(ctx).
 		Str("server_url", c.serverURL).
@@ -82,7 +98,7 @@ func (c *Client) Start(ctx context.Context) {
 			Dur("backoff", backoff).
 			Msg("Connecting to main server SSE stream")
 
-		err := c.connect(ctx)
+		up, err := c.connect(ctx)
 
 		if ctx.Err() != nil {
 			c.logger.Info().Msg("SSE client stopped — context cancelled")
@@ -102,6 +118,10 @@ func (c *Client) Start(ctx context.Context) {
 				Msg("SSE stream closed cleanly by server, will reconnect")
 		}
 
+		if up >= stableAfter {
+			backoff = initialBackoff
+		}
+
 		select {
 		case <-time.After(backoff):
 		case <-ctx.Done():
@@ -117,12 +137,20 @@ func (c *Client) Start(ctx context.Context) {
 	}
 }
 
-func (c *Client) connect(ctx context.Context) error {
+// connect runs one stream until it ends and reports how long it was up (0 if
+// it never got a 200).
+func (c *Client) connect(ctx context.Context) (time.Duration, error) {
 	url := strings.TrimRight(c.serverURL, "/") + "/api/v1/events/orders"
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	connCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	idle := &idleWatch{}
+	timer := time.AfterFunc(c.idleTimeout, func() { idle.fired.Store(true); cancel() })
+	defer timer.Stop()
+
+	req, err := http.NewRequestWithContext(connCtx, http.MethodGet, url, nil)
 	if err != nil {
-		return fmt.Errorf("build request: %w", err)
+		return 0, fmt.Errorf("build request: %w", err)
 	}
 	req.Header.Set("Accept", "text/event-stream")
 	req.Header.Set("Cache-Control", "no-cache")
@@ -132,23 +160,49 @@ func (c *Client) connect(ctx context.Context) error {
 
 	resp, err := http11Client.Do(req)
 	if err != nil {
-		return fmt.Errorf("dial: %w", err)
+		return 0, idle.wrap(c.idleTimeout, fmt.Errorf("dial: %w", err))
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("unexpected status %d from SSE endpoint", resp.StatusCode)
+		return 0, fmt.Errorf("unexpected status %d from SSE endpoint", resp.StatusCode)
 	}
+	connectedAt := time.Now()
+	timer.Reset(c.idleTimeout)
 
 	c.logger.Info().Ctx(ctx).
 		Str("url", url).
 		Int("reconnect_count", c.reconnectCount).
 		Msg("Connected to main server SSE stream")
 
-	return c.readEvents(ctx, resp.Body)
+	if c.onConnect != nil {
+		c.onConnect()
+	}
+
+	// alive(true) re-arms the idle timer; alive(false) holds it while an order
+	// is handled (printing can be slow — that's not a dead stream).
+	err = c.readEvents(ctx, resp.Body, func(arm bool) {
+		if arm {
+			timer.Reset(c.idleTimeout)
+		} else {
+			timer.Stop()
+		}
+	})
+	return time.Since(connectedAt), idle.wrap(c.idleTimeout, err)
 }
 
-func (c *Client) readEvents(ctx context.Context, r io.Reader) error {
+// idleWatch records that the idle timer cut the connection, so the error says
+// so instead of a bare "context canceled".
+type idleWatch struct{ fired atomic.Bool }
+
+func (w *idleWatch) wrap(timeout time.Duration, err error) error {
+	if w.fired.Load() {
+		return fmt.Errorf("no data from main for %s (keepalives stopped) — reconnecting: %w", timeout, err)
+	}
+	return err
+}
+
+func (c *Client) readEvents(ctx context.Context, r io.Reader, alive func(arm bool)) error {
 	c.logger.Debug().Ctx(ctx).Msg("Starting SSE event loop")
 
 	scanner := bufio.NewScanner(r)
@@ -166,6 +220,7 @@ func (c *Client) readEvents(ctx context.Context, r io.Reader) error {
 		default:
 		}
 
+		alive(true)
 		line := scanner.Text()
 		lineCount++
 		c.logger.Trace().Str("line", line).Int("line_count", lineCount).Msg("SSE raw line received")
@@ -173,7 +228,9 @@ func (c *Client) readEvents(ctx context.Context, r io.Reader) error {
 		if line == "" {
 			if eventType != "" || dataLine != "" {
 				if eventType == "order" && dataLine != "" {
+					alive(false)
 					c.handleOrderEvent(ctx, dataLine)
+					alive(true)
 				} else {
 					c.logger.Debug().Ctx(ctx).Str("event_type", eventType).Msg("SSE event ignored (not an order event)")
 				}

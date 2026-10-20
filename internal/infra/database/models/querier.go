@@ -18,6 +18,10 @@ type Querier interface {
 	// (e.g. mobile double-tap). Used inside the accept transaction.
 	GetOrderByIDForUpdate(ctx context.Context, orderID int32) (Order, error)
 	GetPrinterConfig(ctx context.Context, name string) (PrinterConfig, error)
+	// Catch-up path: same insert as UpsertArrivedOrder, but reports whether the
+	// row was created (1) or already existed (0), so an order the SSE stream
+	// delivers at the same moment is only handled once.
+	InsertArrivedOrder(ctx context.Context, arg InsertArrivedOrderParams) (int64, error)
 	// Pending-acceptance queue. Used by mobile to populate the "awaiting you" list
 	// when it connects or reconnects to the SSE stream.
 	ListArrivedOrders(ctx context.Context) ([]Order, error)

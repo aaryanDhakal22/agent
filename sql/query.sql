@@ -6,6 +6,14 @@ INSERT INTO orders (order_id, payload, state, arrival_date)
 VALUES ($1, $2, 'arrived', now())
 ON CONFLICT (order_id) DO NOTHING;
 
+-- name: InsertArrivedOrder :execrows
+-- Catch-up path: same insert as UpsertArrivedOrder, but reports whether the
+-- row was created (1) or already existed (0), so an order the SSE stream
+-- delivers at the same moment is only handled once.
+INSERT INTO orders (order_id, payload, state, arrival_date)
+VALUES ($1, $2, 'arrived', now())
+ON CONFLICT (order_id) DO NOTHING;
+
 -- name: GetOrderByID :one
 SELECT order_id, payload, state, arrival_date, printed_date
 FROM orders

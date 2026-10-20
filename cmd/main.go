@@ -7,6 +7,7 @@ import (
 	"os/signal"
 	"syscall"
 
+	"quiccpos/agent/internal/application/catchup"
 	orderApp "quiccpos/agent/internal/application/order"
 	printerApp "quiccpos/agent/internal/application/printer"
 	"quiccpos/agent/internal/application/retention"
@@ -188,11 +189,16 @@ func main() {
 
 	// --- SSE client (main/ → agent) + HTTP server (agent → mobile) --------
 	sseClient := sseclient.New(cfg.MainServerURL, cfg.AgentAPIKey, orderService, logger, meters)
+	// main/ has no replay — the reconciler pulls in what the stream missed
+	// (at startup, on every reconnect, and every minute).
+	reconciler := catchup.New(cfg.MainServerURL, cfg.AgentAPIKey, orderService, logger)
+	sseClient.OnConnect(reconciler.Trigger)
 	httpServer := transport.NewServer(orderService, broker, printerRegistry, printerManager, cfg.HTTPPort, logger)
 
 	go httpServer.Start(ctx)
 	go sseClient.Start(ctx)
 	go retention.Run(ctx, orderRepo, logger)
+	go reconciler.Run(ctx)
 
 	<-ctx.Done()
 	logger.Info().Msg("Agent shut down")

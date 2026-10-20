@@ -43,6 +43,22 @@ func (r *OrderRepository) UpsertArrived(ctx context.Context, o order.OrderReques
 	})
 }
 
+func (r *OrderRepository) InsertArrived(ctx context.Context, o order.OrderRequest) (bool, error) {
+	payload, err := json.Marshal(o)
+	if err != nil {
+		return false, fmt.Errorf("marshal payload: %w", err)
+	}
+	q := models.New(r.pool)
+	n, err := q.InsertArrivedOrder(ctx, models.InsertArrivedOrderParams{
+		OrderID: int32(o.OrderID),
+		Payload: payload,
+	})
+	if err != nil {
+		return false, err
+	}
+	return n == 1, nil
+}
+
 func (r *OrderRepository) GetByID(ctx context.Context, id int) (*order.StoredOrder, error) {
 	q := models.New(r.pool)
 	row, err := q.GetOrderByID(ctx, int32(id))

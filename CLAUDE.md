@@ -34,24 +34,25 @@ task devup / devupd / devdown   # docker compose (agent + nginx web UI)
 **Clean Architecture layout inside `internal/`:**
 - `domain/` — pure types (`order.OrderRequest`, `printer.Printer` interface, `printer.PrintJob`).
 - `application/` — use-cases (`order.Service.Handle`, `printer.Service.Print`/`KeepCheck`). Owns tracers, meters, and the business decision of which Pushover sound to play.
-- `infrastructure/` — adapters: `escpos/` (TCP→port 9100), `sse/` (main server listener), `mainclient/` (HTTP GET against main for backlog), `notify/` (Pushover).
+- `infrastructure/` — adapters: `escpos/` (TCP→port 9100), `sse/` (main server listener), `notify/` (Pushover). The catch-up reconciler lives in `application/catchup/`.
 - `transport/` — HTTP server exposing `/api/orders` (list) and `/api/orders/{id}/reprint`.
 - `store/` — in-memory, 24-hour-TTL map keyed by order ID. Cleanup runs every 10 min. **Not persisted** — agent restart wipes the store.
 - `observability/` — `otel.go` (providers + shutdown), `zlog.go` (trace-id hook + OTLP log bridge), `meters.go` (custom instruments: `orders.printed`, `printer.status`, `printer.detect.duration_ms`, `printer.write.duration_ms`, `sse.reconnects`).
 
 **SSE client — several non-obvious behaviours** (`internal/infrastructure/sse/client.go`):
 - HTTP/1.1 is **forced** by nil-ing `TLSNextProto` on the Transport. HTTP/2 multiplexed streams get terminated by upstream proxies on idle timeout, which was causing spurious reconnects — do not revert this.
-- Exponential backoff from 2 s to 60 s on any disconnect; reconnect counter published via `sse.reconnects` counter.
-- **Backlog recovery on reconnect only** (not the first connection): on reconnect, calls `mainClient.FetchRecentOrders(50)`, filters to orders with `OrderID > highestKnownID` in the local store, reverses them to oldest-first, and runs them through `orderService.Handle` (which prints + notifies + stores). First connection skips backlog because there's no session watermark yet.
+- Exponential backoff from 2 s to 60 s on any disconnect, reset to 2 s after a connection that stayed up 30 s; reconnect counter published via `sse.reconnects` counter.
+- **Idle timeout 45 s**: main writes a keepalive every 15 s, so no line at all for 45 s (headers included) drops the stream and reconnects — a half-open stream can't sit forever. The timer is held while an order is being handled (printing can be slow).
+- **Catch-up (main has no replay)**: `application/catchup` GETs main's `/api/v1/orders?num=100` at startup, right after every SSE (re)connect (`sseClient.OnConnect`), and every minute. Any order the agent doesn't have, by vendor `submitted_date` age: <= 60 min → normal arrival path (auto-accept prints); <= 12 h → stored as arrived for mobile, never printed; older → ignored (also keeps main's old test orders out). `orderService.Recover` acts only when its insert created the row (`InsertArrivedOrder :execrows`), so an order SSE delivers at the same moment is handled once. Logs `Recovered missed order`; no Pushover.
 - Event envelope is `order.OrderRequest` **plus** optional `_traceparent` / `_tracestate` fields. When present, the incoming trace context is `propagator.Extract`'d so the agent-side `sse.receive` span chains under main's `sse.publish` span — giving a single trace spanning both services. The fields are optional; omit-compatible with uninstrumented main.
 - Scanner buffer is bumped to 1 MB/line — default 64 KB is too small for orders with many items.
 
 **Trace propagation summary** (inbound *and* outbound):
 - Inbound: `otelhttp.NewHandler` on the transport mux extracts `traceparent` from HTTP request headers (e.g. reprint requests from the mobile app if it adds them).
 - Inbound SSE: extracted from the `_traceparent` field in the event JSON body (see above).
-- Outbound HTTP (Pushover, mainclient backlog fetch, SSE dial): `otelhttp.NewTransport` wraps the clients.
+- Outbound HTTP (Pushover, catch-up fetch, SSE dial): `otelhttp.NewTransport` wraps the clients.
 
-**The `store` is a read-through cache for the mobile app**, not a source of truth. `main/` holds the authoritative 90-day history. `main` → `agent` drift during disconnects is reconciled by the backlog-recovery logic above.
+**The `store` is a read-through cache for the mobile app**, not a source of truth. `main/` holds the authoritative 90-day history. `main` → `agent` drift during disconnects is reconciled by the catch-up reconciler above.
 
 **Pushover sounds are order-shaped signals** in `order/service.go`:
 - `cash-order` when `Payments == nil` (no prepayment → expect cash on delivery/pickup)

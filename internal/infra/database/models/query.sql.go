@@ -87,6 +87,28 @@ func (q *Queries) GetPrinterConfig(ctx context.Context, name string) (PrinterCon
 	return i, err
 }
 
+const insertArrivedOrder = `-- name: InsertArrivedOrder :execrows
+INSERT INTO orders (order_id, payload, state, arrival_date)
+VALUES ($1, $2, 'arrived', now())
+ON CONFLICT (order_id) DO NOTHING
+`
+
+type InsertArrivedOrderParams struct {
+	OrderID int32  `json:"order_id"`
+	Payload []byte `json:"payload"`
+}
+
+// Catch-up path: same insert as UpsertArrivedOrder, but reports whether the
+// row was created (1) or already existed (0), so an order the SSE stream
+// delivers at the same moment is only handled once.
+func (q *Queries) InsertArrivedOrder(ctx context.Context, arg InsertArrivedOrderParams) (int64, error) {
+	result, err := q.db.Exec(ctx, insertArrivedOrder, arg.OrderID, arg.Payload)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const listArrivedOrders = `-- name: ListArrivedOrders :many
 SELECT order_id, payload, state, arrival_date, printed_date
 FROM orders
