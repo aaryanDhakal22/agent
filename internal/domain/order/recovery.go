@@ -12,11 +12,13 @@ import (
 // the open batch, the kitchen counter, the settings, and the drivers with
 // their queue and open shifts.
 type AgentState struct {
-	Version           int           `json:"version"`
-	Batch             StateBatch    `json:"batch"`
-	KitchenNext       int64         `json:"kitchen_next"`
-	LastPrepMinutes   int64         `json:"last_prep_minutes"`
-	Prefs             FloorPrefs    `json:"prefs"`
+	Version         int        `json:"version"`
+	Batch           StateBatch `json:"batch"`
+	KitchenNext     int64      `json:"kitchen_next"`
+	LastPrepMinutes int64      `json:"last_prep_minutes"`
+	Prefs           FloorPrefs `json:"prefs"`
+	// ReceiptPrefs: nil in reports from agents older than receipt settings.
+	ReceiptPrefs      *ReceiptPrefs `json:"receipt_prefs,omitempty"`
 	DriverResetTime   string        `json:"driver_reset_time"`
 	LastDriverResetAt *time.Time    `json:"last_driver_reset_at,omitempty"`
 	AutoAccept        bool          `json:"auto_accept"`

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"quiccpos/agent/internal/domain/order"
 
@@ -178,7 +179,7 @@ func (s *Service) ListDrivers(ctx context.Context) ([]order.Driver, error) {
 
 func cleanName(name string) (string, error) {
 	name = strings.TrimSpace(name)
-	if name == "" || len(name) > 40 {
+	if name == "" || utf8.RuneCountInString(name) > 40 {
 		return "", fmt.Errorf("%w: driver name must be 1-40 characters", ErrBadRequest)
 	}
 	return name, nil
@@ -263,8 +264,34 @@ func (s *Service) SetDriverResetTime(ctx context.Context, hhmm string) error {
 		return err
 	}
 	// Moving the time to one that already passed today must not fire a reset
-	// right now: count today's as done; it next runs tomorrow.
-	return s.repo.MarkDriverReset(ctx, time.Now())
+	// right now: count the latest scheduled one as done. Not "now" — a driver
+	// out on a run (clocked in before now) would then be clocked out when
+	// they return.
+	hm, _ := time.Parse("15:04", hhmm)
+	return s.repo.MarkDriverReset(ctx, lastScheduledReset(time.Now(), hm, s.tz()))
+}
+
+// SetStoreTZ gives the service the location's timezone (from store_config).
+func (s *Service) SetStoreTZ(tz func() *time.Location) { s.storeTZ.Store(&tz) }
+
+func (s *Service) tz() *time.Location {
+	if fn := s.storeTZ.Load(); fn != nil && *fn != nil {
+		if l := (*fn)(); l != nil {
+			return l
+		}
+	}
+	return time.Local
+}
+
+// lastScheduledReset is the most recent hm (local wall time in loc) at or
+// before now.
+func lastScheduledReset(now, hm time.Time, loc *time.Location) time.Time {
+	local := now.In(loc)
+	due := time.Date(local.Year(), local.Month(), local.Day(), hm.Hour(), hm.Minute(), 0, 0, loc)
+	if local.Before(due) {
+		due = due.AddDate(0, 0, -1)
+	}
+	return due
 }
 
 // DriverResetDue runs the daily auto clock-out once it's past today's reset
@@ -280,9 +307,11 @@ func (s *Service) DriverResetDue(ctx context.Context, now time.Time, loc *time.L
 		return 0, nil // bad setting: never auto-reset rather than reset at a wrong time
 	}
 	if rs.LastRun == nil {
-		// First check after install/upgrade: start the clock now instead of
-		// clocking everyone out mid-service because "today's 10:00 passed".
-		return 0, s.repo.MarkDriverReset(ctx, now)
+		// First check after install/upgrade: count the latest scheduled reset
+		// as done instead of clocking everyone out mid-service because
+		// "today's 10:00 passed" (and not "now": drivers clocked in during
+		// setup would be clocked out on their first return).
+		return 0, s.repo.MarkDriverReset(ctx, lastScheduledReset(now, hm, loc))
 	}
 	local := now.In(loc)
 	due := time.Date(local.Year(), local.Month(), local.Day(), hm.Hour(), hm.Minute(), 0, 0, loc)

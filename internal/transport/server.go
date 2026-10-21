@@ -57,7 +57,8 @@ type Server struct {
 	onLinked      func(*recovery.Outcome)
 	linkMu        sync.Mutex
 	diag          DiagDeps
-	testMu        sync.Mutex // one printer test at a time
+	testMu        sync.Mutex // one printer test (or sample) at a time
+	receiptSample func(order.ReceiptPrefs) []byte
 	mainReach     mainProbe
 	started       time.Time
 }
@@ -121,13 +122,18 @@ func (s *Server) Start(ctx context.Context) {
 	// extracts any inbound traceparent header, and attaches a context carrying
 	// the span to r.Context() for handlers to use downstream. traceIDHeader
 	// sits inside otelhttp so the span already exists when it runs.
-	handler := otelhttp.NewHandler(traceIDHeader(mux), "agent-http",
+	// No request needs more than ~256 KB (a tablet's diagnostics report); the
+	// open routes decode JSON, so cap every body against a memory blow-up.
+	handler := otelhttp.NewHandler(http.MaxBytesHandler(traceIDHeader(mux), maxRequestBody), "agent-http",
 		otelhttp.WithServerName("quicc-agent"),
 	)
 
+	// No WriteTimeout: /api/events is a long-lived SSE stream.
 	srv := &http.Server{
-		Addr:    fmt.Sprintf(":%s", s.port),
-		Handler: handler,
+		Addr:              fmt.Sprintf(":%s", s.port),
+		Handler:           handler,
+		ReadHeaderTimeout: 10 * time.Second,
+		IdleTimeout:       2 * time.Minute,
 	}
 
 	go func() {
@@ -411,6 +417,9 @@ func (s *Server) writeJSON(w http.ResponseWriter, status int, body any) {
 		s.logger.Warn().Err(err).Msg("Failed to encode JSON response")
 	}
 }
+
+// maxRequestBody caps every request body (see Start).
+const maxRequestBody = 1 << 20
 
 func (s *Server) writeError(w http.ResponseWriter, r *http.Request, status int, err error) {
 	s.logger.Warn().Ctx(r.Context()).Err(err).Int("status", status).Str("path", r.URL.Path).Msg("Request failed")

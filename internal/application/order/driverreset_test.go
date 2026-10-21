@@ -19,6 +19,10 @@ func (r *resetRepo) MarkDriverReset(_ context.Context, at time.Time) error {
 	r.reset.LastRun = &at
 	return nil
 }
+func (r *resetRepo) SetDriverResetTime(_ context.Context, hhmm string) error {
+	r.reset.Time = hhmm
+	return nil
+}
 func (r *resetRepo) AutoClockOut(_ context.Context, at time.Time) (int, error) {
 	r.runs = append(r.runs, at)
 	r.reset.LastRun = &at
@@ -70,5 +74,51 @@ func TestFirstResetCheckAfterUpgradeDoesNotClockAnyoneOut(t *testing.T) {
 	svc.DriverResetDue(context.Background(), afternoon.AddDate(0, 0, 1).Add(-5*time.Hour), ny)
 	if len(repo.runs) != 1 {
 		t.Fatalf("runs = %d", len(repo.runs))
+	}
+}
+
+// The clock starts at the latest scheduled reset, not "now": a driver who
+// clocked in after 10:00 (e.g. in the setup wizard) must not count as having
+// crossed a reset.
+func TestFirstResetCheckStampsTheScheduledTimeNotNow(t *testing.T) {
+	svc, base, _, _ := newTestService(t, false)
+	repo := &resetRepo{fakeRepo: base, reset: order.DriverReset{Time: "10:00"}}
+	svc.repo = repo
+	ny, _ := time.LoadLocation("America/New_York")
+	afternoon := time.Date(2026, 10, 16, 15, 0, 0, 0, ny)
+	svc.DriverResetDue(context.Background(), afternoon, ny)
+	if want := time.Date(2026, 10, 16, 10, 0, 0, 0, ny); repo.reset.LastRun == nil || !repo.reset.LastRun.Equal(want) {
+		t.Fatalf("LastRun = %v, want %v", repo.reset.LastRun, want)
+	}
+}
+
+func TestSavingTheResetTimeStampsTheLatestScheduledReset(t *testing.T) {
+	svc, base, _, _ := newTestService(t, false)
+	repo := &resetRepo{fakeRepo: base, reset: order.DriverReset{Time: "10:00"}}
+	svc.repo = repo
+	ny, _ := time.LoadLocation("America/New_York")
+	svc.SetStoreTZ(func() *time.Location { return ny })
+
+	if err := svc.SetDriverResetTime(context.Background(), "04:00"); err != nil {
+		t.Fatal(err)
+	}
+	last := *repo.reset.LastRun
+	now := time.Now().In(ny)
+	if last.After(now) || now.Sub(last) > 24*time.Hour || last.In(ny).Hour() != 4 || last.In(ny).Minute() != 0 {
+		t.Fatalf("LastRun = %v, want the latest 04:00 New York before %v", last.In(ny), now)
+	}
+}
+
+func TestLastScheduledReset(t *testing.T) {
+	ny, _ := time.LoadLocation("America/New_York")
+	hm, _ := time.Parse("15:04", "10:00")
+	for _, tc := range []struct{ now, want time.Time }{
+		{time.Date(2026, 10, 16, 15, 0, 0, 0, ny), time.Date(2026, 10, 16, 10, 0, 0, 0, ny)},
+		{time.Date(2026, 10, 16, 10, 0, 0, 0, ny), time.Date(2026, 10, 16, 10, 0, 0, 0, ny)},
+		{time.Date(2026, 10, 16, 9, 59, 0, 0, ny), time.Date(2026, 10, 15, 10, 0, 0, 0, ny)},
+	} {
+		if got := lastScheduledReset(tc.now.UTC(), hm, ny); !got.Equal(tc.want) {
+			t.Errorf("lastScheduledReset(%v) = %v, want %v", tc.now, got, tc.want)
+		}
 	}
 }

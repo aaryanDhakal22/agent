@@ -11,6 +11,7 @@ package order
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -122,6 +123,24 @@ type PaymentSummary struct {
 	AmountCents int64  `json:"amount_cents"`
 	Last4       string `json:"last4,omitempty"`
 	AuthCode    string `json:"auth_code,omitempty"`
+}
+
+// CashDue is what is collected in cash for the order (at the counter or by
+// the driver): the cash payments, or the whole total when the order carries
+// no payments at all — that is how the vendor sends a cash order (v1 printed
+// "Collect Cash" for exactly that case). Card and other payments (a third
+// party, an invoice) are already paid and never count.
+func (s Snapshot) CashDue() int64 {
+	if len(s.Payments) == 0 {
+		return s.Money.Total
+	}
+	var cash int64
+	for _, p := range s.Payments {
+		if strings.EqualFold(p.Method, "cash") {
+			cash += p.AmountCents
+		}
+	}
+	return cash
 }
 
 // MustParseID returns the snapshot id as a uuid.UUID. The wire shape uses

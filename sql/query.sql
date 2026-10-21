@@ -219,6 +219,12 @@ SELECT green_till_minutes, tip_tax_bps FROM settings WHERE id = 1;
 -- name: SetFloorPrefs :exec
 UPDATE settings SET green_till_minutes = ?, tip_tax_bps = ? WHERE id = 1;
 
+-- name: GetReceiptPrefs :one
+SELECT receipt_prefs FROM settings WHERE id = 1;
+
+-- name: SetReceiptPrefs :exec
+UPDATE settings SET receipt_prefs = ? WHERE id = 1;
+
 -- name: SetLastReturn :exec
 UPDATE settings SET last_return_driver_id = ?, last_return_position = ?, last_return_at = ? WHERE id = 1;
 

@@ -140,7 +140,9 @@ manually and runs from an env-file snapshot rendered from Doppler (not live
 - HTTP/1.1 is **forced** by nil-ing `TLSNextProto` on the Transport. HTTP/2
   multiplexed streams get terminated by upstream proxies on idle timeout —
   do not revert.
-- Exponential backoff 2s → 60s on disconnect.
+- Exponential backoff 2s doubling, capped at exactly 60s; it goes back to 2s
+  after a connection that reached HTTP 200 (`c.streamed`), so a drop after a
+  long healthy stream doesn't wait out the last outage's backoff.
 - Three event types handled:
   - `event: store_config` — handshake frame. Unmarshalled to
     `storeconfig.StoreContext`; persisted via `storeConfigSink.Apply`,
@@ -284,9 +286,10 @@ nginx :80) — the switch is in `../CUTOVER.md`; never run both agents at once.
   runs `OnArrival` for each — which now **ignores orders it already holds**
   (`UpsertArrived` reports `inserted`), so redeliveries never re-announce or
   re-accept an order.
-- **Accept**: the `accepted` floor event is written with
-  `context.WithoutCancel` (a tablet timeout can't lose it); printing is capped
-  at 25 s per order, dials honour the context, fallbacks the health check saw
+- **Accept**: the print and the `accepted` floor event run on
+  `context.WithoutCancel` (a cancelled tablet request can neither cut the print
+  short nor lose the event); printing is capped at 25 s per order
+  (`printBudget`), dials honour the context, fallbacks the health check saw
   down are tried last, print-trouble Pushovers are sent in the background.
 - **Mobile SSE** buffer is 128 and a client that can't keep up is
   **disconnected** (it reconnects + refetches) instead of silently missing
@@ -294,21 +297,42 @@ nginx :80) — the switch is in `../CUTOVER.md`; never run both agents at once.
 - **Web sessions**: the signing secret rotates (and is re-persisted) on a
   password change, unlink, or revoke-wipe → every other browser is signed out;
   unlink/wipe also **revoke all paired tablets**. `/api/login` is throttled per
-  IP (5 misses → 30 s, doubling, max 15 min → 429 `too_many_attempts`).
+  IP (5 misses → 30 s, doubling, max 15 min → 429 `too_many_attempts`), and only
+  one attempt per IP may be in flight (a parallel one → 429 too).
 - Drivers: can't remove one who is `out` (409); removing a clocked-in driver
   closes the shift; "returned" only for `out` drivers; the daily reset's first
-  check after install/upgrade only starts the clock, and changing the time never
-  fires a reset immediately; close batch clocks out drivers whose shift began
-  before the last reset.
+  check after install/upgrade and saving a new time both stamp the most recent
+  *scheduled* reset as done (`lastScheduledReset`: today's HH:MM if passed, else
+  yesterday's) — never "now", or a driver out on a run would be clocked out on
+  return; close batch clocks out drivers whose shift began before the last reset.
 - `cmd/main.go` creates the DB directory (`~/.quicc` on a fresh Pi); ticket
   names are cut by characters, not bytes; floor sync isolates an event main
   rejects with 400/413 instead of retrying the batch forever.
+
+## Pre-production sweep (2.0.2, 2026-10-21)
+
+- Every request body is capped at 1 MiB (`MaxBytesHandler`, both listeners);
+  the main port has `ReadHeaderTimeout` 10 s / `IdleTimeout` 2 min (no write
+  timeout — `/api/events`).
+- Tablet and driver names: 1–40 **runes** (`utf8.RuneCountInString`), not bytes.
+- The printer status `Registry` drops probe results for printers no longer in
+  the roster, so a removed printer can't reappear as "up".
+- Kitchen ticket: vendor placeholder size `Serving` is hidden, `Serving (2
+  Piece)` prints `(2 Piece)` (`displaySize`; the customer receipt keeps the
+  vendor size as v1 did); `wordWrap` splits a word longer than the line.
+- **One cash rule** (`order.Snapshot.CashDue`, mirrored by Quibase's
+  `OrderSnapshot.cashDueCents`): cash due = the `cash` payments; **no payments
+  at all = the whole total** (how the vendor sends a cash order — main now also
+  turns `balance_owing` into a pending cash payment); card / `other` = paid.
+  Used by the driver report and the receipt (`CASH - $due` + `Collect Cash`,
+  `PAID - CARD`, or plain `PAID`).
 
 ## Driver reports, undo-return, settings, app cache (2026-10-16)
 
 - **Driver reports** (`application/order/reports.go`, repo `DriverReports`,
   `receipt/report.go`): one slip per driver who delivered in, or was clocked in
-  during, a batch. Cash = the order's *cash* payments (card = paid to the store);
+  during, a batch. Cash = `Snapshot.CashDue()` (the *cash* payments, or the
+  whole total when there are no payments; card = paid to the store);
   tips A/T = all tips × (1 − `tip_tax_bps`); owed = cash − tips A/T (negative →
   "STORE OWES DRIVER"). Printed by `Dispatcher.PrintDocument` (receipt printer,
   failover) **in the background after Close batch** and on demand via
@@ -392,8 +416,22 @@ errors only if nothing printed. Roster is keyed by printer **id** (rename-safe).
 - One Pushover per print for failed/rerouted tickets (+ unrouted items on accept).
 - `escpos` dials `ip` as-is when it's `host:port` (fake printers in pytest),
   else `ip:9100`.
-- Receipt bytes: `receipt.Build(snap, sc, ticket)`; station layout pinned by
-  `receipt/testdata/station.golden` (`go test ./internal/infra/printer/receipt -update`).
+- Receipt bytes: `receipt.Build(snap, sc, ticket, prefs)`; layouts pinned by
+  `receipt/testdata/{station,receipt_delivery,receipt_pickup}.golden`
+  (`go test ./internal/infra/printer/receipt -update`). Order notes print on the
+  customer receipt only; food notes stay under their item on the kitchen ticket.
+- **Receipt settings** (2.0.2, `order.ReceiptPrefs`, `settings.receipt_prefs`
+  JSON, migration `00010`): kitchen item/number size, footer text (null =
+  location `receipt_footer` → `ONLINE ORDER`; `""` = none) + size, copies 1-2,
+  store address / phone / extra-paper toggles. **Defaults must stay
+  byte-identical** to the goldens. Decode with `order.DecodeReceiptPrefs` (over
+  the defaults — the bools default true). The print path reads the order
+  service's atomic copy (`PrintPrefs`; reloaded after a link/restore);
+  `SetReceiptPrefs` wakes state sync (`agent.state.receipt_prefs`). Device routes
+  `GET`/`PUT /api/settings/receipt` + `POST /api/printers/sample`
+  (`transport/server_receipt.go`; sample = `receipt.BuildSample` via
+  `PrintTest`, no failover, `testMu`). Preview a setting without paper:
+  `RECEIPT_PREVIEW_PREFS='{...}'` with `TestPreviewDump`.
 - **Keep `sql/query.sql` pure ASCII** — a non-ASCII char (e.g. `→`) in a comment
   makes sqlc's sqlite engine mis-slice every later query (runtime "syntax error").
 
@@ -449,7 +487,8 @@ binary stays static) with WAL + `busy_timeout` + `foreign_keys` and a single ope
 connection. `internal/migrate` runs goose (`sqlite3` dialect) on boot
 (`00001_initial_schema`, `00002_session_secret`, `00003_ui_password`,
 `00004_floor` + `00005_cancelled` — each rebuilds `orders` to widen the state CHECK;
-`00006_driver_shifts` rebuilds `drivers` (adds `off`) + `driver_shifts`; use
+`00006_driver_shifts` rebuilds `drivers` (adds `off`) + `driver_shifts`; …
+`00010_receipt_prefs` adds `settings.receipt_prefs`; use
 `migrate.RunTo` in tests to seed an older schema). sqlc
 targets the `sqlite` engine (`sql/sqlc.yaml`, `sql_package: database/sql`);
 `sql/schema.sql` mirrors **all** migrations and every query — including the
@@ -504,7 +543,7 @@ the agent itself — no nginx. It's a password-gated SPA whose three auth panels
 `/api/drivers*`, `/api/batches`, `/api/batch/close`, `/api/printers*`,
 `/api/events`) and the Quibase setup/diagnostics routes (`/api/pairing/code`,
 `/api/device/self`, `/api/device/report-token`, `/api/diag`, `/api/diag/report`,
-`/api/printers/test`) need a paired tablet key **or** the web-UI session — no
+`/api/printers/test`, `/api/printers/sample`, `/api/settings/receipt`) need a paired tablet key **or** the web-UI session — no
 longer LAN-open; `POST /api/pair` is open (needs a live code); the web-UI surface
 (history, print/resend, store-config, settings, devices) is session-gated.
 `internal/infra/mainclient` is the agent's HTTP client to main.
@@ -530,6 +569,7 @@ longer LAN-open; `POST /api/pair` is open (needs a live code); the web-UI surfac
 | Duplex RPC (envelope + registry) | `internal/rpc/{envelope.go,registry.go}` |
 | Printer-roster report to main | `internal/application/printer/report.go` (wired in `cmd/main.go`) |
 | Receipt builder | `internal/infra/printer/receipt/builder.go` |
+| Receipt settings (prefs, routes, sample) | `internal/domain/order/receipt_prefs.go`, `internal/transport/server_receipt.go`, `internal/infra/printer/receipt/sample.go` |
 | HTTP route table (single source of truth) | `internal/transport/routes.go` — `routeDef` slice drives the mux **and** `GET /__routes` |
 | HTTP server wiring | `internal/transport/server.go` (`Start` iterates the table) |
 | Schema | `sql/schema.sql` + `internal/migrate/sql/*.sql` |

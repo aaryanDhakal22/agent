@@ -34,6 +34,15 @@ func (f *fakePrinter) Detect(context.Context) error {
 	}
 	return nil
 }
+
+// setDown flips the fake under its lock (the dispatcher's health loop reads
+// it from another goroutine).
+func (f *fakePrinter) setDown(down bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.down = down
+}
+
 func (f *fakePrinter) Name() string { return f.name }
 func (f *fakePrinter) IP() string   { return "fake" }
 func (f *fakePrinter) SetIP(string) {}
@@ -84,6 +93,12 @@ func routedSnap() order.Snapshot {
 	}}
 }
 
+func detects(f *fakePrinter) int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.detects
+}
+
 func jobs(f *fakePrinter) string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -103,7 +118,7 @@ func TestExecute_AllUp(t *testing.T) {
 
 func TestExecute_StationDownFailsOverToReceiptPrinter(t *testing.T) {
 	d, fk := newTestDispatcher(t)
-	fk["Pizza"].down = true
+	fk["Pizza"].setDown(true)
 	out, err := d.Execute(context.Background(), routedSnap())
 	if err != nil || len(out.Failed) != 0 {
 		t.Fatalf("err=%v out=%+v", err, out)
@@ -124,7 +139,7 @@ func TestExecute_StationDownFailsOverToReceiptPrinter(t *testing.T) {
 
 func TestExecute_ReceiptDownFailsOverToAStation(t *testing.T) {
 	d, fk := newTestDispatcher(t)
-	fk["Front"].down = true
+	fk["Front"].setDown(true)
 	if _, err := d.Execute(context.Background(), routedSnap()); err != nil {
 		t.Fatal(err)
 	}
@@ -136,7 +151,7 @@ func TestExecute_ReceiptDownFailsOverToAStation(t *testing.T) {
 func TestExecute_AllDownErrors(t *testing.T) {
 	d, fk := newTestDispatcher(t)
 	for _, f := range fk {
-		f.down = true
+		f.setDown(true)
 	}
 	out, err := d.Execute(context.Background(), routedSnap())
 	if err == nil || !errors.Is(err, ErrPrinterUnreachable) || len(out.Printed) != 0 || len(out.Failed) != 3 {
@@ -177,8 +192,8 @@ func TestApplyDropsRemovedPrintersFromTheRegistry(t *testing.T) {
 
 func TestKnownDownFallbacksAreTriedLast(t *testing.T) {
 	d, fk := newTestDispatcher(t)
-	fk["Pizza"].down = true
-	fk["Front"].down = true
+	fk["Pizza"].setDown(true)
+	fk["Front"].setDown(true)
 	// The health check already saw Front (the receipt printer) down.
 	now := time.Now()
 	d.registry.Record("Front", "x", false, errors.New("refused"), now)
@@ -193,7 +208,7 @@ func TestKnownDownFallbacksAreTriedLast(t *testing.T) {
 			t.Fatalf("pizza ticket printed on %s", p.PrintedOn)
 		}
 	}
-	if fk["Front"].detects == 0 {
+	if detects(fk["Front"]) == 0 {
 		t.Log("front never tried (fine: everything printed before reaching it)")
 	}
 }
@@ -209,14 +224,14 @@ func TestPrintDocument_ReceiptPrinterThenFailover(t *testing.T) {
 		t.Fatalf("front = %q", jobs(fk["Front"]))
 	}
 
-	fk["Front"].down = true
+	fk["Front"].setDown(true)
 	res, err = d.PrintDocument(context.Background(), "driver-report", build)
 	if err != nil || res.PrintedOn != "Pizza" || res.ReroutedFrom != "Front" || jobs(fk["Pizza"]) != "report:Front" {
 		t.Fatalf("failover res=%+v err=%v pizza=%q", res, err, jobs(fk["Pizza"]))
 	}
 
 	for _, f := range fk {
-		f.down = true
+		f.setDown(true)
 	}
 	if _, err := d.PrintDocument(context.Background(), "driver-report", build); err == nil {
 		t.Fatal("expected an error with every printer down")

@@ -34,6 +34,10 @@ type StatusSnapshot struct {
 type Registry struct {
 	mu      sync.RWMutex
 	entries map[string]StatusSnapshot
+	// roster is the set of printer names last passed to Retain (nil until
+	// then). A probe that was already running when the roster changed must
+	// not bring a removed printer back.
+	roster map[string]bool
 }
 
 func NewRegistry() *Registry {
@@ -45,6 +49,9 @@ func NewRegistry() *Registry {
 func (r *Registry) Register(name string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if r.roster != nil {
+		r.roster[name] = true
+	}
 	if _, ok := r.entries[name]; !ok {
 		r.entries[name] = StatusSnapshot{Name: name}
 	}
@@ -58,6 +65,9 @@ func (r *Registry) Register(name string) {
 func (r *Registry) Record(name, ip string, up bool, probeErr error, at time.Time) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if r.roster != nil && !r.roster[name] {
+		return // removed from the roster while this probe was running
+	}
 
 	prev, existed := r.entries[name]
 	snap := prev
@@ -116,6 +126,7 @@ func (r *Registry) Retain(names []string) {
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	r.roster = keep
 	for n := range r.entries {
 		if !keep[n] {
 			delete(r.entries, n)

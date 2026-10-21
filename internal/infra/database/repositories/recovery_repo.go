@@ -36,6 +36,11 @@ func (r *OrderRepository) AgentState(ctx context.Context) (st order.AgentState, 
 	if p, err := q.GetFloorPrefs(ctx); err == nil {
 		st.Prefs = order.FloorPrefs{GreenTillMinutes: p.GreenTillMinutes, TipTaxBps: p.TipTaxBps}
 	}
+	if raw, err := q.GetReceiptPrefs(ctx); err == nil {
+		if rp, err := order.DecodeReceiptPrefs([]byte(raw)); err == nil {
+			st.ReceiptPrefs = &rp
+		}
+	}
 	if rs, err := q.GetDriverReset(ctx); err == nil {
 		st.DriverResetTime = rs.DriverResetTime
 		if last, err := optTS(sql.NullString{String: rs.LastDriverResetAt, Valid: rs.LastDriverResetAt != ""}); err == nil {
@@ -194,6 +199,16 @@ func (r *OrderRepository) Restore(ctx context.Context, data order.RestoreData) (
 			if p := data.State.Prefs; p.GreenTillMinutes > 0 {
 				if err := q.SetFloorPrefs(ctx, models.SetFloorPrefsParams{GreenTillMinutes: p.GreenTillMinutes, TipTaxBps: p.TipTaxBps}); err != nil {
 					return err
+				}
+			}
+			// Receipt settings from an older agent's report are absent (keep
+			// the defaults); invalid ones are dropped rather than failing the
+			// whole restore.
+			if rp := data.State.ReceiptPrefs; rp != nil {
+				if p := rp.Normalize(); p.Validate() == nil {
+					if err := setReceiptPrefs(ctx, q, p); err != nil {
+						return err
+					}
 				}
 			}
 			if data.State.DriverResetTime != "" {

@@ -119,6 +119,8 @@ CREATE TABLE settings (
     manager_username          text NOT NULL DEFAULT '',
     device_id                 text NOT NULL DEFAULT '',
     last_backup_at            text NOT NULL DEFAULT '',
+    -- 00010_receipt_prefs: receipt settings (JSON; missing keys = defaults).
+    receipt_prefs             text NOT NULL DEFAULT '{}',
     CHECK (id = 1)
 );
 

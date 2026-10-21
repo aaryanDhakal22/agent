@@ -9,7 +9,7 @@ func slipFor(e RosterEntry) []byte { return []byte("test:" + e.Name) }
 
 func TestPrintTest_NoFailover(t *testing.T) {
 	d, fk := newTestDispatcher(t)
-	fk["Pizza"].down = true
+	fk["Pizza"].setDown(true)
 	res := d.PrintTest(context.Background(), "", slipFor)
 	if len(res) != 3 {
 		t.Fatalf("want one result per printer, got %+v", res)
@@ -36,7 +36,7 @@ func TestPrintTest_NoFailover(t *testing.T) {
 
 func TestPrintTest_OnePrinterAndUnknownID(t *testing.T) {
 	d, fk := newTestDispatcher(t)
-	fk["Wings"].down = true
+	fk["Wings"].setDown(true)
 	res := d.PrintTest(context.Background(), "p-wings", slipFor)
 	if len(res) != 1 || res[0].OK || res[0].ErrorCode != TestUnreachable {
 		t.Fatalf("wings: %+v", res)
@@ -52,7 +52,7 @@ func TestPrintTest_OnePrinterAndUnknownID(t *testing.T) {
 
 func TestProbe_DoesNotPrint(t *testing.T) {
 	d, fk := newTestDispatcher(t)
-	fk["Front"].down = true
+	fk["Front"].setDown(true)
 	res := d.Probe(context.Background(), "")
 	if len(res) != 3 || res[0].Name != "Front" || res[0].OK || res[0].ErrorCode != TestUnreachable || !res[1].OK {
 		t.Fatalf("probe: %+v", res)

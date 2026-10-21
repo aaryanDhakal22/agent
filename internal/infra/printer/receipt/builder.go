@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"quiccpos/agent/internal/domain/order"
 	"quiccpos/agent/internal/domain/printer"
@@ -26,6 +27,7 @@ const (
 	cmdBoldOff   = "\x1b\x45\x00"
 	cmdDoubleSz  = "\x1d\x21\x11"
 	cmdQuadSz    = "\x1d\x21\x22"
+	cmdHugeSz    = "\x1d\x21\x33" // triple width + height
 	cmdBaseSz    = "\x1b\x21\x10"
 	cmdNormalSz  = "\x1b\x21\x00" // font A, single height
 	cmdSmallSz   = "\x1b\x21\x01" // font B — the "rest of the order" list
@@ -35,15 +37,22 @@ const (
 	cmdInvertOff = "\x1d\x42\x00"
 )
 
-// Build renders one planned ticket: a kitchen station ticket (BuildStation) or
-// a full receipt, with a "REROUTED from X" banner when it printed on a
-// fallback printer.
-func Build(snap order.Snapshot, sc storeconfig.StoreContext, t printer.Ticket) []byte {
+// Build renders one planned ticket with the store's receipt settings: a
+// kitchen station ticket (BuildStation) or the customer receipt (repeated for
+// prefs.Copies, each copy cut), with a "REROUTED from X" banner when it
+// printed on a fallback printer. order.DefaultReceiptPrefs() prints exactly
+// what the agent printed before the settings existed.
+func Build(snap order.Snapshot, sc storeconfig.StoreContext, t printer.Ticket, prefs order.ReceiptPrefs) []byte {
 	snap = localize(snap, sc)
+	prefs = prefs.Normalize()
 	if t.Kind == printer.TicketStation {
-		return BuildStation(snap, t)
+		return buildStation(snap, t, prefs)
 	}
-	return buildFull(snap, sc, t.ReroutedFrom)
+	out := buildFull(snap, sc, t.ReroutedFrom, prefs)
+	if prefs.Copies > 1 {
+		return bytes.Repeat(out, prefs.Copies)
+	}
+	return out
 }
 
 // BuildWith renders a canonical Snapshot into ESC/POS bytes using the
@@ -52,8 +61,10 @@ func Build(snap order.Snapshot, sc storeconfig.StoreContext, t printer.Ticket) [
 // Money convention: every amount on the wire is integer cents; we render
 // them as dollar strings here ("$X.YY") at format time and never anywhere
 // else.
+//
+// Default receipt settings; Build takes the store's.
 func BuildWith(snap order.Snapshot, sc storeconfig.StoreContext) []byte {
-	return buildFull(localize(snap, sc), sc, "")
+	return buildFull(localize(snap, sc), sc, "", order.DefaultReceiptPrefs())
 }
 
 // localize puts the order's times in the location's timezone so tickets show
@@ -72,7 +83,7 @@ func localize(snap order.Snapshot, sc storeconfig.StoreContext) order.Snapshot {
 	return snap
 }
 
-func buildFull(snap order.Snapshot, sc storeconfig.StoreContext, reroutedFrom string) []byte {
+func buildFull(snap order.Snapshot, sc storeconfig.StoreContext, reroutedFrom string, prefs order.ReceiptPrefs) []byte {
 	var buf bytes.Buffer
 	w := func(s string) {
 		if len(s) > 0 && (s[0] == '\x1b' || s[0] == '\x1d' || s[0] == '\x0a') {
@@ -100,17 +111,19 @@ func buildFull(snap order.Snapshot, sc storeconfig.StoreContext, reroutedFrom st
 	w(cmdBoldOff)
 	w(cmdBaseSz)
 
-	if sc.Location.Name != "" {
-		w(sc.Location.Name)
-		nl()
-	}
-	if sc.Location.AddressLine1 != "" {
-		w(sc.Location.AddressLine1)
-		nl()
-	}
-	if sc.Location.AddressLine2 != "" {
-		w(sc.Location.AddressLine2)
-		nl()
+	if prefs.ShowStoreAddress {
+		if sc.Location.Name != "" {
+			w(sc.Location.Name)
+			nl()
+		}
+		if sc.Location.AddressLine1 != "" {
+			w(sc.Location.AddressLine1)
+			nl()
+		}
+		if sc.Location.AddressLine2 != "" {
+			w(sc.Location.AddressLine2)
+			nl()
+		}
 	}
 
 	// --- Promised-for-later flag ---------------------------------------
@@ -136,12 +149,12 @@ func buildFull(snap order.Snapshot, sc storeconfig.StoreContext, reroutedFrom st
 		w(cmdBoldOn)
 		w(cmdDoubleSz)
 		w(cmdCenter)
-		w(" " + strings.ToUpper(name) + " ")
+		w(" " + lastFirst(name) + " ")
 		w(cmdBaseSz)
 		w(cmdBoldOff)
 		nl()
 	}
-	if phone := strings.TrimSpace(snap.Customer.Phone); phone != "" {
+	if phone := strings.TrimSpace(snap.Customer.Phone); phone != "" && prefs.ShowPhone {
 		nl()
 		w(cmdBoldOn)
 		w(cmdDoubleSz)
@@ -170,10 +183,8 @@ func buildFull(snap order.Snapshot, sc storeconfig.StoreContext, reroutedFrom st
 		w(cmdBoldOff)
 		w(cmdBaseSz)
 		nl()
-		if addr.Line2 != "" {
-			w("Apt: " + addr.Line2)
-			nl()
-		}
+		w("Apt: " + addr.Line2)
+		nl()
 		w("City: " + addr.City)
 		nl()
 		w("Zip: " + addr.PostalCode)
@@ -196,9 +207,14 @@ func buildFull(snap order.Snapshot, sc storeconfig.StoreContext, reroutedFrom st
 	nl()
 	w(cmdBoldOn)
 	w(cmdDoubleSz)
-	if len(snap.Payments) == 0 || !hasCardPayment(snap.Payments) {
-		w("CASH - " + dollars(snap.Money.Total))
-	} else {
+	cashDue := snap.CashDue()
+	switch {
+	case cashDue > 0:
+		w("CASH - " + dollars(cashDue))
+	case !hasCardPayment(snap.Payments):
+		// Paid another way (a third party, an invoice): nothing to collect.
+		w("PAID")
+	default:
 		// First card payment drives the displayed last4/auth code.
 		card := firstCardPayment(snap.Payments)
 		w("PAID - CARD")
@@ -229,24 +245,44 @@ func buildFull(snap order.Snapshot, sc storeconfig.StoreContext, reroutedFrom st
 	for _, item := range snap.Items {
 		w(separator())
 		nl()
+		itemSum := int64(item.Quantity) * item.UnitPrice
+		size := strings.TrimSpace(item.Size)
 		w(cmdBoldOn)
-		w(itemLine(item.Quantity, itemName(item), item.UnitPrice))
+		if size != "" {
+			w(itemLine(item.Quantity, size, item.UnitPrice))
+		} else {
+			w(itemLine(item.Quantity, item.Name, item.UnitPrice))
+		}
 		w(cmdBoldOff)
 		nl()
+		if size != "" {
+			w(cmdLeft)
+			w("    " + item.Name)
+			nl()
+		}
 
 		for _, mod := range item.Children {
 			label := mod.Name
 			if mod.Quantity > 1 {
 				label = fmt.Sprintf("(x%d) %s", mod.Quantity, label)
 			}
+			// Sides (fries, salad) stand out, as on the v1 receipt.
+			side := strings.Contains(strings.ToLower(mod.Name), "fries") || strings.Contains(strings.ToLower(mod.Name), "salad")
+			if side {
+				w(cmdBoldOn)
+			}
 			w(modifierLine(label, mod.UnitPrice))
+			if side {
+				w(cmdBoldOff)
+			}
 			nl()
+			itemSum += mod.UnitPrice * int64(max(mod.Quantity, 1))
 		}
 		if strings.TrimSpace(item.Notes) != "" {
 			w("    Note: " + item.Notes)
 			nl()
 		}
-		w(rightAlign("Sum: "+dollars(item.LineTotal), lineWidth))
+		w(rightAlign("Sum: "+dollars(itemSum), lineWidth))
 		nl()
 	}
 
@@ -294,8 +330,8 @@ func buildFull(snap order.Snapshot, sc storeconfig.StoreContext, reroutedFrom st
 	w(cmdDoubleSz)
 	w(cmdCenter)
 	nl()
-	if len(snap.Payments) == 0 || !hasCardPayment(snap.Payments) {
-		w("Collect Cash: " + dollars(snap.Money.Total))
+	if cashDue > 0 {
+		w("Collect Cash: " + dollars(cashDue))
 	} else {
 		w("Order Total:" + dollars(snap.Money.Total))
 	}
@@ -305,29 +341,56 @@ func buildFull(snap order.Snapshot, sc storeconfig.StoreContext, reroutedFrom st
 	nl()
 
 	// --- Footer --------------------------------------------------------
-	footer := sc.LocationConfigString("receipt_footer", "ONLINE ORDER")
-	w(cmdBoldOn)
-	w(cmdQuadSz)
-	w(cmdCenter)
-	w(footer)
-	w(cmdBoldOff)
-	w(cmdBaseSz)
-	w(cmdCut)
-	nl()
-
-	for i := 0; i < 4; i++ {
-		nl()
+	// The setting, else the location's receipt_footer, else ONLINE ORDER;
+	// an empty setting prints no footer line.
+	if footer := prefs.Footer(sc.LocationConfigString("receipt_footer", "")); footer != "" {
+		w(cmdBoldOn)
+		w(textSize(prefs.FooterSize))
+		w(cmdCenter)
+		w(footer)
+		w(cmdBoldOff)
+		w(cmdBaseSz)
 	}
-	w(cmdCut)
+	if prefs.ExtraPaper {
+		// v1's ending: cut, feed well past it, cut again.
+		w(cmdCut)
+		nl()
+		for i := 0; i < 4; i++ {
+			nl()
+		}
+		w(cmdCut)
+	} else {
+		for i := 0; i < 3; i++ {
+			nl()
+		}
+		w(cmdCut)
+	}
 	return buf.Bytes()
 }
 
-// BuildStation renders a kitchen station ticket: the order header, the
-// station's name, its own items in full (size, modifiers, notes — items main
-// couldn't route to this station are flagged ** UNMATCHED **), then a rule and
-// the rest of the order in the small font so the cook knows what else is on it.
-// No prices, payment or address — that's the customer receipt's job.
+// BuildStation renders a kitchen station ticket:
+//
+//	#1123                      (biggest)
+//	GONZALEZ, MARIA
+//	-----------------------------------------
+//	2 Pepperoni Pizza (Large)       (big, bold)
+//	  - Extra cheese             $2.00
+//	  - Note: well done
+//	-----------------------------------------
+//	ITEMS TO OTHER PRINTERS
+//	2 Buffalo Wings (10 pc)         (one size smaller)
+//
+// A REROUTED banner tops a ticket printed on a fallback printer, a scheduled
+// order says when it's for, items main couldn't route here are flagged
+// ** UNMATCHED **, and a food note sits under its item (the order's notes are
+// on the customer receipt only). Modifiers show a price only when they aren't
+// free. Default receipt settings; Build takes the store's (item and number
+// sizes).
 func BuildStation(snap order.Snapshot, t printer.Ticket) []byte {
+	return buildStation(snap, t, order.DefaultReceiptPrefs())
+}
+
+func buildStation(snap order.Snapshot, t printer.Ticket, prefs order.ReceiptPrefs) []byte {
 	var buf bytes.Buffer
 	w := func(s string) { buf.WriteString(s) }
 	nl := func() { buf.WriteString(cmdFeed) }
@@ -338,44 +401,38 @@ func BuildStation(snap order.Snapshot, t printer.Ticket) []byte {
 		writeRerouted(w, nl, t.ReroutedFrom)
 	}
 
-	// --- Header ------------------------------------------------------------
+	// --- Ticket number, customer ---------------------------------------------
 	w(cmdCenter)
 	w(cmdBoldOn)
-	w(cmdQuadSz)
+	w(textSize(prefs.KitchenNumberSize))
 	writeOrderNumbers(w, nl, snap)
-	w(cmdDoubleSz)
-	w(formatServiceType(snap.Fulfillment.Type))
-	nl()
-	w(cmdBaseSz)
-	w(cmdInvertOn)
-	w(" " + strings.ToUpper(t.Station) + " ")
-	w(cmdInvertOff)
-	w(cmdBoldOff)
-	nl()
 	if name := strings.TrimSpace(snap.Customer.DisplayName); name != "" {
-		w(strings.ToUpper(name))
+		w(cmdDoubleSz)
+		w(lastFirst(name))
 		nl()
 	}
+	w(cmdBaseSz)
 	if snap.Fulfillment.PromisedAt != nil && !snap.Fulfillment.PromisedAt.IsZero() {
-		w(cmdBoldOn)
-		w("FUTURE: " + snap.Fulfillment.PromisedAt.Format("Jan 2  3:04 PM"))
-		w(cmdBoldOff)
-	} else {
-		w(snap.PlacedAt.Format("Jan 2  3:04 PM"))
+		w(cmdInvertOn)
+		w(" FUTURE " + snap.Fulfillment.PromisedAt.Format("Jan 2  3:04 PM") + " ")
+		w(cmdInvertOff)
+		nl()
 	}
-	nl()
+	w(cmdBoldOff)
 	w(cmdLeft)
+	w(strings.Repeat("-", stationWidth))
+	nl()
 
 	// --- This station's items ----------------------------------------------
 	for _, it := range t.Mine {
-		w(separator())
-		nl()
 		w(cmdBoldOn)
-		w(cmdDoubleSz)
-		w(fmt.Sprintf("%d x %s", it.Quantity, itemName(it)))
+		w(textSize(prefs.KitchenItemSize))
+		for _, line := range wordWrap(fmt.Sprintf("%d %s", it.Quantity, itemName(it)), itemWidth(prefs.KitchenItemSize), "  ") {
+			w(line)
+			nl()
+		}
 		w(cmdBaseSz)
 		w(cmdBoldOff)
-		nl()
 		if it.Routing != order.RoutingMatched || it.PrinterID != t.TargetID {
 			w(cmdInvertOn)
 			w(" ** UNMATCHED ** ")
@@ -387,37 +444,35 @@ func BuildStation(snap order.Snapshot, t printer.Ticket) []byte {
 			if mod.Quantity > 1 {
 				label = fmt.Sprintf("(x%d) %s", mod.Quantity, label)
 			}
-			w("   + " + label)
+			w(stationModifierLine(label, mod.UnitPrice))
 			nl()
 		}
 		if note := strings.TrimSpace(it.Notes); note != "" {
 			w(cmdBoldOn)
-			w("   Note: " + note)
+			for _, line := range wordWrap("  - Note: "+note, stationWidth, "          ") {
+				w(line)
+				nl()
+			}
 			w(cmdBoldOff)
-			nl()
 		}
 	}
-	if note := strings.TrimSpace(snap.Notes); note != "" {
-		w(separator())
-		nl()
-		w(cmdBoldOn)
-		w("Order notes: " + note)
-		w(cmdBoldOff)
-		nl()
-	}
-	w(strings.Repeat("=", lineWidth))
+	w(strings.Repeat("-", stationWidth))
 	nl()
 
-	// --- The rest of the order, small ----------------------------------------
+	// --- The rest of the order, one size smaller ---------------------------------
 	if len(t.Others) > 0 {
-		w(cmdSmallSz)
-		w("Also on this order:")
+		w(cmdNormalSz)
+		w(cmdBoldOn)
+		w("ITEMS TO OTHER PRINTERS")
+		w(cmdBoldOff)
 		nl()
 		for _, it := range t.Others {
-			w(fmt.Sprintf("  %d %s", it.Quantity, itemName(it)))
-			nl()
+			for _, line := range wordWrap(fmt.Sprintf("%d %s", it.Quantity, itemName(it)), stationWidth, "  ") {
+				w(line)
+				nl()
+			}
 		}
-		w(cmdNormalSz)
+		w(cmdBaseSz)
 	}
 
 	for i := 0; i < 4; i++ {
@@ -427,22 +482,111 @@ func BuildStation(snap order.Snapshot, t printer.Ticket) []byte {
 	return buf.Bytes()
 }
 
-// writeOrderNumbers prints the big header number: the kitchen number when the
-// order has one (staff call orders by it), with the vendor's order number
-// underneath; otherwise just the vendor's "#<order id>". Expects quad size on
-// entry and leaves it on.
+// The kitchen ticket uses the full 80 mm line: 48 characters in the base font,
+// 24 at double size, 16 at quad. (The customer receipt keeps v1's 41-column
+// layout.)
+const (
+	stationWidth = 48
+	bigLineWidth = 24
+	xlLineWidth  = 16
+)
+
+// textSize maps a receipt-settings size onto its ESC/POS size command:
+// normal = the base font (double height), large = double, xlarge = quad,
+// huge = triple. Validation keeps each setting to its own subset.
+func textSize(size string) string {
+	switch size {
+	case order.SizeNormal:
+		return cmdBaseSz
+	case order.SizeLarge:
+		return cmdDoubleSz
+	case order.SizeHuge:
+		return cmdHugeSz
+	default:
+		return cmdQuadSz
+	}
+}
+
+// itemWidth is how many characters of a kitchen item fit on a line at size.
+func itemWidth(size string) int {
+	switch size {
+	case order.SizeNormal:
+		return stationWidth
+	case order.SizeXLarge:
+		return xlLineWidth
+	default:
+		return bigLineWidth
+	}
+}
+
+// wordWrap breaks text into lines of at most width characters at spaces (a
+// word longer than a line is split), continuation lines starting with indent —
+// the printer itself would break mid-word.
+func wordWrap(text string, width int, indent string) []string {
+	rc := utf8.RuneCountInString
+	var lines []string
+	// Leading spaces (e.g. the "  - " of a note) stay on the first line;
+	// later lines start with indent.
+	lead := text[:len(text)-len(strings.TrimLeft(text, " "))]
+	prefix := func() string {
+		if len(lines) == 0 {
+			return lead
+		}
+		return indent
+	}
+	cur := "" // the line being built, without its prefix
+	for _, word := range strings.Fields(text) {
+		for word != "" {
+			p := prefix()
+			avail := max(width-rc(p), 1)
+			need := rc(word)
+			if cur != "" {
+				need += 1 + rc(cur)
+			}
+			switch {
+			case need <= avail:
+				if cur != "" {
+					cur += " "
+				}
+				cur += word
+				word = ""
+			case cur != "":
+				lines = append(lines, p+cur)
+				cur = ""
+			default: // a word longer than a whole line: split it
+				r := []rune(word)
+				lines = append(lines, p+string(r[:avail]))
+				word = string(r[avail:])
+			}
+		}
+	}
+	if cur != "" || len(lines) == 0 {
+		lines = append(lines, prefix()+cur)
+	}
+	return lines
+}
+
+// stationModifierLine is "  - Extra cheese" with the price right-aligned when
+// the modifier isn't free.
+func stationModifierLine(name string, priceCents int64) string {
+	label := "  - " + name
+	if priceCents == 0 {
+		return label
+	}
+	return leftRight(truncRunes(label, stationWidth-9), dollars(priceCents), stationWidth)
+}
+
+// writeOrderNumbers prints the big header number: "#<kitchen number>" (it took
+// the place of the vendor's order number on the v1 receipt — staff call orders
+// by it, and the tablet shows the same number); "#<vendor order id>" only for
+// an order that has none yet. Expects quad size on entry and leaves it on.
 func writeOrderNumbers(w func(string), nl func(), snap order.Snapshot) {
 	if snap.KitchenNumber == nil {
 		w("#" + snap.SourceEventID)
-		nl()
-		return
+	} else {
+		w(fmt.Sprintf("#%d", *snap.KitchenNumber))
 	}
-	w(fmt.Sprintf("%d", *snap.KitchenNumber))
 	nl()
-	w(cmdBaseSz)
-	w("Order #" + snap.SourceEventID)
-	nl()
-	w(cmdQuadSz)
 }
 
 // writeRerouted prints the inverted "REROUTED from X" banner that tops a
@@ -460,12 +604,30 @@ func writeRerouted(w func(string), nl func(), from string) {
 	nl()
 }
 
-// itemName is the printed item label: "Name (Size)" when the vendor sent a size.
+// itemName is the kitchen-ticket item label: "Name (Size)" when the size says
+// something (see displaySize).
 func itemName(it order.LineItem) string {
-	if sz := strings.TrimSpace(it.Size); sz != "" {
+	if sz := displaySize(it.Size); sz != "" {
 		return it.Name + " (" + sz + ")"
 	}
 	return it.Name
+}
+
+// displaySize drops the vendor's placeholder size: "Serving" (a single-size
+// item) prints nothing and "Serving (2 Piece)" prints "2 Piece". The customer
+// receipt keeps the vendor's size as v1 printed it.
+func displaySize(size string) string {
+	s := strings.TrimSpace(size)
+	if strings.EqualFold(s, "serving") {
+		return ""
+	}
+	if len(s) > len("serving") && strings.EqualFold(s[:len("serving")], "serving") {
+		rest := strings.TrimSpace(s[len("serving"):])
+		if strings.HasPrefix(rest, "(") && strings.HasSuffix(rest, ")") {
+			return strings.TrimSpace(rest[1 : len(rest)-1])
+		}
+	}
+	return s
 }
 
 // --- formatters -----------------------------------------------------------
@@ -530,9 +692,23 @@ func itemLine(qty int, name string, unitCents int64) string {
 	return fmt.Sprintf("%-3d %-29s %7s", qty, truncRunes(name, 29), dollars(unitCents))
 }
 
+// modifierLine is a modifier under its item; free modifiers carry no price.
 func modifierLine(name string, priceCents int64) string {
 	indent := "     "
+	if priceCents == 0 {
+		return indent + truncRunes(name, 36)
+	}
 	return fmt.Sprintf("%s%-28s %7s", indent, truncRunes(name, 28), dollars(priceCents))
+}
+
+// lastFirst turns "Maria Gonzalez" into "GONZALEZ, MARIA" (the v1 receipt's
+// customer line); a single word is just upper-cased.
+func lastFirst(name string) string {
+	f := strings.Fields(name)
+	if len(f) < 2 {
+		return strings.ToUpper(name)
+	}
+	return strings.ToUpper(f[len(f)-1] + ", " + strings.Join(f[:len(f)-1], " "))
 }
 
 // truncRunes cuts s to at most n characters without splitting a multi-byte
