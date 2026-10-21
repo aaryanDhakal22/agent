@@ -54,3 +54,34 @@ func TestSessionRotationSignsEveryoneOut(t *testing.T) {
 		t.Fatalf("rotated secret must be persisted, got %q", saved)
 	}
 }
+
+// Parallel attempts from one address used to all pass the block check before
+// any failure was counted; only one may be in flight now.
+func TestLoginThrottleOneAttemptInFlight(t *testing.T) {
+	var th loginThrottle
+	now := time.Now()
+	release, wait := th.begin("10.0.0.5", now)
+	if wait != 0 {
+		t.Fatalf("first attempt refused: %v", wait)
+	}
+	if _, wait := th.begin("10.0.0.5", now); wait == 0 {
+		t.Fatal("a second concurrent attempt from the same address was allowed")
+	}
+	if r2, wait := th.begin("10.0.0.6", now); wait != 0 {
+		t.Fatal("another address was refused")
+	} else {
+		r2()
+	}
+	release()
+	if r3, wait := th.begin("10.0.0.5", now); wait != 0 {
+		t.Fatal("refused after the first attempt finished")
+	} else {
+		r3()
+	}
+	for i := 0; i < 5; i++ {
+		th.fail("10.0.0.5", now)
+	}
+	if _, wait := th.begin("10.0.0.5", now); wait == 0 {
+		t.Fatal("five failures should block")
+	}
+}

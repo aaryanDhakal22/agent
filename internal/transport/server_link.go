@@ -51,8 +51,8 @@ func (s *Server) handleSetupLink(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	tablet := strings.TrimSpace(body.TabletName)
-	if len(tablet) > 40 {
-		tablet = tablet[:40]
+	if r := []rune(tablet); len(r) > 40 {
+		tablet = string(r[:40]) // whole characters: a byte cut can split one
 	}
 	ip := clientIP(r)
 	if wait := s.logins.blockedFor(ip, time.Now()); wait > 0 {
@@ -114,11 +114,6 @@ func (s *Server) handleSetupLink(w http.ResponseWriter, r *http.Request) {
 		go s.onLinked(out)
 	}
 	s.writeJSON(w, http.StatusOK, resp)
-}
-
-type managerLoginDTO struct {
-	Username string `json:"username"`
-	Password string `json:"password"`
 }
 
 // loginUsernameOK: an agent linked with the manager login expects that

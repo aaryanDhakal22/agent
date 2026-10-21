@@ -207,9 +207,14 @@ func buildFull(snap order.Snapshot, sc storeconfig.StoreContext, reroutedFrom st
 	nl()
 	w(cmdBoldOn)
 	w(cmdDoubleSz)
-	if len(snap.Payments) == 0 || !hasCardPayment(snap.Payments) {
-		w("CASH - " + dollars(snap.Money.Total))
-	} else {
+	cashDue := snap.CashDue()
+	switch {
+	case cashDue > 0:
+		w("CASH - " + dollars(cashDue))
+	case !hasCardPayment(snap.Payments):
+		// Paid another way (a third party, an invoice): nothing to collect.
+		w("PAID")
+	default:
 		// First card payment drives the displayed last4/auth code.
 		card := firstCardPayment(snap.Payments)
 		w("PAID - CARD")
@@ -325,8 +330,8 @@ func buildFull(snap order.Snapshot, sc storeconfig.StoreContext, reroutedFrom st
 	w(cmdDoubleSz)
 	w(cmdCenter)
 	nl()
-	if len(snap.Payments) == 0 || !hasCardPayment(snap.Payments) {
-		w("Collect Cash: " + dollars(snap.Money.Total))
+	if cashDue > 0 {
+		w("Collect Cash: " + dollars(cashDue))
 	} else {
 		w("Order Total:" + dollars(snap.Money.Total))
 	}
@@ -518,32 +523,45 @@ func itemWidth(size string) int {
 // word longer than a line is split), continuation lines starting with indent —
 // the printer itself would break mid-word.
 func wordWrap(text string, width int, indent string) []string {
+	rc := utf8.RuneCountInString
 	var lines []string
-	// Leading spaces (e.g. the "  - " of a note) stay on the first line.
+	// Leading spaces (e.g. the "  - " of a note) stay on the first line;
+	// later lines start with indent.
 	lead := text[:len(text)-len(strings.TrimLeft(text, " "))]
-	cur := ""
-	for _, word := range strings.Fields(text) {
-		for utf8.RuneCountInString(word) > width-utf8.RuneCountInString(indent) && cur == "" && len(lines) > 0 {
-			r := []rune(word)
-			n := width - utf8.RuneCountInString(indent)
-			lines = append(lines, indent+string(r[:n]))
-			word = string(r[n:])
+	prefix := func() string {
+		if len(lines) == 0 {
+			return lead
 		}
-		switch {
-		case cur == "":
-			cur = lead + word
-			if len(lines) > 0 {
-				cur = indent + word
+		return indent
+	}
+	cur := "" // the line being built, without its prefix
+	for _, word := range strings.Fields(text) {
+		for word != "" {
+			p := prefix()
+			avail := max(width-rc(p), 1)
+			need := rc(word)
+			if cur != "" {
+				need += 1 + rc(cur)
 			}
-		case utf8.RuneCountInString(cur)+1+utf8.RuneCountInString(word) <= width:
-			cur += " " + word
-		default:
-			lines = append(lines, cur)
-			cur = indent + word
+			switch {
+			case need <= avail:
+				if cur != "" {
+					cur += " "
+				}
+				cur += word
+				word = ""
+			case cur != "":
+				lines = append(lines, p+cur)
+				cur = ""
+			default: // a word longer than a whole line: split it
+				r := []rune(word)
+				lines = append(lines, p+string(r[:avail]))
+				word = string(r[avail:])
+			}
 		}
 	}
 	if cur != "" || len(lines) == 0 {
-		lines = append(lines, cur)
+		lines = append(lines, prefix()+cur)
 	}
 	return lines
 }

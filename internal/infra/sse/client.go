@@ -27,10 +27,13 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
-const (
+// Reconnect waits (vars so tests can shorten them).
+var (
 	initialBackoff = 2 * time.Second
 	maxBackoff     = 60 * time.Second
+)
 
+const (
 	tracerName = "quiccpos/agent/sse"
 )
 
@@ -129,6 +132,7 @@ type Client struct {
 	commands        *agentrpc.Registry
 	logger          zerolog.Logger
 	reconnectCount  int
+	streamed        bool // the current connect attempt got its 200 (Start's goroutine only)
 	state           *ConnState
 	tracer          trace.Tracer
 	meters          observability.Meters
@@ -160,7 +164,13 @@ func (c *Client) Start(ctx context.Context) {
 		c.logger.Info().Ctx(ctx).Int("attempt", c.reconnectCount+1).Dur("backoff", backoff).
 			Msg("Connecting to main server SSE stream")
 
+		c.streamed = false
 		err := c.connect(ctx)
+		if c.streamed {
+			// The stream was up (HTTP 200): a drop after that starts over at
+			// the short wait instead of where the last outage left off.
+			backoff = initialBackoff
+		}
 		if ctx.Err() != nil {
 			c.logger.Info().Msg("SSE client stopped — context cancelled")
 			return
@@ -180,9 +190,7 @@ func (c *Client) Start(ctx context.Context) {
 			return
 		}
 
-		if backoff < maxBackoff {
-			backoff *= 2
-		}
+		backoff = min(backoff*2, maxBackoff)
 		c.reconnectCount++
 		c.state.reconnects.Store(int64(c.reconnectCount))
 		c.meters.SSEReconnects.Add(ctx, 1)
@@ -231,6 +239,7 @@ func (c *Client) connect(ctx context.Context) error {
 
 	// Connected. A valid 200 means the key authenticated — clear any prior
 	// rejection/error and stamp the connection time.
+	c.streamed = true
 	c.state.connected.Store(true)
 	c.state.connectedSince.Store(time.Now().Unix())
 	c.state.authRejected.Store(false)

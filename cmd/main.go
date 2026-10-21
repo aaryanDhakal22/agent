@@ -442,6 +442,7 @@ func main() {
 		}
 		return time.Local
 	}
+	orderService.SetStoreTZ(storeTZ)
 	nightly := backup.New(db, cfg.AgentDBPath, func(rc context.Context, path string, body []byte, ct string) (int, []byte, error) {
 		return mainClient.Upload(rc, sseCtrl.CurrentKey(), path, body, ct)
 	}, settingsRepo, sseCtrl.Configured, storeTZ, logger)

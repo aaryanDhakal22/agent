@@ -188,6 +188,22 @@ func TestWordWrap(t *testing.T) {
 			t.Fatalf("line too long: %q", l)
 		}
 	}
+	// A word longer than the line is split (it used to overflow and the
+	// printer broke it mid-word without the indent).
+	got = wordWrap("1 Supercalifragilisticexpialidocious Pizza", 16, "  ")
+	want = []string{"1", "  Supercalifragi", "  listicexpialid", "  ocious Pizza"}
+	if strings.Join(got, "|") != strings.Join(want, "|") {
+		t.Fatalf("long word: got %q want %q", got, want)
+	}
+	for _, l := range got {
+		if utf8.RuneCountInString(l) > 16 {
+			t.Fatalf("line too long: %q", l)
+		}
+	}
+	// The first line keeps its lead ("  - " of a note).
+	if got := wordWrap("  - Note: extra crispy please", 16, "    "); got[0] != "  - Note: extra" {
+		t.Fatalf("lead lost: %q", got)
+	}
 }
 
 func TestTruncRunesKeepsCharactersWhole(t *testing.T) {
@@ -230,5 +246,35 @@ func TestBuildStation_HidesServingSize(t *testing.T) {
 	}
 	if !strings.Contains(out, "1 Wings (6 Piece)") {
 		t.Errorf("a fixed portion keeps its size:\n%q", out)
+	}
+}
+
+func TestBuildWith_PaymentWording(t *testing.T) {
+	sc := storeconfig.StoreContext{}
+	for _, tc := range []struct {
+		name     string
+		payments []order.PaymentSummary
+		want     []string
+		not      []string
+	}{
+		{"cash (no payments)", nil, []string{"CASH - $42.97", "Collect Cash: $42.97"}, []string{"PAID"}},
+		{"card", []order.PaymentSummary{{Method: "card", AmountCents: 4297, Last4: "4242"}}, []string{"PAID - CARD", "Card: ****4242", "Order Total:$42.97"}, []string{"Collect Cash"}},
+		{"third party", []order.PaymentSummary{{Method: "other", AmountCents: 4297}}, []string{"PAID", "Order Total:$42.97"}, []string{"Collect Cash", "CASH -"}},
+		{"part-paid", []order.PaymentSummary{{Method: "card", AmountCents: 2297}, {Method: "cash", AmountCents: 2000}}, []string{"CASH - $20.00", "Collect Cash: $20.00"}, nil},
+	} {
+		snap := receiptFixture()
+		snap.Money = order.Money{Subtotal: 4297, Total: 4297}
+		snap.Payments = tc.payments
+		out := string(BuildWith(snap, sc))
+		for _, w := range tc.want {
+			if !strings.Contains(out, w) {
+				t.Errorf("%s: missing %q", tc.name, w)
+			}
+		}
+		for _, n := range tc.not {
+			if strings.Contains(out, n) {
+				t.Errorf("%s: should not print %q", tc.name, n)
+			}
+		}
 	}
 }

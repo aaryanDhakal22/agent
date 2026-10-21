@@ -15,6 +15,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"quiccpos/agent/internal/domain/device"
 
@@ -171,7 +172,7 @@ func (s *Server) handlePair(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	name := strings.TrimSpace(req.Name)
-	if name == "" || len(name) > 40 {
+	if name == "" || utf8.RuneCountInString(name) > 40 {
 		s.writeJSON(w, http.StatusBadRequest, errCodeMap("name must be 1-40 characters", "name_required"))
 		return
 	}

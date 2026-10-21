@@ -209,11 +209,13 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ip := clientIP(r)
-	if wait := s.logins.blockedFor(ip, time.Now()); wait > 0 {
+	release, wait := s.logins.begin(ip, time.Now())
+	if wait > 0 {
 		w.Header().Set("Retry-After", strconv.Itoa(int(wait.Seconds())+1))
 		s.writeJSON(w, http.StatusTooManyRequests, errCodeMap("Too many wrong passwords — wait a minute and try again.", "too_many_attempts"))
 		return
 	}
+	defer release()
 	ok := s.loginUsernameOK(r, body.Username) && bcrypt.CompareHashAndPassword([]byte(hash), []byte(body.Password)) == nil
 	if !ok && s.recovery != nil {
 		// The manager may have changed the password in main since the last
@@ -498,8 +500,9 @@ func (s *Server) ResetAccess(ctx context.Context) {
 // from one address, that address waits 30 s, doubling per further miss (max
 // 15 min). A correct password clears it.
 type loginThrottle struct {
-	mu    sync.Mutex
-	fails map[string]*loginFails
+	mu     sync.Mutex
+	fails  map[string]*loginFails
+	active map[string]bool // an attempt from this IP is being checked
 }
 
 type loginFails struct {
@@ -514,6 +517,30 @@ func (t *loginThrottle) blockedFor(ip string, now time.Time) time.Duration {
 		return f.until.Sub(now)
 	}
 	return 0
+}
+
+// begin reserves ip's single in-flight attempt; the caller must call the
+// returned release when the attempt is decided. A failure is only counted
+// after bcrypt (and maybe a hash refresh from main), so without this N
+// parallel requests got N guesses past the block check. wait > 0 → refuse.
+func (t *loginThrottle) begin(ip string, now time.Time) (release func(), wait time.Duration) {
+	if wait := t.blockedFor(ip, now); wait > 0 {
+		return func() {}, wait
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.active[ip] {
+		return func() {}, time.Second
+	}
+	if t.active == nil {
+		t.active = map[string]bool{}
+	}
+	t.active[ip] = true
+	return func() {
+		t.mu.Lock()
+		delete(t.active, ip)
+		t.mu.Unlock()
+	}, 0
 }
 
 func (t *loginThrottle) fail(ip string, now time.Time) {

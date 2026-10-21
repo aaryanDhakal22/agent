@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"sync/atomic"
+	"time"
 
 	"quiccpos/agent/internal/domain/order"
 	"quiccpos/agent/internal/domain/printer"
@@ -52,7 +53,9 @@ type Service struct {
 	meters   observability.Meters
 	// onFloorEvent is called after every committed floor change so the sync
 	// sender pushes it to main right away (set via OnFloorEvent).
-	onFloorEvent func()
+	// Set by cmd/main after the SSE client may already be running: atomic.
+	onFloorEvent atomic.Pointer[func()]
+	storeTZ      atomic.Pointer[func() *time.Location] // unset → time.Local
 	onStored     func(orderID string)
 	// Driver-report printing (SetDocumentPrinting).
 	printDoc    DocPrinter
@@ -85,11 +88,11 @@ func NewService(
 
 // OnFloorEvent registers the hook run after each committed floor change
 // (cmd/main.go wires the floorsync sender's Wake).
-func (s *Service) OnFloorEvent(fn func()) { s.onFloorEvent = fn }
+func (s *Service) OnFloorEvent(fn func()) { s.onFloorEvent.Store(&fn) }
 
 func (s *Service) floorChanged() {
-	if s.onFloorEvent != nil {
-		s.onFloorEvent()
+	if fn := s.onFloorEvent.Load(); fn != nil && *fn != nil {
+		(*fn)()
 	}
 }
 
@@ -195,7 +198,10 @@ func (s *Service) Accept(ctx context.Context, id uuid.UUID, prepMinutes *int) (*
 		return fail(err)
 	}
 	span.SetAttributes(attribute.Int64("order.kitchen_number", deref(so.Status.KitchenNumber)))
-	out, err := s.print(ctx, printable(*so))
+	// Once claimed, the print runs to the end even if the tablet's request is
+	// cancelled (Wi-Fi blip, app killed) — otherwise the remaining stations
+	// and failovers are skipped mid-job. The dispatcher caps a job at 25 s.
+	out, err := s.print(context.WithoutCancel(ctx), printable(*so))
 	if err != nil {
 		// Revert even if the request was cancelled mid-print.
 		rctx := context.WithoutCancel(ctx)

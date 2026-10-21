@@ -210,12 +210,8 @@ func NewDriverReportLine(so StoredOrder) DriverReportLine {
 			l.Address += ", " + l2
 		}
 	}
-	for _, p := range snap.Payments {
-		if strings.EqualFold(p.Method, "cash") {
-			l.Cash = true
-			l.CashCents += p.AmountCents
-		}
-	}
+	l.CashCents = snap.CashDue()
+	l.Cash = l.CashCents > 0
 	return l
 }
 
