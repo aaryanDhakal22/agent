@@ -295,6 +295,9 @@ UPDATE paired_devices SET revoked_at = ? WHERE revoked_at IS NULL;
 -- name: RevokePairedDevice :execrows
 UPDATE paired_devices SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL;
 
+-- name: RenamePairedDevice :execrows
+UPDATE paired_devices SET name = ? WHERE id = ? AND revoked_at IS NULL;
+
 -- Settings -----------------------------------------------------------------
 
 -- name: GetAutoAccept :one

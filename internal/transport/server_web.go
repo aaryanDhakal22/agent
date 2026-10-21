@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"net"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -358,20 +359,15 @@ func (s *Server) handleSession(w http.ResponseWriter, r *http.Request) {
 		state = "locked"
 	}
 
-	sseState := "unconfigured"
-	if configured {
-		switch {
-		case st.Connected:
-			sseState = "connected"
-		case st.AuthRejected:
-			sseState = "rejected"
-		default:
-			sseState = "connecting"
-		}
-	}
+	sseState := s.sseState(configured)
 
 	li, _ := s.settings.GetLinkInfo(ctx)
+	host, _ := os.Hostname()
+	sc := s.storeContext()
 	s.writeJSON(w, http.StatusOK, map[string]any{
+		"store_name":          sc.StoreName(),
+		"version":             s.version,
+		"hostname":            host,
 		"state":               state,
 		"has_hint":            hint != "",
 		"manager_login":       li.ManagerUsername != "",

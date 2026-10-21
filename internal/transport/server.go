@@ -51,14 +51,22 @@ type Server struct {
 	commit        string
 	logger        zerolog.Logger
 	port          string
+	altPort       string // second port with the same handler (HTTP_ALT_PORT), "" = off
 	apps          *appupdate.Updater
 	recovery      *recovery.Service
 	onLinked      func(*recovery.Outcome)
 	linkMu        sync.Mutex
+	diag          DiagDeps
+	testMu        sync.Mutex // one printer test at a time
+	mainReach     mainProbe
+	started       time.Time
 }
 
 // SetAppUpdater wires the tablet-app release cache (/api/app/*).
 func (s *Server) SetAppUpdater(u *appupdate.Updater) { s.apps = u }
+
+// SetAltPort makes Start also serve everything on port p (HTTP_ALT_PORT).
+func (s *Server) SetAltPort(p string) { s.altPort = p }
 
 func NewServer(
 	svc *orderApp.Service,
@@ -88,6 +96,7 @@ func NewServer(
 		version:       version,
 		commit:        commit,
 		port:          port,
+		started:       time.Now(),
 		logger:        logger.With().Str("module", "http-server").Logger(),
 	}
 }
@@ -128,6 +137,10 @@ func (s *Server) Start(ctx context.Context) {
 		defer cancel()
 		srv.Shutdown(shutdownCtx)
 	}()
+
+	if s.altPort != "" && s.altPort != s.port {
+		startAltListener(ctx, ":"+s.altPort, handler, s.logger)
+	}
 
 	s.logger.Info().Str("addr", srv.Addr).Msg("HTTP server listening")
 	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {

@@ -23,8 +23,9 @@ import (
 
 // Tablet pairing + device-key auth.
 //
-// The web UI (session) asks for a 6-digit code (POST /api/pairing/code, 5-min
-// TTL, one live code at a time, burned after 5 wrong guesses); the tablet
+// The web UI (session) or an already-paired tablet asks for a 6-digit code
+// (POST /api/pairing/code, 5-min TTL, one live code at a time, burned after 5
+// wrong guesses); the tablet
 // sends it with a name to POST /api/pair and gets a device key back once. The
 // key (qagt_…) goes in X-Agent-Device-Key on every floor request; only its
 // sha256 is stored. Devices are listed + revoked in the web UI's Settings.
@@ -148,7 +149,8 @@ func (s *Server) floor(h http.HandlerFunc) http.HandlerFunc {
 	})
 }
 
-// POST /api/pairing/code (session) — show a fresh 6-digit code.
+// POST /api/pairing/code (session or a paired tablet's key, so a tablet can
+// pair another one) — show a fresh 6-digit code.
 func (s *Server) handlePairingCode(w http.ResponseWriter, _ *http.Request) {
 	code, exp, err := s.pairing.issue(time.Now())
 	if err != nil {
@@ -203,7 +205,8 @@ func (s *Server) handleListDevices(w http.ResponseWriter, r *http.Request) {
 
 // POST /api/devices/{id}/revoke (session).
 func (s *Server) handleRevokeDevice(w http.ResponseWriter, r *http.Request) {
-	err := s.devices.Revoke(r.Context(), r.PathValue("id"), time.Now())
+	id := r.PathValue("id")
+	err := s.devices.Revoke(r.Context(), id, time.Now())
 	if errors.Is(err, device.ErrNotFound) {
 		s.writeJSON(w, http.StatusNotFound, errCodeMap("no such active device", "not_found"))
 		return
@@ -212,5 +215,6 @@ func (s *Server) handleRevokeDevice(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, r, http.StatusInternalServerError, err)
 		return
 	}
+	s.dropTabletToken(id)
 	w.WriteHeader(http.StatusNoContent)
 }

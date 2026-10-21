@@ -74,6 +74,19 @@ func (r *DeviceRepository) Revoke(ctx context.Context, id string, at time.Time) 
 	return nil
 }
 
+func (r *DeviceRepository) Rename(ctx context.Context, id, name string) (err error) {
+	ctx, _, end := dbSpan(ctx, "devices.rename")
+	defer end(&err)
+	n, err := models.New(r.db).RenamePairedDevice(ctx, models.RenamePairedDeviceParams{Name: name, ID: id})
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return device.ErrNotFound
+	}
+	return nil
+}
+
 func (r *DeviceRepository) RevokeAll(ctx context.Context, at time.Time) (err error) {
 	ctx, _, end := dbSpan(ctx, "devices.revoke_all")
 	defer end(&err)

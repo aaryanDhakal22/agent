@@ -266,6 +266,7 @@ func (s *Server) handleUnpairSelf(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, r, http.StatusInternalServerError, err)
 		return
 	}
+	s.dropTabletToken(d.ID)
 	w.WriteHeader(http.StatusNoContent)
 }
 

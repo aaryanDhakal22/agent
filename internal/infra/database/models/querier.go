@@ -97,6 +97,7 @@ type Querier interface {
 	// Driver shifts ----------------------------------------------------------------
 	OpenShift(ctx context.Context, arg OpenShiftParams) error
 	RenameDriver(ctx context.Context, arg RenameDriverParams) (int64, error)
+	RenamePairedDevice(ctx context.Context, arg RenamePairedDeviceParams) (int64, error)
 	// Close batch: drivers out on a run are back in the queue (clocked-out stay off).
 	ResetDriversAvailable(ctx context.Context) error
 	ResetKitchenNumber(ctx context.Context) error

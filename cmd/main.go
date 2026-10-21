@@ -14,6 +14,7 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"strconv"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -38,6 +39,7 @@ import (
 	"quiccpos/agent/internal/domain/storeconfig"
 	"quiccpos/agent/internal/infra/database"
 	"quiccpos/agent/internal/infra/database/repositories"
+	"quiccpos/agent/internal/infra/discovery"
 	"quiccpos/agent/internal/infra/mainclient"
 	"quiccpos/agent/internal/infra/notify"
 	"quiccpos/agent/internal/infra/printer/escpos"
@@ -393,7 +395,19 @@ func main() {
 		return settingsRepo.SetSessionSecret(context.Background(), hexSecret)
 	})
 	httpServer := transport.NewServer(orderService, broker, printerRegistry, settingsRepo, sseCtrl, mainClient, session, deviceRepo, cfg.HTTPPort, version, commit, logger)
+	httpServer.SetAltPort(cfg.HTTPAltPort)
 	httpServer.SetAppUpdater(appUpdater)
+	httpServer.SetDiag(transport.DiagDeps{
+		Dispatcher:  dispatcher,
+		Health:      heartbeat,
+		StoreCtx:    func() storeconfig.StoreContext { sc, _ := storeCtx.Load().(storeconfig.StoreContext); return sc },
+		RPC:         registry,
+		AcksPending: orderAcker.Pending,
+		TestSlip: func(printerName, tablet string, at time.Time) []byte {
+			sc, _ := storeCtx.Load().(storeconfig.StoreContext)
+			return receipt.BuildTestSlip(printerName, sc, tablet, at)
+		},
+	})
 
 	// Floor sync: every committed floor change wakes the sender, which pushes
 	// the floor_events outbox to main as `floor.events` (retrying with backoff
@@ -438,6 +452,18 @@ func main() {
 	resetAccess := httpServer.ResetAccess
 	onWipe.Store(&resetAccess)
 	go httpServer.Start(ctx)
+	// LAN discovery: the Quibase setup wizard finds this Pi by UDP broadcast.
+	hostname, _ := os.Hostname()
+	httpPort, _ := strconv.Atoi(cfg.HTTPPort)
+	go discovery.New(cfg.DiscoveryPort, httpPort, version, hostname, func() discovery.State {
+		key, _ := settingsRepo.GetStoreAPIKey(context.Background())
+		sc, _ := storeCtx.Load().(storeconfig.StoreContext)
+		store := ""
+		if key != "" {
+			store = sc.StoreName()
+		}
+		return discovery.State{Linked: key != "", LinkAvailable: true, Store: store}
+	}, logger).Run(ctx)
 	go retention.Run(ctx, orderRepo, cfg.KeepBatches, logger, meters)
 	go floorSender.Run(ctx)
 	go escalation.Run(ctx, orderService, logger)
@@ -472,6 +498,19 @@ func applyLinkedSecrets(cfg *config.Config, sec order.Secrets) {
 type rpcReplyPoster struct {
 	client *mainclient.Client
 	key    func() string
+}
+
+// ExchangeRPC posts an envelope and hands back main's status + body
+// (rpc.Exchanger, for Registry.Send).
+func (p *rpcReplyPoster) ExchangeRPC(ctx context.Context, body []byte) (int, []byte, error) {
+	k := ""
+	if p.key != nil {
+		k = p.key()
+	}
+	if k == "" {
+		return 0, nil, fmt.Errorf("no store key configured")
+	}
+	return p.client.PostRPC(ctx, k, body)
 }
 
 func (p *rpcReplyPoster) PostRPC(ctx context.Context, body []byte) error {

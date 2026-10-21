@@ -13,14 +13,20 @@ import (
 // record (main/ keeps full history), so a small window is plenty.
 const defaultKeepBatches = 3
 
+// defaultDiscoveryPort is the UDP port the Quibase LAN probe is answered on.
+const defaultDiscoveryPort = 48080
+
 // Config is the agent's runtime configuration. Printers used to be a fixed
 // roster of env-var IPs (PIZZA_PRINTER_IP, DESI_PRINTER_IP, …); they now
 // come from main/'s store_config handshake on SSE connect and persist in
 // the agent's SQLite DB. Same for store identity (name, address, phone).
 type Config struct {
-	AppEnv             string
-	MainServerURL      string
-	HTTPPort           string
+	AppEnv        string
+	MainServerURL string
+	HTTPPort      string
+	// HTTPAltPort (HTTP_ALT_PORT, optional) is a second port serving the same
+	// API + web UI — 80 on a Pi, so the address needs no ":8080". Empty = off.
+	HTTPAltPort        string
 	LogLevel           string // trace|debug|info|warn|error — default "info"
 	LogOutput          string // console|json|file — default "console"
 	PrinterDetectDelay time.Duration
@@ -35,6 +41,9 @@ type Config struct {
 	// KeepBatches is how many closed batches are kept locally besides the open
 	// one (AGENT_KEEP_BATCHES). Older batches are pruned; main has the full set.
 	KeepBatches int
+	// DiscoveryPort is the UDP port for the tablet's LAN probe
+	// (AGENT_DISCOVERY_PORT, default 48080; 0 disables discovery).
+	DiscoveryPort int
 
 	// OpenTelemetry
 	OTELEndpoint    string // e.g. "home-server.lan:4317"; empty → noop providers
@@ -46,6 +55,7 @@ func Load() (*Config, error) {
 		AppEnv:             getEnvDefault("APP_ENV", "dev"),
 		MainServerURL:      os.Getenv("MAIN_SERVER_URL"),
 		HTTPPort:           getEnvDefault("HTTP_PORT", "8080"),
+		HTTPAltPort:        getEnvDefault("HTTP_ALT_PORT", ""),
 		PrinterDetectDelay: getPrinterDetectDelay(),
 		PushoverAppToken:   os.Getenv("PUSHOVER_APP_TOKEN"),
 		PushoverUserKey:    os.Getenv("PUSHOVER_USER_KEY"),
@@ -55,6 +65,8 @@ func Load() (*Config, error) {
 
 		AgentDBPath: getAgentDBPath(),
 		KeepBatches: getKeepBatches(),
+
+		DiscoveryPort: getDiscoveryPort(),
 
 		OTELEndpoint:    os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT"),
 		OTELServiceName: getEnvDefault("OTEL_SERVICE_NAME", "quicc-agent"),
@@ -91,6 +103,17 @@ func getKeepBatches() int {
 		}
 	}
 	return defaultKeepBatches
+}
+
+// getDiscoveryPort reads AGENT_DISCOVERY_PORT: 0 disables discovery, an
+// unset or invalid value falls back to the default.
+func getDiscoveryPort() int {
+	if v := os.Getenv("AGENT_DISCOVERY_PORT"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 && n <= 65535 {
+			return n
+		}
+	}
+	return defaultDiscoveryPort
 }
 
 func getEnvDefault(key, fallback string) string {
