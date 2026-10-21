@@ -106,13 +106,40 @@ func TestPlan_ReceiptOnlyRosterIsAlsoTheStation(t *testing.T) {
 	}
 }
 
-func TestPlan_ItemRoutedToReceiptPrinter(t *testing.T) {
+func TestPlan_ItemRoutedToReceiptPrinterIsReceiptOnly(t *testing.T) {
 	snap := order.Snapshot{Items: []order.LineItem{
 		item("Soda", order.RoutingMatched, front.ID),
 		item("Pepperoni", order.RoutingMatched, pizza.ID),
 	}}
-	tk, _ := Plan(snap, []RosterEntry{front, pizza})
-	if len(tk) != 3 || tk[0].TargetID != front.ID || tk[0].Kind != printer.TicketStation {
-		t.Fatalf("item on the receipt printer should still get a station ticket there: %+v", tk)
+	tk, un := Plan(snap, []RosterEntry{front, pizza})
+	if len(un) != 0 || len(tk) != 2 {
+		t.Fatalf("want pizza station + receipt only, got %+v (unrouted %v)", tk, un)
+	}
+	if tk[0].Kind != printer.TicketStation || tk[0].TargetID != pizza.ID ||
+		!reflect.DeepEqual(names(tk[0].Mine), []string{"Pepperoni"}) ||
+		!reflect.DeepEqual(names(tk[0].Others), []string{"Soda"}) {
+		t.Fatalf("pizza ticket = %+v", tk[0])
+	}
+	if tk[1].Kind != printer.TicketReceipt || tk[1].TargetID != front.ID {
+		t.Fatalf("receipt = %+v", tk[1])
+	}
+}
+
+func TestPlan_OnlyReceiptOnlyItemsPrintJustTheReceipt(t *testing.T) {
+	snap := order.Snapshot{Items: []order.LineItem{
+		item("Soda", order.RoutingMatched, front.ID),
+		item("Brownie", order.RoutingMatched, front.ID),
+	}}
+	tk, _ := Plan(snap, []RosterEntry{front, pizza, wings})
+	if len(tk) != 1 || tk[0].Kind != printer.TicketReceipt || tk[0].TargetID != front.ID {
+		t.Fatalf("want just the receipt, got %+v", tk)
+	}
+}
+
+func TestPlan_SolePrinterStillGetsStationTicketForItsItems(t *testing.T) {
+	snap := order.Snapshot{Items: []order.LineItem{item("Soda", order.RoutingMatched, front.ID)}}
+	tk, _ := Plan(snap, []RosterEntry{front})
+	if len(tk) != 2 || tk[0].Kind != printer.TicketStation || tk[0].TargetID != front.ID || tk[1].Kind != printer.TicketReceipt {
+		t.Fatalf("single printer is the kitchen too: want station + receipt, got %+v", tk)
 	}
 }

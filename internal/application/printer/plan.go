@@ -24,6 +24,10 @@ type RosterEntry struct {
 //     reported in unrouted). Each station with items gets a station ticket
 //     (its items + the rest of the order listed small), and the receipt
 //     printer gets the full customer receipt.
+//   - An item routed to the receipt printer is receipt-only: it gets no
+//     station ticket of its own (drinks/desserts the counter or driver picks
+//     up from the receipt) — unless the receipt printer is the only printer,
+//     in which case it is also the kitchen station.
 //
 // With no receipt printer flagged, the first printer is used as the receipt
 // printer. An empty roster yields no tickets.
@@ -70,11 +74,12 @@ func Plan(snap order.Snapshot, roster []RosterEntry) (tickets []printer.Ticket, 
 		}
 	}
 
-	// Station tickets in roster order (a matched item may also target the
-	// receipt printer itself — then it gets a station ticket there too).
+	// Station tickets in roster order. The receipt printer gets one only when
+	// it is also the sole station; otherwise its items ride on the receipt.
+	receiptIsStation := len(stations) == 1 && stations[0].ID == receipt.ID
 	for _, p := range roster {
 		idx := assigned[p.ID]
-		if len(idx) == 0 {
+		if len(idx) == 0 || (p.ID == receipt.ID && !receiptIsStation) {
 			continue
 		}
 		mine := make([]order.LineItem, 0, len(idx))

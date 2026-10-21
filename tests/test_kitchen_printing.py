@@ -103,6 +103,26 @@ def test_station_tickets_and_receipt(kitchen, fakes) -> None:
     assert "REROUTED" not in pizza + wings + front
 
 
+def test_items_on_the_receipt_printer_print_only_on_the_receipt(kitchen, fakes) -> None:
+    """Drinks/desserts routed to the receipt printer get no slip of their own:
+    the pizza station lists them small, and Front prints just the receipt."""
+    a, ids = kitchen["agent"], kitchen["ids"]
+    snap = _snap(kitchen["main_store"], [
+        _item("Pepperoni Pizza", ids["Pizza"]),
+        _item("Can Soda", ids["Front"]),
+    ])
+    r = _accept(a, snap)
+    assert r.status_code == 200, r.text + a.log_tail()
+    _wait_jobs(fakes["Pizza"], 1)
+    _wait_jobs(fakes["Front"], 1)
+    time.sleep(1.5)  # nothing else may follow
+    assert len(fakes["Front"].jobs) == 1, "Front must print only the receipt"
+    assert "Total:" in fakes["Front"].text() and "Can Soda" in fakes["Front"].text()
+    pizza = fakes["Pizza"].text()
+    assert "1 Pepperoni Pizza" in pizza and "ITEMS TO OTHER PRINTERS" in pizza and "\n1 Can Soda\n" in pizza, pizza
+    assert len(fakes["Wings"].jobs) == 0
+
+
 def test_station_down_reroutes_to_receipt_printer(kitchen, fakes) -> None:
     a, ids = kitchen["agent"], kitchen["ids"]
     fakes["Wings"].stop()

@@ -405,7 +405,10 @@ main stamps `printer_id` + `routing` on each line item at ingest; the agent
 splits. `Dispatcher.Execute` → `Plan` (pure, `application/printer/plan.go`) →
 one station ticket per printer with items (own items full, rest small) + the
 customer receipt on the `is_receipt` printer; unrouted items go to every
-station; orders with no `routing` at all print one full receipt (legacy). Each
+station; items routed to the receipt printer are **receipt-only** (no slip of
+their own — drinks/desserts the driver or counter picks up from the receipt)
+unless it is the only printer (then it is the kitchen too, e.g. staging);
+orders with no `routing` at all print one full receipt (legacy). Each
 ticket fails over (receipt printer → others) with a REROUTED banner; Execute
 errors only if nothing printed. Roster is keyed by printer **id** (rename-safe).
 
