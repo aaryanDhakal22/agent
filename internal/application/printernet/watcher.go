@@ -103,6 +103,8 @@ type Watcher struct {
 	scanDone  chan struct{} // closed when the running sweep ends
 	lastAuto  time.Time     // last auto-follow sweep
 	wake      chan struct{}
+
+	ambiguousAt map[string]time.Time // printer id → last "MAC is shared" notice
 }
 
 func New(d Deps, logger zerolog.Logger) *Watcher {
@@ -121,7 +123,7 @@ func New(d Deps, logger zerolog.Logger) *Watcher {
 	if d.Now == nil {
 		d.Now = time.Now
 	}
-	return &Watcher{d: d, macs: map[string]printer.NetAddress{}, wake: make(chan struct{}, 1),
+	return &Watcher{d: d, macs: map[string]printer.NetAddress{}, wake: make(chan struct{}, 1), ambiguousAt: map[string]time.Time{},
 		logger: logger.With().Str("module", "printer-net").Logger()}
 }
 
@@ -263,13 +265,56 @@ func (w *Watcher) Follow(ctx context.Context) {
 	}
 	w.logger.Info().Ctx(ctx).Strs("printers", names).Msg("printer down — looking for it on the network")
 	got := w.scan(ctx)
+	// A MAC is only an identity if it's unique: some printers ship with the
+	// same factory MAC (e.g. 00:61:00:00:00:00), and following the wrong one
+	// would send a station's tickets to another printer. Shared → don't move.
+	w.mu.Lock()
+	inRoster := map[string]int{}
+	for _, p := range roster {
+		if m := w.macs[p.ID].MAC; m != "" {
+			inRoster[strings.ToLower(m)]++
+		}
+	}
+	w.mu.Unlock()
+	onLAN := map[string]int{}
+	for _, s := range got {
+		if s.mac != "" {
+			onLAN[strings.ToLower(s.mac)]++
+		}
+	}
 	for _, c := range cands {
+		key := strings.ToLower(c.mac)
+		if inRoster[key] > 1 || onLAN[key] > 1 {
+			w.ambiguous(ctx, c, inRoster[key], onLAN[key])
+			continue
+		}
 		for _, s := range got {
-			if s.mac == c.mac && s.ip != c.IP {
+			if strings.EqualFold(s.mac, c.mac) && s.ip != c.IP {
 				w.moved(ctx, c, s.ip)
 				break
 			}
 		}
+	}
+}
+
+// ambiguous reports (≤ once per 6 h per printer) that a down printer can't be
+// followed because its MAC isn't unique.
+func (w *Watcher) ambiguous(ctx context.Context, c candidate, roster, lan int) {
+	w.logger.Warn().Ctx(ctx).Str("printer", c.Name).Str("mac", c.mac).Int("roster_printers", roster).
+		Int("lan_devices", lan).Msg("printer down — MAC is shared, not following it automatically")
+	w.mu.Lock()
+	last := w.ambiguousAt[c.ID]
+	due := last.IsZero() || w.d.Now().Sub(last) >= 6*time.Hour
+	if due {
+		w.ambiguousAt[c.ID] = w.d.Now()
+	}
+	w.mu.Unlock()
+	if !due || w.d.Notify == nil {
+		return
+	}
+	msg := fmt.Sprintf("Printer %s is down and its network ID (%s) is shared with another device — fix its address by hand (Store › Printers)", c.Name, c.mac)
+	if err := w.d.Notify(ctx, msg, "classical"); err != nil {
+		w.logger.Warn().Ctx(ctx).Err(err).Msg("Pushover failed")
 	}
 }
 

@@ -435,6 +435,10 @@ nginx :80) — the switch is in `../CUTOVER.md`; never run both agents at once.
   on TCP 9100 (32 × 400 ms) → MAC at a new IP → `Registry.Send` `printer.moved`
   → `applied` → Pushover "Printer X moved A → B — updated automatically"; main
   republishes store_config. The SendFloor down/up notices are untouched.
+  **A shared MAC is never followed** (some printers ship the same factory MAC,
+  e.g. the staging printer's `00:61:00:00:00:00`): if two roster printers learned
+  it or two devices answer with it, the watcher logs + pages "fix its address by
+  hand" (≤ once / 6 h / printer) instead of moving anything.
 - **Found printers**: sweeps also feed `GET /api/printers/found` (`?refresh=1`
   waits ≤ 15 s), `printer.report.found` (unknown only) and the web UI's "Found
   on the network" card; `POST /api/printers/add` → RPC `printer.add`.

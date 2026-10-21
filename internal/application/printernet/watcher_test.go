@@ -243,3 +243,44 @@ func TestFoundList(t *testing.T) {
 		t.Fatalf("sweeps %d", g.sweeps)
 	}
 }
+
+func TestFollowRefusesSharedMAC(t *testing.T) {
+	ctx := context.Background()
+	shared := "00:61:00:00:00:00"
+
+	// Two roster printers learned the same (factory default) MAC.
+	g := newRig()
+	g.store.m["p-pizza"] = printer.NetAddress{PrinterID: "p-pizza", MAC: shared, IP: "192.168.1.40"}
+	g.store.m["p-front"] = printer.NetAddress{PrinterID: "p-front", MAC: shared, IP: "192.168.1.41"}
+	g.applied = true
+	w := g.watcher()
+	g.status = []printerApp.StatusSnapshot{down("Pizza", g.now.Add(-time.Minute))}
+	g.answers = []string{"192.168.1.47"}
+	g.arp = map[string]string{"192.168.1.47": shared}
+	w.Follow(ctx)
+	if len(g.sends) != 0 {
+		t.Fatalf("followed a MAC two printers share: %v", g.sends)
+	}
+	if len(g.pages) != 1 {
+		t.Fatalf("want one notice, got %v", g.pages)
+	}
+	// A later sweep doesn't page again within 6 h.
+	g.now = g.now.Add(3 * time.Minute)
+	w.Follow(ctx)
+	if len(g.pages) != 1 {
+		t.Fatalf("paged again: %v", g.pages)
+	}
+
+	// Unique in the roster, but two devices answer with that MAC.
+	g = newRig()
+	g.store.m["p-pizza"] = printer.NetAddress{PrinterID: "p-pizza", MAC: shared, IP: "192.168.1.40"}
+	g.applied = true
+	w = g.watcher()
+	g.status = []printerApp.StatusSnapshot{down("Pizza", g.now.Add(-time.Minute))}
+	g.answers = []string{"192.168.1.47", "192.168.1.48"}
+	g.arp = map[string]string{"192.168.1.47": shared, "192.168.1.48": shared}
+	w.Follow(ctx)
+	if len(g.sends) != 0 {
+		t.Fatalf("followed a MAC two devices answer with: %v", g.sends)
+	}
+}
