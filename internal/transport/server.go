@@ -13,8 +13,10 @@ import (
 	"quiccpos/agent/internal/application/appupdate"
 	orderApp "quiccpos/agent/internal/application/order"
 	printerApp "quiccpos/agent/internal/application/printer"
+	"quiccpos/agent/internal/application/printernet"
 	"quiccpos/agent/internal/application/recovery"
 	"quiccpos/agent/internal/application/sseclient"
+	"quiccpos/agent/internal/application/update"
 	"quiccpos/agent/internal/domain/device"
 	"quiccpos/agent/internal/domain/order"
 	"quiccpos/agent/internal/infra/mainclient"
@@ -61,6 +63,8 @@ type Server struct {
 	receiptSample func(order.ReceiptPrefs) []byte
 	mainReach     mainProbe
 	started       time.Time
+	updates       *update.Requester
+	printerNet    *printernet.Watcher
 }
 
 // SetAppUpdater wires the tablet-app release cache (/api/app/*).

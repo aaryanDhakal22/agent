@@ -327,6 +327,9 @@ textarea.field { resize: vertical; min-height: 84px; }
 }
 .sbody { flex: 999 1 420px; min-width: 0; padding: 20px 22px; display: flex; flex-direction: column; }
 .sbody > h2 { margin-bottom: 4px; }
+.acct { flex: 999 1 420px; min-width: 0; gap: 20px; }
+.acct > .sbody { flex: none; }
+.dlg-input { display: flex; flex-direction: column; gap: 6px; }
 .srow { display: flex; flex-wrap: wrap; align-items: center; gap: 14px; padding: 14px 0; border-top: 1px solid var(--border); }
 .srow.top { align-items: flex-start; }
 .srow .lblcol { flex: 1 1 200px; min-width: 0; }

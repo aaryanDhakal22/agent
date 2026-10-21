@@ -499,7 +499,7 @@
                   <span class="badge" :class="printerTone(p)"><span class="dot"></span><span x-text="printerState(p)"></span></span>
                 </div>
                 <div class="small muted">
-                  <span class="mono" x-text="p.ip || '—'"></span><span x-show="p.last_checked" x-text="' · checked ' + ago(p.last_checked)"></span><span x-show="p.up === false && p.down_since" x-text="' · down since ' + clock(p.down_since)"></span><span x-show="p.up === true && p.up_since" x-text="' · up since ' + clock(p.up_since)"></span>
+                  <span class="mono" x-text="p.ip || '—'"></span><span class="mono" x-show="p.mac" x-text="' · ' + p.mac" title="MAC address (hardware) — the Pi finds the printer by it if its address changes"></span><span x-show="p.last_checked" x-text="' · checked ' + ago(p.last_checked)"></span><span x-show="p.up === false && p.down_since" x-text="' · down since ' + clock(p.down_since)"></span><span x-show="p.up === true && p.up_since" x-text="' · up since ' + clock(p.up_since)"></span>
                 </div>
                 <div class="err-text small" x-show="p.up === false && p.last_error" x-text="p.last_error"></div>
                 <div role="status" :class="resultFor(p) && resultFor(p).ok ? 'ok-text' : 'err-text'" x-show="resultFor(p)" x-text="resultFor(p) ? resultFor(p).text : ''"></div>
@@ -511,6 +511,25 @@
             </div>
           </template>
           <div class="empty" x-show="!printers.length">No printers yet — add them in main (<b>/app/store</b>).</div>
+        </div>
+      </section>
+
+      <section class="card card-pad stack" style="gap:10px" aria-labelledby="h-found">
+        <div class="hrow" style="justify-content:space-between">
+          <div style="min-width:0"><div class="eyebrow" id="h-found">Found on the network</div><p class="help" x-text="foundSub"></p></div>
+          <button type="button" class="btn" :disabled="!!foundBusy" @click="loadFound(true)" x-text="foundBusy ? 'Scanning…' : 'Scan again'"></button>
+        </div>
+        <div class="list">
+          <template x-for="f in foundNew" :key="f.ip">
+            <div class="li">
+              <div class="main">
+                <b class="mono" x-text="f.ip"></b>
+                <div class="small muted mono" x-text="f.mac || 'MAC address unknown'"></div>
+              </div>
+              <div class="hrow"><button type="button" class="btn btn-p" :disabled="!!foundBusy" @click="addFound(f)">Add</button></div>
+            </div>
+          </template>
+          <div class="empty" x-show="!foundNew.length" x-text="found && found.scanned_at ? 'No new printers — every printer that answers is already set up.' : 'Press Scan again to look for printers on this network.'"></div>
         </div>
       </section>
     </section>
@@ -717,8 +736,29 @@
           </dl>
         </section>
 
-        <!-- Account -->
-        <section class="card sbody" x-show="settingsTab === 'account'" aria-labelledby="h-s-acct">
+        <!-- Account: Updates + login -->
+        <div class="stack acct" x-show="settingsTab === 'account'">
+        <section class="card sbody" aria-labelledby="h-s-upd">
+          <h2 id="h-s-upd">Updates</h2>
+          <p class="help">The Pi installs the version published for this store, checks it first, and goes back to the old version by itself if the new one doesn't start properly.</p>
+          <p class="err-text" role="alert" x-show="updErr" x-text="updErr"></p>
+          <dl class="kv" style="margin:14px 0 0">
+            <dt>This Pi</dt>
+            <dd><span class="hrow"><span class="mono" x-text="upd ? 'v' + upd.current_version : '—'"></span><span class="badge b-brand" x-show="upd && upd.update_available">Update available</span><span class="badge b-ok" x-show="upd && upd.latest_version && !upd.update_available">Up to date</span></span></dd>
+            <dt>Published</dt><dd class="mono" x-text="upd && upd.latest_version ? 'v' + upd.latest_version : '—'"></dd>
+            <dt>Now</dt><dd x-text="updStateText"></dd>
+            <dt>Last result</dt><dd x-text="updLastText"></dd>
+          </dl>
+          <div class="srow" style="margin-top:14px">
+            <div class="lblcol"><div class="lbl">Update now</div><p class="help" x-text="updBlockedText"></p></div>
+            <button type="button" class="btn btn-p" :disabled="!!updBusy || !(upd && upd.can_update_now)" @click="startUpdate()" x-text="updBusy === '/api/update' ? 'Starting…' : 'Update now'"></button>
+          </div>
+          <div class="srow">
+            <div class="lblcol"><div class="lbl">Roll back</div><p class="help">Back to the version this Pi ran before. Only while no orders are open.</p></div>
+            <button type="button" class="btn" :disabled="!!updBusy || updRollbackBlocked" @click="startRollback()">Roll back</button>
+          </div>
+        </section>
+        <section class="card sbody" aria-labelledby="h-s-acct">
           <h2 id="h-s-acct">Account</h2>
           <p class="help" x-show="session.manager_login">This Pi signs in with the store manager login. Change that password in the main dashboard (Store → Login).</p>
           <form class="stack" style="gap:12px;margin-top:14px" x-show="!session.manager_login" @submit.prevent="changePassword()">
@@ -739,6 +779,7 @@
             <button type="button" class="btn btn-danger" @click="unlink()">Unlink this Pi</button>
           </div>
         </section>
+        </div>
       </div>
     </section>
 
@@ -753,6 +794,10 @@
     <div class="card dlg" role="dialog" aria-modal="true" aria-labelledby="dlg-title" aria-describedby="dlg-body">
       <h2 id="dlg-title" x-text="dialog.title"></h2>
       <p id="dlg-body" x-show="dialog.body" x-text="dialog.body"></p>
+      <div class="dlg-input" x-show="!!dialog.input">
+        <label class="lbl" for="dlg-input" x-text="dialog.input ? dialog.input.label : ''"></label>
+        <input class="field" id="dlg-input" autocomplete="off" x-model="dialog.value" :maxlength="dialog.input ? (dialog.input.maxlength || 40) : 40" @keydown.enter.prevent="closeDialog(true)" />
+      </div>
       <ul x-show="dialog.list && dialog.list.length"><template x-for="(l, i) in dialog.list" :key="i"><li x-text="l"></li></template></ul>
       <div class="acts">
         <button type="button" class="btn" data-role="cancel" x-show="dialog.cancelLabel" @click="closeDialog(false)" x-text="dialog.cancelLabel"></button>

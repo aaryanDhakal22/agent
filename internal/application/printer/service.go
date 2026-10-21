@@ -26,6 +26,9 @@ type Service struct {
 	logger   zerolog.Logger
 	tracer   trace.Tracer
 	meters   observability.Meters
+	// onProbe runs after every health probe (KeepCheck, ProbeNow) with the
+	// address probed — the dispatcher's hook for learning printer MACs.
+	onProbe func(ctx context.Context, ip string, up bool)
 }
 
 func NewService(p printer.Printer, registry *Registry, logger zerolog.Logger, meters observability.Meters) *Service {
@@ -71,6 +74,9 @@ func (s *Service) KeepCheck(ctx context.Context, delay time.Duration, notifier *
 
 		if s.registry != nil {
 			s.registry.Record(name, s.printer.IP(), up, err, probedAt)
+		}
+		if s.onProbe != nil {
+			s.onProbe(ctx, s.printer.IP(), up)
 		}
 
 		if err != nil {
@@ -229,6 +235,9 @@ func (s *Service) ProbeNow(ctx context.Context) error {
 
 	if s.registry != nil {
 		s.registry.Record(name, s.printer.IP(), up, err, probedAt)
+	}
+	if s.onProbe != nil {
+		s.onProbe(ctx, s.printer.IP(), up)
 	}
 
 	if err != nil {

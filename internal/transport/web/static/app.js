@@ -232,6 +232,10 @@ function agentApp() {
 
     // --- printers ---
     printers: [], printersErr: '', printerResults: {}, printerBusy: '',
+    found: null, foundBusy: false,
+
+    // --- Pi updates (Settings › Account, Overview Pi card) ---
+    upd: null, updErr: '', updBusy: '',
 
     // --- settings ---
     autoAccept: false, autoAcceptLoaded: false, floorForm: { green: '', tiptax: '' },
@@ -289,14 +293,14 @@ function agentApp() {
       if (this.dialog) this.closeDialog(false);
       priv.lastFocus = document.activeElement;
       return new Promise(resolve => {
-        this.dialog = Object.assign({ title: '', body: '', list: [], confirmLabel: 'OK', cancelLabel: 'Cancel', danger: false, focusCancel: false }, opts, { resolve });
+        this.dialog = Object.assign({ title: '', body: '', list: [], confirmLabel: 'OK', cancelLabel: 'Cancel', danger: false, focusCancel: false, input: null, value: '' }, opts, { resolve });
         // Focus the safe choice: Cancel on a destructive (danger / focusCancel)
         // dialog, else OK.
         // (Retried briefly: the dialog renders on Alpine's next flush.)
         const focusSafe = (tries) => {
           const wrap = document.getElementById('dialog');
           if (!this.dialog || !wrap || wrap.contains(document.activeElement)) return;
-          const pick = ((this.dialog.danger || this.dialog.focusCancel) && wrap.querySelector('[data-role=cancel]')) || wrap.querySelector('[data-role=ok]');
+          const pick = (this.dialog.input && wrap.querySelector('#dlg-input')) || ((this.dialog.danger || this.dialog.focusCancel) && wrap.querySelector('[data-role=cancel]')) || wrap.querySelector('[data-role=ok]');
           if (pick) pick.focus();
           if (tries > 0 && !wrap.contains(document.activeElement)) setTimeout(() => focusSafe(tries - 1), 30);
         };
@@ -306,13 +310,14 @@ function agentApp() {
     closeDialog(ok) {
       const d = this.dialog; if (!d) return;
       this.dialog = null;
-      d.resolve(!!ok);
+      // A dialog with an input resolves the typed text (null when cancelled).
+      d.resolve(d.input ? (ok ? String(d.value || '') : null) : !!ok);
       const f = priv.lastFocus; priv.lastFocus = null;
       if (f && typeof f.focus === 'function' && document.contains(f)) setTimeout(() => f.focus(), 0);
     },
     // Keep Tab inside the open dialog.
     trapTab(e) {
-      const els = [...document.querySelectorAll('#dialog button:not([disabled])')];
+      const els = [...document.querySelectorAll('#dialog input, #dialog button:not([disabled])')].filter(el => el.offsetParent !== null);
       if (!els.length) return;
       const first = els[0], last = els[els.length - 1];
       if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
@@ -535,6 +540,7 @@ function agentApp() {
       if (this.state !== 'ready' || document.hidden) return;
       if (this.page === 'overview') { this.loadDiag(); this.loadDevices(); }
       if (this.page === 'printers') this.loadPrinters();
+      if (this.page === 'settings' && this.settingsTab === 'account') this.loadUpdate();
     },
     get pageTitle() { return (NAV.find(n => n.id === this.page) || NAV[0]).label; },
 
@@ -768,7 +774,7 @@ function agentApp() {
 
     // --- overview -------------------------------------------------------------------
     loadOverview() {
-      this.loadFloor(); this.loadDiag(); this.loadDevices(); this.loadAppLatest(); this.loadBatches(); this.loadReports();
+      this.loadFloor(); this.loadDiag(); this.loadDevices(); this.loadAppLatest(); this.loadBatches(); this.loadReports(); this.loadUpdate();
     },
     async loadDiag() {
       try { this.diag = await this.call('/api/diag'); this.diagErr = false; } catch { this.diagErr = true; /* cards: "Couldn't check" */ }
@@ -856,6 +862,7 @@ function agentApp() {
       if (h.disk_free_bytes) bits.push(bytes(h.disk_free_bytes) + ' free');
       if (h.ntp_synced === 'yes') bits.push('clock synced');
       else if (h.ntp_synced === 'no') bits.push('clock NOT synced');
+      if (this.upd && this.upd.update_available) bits.unshift('update available');
       const probs = (this.diag.problems || []).filter(p => ['sd_errors', 'rootfs_ro', 'under_voltage', 'ntp', 'health_stale'].includes(p));
       const bad = probs.some(p => p === 'sd_errors' || p === 'rootfs_ro');
       return { tone: bad ? 'bad' : probs.length ? 'warn' : 'ok', t: probs.length ? (probs.length === 1 ? 'Needs a look' : probs.length + ' problems') : 'Healthy', s: bits.join(' · ') || 'no health report on this machine' };
@@ -1044,9 +1051,49 @@ function agentApp() {
       const add = (name) => { if (!byName.has(name)) byName.set(name, { name, id: '', ip: '', is_receipt: false, up: null }); return byName.get(name); };
       for (const p of roster) Object.assign(add(p.name), { id: p.id, ip: p.ip || '', is_receipt: !!p.is_receipt });
       for (const p of cfg) { const e = add(p.name); if (!e.id) e.id = p.id; if (!e.ip) e.ip = p.ip; e.is_receipt = e.is_receipt || !!p.is_receipt; }
-      for (const s of status) Object.assign(add(s.name), { ip: s.ip || byName.get(s.name).ip, up: s.up, last_checked: s.last_checked, last_error: s.last_error, up_since: s.up_since, down_since: s.down_since });
+      for (const s of status) Object.assign(add(s.name), { ip: s.ip || byName.get(s.name).ip, up: s.up, mac: s.mac || '', last_checked: s.last_checked, last_error: s.last_error, up_since: s.up_since, down_since: s.down_since });
       this.printers = [...byName.values()].sort((a, b) => (b.is_receipt - a.is_receipt) || a.name.localeCompare(b.name));
       this.printersErr = st.status === 'rejected' ? st.reason.message : '';
+      if (!this.foundBusy) this.loadFound(false);
+    },
+    // Printers answering on the Pi's network (TCP 9100). refresh scans now
+    // (the Pi waits up to 15 s for the sweep; still scanning → ask again).
+    async loadFound(refresh) {
+      if (refresh) this.foundBusy = true;
+      try {
+        let f = await this.call('/api/printers/found' + (refresh ? '?refresh=1' : ''));
+        for (let i = 0; refresh && f && f.scanning && i < 10; i++) {
+          await new Promise(r => setTimeout(r, 3000));
+          f = await this.call('/api/printers/found');
+        }
+        this.found = f;
+      } catch (e) { if (refresh) this.toast("Couldn't scan. " + e.message, true); }
+      finally { if (refresh) this.foundBusy = false; }
+    },
+    get foundNew() { return ((this.found && this.found.printers) || []).filter(f => !f.known); },
+    get foundSub() {
+      const f = this.found;
+      if (this.foundBusy || (f && f.scanning)) return 'Looking for printers on this network…';
+      if (!f || !f.scanned_at) return 'Not checked yet — press Scan again.';
+      return "Printers answering on this Pi's network that aren't set up yet · checked " + this.ago(f.scanned_at);
+    },
+    async addFound(f) {
+      const name = await this.ask({
+        title: 'Add the printer at ' + f.ip + '?',
+        body: 'Name it after its station (e.g. Pizza, Grill). It is added in main as a kitchen printer — the first printer becomes the receipt printer.',
+        confirmLabel: 'Add printer', input: { label: 'Printer name', maxlength: 40 },
+      });
+      if (name === null) return;
+      const n = name.trim();
+      if (!n) { this.toast('Type a name for the printer.', true); return; }
+      this.foundBusy = true;
+      try {
+        await this.call('/api/printers/add', { method: 'POST', body: { name: n, ip: f.ip, mac: f.mac || '' } });
+        this.toast('Added ' + n + ' — it appears here in a moment');
+        setTimeout(() => this.loadPrinters(), 2500);
+      } catch (e) {
+        this.toast(e.code === 'name_taken' ? 'There is already a printer called ' + n + '.' : 'Not added. ' + e.message, true);
+      } finally { this.foundBusy = false; this.loadPrinters(); }
     },
     printerTone(p) { return p.up === true ? 'b-ok' : p.up === false && p.last_checked ? 'b-bad' : 'b-mute'; },
     printerState(p) { return p.up === true ? 'Ready' : p.up === false && p.last_checked ? 'Down' : 'Not checked yet'; },
@@ -1082,7 +1129,7 @@ function agentApp() {
         case 'clockout': this.loadReset(); break;
         case 'tablets': this.loadDevices(); this.loadAppLatest(); break;
         case 'store': this.loadStoreCfg(); break;
-        case 'account': this.cp.err = ''; break;
+        case 'account': this.cp.err = ''; this.loadUpdate(); break;
       }
     },
     async loadAutoAccept() {
@@ -1216,6 +1263,68 @@ function agentApp() {
       if (!ok) return;
       try { await this.call('/api/devices/' + d.id + '/revoke', { method: 'POST' }); this.toast(d.name + ' revoked'); } catch (e) { this.toast(e.message, true); }
       this.loadDevices();
+    },
+
+    // Updates (Settings › Account)
+    async loadUpdate() {
+      try { this.upd = await this.call('/api/update/status'); this.updErr = ''; } catch (e) { this.updErr = e.message; }
+    },
+    get updStateText() {
+      const u = this.upd; if (!u) return '—';
+      const p = u.pending || {};
+      switch (u.state) {
+        case 'waiting_for_idle': return 'Waiting until no orders are open, then it installs' + (p.requested_by ? ' (asked by ' + p.requested_by + ')' : '');
+        case 'requested': return (p.action === 'rollback' ? 'Roll back' : 'Update') + ' requested — starting…';
+        case 'running': return 'Installing — this page may drop for a minute';
+        case 'ok': return 'Just finished';
+        case 'up_to_date': return 'Already up to date';
+        case 'failed': return 'Failed';
+        case 'rolled_back': return 'Failed — rolled back';
+        default: return 'Nothing running';
+      }
+    },
+    get updLastText() {
+      const l = this.upd && this.upd.last; if (!l) return 'None yet';
+      const what = { ok: l.action === 'rollback' ? 'Rolled back' : 'Updated', up_to_date: 'Already up to date', failed: 'Failed', rolled_back: 'Failed, rolled back' }[l.state] || l.state;
+      const vers = l.state === 'ok' && l.from_version && l.to_version ? ' ' + l.from_version + ' → ' + l.to_version : l.state === 'rolled_back' && l.from_version ? ' to ' + l.from_version : '';
+      return what + vers + ' · ' + dateTime(l.finished_at || l.started_at) + (l.error ? ' — ' + l.error : '');
+    },
+    get updBlockedText() {
+      const u = this.upd; if (!u) return '';
+      switch (u.blocked_reason) {
+        case 'not_after_close': return 'Only right after Close batch — close the batch on Overview first, then update.';
+        case 'update_in_progress': return 'An update is already in progress.';
+        case 'not_supported': return "This machine can't update itself — only an installed Pi can.";
+        default: return u.update_available ? "Installs the published version now. Orders can't arrive for about a minute." : 'Re-checks and installs the published version (nothing changes when it is already current).';
+      }
+    },
+    get updRollbackBlocked() { const u = this.upd; return !u || u.blocked_reason === 'not_supported' || u.blocked_reason === 'update_in_progress'; },
+    async startUpdate() {
+      const u = this.upd || {};
+      const ok = await this.ask({
+        title: 'Update this Pi now?',
+        body: 'It installs ' + (u.latest_version ? 'version ' + u.latest_version : 'the published version') + ' and restarts the Pi software — this page and the tablet drop for about a minute. If the new version does not start properly the Pi goes back to ' + (u.current_version || 'this one') + ' by itself.',
+        confirmLabel: 'Update now', focusCancel: true,
+      });
+      if (!ok) return;
+      await this.sendUpdate('/api/update', 'Update started — the Pi restarts in a minute');
+    },
+    async startRollback() {
+      const ok = await this.ask({
+        title: 'Roll back this Pi?',
+        body: 'It goes back to the version it ran before and restarts the Pi software — this page and the tablet drop for about a minute. Press Roll back again later to undo it.',
+        confirmLabel: 'Roll back', danger: true,
+      });
+      if (!ok) return;
+      await this.sendUpdate('/api/update/rollback', 'Roll back started — the Pi restarts in a minute');
+    },
+    async sendUpdate(path, done) {
+      this.updBusy = path;
+      try {
+        await this.call(path, { method: 'POST', body: {} });
+        this.toast(done);
+      } catch (e) { this.toast(e.message, true); }
+      finally { this.updBusy = ''; this.loadUpdate(); }
     },
 
     // Account

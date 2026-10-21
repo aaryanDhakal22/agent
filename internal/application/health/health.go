@@ -55,6 +55,7 @@ type Report struct {
 	LastBackupAt   string         `json:"last_backup_at,omitempty"`
 	System         map[string]any `json:"system,omitempty"` // from HealthFile (sd_errors, throttled, …)
 	Pi             SystemHealth   `json:"pi"`               // System, parsed (throttled bits, staleness)
+	Update         any            `json:"update,omitempty"` // update.Health: versions, update state, last result
 	Problems       []string       `json:"problems,omitempty"`
 }
 
@@ -66,6 +67,8 @@ type Inputs struct {
 	FloorBacklog func(ctx context.Context) int64
 	Printers     func() (up, down int)
 	LastBackup   func(ctx context.Context) string
+	// Update is the Pi update block (update.Requester.Health).
+	Update func(ctx context.Context) any
 }
 
 type Heartbeat struct {
@@ -201,6 +204,9 @@ func (h *Heartbeat) collect(ctx context.Context) Report {
 	}
 	if h.in.LastBackup != nil {
 		r.LastBackupAt = h.in.LastBackup(ctx)
+	}
+	if h.in.Update != nil {
+		r.Update = h.in.Update(ctx)
 	}
 	if b, err := os.ReadFile(h.HealthFile); err == nil {
 		var sys map[string]any

@@ -2,7 +2,9 @@ package backup
 
 import (
 	"context"
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -69,6 +71,8 @@ func TestNowUploadsASQLiteFile(t *testing.T) {
 		got = body
 		return 201, []byte(`{}`), nil
 	}, st, nil, nil, zerolog.Nop())
+	tmp := t.TempDir()
+	s.TempDir = tmp
 	n, err := s.Now(ctx)
 	if err != nil {
 		t.Fatal(err)
@@ -78,5 +82,15 @@ func TestNowUploadsASQLiteFile(t *testing.T) {
 	}
 	if st.last == "" {
 		t.Fatal("last backup not recorded")
+	}
+	// The copy is made in the temp dir (RAM on the Pi), never next to the
+	// database, and removed afterwards.
+	for _, dir := range []string{filepath.Dir(path), tmp} {
+		entries, _ := os.ReadDir(dir)
+		for _, e := range entries {
+			if strings.Contains(e.Name(), "backup") {
+				t.Fatalf("left %s in %s", e.Name(), dir)
+			}
+		}
 	}
 }

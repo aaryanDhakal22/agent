@@ -426,3 +426,29 @@ INSERT INTO driver_shifts (id, driver_id, driver_name, batch_id, clock_in) VALUE
 
 -- name: SetKitchenCounters :exec
 UPDATE settings SET kitchen_next = ?, last_prep_minutes = ? WHERE id = 1;
+
+-- Pi updates (2.0.6) ----------------------------------------------------------
+
+-- name: CountOpenBatchOrders :one
+SELECT CAST(count(*) AS INTEGER) AS total,
+       CAST(COALESCE(SUM(CASE WHEN state IN ('arrived', 'accepted', 'ready', 'on_delivery') THEN 1 ELSE 0 END), 0) AS INTEGER) AS active
+FROM orders
+WHERE batch_id = (SELECT id FROM batches WHERE closed_at IS NULL ORDER BY id DESC LIMIT 1);
+
+-- name: GetUpdateState :one
+SELECT update_job, update_notified FROM settings WHERE id = 1;
+
+-- name: SetUpdateJob :exec
+UPDATE settings SET update_job = ? WHERE id = 1;
+
+-- name: SetUpdateNotified :exec
+UPDATE settings SET update_notified = ? WHERE id = 1;
+
+-- Printer MACs (2.0.6) --------------------------------------------------------
+
+-- name: ListPrinterMACs :many
+SELECT printer_id, mac, ip, seen_at FROM printer_macs ORDER BY printer_id;
+
+-- name: UpsertPrinterMAC :exec
+INSERT INTO printer_macs (printer_id, mac, ip, seen_at) VALUES (?, ?, ?, ?)
+ON CONFLICT (printer_id) DO UPDATE SET mac = excluded.mac, ip = excluded.ip, seen_at = excluded.seen_at;

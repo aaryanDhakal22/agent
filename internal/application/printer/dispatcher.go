@@ -52,6 +52,36 @@ type Dispatcher struct {
 	keepCheckParent context.Context
 	printerDelay    time.Duration
 	build           TicketBuilder
+	// probeHook (SetProbeHook) sees every health probe: printer id + address.
+	probeHook func(ctx context.Context, printerID, ip string, up bool)
+}
+
+// RosterPrinter is one configured printer with the address it is dialled on.
+type RosterPrinter struct {
+	ID        string
+	Name      string
+	IP        string
+	IsReceipt bool
+}
+
+// RosterPrinters returns the configured printers (id, name, current IP) in
+// roster order.
+func (d *Dispatcher) RosterPrinters() []RosterPrinter {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	out := make([]RosterPrinter, len(d.roster))
+	for i, sl := range d.roster {
+		out[i] = RosterPrinter{ID: sl.entry.ID, Name: sl.entry.Name, IP: sl.svc.Printer().IP(), IsReceipt: sl.entry.IsReceipt}
+	}
+	return out
+}
+
+// SetProbeHook registers f to run after every printer health probe (applies
+// to the next roster; call it before the first Apply).
+func (d *Dispatcher) SetProbeHook(f func(ctx context.Context, printerID, ip string, up bool)) {
+	d.mu.Lock()
+	d.probeHook = f
+	d.mu.Unlock()
 }
 
 // rosterSlot pairs a configured printer with its live Service.
@@ -115,6 +145,10 @@ func (d *Dispatcher) Apply(ctx context.Context, printers []storeconfig.PrinterCo
 	for _, p := range printers {
 		dev := d.factory(p.Name, p.IP)
 		svc := NewService(dev, d.registry, d.logger, d.meters)
+		if hook := d.probeHook; hook != nil {
+			id := p.ID
+			svc.onProbe = func(ctx context.Context, ip string, up bool) { hook(ctx, id, ip, up) }
+		}
 		slot := rosterSlot{entry: RosterEntry{ID: p.ID, Name: p.Name, IsReceipt: p.IsReceipt}, svc: svc}
 		d.roster = append(d.roster, slot)
 		d.byID[p.ID] = slot

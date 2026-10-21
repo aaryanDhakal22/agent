@@ -399,6 +399,55 @@ nginx :80) — the switch is in `../CUTOVER.md`; never run both agents at once.
 - `internal/infra/database/ascii_test.go` fails the Go suite if `sql/query.sql`
   gains a non-ASCII byte.
 
+## Pi updates + printers on the network (2.0.6)
+
+- **Updates** (`application/update`, routes in `transport/server_update.go`):
+  the agent only gates + hands off. `Requester.Request` (RPC `agent.update` /
+  `agent.rollback` from main, `POST /api/update[/rollback]` = `pi-web`) writes
+  `update.request` (tmp + rename, 0644) into `AGENT_UPDATE_DIR` (default = the DB
+  dir, `/var/lib/quicc-agent` on a Pi); the root `quicc-update.path` →
+  `update.sh` installs and writes `update.status`. Gate: update only when the
+  open batch has **zero orders** (right after Close batch) → else
+  `not_after_close`; `force` (admin only) waits for **idle** (no
+  arrived/accepted/ready/on_delivery) → `waiting_for_idle`, persisted in
+  `settings.update_job`, re-checked every 30 s; rollback = idle only
+  (`orders_open`). `not_supported` unless APP_ENV prod|staging + dir
+  `/var/lib/quicc-agent` + `quicc-update.path` installed, or
+  `AGENT_UPDATE_ENABLED=1` (pytest). The loop (10 s while in progress; the
+  status file is read once at startup otherwise) reports each new
+  `<id>:<state>` as RPC `agent.update.status` (+ synthetic `waiting_for_idle` /
+  `requested`; `requested` > 10 min → `failed`, `running` > 20 min → `failed`)
+  and Pushovers each terminal state **once** to the developer (`notifier.Send`,
+  dedupe in `settings.update_notified`, nothing older than 24 h).
+- **Latest version** (`update.Latest`): `UTILITY_URL` (default
+  `https://utility.quiccpos.com`) + `/<prod|staging>/manifest.txt`, 10 min
+  cache, refreshed in the background; `update_available` = manifest
+  `agent-linux-arm64` sha ≠ sha256 of `os.Executable()` (hashed once). Not
+  signature-checked (display only). Dev: no URL → empty.
+- **Printer MACs** (`application/printernet` + `infra/netscan`): the
+  dispatcher's probe hook → `Watcher.OnProbe` reads `/proc/net/arp` after a good
+  probe, **on-link IPs only** (else it's the gateway's MAC), writes
+  `printer_macs` (`00011`) only on a change. `StatusSnapshot.mac` is filled by
+  `Registry.SetMACLookup` *after* the registry lock is released (the lookup
+  takes the dispatcher lock — don't call it under `r.mu`).
+- **Auto-follow**: down ≥ 45 s + MAC known → sweep (≤ 1 / 2 min, single-flight)
+  of the /24 around each private interface IP (virtual ifaces skipped, ≤ 4 nets)
+  on TCP 9100 (32 × 400 ms) → MAC at a new IP → `Registry.Send` `printer.moved`
+  → `applied` → Pushover "Printer X moved A → B — updated automatically"; main
+  republishes store_config. The SendFloor down/up notices are untouched.
+- **Found printers**: sweeps also feed `GET /api/printers/found` (`?refresh=1`
+  waits ≤ 15 s), `printer.report.found` (unknown only) and the web UI's "Found
+  on the network" card; `POST /api/printers/add` → RPC `printer.add`.
+- `agent.health.update` = `{current_version, latest_version, update_available,
+  state, last}`. The nightly backup's `VACUUM INTO` copy goes to
+  `os.TempDir()` (PrivateTmp → RAM on the Pi), not the DB dir.
+- Tests: `application/update/requester_test.go` (gates, forced wait, status
+  transitions, report/Pushover dedupe across restarts, manifest),
+  `infra/netscan/netscan_test.go` (ARP incl. incomplete/zero, on-link vs gateway,
+  sweep bounds), `application/printernet/watcher_test.go` (learn, follow →
+  moved, rate limit, found), `tests/test_updates.py` (routes, `not_supported`,
+  the request/status file handshake with a fake manifest, found, add).
+
 ## Printing (station tickets + receipt)
 
 main stamps `printer_id` + `routing` on each line item at ingest; the agent
@@ -468,7 +517,10 @@ Optional: `AGENT_DB_PATH` (SQLite file, default `~/.quicc/agent.db`),
 `LOG_OUTPUT` (`console`|`json`|`file`; `file` → lumberjack-rotated
 `log/agent.log`), `PUSHOVER_APP_TOKEN`, `PUSHOVER_USER_KEY`, `PUSHOVER_BOSS_KEY`,
 `OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_SERVICE_NAME` (default `quicc-agent`),
-`AGENT_DISCOVERY_PORT` (UDP LAN discovery, default 48080, `0` off).
+`AGENT_DISCOVERY_PORT` (UDP LAN discovery, default 48080, `0` off),
+`AGENT_UPDATE_DIR` (default the DB dir), `AGENT_UPDATE_ENABLED` (`1` = allow the
+update handshake off a Pi — tests), `UTILITY_URL` (manifest host for the
+latest-version check).
 
 `OTEL_EXPORTER_OTLP_ENDPOINT` accepts a full URL or a bare `host:port`
 (defaults to `http://`). OTLP transport is **HTTP** here, not gRPC; use
@@ -491,7 +543,8 @@ connection. `internal/migrate` runs goose (`sqlite3` dialect) on boot
 (`00001_initial_schema`, `00002_session_secret`, `00003_ui_password`,
 `00004_floor` + `00005_cancelled` — each rebuilds `orders` to widen the state CHECK;
 `00006_driver_shifts` rebuilds `drivers` (adds `off`) + `driver_shifts`; …
-`00010_receipt_prefs` adds `settings.receipt_prefs`; use
+`00010_receipt_prefs` adds `settings.receipt_prefs`; `00011_updates_printer_macs`
+adds `printer_macs` + `settings.update_job` / `update_notified`; use
 `migrate.RunTo` in tests to seed an older schema). sqlc
 targets the `sqlite` engine (`sql/sqlc.yaml`, `sql_package: database/sql`);
 `sql/schema.sql` mirrors **all** migrations and every query — including the
@@ -541,7 +594,8 @@ JS/CSS `no-cache` + content ETag, fonts immutable for a year.
   from `api()` re-reads the session.
 - **Pages** (hash routes `#/overview`, `#/live`, … `#/settings/<tab>`):
   **Overview** (home) — health strip (session SSE state, `/api/diag` printers +
-  Pi health, `/api/devices` + `/api/app/latest`), batch counts and money from
+  Pi health + "update available" from `/api/update/status`, `/api/devices` +
+  `/api/app/latest`), batch counts and money from
   `/api/orders?batch=current` (cash = the one cash rule, card & prepaid = the
   rest of the total, tips; waiting + cancelled orders excluded), needs-attention
   (waiting orders, diag `problems`, `floor_backlog`, `acks_pending`), the drivers
@@ -581,7 +635,13 @@ JS/CSS `no-cache` + content ETag, fonts immutable for a year.
   prefs), Receipts (`/api/settings/receipt` + paper preview; Print a sample saves
   first — the sample uses saved prefs), Daily clock-out, Tablets (pairing code,
   revoke, cached Quibase), Store info (read-only `/api/store-config`), Account
-  (password change hidden when `manager_login`; Log out; Unlink).
+  (Updates card — version, published version, "Update available", state, last
+  result, Update now (disabled with the reason unless right after close; styled
+  confirm) and Roll back — then password change hidden when `manager_login`;
+  Log out; Unlink). Printers also shows each printer's learned MAC and a "Found
+  on the network" card (Add → name dialog → `POST /api/printers/add`; Scan
+  again = `?refresh=1`). `ask({input: {label, maxlength}})` makes the dialog
+  carry a text field and resolve the typed string (`null` on cancel).
 - Toasts + styled dialogs replace every `alert()`/`confirm()`.
 - Dev hot reload: `.air.toml` `include_ext` includes js/css, so editing
   `static/app.js`/`app.css` rebuilds the embedded binary like index.html does.
@@ -617,6 +677,8 @@ longer LAN-open; `POST /api/pair` is open (needs a live code); the web-UI surfac
 | Floor routes + tablet pairing | `internal/transport/server_floor.go`, `internal/transport/pairing.go` |
 | Duplex RPC (envelope + registry) | `internal/rpc/{envelope.go,registry.go}` |
 | Printer-roster report to main | `internal/application/printer/report.go` (wired in `cmd/main.go`) |
+| Pi updates (gate, files, status reports, Pushover, latest version) | `internal/application/update/`, `internal/transport/server_update.go` |
+| Printer MACs, auto-follow, found list | `internal/application/printernet/watcher.go`, `internal/infra/netscan/netscan.go` |
 | Receipt builder | `internal/infra/printer/receipt/builder.go` |
 | Receipt settings (prefs, routes, sample) | `internal/domain/order/receipt_prefs.go`, `internal/transport/server_receipt.go`, `internal/infra/printer/receipt/sample.go` |
 | HTTP route table (single source of truth) | `internal/transport/routes.go` — `routeDef` slice drives the mux **and** `GET /__routes` |
