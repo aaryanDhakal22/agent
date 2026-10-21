@@ -1,0 +1,32 @@
+# systemd unit for the agent on a restaurant / staging Pi.
+#
+# Install (as root on the Pi):
+#   install -d -o pi -g pi /opt/quicc-agent
+#   cp agent-linux-arm64 /opt/quicc-agent/ && chmod +x /opt/quicc-agent/agent-linux-arm64
+#   cp quicc-agent.service /etc/systemd/system/
+#   # Doppler service token for agent/<stg|prd>, readable only by root:
+#   install -m 600 /dev/stdin /etc/quicc-agent.doppler-token <<< 'dp.st.…'
+#   systemctl daemon-reload && systemctl enable --now quicc-agent
+#   journalctl -u quicc-agent -f
+#
+# Edit User= / paths to match the Pi. The agent keeps its SQLite DB at
+# AGENT_DB_PATH (set in Doppler; default ~/.quicc/agent.db of User=).
+[Unit]
+Description=Quicc POS agent (orders, printing, floor flow)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=pi
+WorkingDirectory=/opt/quicc-agent
+# The token file holds only the Doppler service token for this Pi's config.
+ExecStart=/bin/sh -c 'DOPPLER_TOKEN=$(cat /etc/quicc-agent.doppler-token) exec doppler run -- /opt/quicc-agent/agent-linux-arm64'
+Environment=HTTP_PORT=8080
+Restart=always
+RestartSec=3
+# Give in-flight prints + the floor sync a moment on stop.
+TimeoutStopSec=15
+
+[Install]
+WantedBy=multi-user.target

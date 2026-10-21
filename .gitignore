@@ -1,2 +1,60 @@
-.env
+# agent/ — supplements root .gitignore with module-specific bits.
+
+# Doppler tokens.
+.doppler-*
 .doppler-token
+
+# Local env overrides.
+.env
+.env.local
+*.local.*
+
+# Go / build artefacts.
+*.exe
+*.exe~
+*.test
+*.out
+**/tmp/
+/bin/
+agent
+agent-linux-arm64
+agent-linux-arm64.sha256
+log/
+
+# Air hot-reload build output.
+/tmp/
+build-errors.log
+
+# Local SQLite database (AGENT_DB_PATH points at sql/agent.db in dev).
+*.db
+*.db-wal
+*.db-shm
+sql/*.db
+sql/*.db-wal
+sql/*.db-shm
+
+# Python.
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+
+# Claude Code local/session files (CLAUDE.md stays tracked).
+.claude/
+CLAUDE.local.md
+
+# OS / editor junk.
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
+
+# Python test caches.
+__pycache__/
+*.pyc
+
+# Quibase APKs cached by dev roster agents (next to their DBs)
+sql/apk/

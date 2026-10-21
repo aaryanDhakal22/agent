@@ -105,3 +105,20 @@ func (r *Registry) All() []StatusSnapshot {
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out
 }
+
+// Retain drops every entry whose printer isn't in names — called when a new
+// roster is applied, so a printer deleted in /app/store disappears from
+// /api/printers and the printer report instead of lingering as "up".
+func (r *Registry) Retain(names []string) {
+	keep := make(map[string]bool, len(names))
+	for _, n := range names {
+		keep[n] = true
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for n := range r.entries {
+		if !keep[n] {
+			delete(r.entries, n)
+		}
+	}
+}

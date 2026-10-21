@@ -12,5 +12,5 @@ dependencies = [
 testpaths = ["."]
 markers = [
     "real_printer: exercises the real ESC/POS printer network (paper may be burned). Opt in with TEST_REAL_PRINTERS=1.",
-    "sse: requires a fake-main SSE server fixture; starts its own listener.",
+    "slow: waits on real timeouts (e.g. the ~30s revoke-detection heartbeat); `task test-quick` skips these",
 ]

@@ -73,7 +73,7 @@ func (p *ESCPOSPrinter) Detect(ctx context.Context) error {
 	if ip == "" {
 		return fmt.Errorf("%w: %s", printer.ErrPrinterNotConfigured, p.name)
 	}
-	addr := net.JoinHostPort(ip, printerPort)
+	addr := dialAddr(ip)
 
 	ctx, span := p.tracer.Start(ctx, "escpos.detect",
 		trace.WithAttributes(
@@ -86,7 +86,8 @@ func (p *ESCPOSPrinter) Detect(ctx context.Context) error {
 
 	p.logger.Debug().Ctx(ctx).Str("addr", addr).Msg("Dialing printer for detection")
 
-	conn, err := net.DialTimeout("tcp", addr, detectTimeout)
+	dialer := net.Dialer{Timeout: detectTimeout}
+	conn, err := dialer.DialContext(ctx, "tcp", addr)
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "dial failed")
@@ -104,7 +105,7 @@ func (p *ESCPOSPrinter) Print(ctx context.Context, job printer.PrintJob) error {
 	if ip == "" {
 		return fmt.Errorf("%w: %s", printer.ErrPrinterNotConfigured, p.name)
 	}
-	addr := net.JoinHostPort(ip, printerPort)
+	addr := dialAddr(ip)
 
 	ctx, span := p.tracer.Start(ctx, "escpos.write",
 		trace.WithAttributes(
@@ -117,7 +118,8 @@ func (p *ESCPOSPrinter) Print(ctx context.Context, job printer.PrintJob) error {
 
 	p.logger.Debug().Ctx(ctx).Str("addr", addr).Msg("Connecting for print job")
 
-	conn, err := net.DialTimeout("tcp", addr, printTimeout)
+	dialer := net.Dialer{Timeout: printTimeout}
+	conn, err := dialer.DialContext(ctx, "tcp", addr)
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "dial failed")
@@ -142,4 +144,14 @@ func (p *ESCPOSPrinter) Print(ctx context.Context, job printer.PrintJob) error {
 
 	p.logger.Info().Ctx(ctx).Str("addr", addr).Int("bytes", n).Msg("Receipt sent to printer")
 	return nil
+}
+
+// dialAddr turns a configured printer address into host:port: a bare IP/host
+// gets the standard raw-print port 9100; an explicit "host:port" is used as-is
+// (fake printers in tests, or a printer behind a port-mapping bridge).
+func dialAddr(ip string) string {
+	if _, _, err := net.SplitHostPort(ip); err == nil {
+		return ip
+	}
+	return net.JoinHostPort(ip, printerPort)
 }

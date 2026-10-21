@@ -6,39 +6,136 @@ package models
 
 import (
 	"context"
-
-	"github.com/jackc/pgx/v5/pgtype"
+	"database/sql"
 )
 
 type Querier interface {
-	DeleteOlderThan(ctx context.Context, arrivalDate pgtype.Timestamptz) (int64, error)
+	// Close-batch: an order nobody accepted is cancelled (never printed, no kitchen number).
+	CancelOrder(ctx context.Context, arg CancelOrderParams) error
+	// Claims an arrived order for acceptance (0 rows = missing or already taken).
+	// The kitchen number is kept across a revert + re-accept.
+	ClaimAccept(ctx context.Context, arg ClaimAcceptParams) (int64, error)
+	ClearAcceptPending(ctx context.Context, id string) error
+	// Unlink / definitive revoke: drop the store key AND the local password + hint
+	// in one statement, back to the blank "paste a token" state.
+	ClearProvisioning(ctx context.Context) error
+	ClockOutDriver(ctx context.Context, id string) (int64, error)
+	CloseBatch(ctx context.Context, arg CloseBatchParams) error
+	CloseShift(ctx context.Context, arg CloseShiftParams) error
+	CountAllDrivers(ctx context.Context) (int64, error)
+	CountAllOrders(ctx context.Context) (int64, error)
+	CountDeliveriesInBatch(ctx context.Context, batchID int64) ([]CountDeliveriesInBatchRow, error)
+	CountUnsyncedFloorEvents(ctx context.Context) (int64, error)
+	CreateDriver(ctx context.Context, arg CreateDriverParams) error
+	// Paired devices (counter tablets) -------------------------------------------
+	CreatePairedDevice(ctx context.Context, arg CreatePairedDeviceParams) error
+	DeactivateDriver(ctx context.Context, id string) (int64, error)
+	DeleteAllBatches(ctx context.Context) error
+	DeleteOldClosedBatches(ctx context.Context, limit int64) error
+	DeleteOldSyncedFloorEvents(ctx context.Context, syncedAt sql.NullString) (int64, error)
+	// Batch retention: keep the open batch plus the newest N closed batches.
+	DeleteOrdersOutsideKeptBatches(ctx context.Context, limit int64) (int64, error)
+	// Close-batch auto-finish: force an order to its terminal state.
+	FinishOrder(ctx context.Context, arg FinishOrderParams) error
+	GetAppRelease(ctx context.Context) (string, error)
+	// Settings -----------------------------------------------------------------
 	GetAutoAccept(ctx context.Context) (bool, error)
-	GetOrderByID(ctx context.Context, orderID int32) (Order, error)
-	// Row-level lock so the accept path is serialized against concurrent calls
-	// (e.g. mobile double-tap). Used inside the accept transaction.
-	GetOrderByIDForUpdate(ctx context.Context, orderID int32) (Order, error)
-	GetPrinterConfig(ctx context.Context, name string) (PrinterConfig, error)
-	// Pending-acceptance queue. Used by mobile to populate the "awaiting you" list
-	// when it connects or reconnects to the SSE stream.
+	GetBatch(ctx context.Context, id int64) (Batch, error)
+	GetDriver(ctx context.Context, id string) (Driver, error)
+	GetDriverReset(ctx context.Context) (GetDriverResetRow, error)
+	GetFloorPrefs(ctx context.Context) (GetFloorPrefsRow, error)
+	GetFloorSettings(ctx context.Context) (GetFloorSettingsRow, error)
+	GetLastBackup(ctx context.Context) (string, error)
+	GetLastReturn(ctx context.Context) (GetLastReturnRow, error)
+	GetLinkInfo(ctx context.Context) (GetLinkInfoRow, error)
+	// Batches -------------------------------------------------------------------
+	GetOpenBatch(ctx context.Context) (Batch, error)
+	GetOpenShift(ctx context.Context, driverID string) (DriverShift, error)
+	GetOrderByID(ctx context.Context, id string) (Order, error)
+	GetPairedDeviceByHash(ctx context.Context, keyHash string) (PairedDevice, error)
+	GetSessionSecret(ctx context.Context) (string, error)
+	GetStoreAPIKey(ctx context.Context) (string, error)
+	// Store config (starter pack from main/'s SSE handshake) --------------------
+	GetStoreConfig(ctx context.Context) (GetStoreConfigRow, error)
+	GetUIPassword(ctx context.Context) (GetUIPasswordRow, error)
+	InsertBatchWithID(ctx context.Context, arg InsertBatchWithIDParams) error
+	// Floor events (sync outbox to main) -------------------------------------------
+	InsertFloorEvent(ctx context.Context, arg InsertFloorEventParams) error
+	// Drivers -------------------------------------------------------------------
+	ListActiveDrivers(ctx context.Context) ([]Driver, error)
 	ListArrivedOrders(ctx context.Context) ([]Order, error)
-	// Newest-first, for mobile history view.
+	ListAvailableDrivers(ctx context.Context) ([]Driver, error)
+	// Driver report: delivered orders of a batch that went out with a driver.
+	ListBatchDeliveries(ctx context.Context, batchID int64) ([]Order, error)
+	// Orders of a batch that aren't finished: finished = delivered or cancelled,
+	// or ready for a non-delivery order.
+	ListBatchLeftovers(ctx context.Context, batchID int64) ([]Order, error)
+	ListBatches(ctx context.Context, limit int64) ([]ListBatchesRow, error)
+	// Claimed but never recorded: the agent stopped between claim and record.
+	ListInterruptedAccepts(ctx context.Context) ([]string, error)
+	ListOnDeliveryByDriver(ctx context.Context, driverID sql.NullString) ([]Order, error)
+	ListOpenShifts(ctx context.Context) ([]DriverShift, error)
+	ListOrdersByBatch(ctx context.Context, arg ListOrdersByBatchParams) ([]Order, error)
 	ListOrdersPage(ctx context.Context, arg ListOrdersPageParams) ([]Order, error)
-	ListPrinterConfigs(ctx context.Context) ([]PrinterConfig, error)
-	// First-time accept: sets state + printed_date. COALESCE preserves any earlier
-	// printed_date (so this is safe even if called twice, though the state check
-	// below ordinarily prevents that).
-	MarkAccepted(ctx context.Context, orderID int32) error
+	// Arrived orders older than the cutoff that haven't been alerted since the cutoff.
+	ListOverdueArrived(ctx context.Context, cutoff string) ([]Order, error)
+	ListPairedDevices(ctx context.Context) ([]PairedDevice, error)
+	// Driver report: shifts that overlap a batch window (opened_at .. closed_at).
+	ListShiftsOverlapping(ctx context.Context, arg ListShiftsOverlappingParams) ([]DriverShift, error)
+	ListShiftsSince(ctx context.Context, clockIn string) ([]DriverShift, error)
+	ListUnsyncedFloorEvents(ctx context.Context, limit int64) ([]FloorEvent, error)
+	MarkAlerted(ctx context.Context, arg MarkAlertedParams) error
+	MarkDelivered(ctx context.Context, arg MarkDeliveredParams) (int64, error)
+	MarkFloorEventFailed(ctx context.Context, arg MarkFloorEventFailedParams) error
+	MarkFloorEventSynced(ctx context.Context, arg MarkFloorEventSyncedParams) error
+	MarkOnDelivery(ctx context.Context, arg MarkOnDeliveryParams) (int64, error)
+	MarkReady(ctx context.Context, arg MarkReadyParams) (int64, error)
+	NextDriverPosition(ctx context.Context) (int64, error)
+	// Allocates a kitchen number: returns the post-increment value (caller subtracts 1).
+	NextKitchenNumber(ctx context.Context) (int64, error)
+	OpenBatch(ctx context.Context, openedAt string) (Batch, error)
+	// Driver shifts ----------------------------------------------------------------
+	OpenShift(ctx context.Context, arg OpenShiftParams) error
+	RenameDriver(ctx context.Context, arg RenameDriverParams) (int64, error)
+	// Close batch: drivers out on a run are back in the queue (clocked-out stay off).
+	ResetDriversAvailable(ctx context.Context) error
+	ResetKitchenNumber(ctx context.Context) error
+	RestoreDriver(ctx context.Context, arg RestoreDriverParams) error
+	RestoreOrder(ctx context.Context, arg RestoreOrderParams) error
+	RestoreShift(ctx context.Context, arg RestoreShiftParams) error
+	// Undoes a claim whose tickets printed nowhere, so the order can be re-accepted.
+	RevertAccept(ctx context.Context, id string) error
+	RevokeAllPairedDevices(ctx context.Context, revokedAt sql.NullString) error
+	RevokePairedDevice(ctx context.Context, arg RevokePairedDeviceParams) (int64, error)
+	SetAppRelease(ctx context.Context, appRelease string) error
 	SetAutoAccept(ctx context.Context, autoAccept bool) error
-	// Mobile-update path: always overwrite. updated_at moves so mobile can tell
-	// how fresh the value is.
-	SetPrinterIP(ctx context.Context, arg SetPrinterIPParams) error
-	// Inserts a freshly-arrived order. Idempotent against duplicate SSE redelivery —
-	// if the order_id already exists (e.g. mobile reconnected and main/ resends),
-	// we leave the existing row (and its state/printed_date) alone.
-	UpsertArrivedOrder(ctx context.Context, arg UpsertArrivedOrderParams) error
-	// Env-var seed path: only populate a row if none exists for this printer.
-	// Mobile-set values are never overwritten at boot.
-	UpsertPrinterConfigIfAbsent(ctx context.Context, arg UpsertPrinterConfigIfAbsentParams) error
+	SetDriverOut(ctx context.Context, id string) error
+	// Undo a mistaken return: back out on the run, at its old queue position.
+	SetDriverOutAt(ctx context.Context, arg SetDriverOutAtParams) (int64, error)
+	SetDriverPosition(ctx context.Context, arg SetDriverPositionParams) error
+	SetDriverResetTime(ctx context.Context, driverResetTime string) error
+	// Back from a run: available again, at the back of the queue.
+	SetDriverReturned(ctx context.Context, arg SetDriverReturnedParams) error
+	SetDriverStatus(ctx context.Context, arg SetDriverStatusParams) (int64, error)
+	SetFloorPrefs(ctx context.Context, arg SetFloorPrefsParams) error
+	SetKitchenCounters(ctx context.Context, arg SetKitchenCountersParams) error
+	SetLastBackup(ctx context.Context, lastBackupAt string) error
+	SetLastDriverReset(ctx context.Context, lastDriverResetAt string) error
+	SetLastPrepMinutes(ctx context.Context, lastPrepMinutes int64) error
+	SetLastReturn(ctx context.Context, arg SetLastReturnParams) error
+	// Link + restore (00008) --------------------------------------------------------
+	SetLinkInfo(ctx context.Context, arg SetLinkInfoParams) error
+	SetManagerPasswordHash(ctx context.Context, uiPasswordHash string) error
+	SetSessionSecret(ctx context.Context, sessionSecret string) error
+	SetStoreAPIKey(ctx context.Context, storeApiKey string) error
+	SetUIPassword(ctx context.Context, arg SetUIPasswordParams) error
+	TouchPairedDevice(ctx context.Context, arg TouchPairedDeviceParams) error
+	// Orders -------------------------------------------------------------------
+	// Idempotent: SSE redelivery (or a reconnect-backlog replay) for the same
+	// canonical id is a no-op so we don't reset state to 'arrived'. The order joins
+	// the currently open batch; arrival_date falls back to the column DEFAULT.
+	UpsertArrivedOrder(ctx context.Context, arg UpsertArrivedOrderParams) (int64, error)
+	UpsertStoreConfig(ctx context.Context, argContext string) error
 }
 
 var _ Querier = (*Queries)(nil)

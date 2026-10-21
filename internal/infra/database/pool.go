@@ -1,27 +1,34 @@
-// Package database wires the pgx connection pool. otelpgx hooks into pgx's
-// tracer interface so every query emits a child span and the caller gets
-// trace correlation "for free" — no instrumentation at call sites.
+// Package database opens the agent's pure-Go SQLite database (modernc.org/sqlite,
+// CGO-free). There is no otelpgx-style automatic query tracing here; the repos
+// wrap their calls in manual spans instead (see repositories/span.go).
 package database
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 
-	"github.com/exaring/otelpgx"
-	"github.com/jackc/pgx/v5/pgxpool"
+	_ "modernc.org/sqlite"
 )
 
-// NewPool parses the DSN, installs the otelpgx tracer, and opens a pool.
-func NewPool(ctx context.Context, dsn string) (*pgxpool.Pool, error) {
-	cfg, err := pgxpool.ParseConfig(dsn)
+// Open opens the SQLite file at path with WAL journalling, a busy timeout (so
+// concurrent writers wait rather than error), and foreign keys on. The
+// connection pool is capped at one open connection: the agent is low-volume and
+// a single writer sidesteps SQLite's "database is locked" corner cases entirely.
+func Open(ctx context.Context, path string) (*sql.DB, error) {
+	dsn := fmt.Sprintf(
+		"file:%s?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=foreign_keys(on)",
+		path,
+	)
+	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
-		return nil, fmt.Errorf("parse DSN: %w", err)
+		return nil, fmt.Errorf("open sqlite: %w", err)
 	}
-	cfg.ConnConfig.Tracer = otelpgx.NewTracer()
+	db.SetMaxOpenConns(1)
 
-	pool, err := pgxpool.NewWithConfig(ctx, cfg)
-	if err != nil {
-		return nil, fmt.Errorf("connect: %w", err)
+	if err := db.PingContext(ctx); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("ping sqlite: %w", err)
 	}
-	return pool, nil
+	return db, nil
 }

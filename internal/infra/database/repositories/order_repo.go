@@ -2,6 +2,7 @@ package repositories
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -10,60 +11,79 @@ import (
 	"quiccpos/agent/internal/domain/order"
 	"quiccpos/agent/internal/infra/database/models"
 
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgtype"
-	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/google/uuid"
 	"github.com/rs/zerolog"
 )
 
-// compile-time interface check
 var _ order.Repository = (*OrderRepository)(nil)
 
 type OrderRepository struct {
-	pool   *pgxpool.Pool
+	db     *sql.DB
 	logger zerolog.Logger
 }
 
-func NewOrderRepository(pool *pgxpool.Pool, lg zerolog.Logger) *OrderRepository {
+func NewOrderRepository(db *sql.DB, lg zerolog.Logger) *OrderRepository {
 	return &OrderRepository{
-		pool:   pool,
+		db:     db,
 		logger: lg.With().Str("module", "order-repo").Logger(),
 	}
 }
 
-func (r *OrderRepository) UpsertArrived(ctx context.Context, o order.OrderRequest) error {
-	payload, err := json.Marshal(o)
-	if err != nil {
-		return fmt.Errorf("marshal payload: %w", err)
+func (r *OrderRepository) UpsertArrived(ctx context.Context, s order.Snapshot) (inserted bool, err error) {
+	ctx, _, end := dbSpan(ctx, "orders.upsert_arrived")
+	defer end(&err)
+
+	// Validate the ids are UUIDs (they're stored as text, but a malformed id is
+	// a bug worth surfacing early rather than persisting garbage).
+	if _, err = uuid.Parse(s.ID); err != nil {
+		return false, fmt.Errorf("invalid snapshot id %q: %w", s.ID, err)
 	}
-	q := models.New(r.pool)
-	return q.UpsertArrivedOrder(ctx, models.UpsertArrivedOrderParams{
-		OrderID: int32(o.OrderID),
-		Payload: payload,
+	if _, err = uuid.Parse(s.TenantID); err != nil {
+		return false, fmt.Errorf("invalid tenant_id %q: %w", s.TenantID, err)
+	}
+	if _, err = uuid.Parse(s.LocationID); err != nil {
+		return false, fmt.Errorf("invalid location_id %q: %w", s.LocationID, err)
+	}
+	payload, err := json.Marshal(s)
+	if err != nil {
+		return false, fmt.Errorf("marshal snapshot: %w", err)
+	}
+	n, err := models.New(r.db).UpsertArrivedOrder(ctx, models.UpsertArrivedOrderParams{
+		ID:            s.ID,
+		TenantID:      s.TenantID,
+		LocationID:    s.LocationID,
+		Source:        s.Source,
+		SourceEventID: s.SourceEventID,
+		Snapshot:      string(payload),
 	})
+	return n == 1, err
 }
 
-func (r *OrderRepository) GetByID(ctx context.Context, id int) (*order.StoredOrder, error) {
-	q := models.New(r.pool)
-	row, err := q.GetOrderByID(ctx, int32(id))
+func (r *OrderRepository) GetByID(ctx context.Context, id uuid.UUID) (so *order.StoredOrder, err error) {
+	ctx, _, end := dbSpan(ctx, "orders.get_by_id")
+	defer end(&err)
+
+	row, err := models.New(r.db).GetOrderByID(ctx, id.String())
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
+		if errors.Is(err, sql.ErrNoRows) {
 			return nil, order.ErrNotFound
 		}
 		return nil, fmt.Errorf("get order: %w", err)
 	}
-	so, err := toStored(row)
+	stored, err := toStored(row)
 	if err != nil {
 		return nil, err
 	}
-	return &so, nil
+	return &stored, nil
 }
 
-func (r *OrderRepository) ListPage(ctx context.Context, offset, limit int) ([]order.StoredOrder, error) {
-	q := models.New(r.pool)
-	rows, err := q.ListOrdersPage(ctx, models.ListOrdersPageParams{
-		Limit:  int32(limit),
-		Offset: int32(offset),
+func (r *OrderRepository) ListPage(ctx context.Context, offset, limit int) (out []order.StoredOrder, err error) {
+	ctx, _, end := dbSpan(ctx, "orders.list_page")
+	defer end(&err)
+
+	rows, err := models.New(r.db).ListOrdersPage(ctx, models.ListOrdersPageParams{
+		Limit:  int64(limit),
+		Offset: int64(offset),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("list orders: %w", err)
@@ -71,107 +91,141 @@ func (r *OrderRepository) ListPage(ctx context.Context, offset, limit int) ([]or
 	return mapRows(rows)
 }
 
-func (r *OrderRepository) ListArrived(ctx context.Context) ([]order.StoredOrder, error) {
-	q := models.New(r.pool)
-	rows, err := q.ListArrivedOrders(ctx)
+func (r *OrderRepository) ListArrived(ctx context.Context) (out []order.StoredOrder, err error) {
+	ctx, _, end := dbSpan(ctx, "orders.list_arrived")
+	defer end(&err)
+
+	rows, err := models.New(r.db).ListArrivedOrders(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("list arrived: %w", err)
 	}
 	return mapRows(rows)
 }
 
-// AcceptAndPrint runs the DB state transition and the physical print inside a
-// single transaction. If `print` returns an error, we roll back — the order
-// remains in the arrived state and can be retried. This is the contract the
-// user asked for: no silent lost prints when the printer is unreachable.
-//
-// A row-level FOR UPDATE lock serializes concurrent accepts on the same order
-// (e.g. mobile double-tap). Duration of the open tx is bounded by the
-// printer's 10s print-timeout, which is acceptable at restaurant order rate.
-func (r *OrderRepository) AcceptAndPrint(
-	ctx context.Context,
-	id int,
-	print func(ctx context.Context, o order.OrderRequest) error,
-) (*order.StoredOrder, error) {
-	log := r.logger.With().Int("order_id", id).Logger()
-	log.Debug().Ctx(ctx).Msg("accept+print: beginning transaction")
+// ClaimAccept flips an arrived order to accepted in one transaction and
+// returns it: allocates a kitchen number (unless a reverted earlier claim
+// already did), stamps accepted_at + the prep estimate, and remembers the prep
+// as the next default. Printing happens afterwards, outside any transaction
+// (a slow or dead printer must not hold the single SQLite connection); the
+// caller reverts with RevertAccept if nothing printed. Two concurrent accepts
+// (mobile double-tap) can't both win: the loser's UPDATE matches 0 rows.
+func (r *OrderRepository) ClaimAccept(ctx context.Context, id uuid.UUID, prepMinutes int) (result *order.StoredOrder, err error) {
+	ctx, _, end := dbSpan(ctx, "orders.claim_accept")
+	defer end(&err)
 
-	tx, err := r.pool.Begin(ctx)
+	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, fmt.Errorf("begin tx: %w", err)
 	}
-	defer tx.Rollback(ctx) //nolint:errcheck — idempotent after Commit
-
+	defer tx.Rollback() //nolint:errcheck
 	q := models.New(tx)
 
-	row, err := q.GetOrderByIDForUpdate(ctx, int32(id))
+	row, err := q.GetOrderByID(ctx, id.String())
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
+		if errors.Is(err, sql.ErrNoRows) {
 			return nil, order.ErrNotFound
 		}
-		return nil, fmt.Errorf("lock row: %w", err)
+		return nil, fmt.Errorf("load order: %w", err)
 	}
-
-	if row.State == models.OrderStateAccepted {
-		log.Info().Ctx(ctx).Msg("accept+print: order already accepted, skipping")
+	if order.State(row.State) != order.StateArrived {
 		return nil, order.ErrAlreadyAccepted
 	}
-
-	stored, err := toStored(row)
+	kitchen := row.KitchenNumber
+	if !kitchen.Valid {
+		next, err := q.NextKitchenNumber(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("allocate kitchen number: %w", err)
+		}
+		kitchen = sql.NullInt64{Int64: next - 1, Valid: true}
+	}
+	now := time.Now()
+	n, err := q.ClaimAccept(ctx, models.ClaimAcceptParams{
+		Now:              nullTS(now),
+		PrepMinutes:      sql.NullInt64{Int64: int64(prepMinutes), Valid: prepMinutes > 0},
+		EstimatedReadyAt: nullTSIf(now.Add(time.Duration(prepMinutes)*time.Minute), prepMinutes > 0),
+		KitchenNumber:    kitchen,
+		ID:               id.String(),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("claim accept: %w", err)
+	}
+	if n == 0 {
+		return nil, order.ErrAlreadyAccepted
+	}
+	if prepMinutes > 0 {
+		if err := q.SetLastPrepMinutes(ctx, int64(prepMinutes)); err != nil {
+			return nil, fmt.Errorf("save prep default: %w", err)
+		}
+	}
+	fresh, err := q.GetOrderByID(ctx, id.String())
+	if err != nil {
+		return nil, fmt.Errorf("reload order: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("commit: %w", err)
+	}
+	so, err := toStored(fresh)
 	if err != nil {
 		return nil, err
 	}
-
-	// Mark accepted first so the DB write is committed atomically with the
-	// physical print. If the print fails, the whole tx rolls back and the
-	// order's state remains 'arrived' for a retry.
-	if err := q.MarkAccepted(ctx, int32(id)); err != nil {
-		return nil, fmt.Errorf("mark accepted: %w", err)
-	}
-
-	if err := print(ctx, stored.Order); err != nil {
-		log.Warn().Ctx(ctx).Err(err).Msg("accept+print: printer failed, rolling back state")
-		return nil, err
-	}
-
-	if err := tx.Commit(ctx); err != nil {
-		return nil, fmt.Errorf("commit tx: %w", err)
-	}
-
-	// Re-read so the caller sees the new state + printed_date that the tx set.
-	fresh, err := r.GetByID(ctx, id)
-	if err != nil {
-		// Committed but re-read failed — return a best-effort view.
-		log.Warn().Ctx(ctx).Err(err).Msg("accept+print: committed but re-read failed")
-		now := time.Now()
-		stored.Status.State = order.StateAccepted
-		stored.Status.PrintedDate = &now
-		return &stored, nil
-	}
-	return fresh, nil
+	return &so, nil
 }
 
-func (r *OrderRepository) DeleteOlderThan(ctx context.Context, cutoff time.Time) (int64, error) {
-	q := models.New(r.pool)
-	return q.DeleteOlderThan(ctx, pgtype.Timestamptz{Time: cutoff, Valid: true})
+// RevertAccept returns a claimed order to arrived (clearing printed_date).
+func (r *OrderRepository) RevertAccept(ctx context.Context, id uuid.UUID) (err error) {
+	ctx, _, end := dbSpan(ctx, "orders.revert_accept")
+	defer end(&err)
+
+	return models.New(r.db).RevertAccept(ctx, id.String())
 }
 
 // --- helpers --------------------------------------------------------------
 
 func toStored(row models.Order) (order.StoredOrder, error) {
-	var o order.OrderRequest
-	if err := json.Unmarshal(row.Payload, &o); err != nil {
-		return order.StoredOrder{}, fmt.Errorf("unmarshal payload for order %d: %w", row.OrderID, err)
+	var s order.Snapshot
+	if err := json.Unmarshal([]byte(row.Snapshot), &s); err != nil {
+		return order.StoredOrder{}, fmt.Errorf("unmarshal snapshot for order %s: %w", row.ID, err)
 	}
-	s := order.Status{
+	arrival, err := parseTS(row.ArrivalDate)
+	if err != nil {
+		return order.StoredOrder{}, fmt.Errorf("parse arrival_date for order %s: %w", row.ID, err)
+	}
+	st := order.Status{
 		State:       order.State(row.State),
-		ArrivalDate: row.ArrivalDate.Time,
+		ArrivalDate: arrival,
+		BatchID:     row.BatchID,
+		DriverName:  row.DriverName,
 	}
-	if row.PrintedDate.Valid {
-		t := row.PrintedDate.Time
-		s.PrintedDate = &t
+	for _, f := range []struct {
+		src sql.NullString
+		dst **time.Time
+	}{
+		{row.PrintedDate, &st.PrintedDate},
+		{row.EstimatedReadyAt, &st.EstimatedReadyAt},
+		{row.AcceptedAt, &st.AcceptedAt},
+		{row.ReadyAt, &st.ReadyAt},
+		{row.OutAt, &st.OutAt},
+		{row.DeliveredAt, &st.DeliveredAt},
+		{row.CancelledAt, &st.CancelledAt},
+	} {
+		t, err := optTS(f.src)
+		if err != nil {
+			return order.StoredOrder{}, fmt.Errorf("parse timestamp for order %s: %w", row.ID, err)
+		}
+		*f.dst = t
 	}
-	return order.StoredOrder{Order: o, Status: s}, nil
+	if row.KitchenNumber.Valid {
+		v := row.KitchenNumber.Int64
+		st.KitchenNumber = &v
+	}
+	if row.PrepMinutes.Valid {
+		v := row.PrepMinutes.Int64
+		st.PrepMinutes = &v
+	}
+	if row.DriverID.Valid {
+		st.DriverID = row.DriverID.String
+	}
+	return order.StoredOrder{Order: s, Status: st}, nil
 }
 
 func mapRows(rows []models.Order) ([]order.StoredOrder, error) {

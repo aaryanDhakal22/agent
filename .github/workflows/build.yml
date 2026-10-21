@@ -1,0 +1,130 @@
+name: Build and Release arm64 binary
+
+# ─────────────────────────────────────────────────────────────────────────
+# Agent CI. The agent no longer ships as a Docker image — it runs as a bare
+# static linux/arm64 binary on the restaurant/staging Raspberry Pi.
+#
+#   * Staging track — a push to the `staging` branch publishes the binary to a
+#     single ROLLING prerelease (tag `staging-latest`; not `staging`, which would
+#     clash with the branch name). The staging Pi downloads it from there.
+#
+#   * Production track — a semver tag push (v1.2.3) builds the binary and cuts
+#     an IMMUTABLE release for that tag, so fleet CD can pin/roll to an exact
+#     version.
+#
+#   * Any other branch — verify + build only (the artifact is kept 7 days).
+#
+# Each release carries agent-linux-arm64 + agent-linux-arm64.sha256.
+# ─────────────────────────────────────────────────────────────────────────
+
+on:
+  push:
+    branches: ["**"]
+    tags: ["v*"]
+
+permissions:
+  contents: write # create releases + upload assets
+
+jobs:
+  # ──────────────────────────────────────────────────────────────────────
+  # Verify — go vet + go test before building anything.
+  # ──────────────────────────────────────────────────────────────────────
+  verify:
+    name: Verify (go vet + go test)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+      - run: go vet ./...
+      - run: go test ./...
+
+  # ──────────────────────────────────────────────────────────────────────
+  # Build the static arm64 binary once; both tracks reuse it.
+  # ──────────────────────────────────────────────────────────────────────
+  build:
+    name: Build linux/arm64
+    needs: verify
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+
+      - name: Resolve version + commit
+        id: meta
+        run: |
+          if [ "${{ github.ref_type }}" = "tag" ]; then
+            echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=$(cat VERSION | tr -d '[:space:]')" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build static arm64 binary
+        env:
+          CGO_ENABLED: "0"
+          GOOS: linux
+          GOARCH: arm64
+        run: |
+          go build -trimpath \
+            -ldflags "-w -s -X main.version=${{ steps.meta.outputs.version }} -X main.commit=${GITHUB_SHA}" \
+            -o agent-linux-arm64 ./cmd/main.go
+          sha256sum agent-linux-arm64 > agent-linux-arm64.sha256
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: agent-linux-arm64
+          path: |
+            agent-linux-arm64
+            agent-linux-arm64.sha256
+          retention-days: 7
+
+  # ──────────────────────────────────────────────────────────────────────
+  # Staging — rolling `staging` prerelease, overwritten on every branch push.
+  # ──────────────────────────────────────────────────────────────────────
+  release-staging:
+    name: Publish rolling staging release
+    needs: build
+    if: github.ref == 'refs/heads/staging'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: agent-linux-arm64
+      - name: Publish rolling staging release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: staging-latest
+          name: "staging (latest)"
+          prerelease: true
+          # Move the `staging` tag to this commit each push so the release
+          # always reflects the newest branch build.
+          target_commitish: ${{ github.sha }}
+          files: |
+            agent-linux-arm64
+            agent-linux-arm64.sha256
+
+  # ──────────────────────────────────────────────────────────────────────
+  # Production — immutable release per semver tag.
+  # ──────────────────────────────────────────────────────────────────────
+  release-production:
+    name: Publish production release
+    needs: build
+    if: github.ref_type == 'tag' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: agent-linux-arm64
+      - name: Publish tagged release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: ${{ github.ref_name }}
+          files: |
+            agent-linux-arm64
+            agent-linux-arm64.sha256

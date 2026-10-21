@@ -30,23 +30,21 @@ def test_staging_printer_reachable() -> None:
     assert _dial(ip, 9100), f"Printer at {ip}:9100 is not reachable"
 
 
-def test_reprint_against_real_store(
-    http: requests.Session, agent_base_url: str, agent_ready: None
-) -> None:
-    """If there's at least one order in the 24h store, we should be able to
-    reprint it and receive a 200. (On the home-network desktop there must
-    have been recent activity for this to be meaningful.)"""
-    r = http.get(f"{agent_base_url}/api/orders", timeout=5)
+def test_reprint_against_real_store(agent_session: requests.Session, agent_base_url: str) -> None:
+    """If the agent holds at least one order, reprinting it should print its
+    tickets (station tickets + receipt) and return 200."""
+    http = agent_session
+    r = http.get(f"{agent_base_url}/api/orders", params={"batch": "all"}, timeout=5)
     assert r.status_code == 200
     orders = r.json()
     if not orders:
-        pytest.skip("no orders in the 24h store — nothing to reprint")
+        pytest.skip("the agent holds no orders — nothing to reprint")
 
     newest = orders[0]
-    order_id = newest["order"]["order_id"]
+    order_id = newest["order"]["id"]  # canonical UUID (the Snapshot's `id`)
 
     # Give the printer a moment between potential prior ops.
     time.sleep(1)
     resp = http.post(f"{agent_base_url}/api/orders/{order_id}/reprint", timeout=30)
     assert resp.status_code == 200, resp.text
-    assert resp.json().get("status") == "reprinted"
+    assert resp.json()["order"]["id"] == order_id  # reprint returns the stored order
