@@ -1,6 +1,8 @@
 package printer
 
 import (
+	"strings"
+
 	"quiccpos/agent/internal/domain/order"
 	"quiccpos/agent/internal/domain/printer"
 )
@@ -24,6 +26,9 @@ type RosterEntry struct {
 //     reported in unrouted). Each station with items gets a station ticket
 //     (its items + the rest of the order listed small), and the receipt
 //     printer gets the full customer receipt.
+//   - A pickup order with cash to collect prints ONLY the customer receipt:
+//     staff type it into the store's old POS, which prints the kitchen
+//     tickets (Lombardi's, 2026-10). Delivery and card-paid pickups are normal.
 //   - An item routed to the receipt printer is receipt-only: it gets no
 //     station ticket of its own (drinks/desserts the counter or driver picks
 //     up from the receipt) — unless the receipt printer is the only printer,
@@ -41,6 +46,10 @@ func Plan(snap order.Snapshot, roster []RosterEntry) (tickets []printer.Ticket, 
 			receipt = p
 			break
 		}
+	}
+
+	if isPickupCash(snap) {
+		return []printer.Ticket{{Kind: printer.TicketReceipt, TargetID: receipt.ID, Station: receipt.Name}}, nil
 	}
 
 	if !isRouted(snap) {
@@ -100,6 +109,12 @@ func Plan(snap order.Snapshot, roster []RosterEntry) (tickets []printer.Ticket, 
 	}
 	tickets = append(tickets, printer.Ticket{Kind: printer.TicketReceipt, TargetID: receipt.ID, Station: receipt.Name})
 	return tickets, unrouted
+}
+
+// isPickupCash: a pickup the customer pays (some) cash for — the one cash
+// rule, Snapshot.CashDue (no payments at all = the whole total is cash).
+func isPickupCash(snap order.Snapshot) bool {
+	return strings.EqualFold(strings.TrimSpace(snap.Fulfillment.Type), "pickup") && snap.CashDue() > 0
 }
 
 // isRouted reports whether main stamped kitchen routing on this order.

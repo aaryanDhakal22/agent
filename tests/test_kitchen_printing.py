@@ -60,6 +60,9 @@ def _snap(store, items: list[dict]) -> dict:
         "customer": {"display_name": "Pytest Kitchen"},
         "fulfillment": {"type": "pickup"},
         "money": {"subtotal_cents": 1500, "total_cents": 1500, "currency": "USD"},
+        # Paid by card: a pickup with cash to collect prints only the receipt
+        # (see test_pickup_cash_prints_only_the_receipt).
+        "payments": [{"method": "card", "amount_cents": 1500}],
         "items": items,
     }
 
@@ -121,6 +124,23 @@ def test_items_on_the_receipt_printer_print_only_on_the_receipt(kitchen, fakes) 
     pizza = fakes["Pizza"].text()
     assert "1 Pepperoni Pizza" in pizza and "ITEMS TO OTHER PRINTERS" in pizza and "\n1 Can Soda\n" in pizza, pizza
     assert len(fakes["Wings"].jobs) == 0
+
+
+def test_pickup_cash_prints_only_the_receipt(kitchen, fakes) -> None:
+    """A pickup paid in cash is typed into the store's old POS (which prints the
+    kitchen tickets), so the Pi prints only the customer receipt."""
+    a, ids = kitchen["agent"], kitchen["ids"]
+    snap = _snap(kitchen["main_store"], [
+        _item("Pepperoni Pizza", ids["Pizza"]),
+        _item("Hot Wings", ids["Wings"]),
+    ])
+    snap.pop("payments")  # no payments = the whole total is cash
+    r = _accept(a, snap)
+    assert r.status_code == 200, r.text + a.log_tail()
+    _wait_jobs(fakes["Front"], 1)
+    time.sleep(1.5)  # nothing else may follow
+    assert len(fakes["Front"].jobs) == 1 and "Total:" in fakes["Front"].text()
+    assert len(fakes["Pizza"].jobs) == 0 and len(fakes["Wings"].jobs) == 0, "no kitchen tickets for pickup cash"
 
 
 def test_station_down_reroutes_to_receipt_printer(kitchen, fakes) -> None:

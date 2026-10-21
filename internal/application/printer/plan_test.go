@@ -143,3 +143,29 @@ func TestPlan_SolePrinterStillGetsStationTicketForItsItems(t *testing.T) {
 		t.Fatalf("single printer is the kitchen too: want station + receipt, got %+v", tk)
 	}
 }
+
+func TestPlan_PickupCashPrintsOnlyTheReceipt(t *testing.T) {
+	items := []order.LineItem{item("Pepperoni", order.RoutingMatched, pizza.ID), item("Wings", order.RoutingMatched, wings.ID)}
+	roster := []RosterEntry{front, pizza, wings}
+	snap := func(kind string, pays ...order.PaymentSummary) order.Snapshot {
+		return order.Snapshot{Items: items, Fulfillment: order.Fulfillment{Type: kind}, Money: order.Money{Total: 2500}, Payments: pays}
+	}
+
+	// Pickup with no payments (= cash) or a cash payment: just the receipt.
+	for _, s := range []order.Snapshot{snap("pickup"), snap("Pickup", order.PaymentSummary{Method: "cash", AmountCents: 2500})} {
+		tk, un := Plan(s, roster)
+		if len(un) != 0 || len(tk) != 1 || tk[0].Kind != printer.TicketReceipt || tk[0].TargetID != front.ID {
+			t.Fatalf("pickup cash: want only the receipt on Front, got %+v", tk)
+		}
+	}
+	// Even on a single-printer store.
+	if tk, _ := Plan(snap("pickup"), []RosterEntry{front}); len(tk) != 1 || tk[0].Kind != printer.TicketReceipt {
+		t.Fatalf("single printer pickup cash: %+v", tk)
+	}
+	// Pickup paid by card, and cash delivery: kitchen tickets as usual.
+	for _, s := range []order.Snapshot{snap("pickup", order.PaymentSummary{Method: "card", AmountCents: 2500}), snap("delivery")} {
+		if tk, _ := Plan(s, roster); len(tk) != 3 {
+			t.Fatalf("%s: want 2 stations + receipt, got %+v", s.Fulfillment.Type, tk)
+		}
+	}
+}
