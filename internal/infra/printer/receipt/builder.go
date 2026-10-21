@@ -586,12 +586,30 @@ func writeRerouted(w func(string), nl func(), from string) {
 	nl()
 }
 
-// itemName is the printed item label: "Name (Size)" when the vendor sent a size.
+// itemName is the kitchen-ticket item label: "Name (Size)" when the size says
+// something (see displaySize).
 func itemName(it order.LineItem) string {
-	if sz := strings.TrimSpace(it.Size); sz != "" {
+	if sz := displaySize(it.Size); sz != "" {
 		return it.Name + " (" + sz + ")"
 	}
 	return it.Name
+}
+
+// displaySize drops the vendor's placeholder size: "Serving" (a single-size
+// item) prints nothing and "Serving (2 Piece)" prints "2 Piece". The customer
+// receipt keeps the vendor's size as v1 printed it.
+func displaySize(size string) string {
+	s := strings.TrimSpace(size)
+	if strings.EqualFold(s, "serving") {
+		return ""
+	}
+	if len(s) > len("serving") && strings.EqualFold(s[:len("serving")], "serving") {
+		rest := strings.TrimSpace(s[len("serving"):])
+		if strings.HasPrefix(rest, "(") && strings.HasSuffix(rest, ")") {
+			return strings.TrimSpace(rest[1 : len(rest)-1])
+		}
+	}
+	return s
 }
 
 // --- formatters -----------------------------------------------------------

@@ -200,3 +200,35 @@ func TestTruncRunesKeepsCharactersWhole(t *testing.T) {
 		t.Fatal("short names untouched")
 	}
 }
+
+func TestDisplaySize(t *testing.T) {
+	for in, want := range map[string]string{
+		"":                  "",
+		"Serving":           "",
+		" serving ":         "",
+		"Serving (2 Piece)": "2 Piece",
+		"Large":             "Large",
+		"14 Large":          "14 Large",
+		"Servings":          "Servings",
+	} {
+		if got := displaySize(in); got != want {
+			t.Errorf("displaySize(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestBuildStation_HidesServingSize(t *testing.T) {
+	snap := order.Snapshot{ID: "o1", Items: []order.LineItem{
+		{Name: "Turkey Club Sandwich", Size: "Serving", Quantity: 1, Routing: order.RoutingMatched, PrinterID: "p1"},
+		{Name: "Wings", Size: "Serving (6 Piece)", Quantity: 1, Routing: order.RoutingMatched, PrinterID: "p2"},
+	}}
+	out := string(BuildStation(snap, printer.Ticket{
+		Kind: printer.TicketStation, TargetID: "p1", Station: "Kitchen", Mine: snap.Items[:1], Others: snap.Items[1:],
+	}))
+	if !strings.Contains(out, "1 Turkey Club Sandwich\n") || strings.Contains(out, "Serving") {
+		t.Errorf("single-size item should print without a size:\n%q", out)
+	}
+	if !strings.Contains(out, "1 Wings (6 Piece)") {
+		t.Errorf("a fixed portion keeps its size:\n%q", out)
+	}
+}
