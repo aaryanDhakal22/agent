@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	orderApp "quiccpos/agent/internal/application/order"
 	printerApp "quiccpos/agent/internal/application/printer"
 	"quiccpos/agent/internal/infra/database"
 	"quiccpos/agent/internal/infra/database/repositories"
@@ -37,7 +38,12 @@ func diagServer(t *testing.T) (*Server, http.Handler, string) {
 	devices := repositories.NewDeviceRepository(db)
 	settings := repositories.NewSettingsRepository(db, zerolog.Nop())
 	session := NewSessionManager([]byte("0123456789abcdef0123456789abcdef"), func(string) error { return nil })
-	s := NewServer(nil, nil, printerApp.NewRegistry(), settings, nil, nil, session, devices, "0", "2.0.1", "test", zerolog.Nop())
+	meters, err := observability.NewMeters()
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc := orderApp.NewService(repositories.NewOrderRepository(db, zerolog.Nop()), settings, nil, nil, nil, zerolog.Nop(), meters)
+	s := NewServer(svc, nil, printerApp.NewRegistry(), settings, nil, nil, session, devices, "0", "2.0.1", "test", zerolog.Nop())
 	key, _ := newDeviceKey()
 	if err := devices.Create(ctx, "dev-1", "Counter", hashDeviceKey(key), key[:11]); err != nil {
 		t.Fatal(err)

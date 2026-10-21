@@ -54,6 +54,58 @@ func (s *Service) SetFloorPrefs(ctx context.Context, p order.FloorPrefs) error {
 	return nil
 }
 
+// ReceiptPrefs returns the stored receipt settings (defaults on a read error).
+func (s *Service) ReceiptPrefs(ctx context.Context) order.ReceiptPrefs {
+	p, err := s.repo.ReceiptPrefs(ctx)
+	if err != nil {
+		s.logger.Warn().Ctx(ctx).Err(err).Msg("read receipt prefs failed; using defaults")
+		return order.DefaultReceiptPrefs()
+	}
+	return p
+}
+
+// LoadReceiptPrefs refreshes the printing path's copy from the DB (startup,
+// and after a restore brought the old Pi's settings back).
+func (s *Service) LoadReceiptPrefs(ctx context.Context) {
+	p := s.ReceiptPrefs(ctx)
+	s.receiptPrefs.Store(&p)
+}
+
+// PrintPrefs are the receipt settings tickets print with right now (no DB
+// read on the print path).
+func (s *Service) PrintPrefs() order.ReceiptPrefs {
+	if p := s.receiptPrefs.Load(); p != nil {
+		return *p
+	}
+	return order.DefaultReceiptPrefs()
+}
+
+// SetReceiptPrefs validates and stores the receipt settings, switches
+// printing over to them and wakes state sync (they're part of the backup
+// main keeps for a Pi swap).
+func (s *Service) SetReceiptPrefs(ctx context.Context, p order.ReceiptPrefs) (order.ReceiptPrefs, error) {
+	if p.FooterText != nil {
+		f := strings.TrimSpace(*p.FooterText)
+		p.FooterText = &f
+	}
+	if err := p.Validate(); err != nil {
+		return p, plainBadRequest{err.Error()}
+	}
+	if err := s.repo.SetReceiptPrefs(ctx, p); err != nil {
+		return p, err
+	}
+	s.receiptPrefs.Store(&p)
+	s.floorChanged()
+	return p, nil
+}
+
+// plainBadRequest is an ErrBadRequest whose message is just the reason (the
+// tablet shows it as is).
+type plainBadRequest struct{ reason string }
+
+func (e plainBadRequest) Error() string        { return e.reason }
+func (e plainBadRequest) Is(target error) bool { return target == ErrBadRequest }
+
 // UndoReturn reverts the latest "returned" tap: the driver is out again at
 // their old place in the queue (their orders stay delivered).
 func (s *Service) UndoReturn(ctx context.Context, driverID string) (*order.Driver, error) {

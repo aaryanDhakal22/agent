@@ -57,7 +57,8 @@ type Server struct {
 	onLinked      func(*recovery.Outcome)
 	linkMu        sync.Mutex
 	diag          DiagDeps
-	testMu        sync.Mutex // one printer test at a time
+	testMu        sync.Mutex // one printer test (or sample) at a time
+	receiptSample func(order.ReceiptPrefs) []byte
 	mainReach     mainProbe
 	started       time.Time
 }

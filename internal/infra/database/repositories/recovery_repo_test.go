@@ -44,6 +44,12 @@ func TestSwapRestoresIdenticalFloor(t *testing.T) {
 	if err := a.SetFloorPrefs(ctx, order.FloorPrefs{GreenTillMinutes: 7, TipTaxBps: 1500}); err != nil {
 		t.Fatal(err)
 	}
+	footer := "THANK YOU"
+	rp := order.DefaultReceiptPrefs()
+	rp.KitchenItemSize, rp.Copies, rp.ShowPhone, rp.FooterText = order.SizeXLarge, 2, false, &footer
+	if err := a.SetReceiptPrefs(ctx, rp); err != nil {
+		t.Fatal(err)
+	}
 
 	// What main stores: A's agent.state + each order's status event.
 	stA, err := a.AgentState(ctx)
@@ -85,6 +91,12 @@ func TestSwapRestoresIdenticalFloor(t *testing.T) {
 	jb, _ := json.Marshal(stB)
 	if string(ja) != string(jb) {
 		t.Fatalf("state differs\nA %s\nB %s", ja, jb)
+	}
+	if stWire.ReceiptPrefs == nil {
+		t.Fatal("agent.state carries receipt_prefs")
+	}
+	if got, _ := b.ReceiptPrefs(ctx); got.Copies != 2 || got.ShowPhone || got.FooterText == nil || *got.FooterText != footer {
+		t.Fatalf("receipt prefs not restored: %+v", got)
 	}
 	ordersB, err := b.ListByBatch(ctx, stA.Batch.ID, 0, 100)
 	if err != nil {

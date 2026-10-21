@@ -173,10 +173,13 @@ func main() {
 	storeCtx.Store(storeconfig.StoreContext{})
 
 	// receiptBuilder closes over the atomic so a hot-swap propagates without
-	// re-wiring the printer service.
+	// re-wiring the printer service. The receipt settings come from the order
+	// service's in-memory copy (receiptPrefs is pointed at it once the service
+	// exists, before anything prints).
+	receiptPrefs := order.DefaultReceiptPrefs
 	receiptBuilder := func(snap order.Snapshot, t domainprinter.Ticket) []byte {
 		sc, _ := storeCtx.Load().(storeconfig.StoreContext)
-		return receipt.Build(snap, sc, t)
+		return receipt.Build(snap, sc, t, receiptPrefs())
 	}
 
 	dispatcher := printerApp.NewDispatcher(ctx, factory, printerRegistry, notifier, cfg.PrinterDetectDelay, receiptBuilder, logger, meters)
@@ -203,6 +206,9 @@ func main() {
 		sc, _ := storeCtx.Load().(storeconfig.StoreContext)
 		return receipt.BuildDriverReport(rep, sc, from, time.Now())
 	})
+
+	orderService.LoadReceiptPrefs(ctx)
+	receiptPrefs = orderService.PrintPrefs
 
 	if n := orderService.RecoverInterruptedAccepts(ctx); n > 0 {
 		logger.Warn().Ctx(ctx).Int("orders", n).Msg("Orders whose accept was interrupted will ring again")
@@ -408,6 +414,11 @@ func main() {
 			return receipt.BuildTestSlip(printerName, sc, tablet, at)
 		},
 	})
+	// Receipt settings (tablet Settings -> Receipts) + PRINT SAMPLE.
+	httpServer.SetReceiptSample(func(p order.ReceiptPrefs) []byte {
+		sc, _ := storeCtx.Load().(storeconfig.StoreContext)
+		return receipt.BuildSample(sc, p, time.Now())
+	})
 
 	// Floor sync: every committed floor change wakes the sender, which pushes
 	// the floor_events outbox to main as `floor.events` (retrying with backoff
@@ -441,6 +452,7 @@ func main() {
 	restart := atomic.Bool{}
 	httpServer.SetRecovery(recoverySvc, func(out *recovery.Outcome) {
 		stateSync.Reset()
+		orderService.LoadReceiptPrefs(ctx) // a restore brings the old Pi's back
 		if os.Getenv("AGENT_SELF_RESTART") == "1" && cfg.OTELEndpoint == "" && out.Secrets.OTLPEndpoint != "" {
 			logger.Info().Msg("linked: restarting in 3 s to start telemetry")
 			time.Sleep(3 * time.Second)

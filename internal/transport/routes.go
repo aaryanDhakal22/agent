@@ -92,6 +92,11 @@ func (s *Server) routes() []routeDef {
 		{"POST", "/api/diag/report", "device", "Relay a tablet's diagnostics report (v1, <=256 KB) to main as RPC diag.report", s.handleDiagReport},
 		{"POST", "/api/printers/test", "device", "Test print {printer_id?, probe_only?}: per-printer results, never fails over (409 while one runs)", s.handlePrinterTest},
 
+		// Receipt settings (Quibase Settings -> Receipts) — paired tablet (or web-UI session).
+		{"GET", "/api/settings/receipt", "device", "Receipt settings {prefs, defaults, footer_effective, footer_store_default, location_footer}", s.handleGetReceiptPrefs},
+		{"PUT", "/api/settings/receipt", "device", "Save the receipt settings (full prefs; missing keys = defaults) -> {prefs, footer_effective, footer_store_default, location_footer}", s.handleSetReceiptPrefs},
+		{"POST", "/api/printers/sample", "device", "Print a sample receipt + kitchen ticket with the current settings {printer_id?} (default the receipt printer), never fails over (409 while a test runs)", s.handlePrinterSample},
+
 		// Web-UI-only — session-gated.
 		{"GET", "/api/devices", "session", "Paired tablets", s.handleListDevices},
 		{"POST", "/api/devices/{id}/revoke", "session", "Revoke a paired tablet", s.handleRevokeDevice},

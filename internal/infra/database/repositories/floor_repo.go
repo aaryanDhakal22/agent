@@ -873,6 +873,30 @@ func (r *OrderRepository) SetFloorPrefs(ctx context.Context, p order.FloorPrefs)
 	return models.New(r.db).SetFloorPrefs(ctx, models.SetFloorPrefsParams{GreenTillMinutes: p.GreenTillMinutes, TipTaxBps: p.TipTaxBps})
 }
 
+// ReceiptPrefs — see order.FloorRepository. Stored as JSON; keys the stored
+// object lacks (older agents: '{}') come back as their defaults.
+func (r *OrderRepository) ReceiptPrefs(ctx context.Context) (order.ReceiptPrefs, error) {
+	raw, err := models.New(r.db).GetReceiptPrefs(ctx)
+	if err != nil {
+		return order.DefaultReceiptPrefs(), err
+	}
+	return order.DecodeReceiptPrefs([]byte(raw))
+}
+
+// SetReceiptPrefs stores every field (so a later default change can't flip a
+// setting the manager chose).
+func (r *OrderRepository) SetReceiptPrefs(ctx context.Context, p order.ReceiptPrefs) error {
+	return setReceiptPrefs(ctx, models.New(r.db), p)
+}
+
+func setReceiptPrefs(ctx context.Context, q *models.Queries, p order.ReceiptPrefs) error {
+	b, err := json.Marshal(p)
+	if err != nil {
+		return err
+	}
+	return q.SetReceiptPrefs(ctx, string(b))
+}
+
 // DriverReports — see order.FloorRepository.
 func (r *OrderRepository) DriverReports(ctx context.Context, batchID int64) (out []order.DriverReport, err error) {
 	ctx, _, end := dbSpan(ctx, "floor.driver_reports")

@@ -87,16 +87,19 @@ def test_station_tickets_and_receipt(kitchen, fakes) -> None:
         _wait_jobs(f, 1)
 
     pizza, wings, front = fakes["Pizza"].text(), fakes["Wings"].text(), fakes["Front"].text()
-    # Pizza station: its own item in full (with size), the unmatched item flagged,
-    # the rest of the order listed small after the rule.
-    assert " PIZZA " in pizza and "1 x Pepperoni Pizza (Large)" in pizza, pizza
-    assert "1 x Mystery Dish" in pizza and "UNMATCHED" in pizza
-    assert "\x1b!\x01Also on this order:" in pizza and "  1 Hot Wings" in pizza
+    # Pizza station: the kitchen number + customer, its own item in full (big,
+    # with size), the unmatched item flagged, the rest of the order listed small
+    # after the rule.
+    assert "#1100\n" in pizza and "KITCHEN, PYTEST" in pizza, pizza
+    assert "1 Pepperoni Pizza\n  (Large)" in pizza, pizza
+    assert "1 Mystery Dish" in pizza and "UNMATCHED" in pizza
+    assert "\x1b!\x00\x1bE\x01ITEMS TO OTHER PRINTERS" in pizza and "\n1 Hot Wings\n" in pizza
     assert "$" not in pizza, "station tickets carry no prices"
     # Wings station mirrors it.
-    assert " WINGS " in wings and "1 x Hot Wings" in wings and "  1 Pepperoni Pizza (Large)" in wings
-    # Front = the full customer receipt only.
-    assert len(fakes["Front"].jobs) == 1 and "Total:" in front and "Pepperoni Pizza (Large)" in front
+    assert "1 Hot Wings" in wings and "\n1 Pepperoni Pizza (Large)\n" in wings
+    # Front = the full customer receipt only (v1 layout: size on the price
+    # line, the item name under it).
+    assert len(fakes["Front"].jobs) == 1 and "Total:" in front and "1   Large" in front and "    Pepperoni Pizza\n" in front
     assert "REROUTED" not in pizza + wings + front
 
 
@@ -108,7 +111,7 @@ def test_station_down_reroutes_to_receipt_printer(kitchen, fakes) -> None:
     assert r.status_code == 200, r.text + a.log_tail()
     _wait_jobs(fakes["Front"], 2)
     front = fakes["Front"].text()
-    assert "REROUTED from WINGS" in front and "1 x Hot Wings" in front, front
+    assert "REROUTED from WINGS" in front and "1 Hot Wings" in front, front
     assert "Total:" in front, "the receipt still prints on Front"
     assert fakes["Wings"].jobs == []
 

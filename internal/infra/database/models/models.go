@@ -106,6 +106,7 @@ type Setting struct {
 	ManagerUsername        string `json:"manager_username"`
 	DeviceID               string `json:"device_id"`
 	LastBackupAt           string `json:"last_backup_at"`
+	ReceiptPrefs           string `json:"receipt_prefs"`
 }
 
 type StoreConfig struct {

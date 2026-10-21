@@ -392,8 +392,22 @@ errors only if nothing printed. Roster is keyed by printer **id** (rename-safe).
 - One Pushover per print for failed/rerouted tickets (+ unrouted items on accept).
 - `escpos` dials `ip` as-is when it's `host:port` (fake printers in pytest),
   else `ip:9100`.
-- Receipt bytes: `receipt.Build(snap, sc, ticket)`; station layout pinned by
-  `receipt/testdata/station.golden` (`go test ./internal/infra/printer/receipt -update`).
+- Receipt bytes: `receipt.Build(snap, sc, ticket, prefs)`; layouts pinned by
+  `receipt/testdata/{station,receipt_delivery,receipt_pickup}.golden`
+  (`go test ./internal/infra/printer/receipt -update`). Order notes print on the
+  customer receipt only; food notes stay under their item on the kitchen ticket.
+- **Receipt settings** (2.0.2, `order.ReceiptPrefs`, `settings.receipt_prefs`
+  JSON, migration `00010`): kitchen item/number size, footer text (null =
+  location `receipt_footer` → `ONLINE ORDER`; `""` = none) + size, copies 1-2,
+  store address / phone / extra-paper toggles. **Defaults must stay
+  byte-identical** to the goldens. Decode with `order.DecodeReceiptPrefs` (over
+  the defaults — the bools default true). The print path reads the order
+  service's atomic copy (`PrintPrefs`; reloaded after a link/restore);
+  `SetReceiptPrefs` wakes state sync (`agent.state.receipt_prefs`). Device routes
+  `GET`/`PUT /api/settings/receipt` + `POST /api/printers/sample`
+  (`transport/server_receipt.go`; sample = `receipt.BuildSample` via
+  `PrintTest`, no failover, `testMu`). Preview a setting without paper:
+  `RECEIPT_PREVIEW_PREFS='{...}'` with `TestPreviewDump`.
 - **Keep `sql/query.sql` pure ASCII** — a non-ASCII char (e.g. `→`) in a comment
   makes sqlc's sqlite engine mis-slice every later query (runtime "syntax error").
 
@@ -449,7 +463,8 @@ binary stays static) with WAL + `busy_timeout` + `foreign_keys` and a single ope
 connection. `internal/migrate` runs goose (`sqlite3` dialect) on boot
 (`00001_initial_schema`, `00002_session_secret`, `00003_ui_password`,
 `00004_floor` + `00005_cancelled` — each rebuilds `orders` to widen the state CHECK;
-`00006_driver_shifts` rebuilds `drivers` (adds `off`) + `driver_shifts`; use
+`00006_driver_shifts` rebuilds `drivers` (adds `off`) + `driver_shifts`; …
+`00010_receipt_prefs` adds `settings.receipt_prefs`; use
 `migrate.RunTo` in tests to seed an older schema). sqlc
 targets the `sqlite` engine (`sql/sqlc.yaml`, `sql_package: database/sql`);
 `sql/schema.sql` mirrors **all** migrations and every query — including the
@@ -504,7 +519,7 @@ the agent itself — no nginx. It's a password-gated SPA whose three auth panels
 `/api/drivers*`, `/api/batches`, `/api/batch/close`, `/api/printers*`,
 `/api/events`) and the Quibase setup/diagnostics routes (`/api/pairing/code`,
 `/api/device/self`, `/api/device/report-token`, `/api/diag`, `/api/diag/report`,
-`/api/printers/test`) need a paired tablet key **or** the web-UI session — no
+`/api/printers/test`, `/api/printers/sample`, `/api/settings/receipt`) need a paired tablet key **or** the web-UI session — no
 longer LAN-open; `POST /api/pair` is open (needs a live code); the web-UI surface
 (history, print/resend, store-config, settings, devices) is session-gated.
 `internal/infra/mainclient` is the agent's HTTP client to main.
@@ -530,6 +545,7 @@ longer LAN-open; `POST /api/pair` is open (needs a live code); the web-UI surfac
 | Duplex RPC (envelope + registry) | `internal/rpc/{envelope.go,registry.go}` |
 | Printer-roster report to main | `internal/application/printer/report.go` (wired in `cmd/main.go`) |
 | Receipt builder | `internal/infra/printer/receipt/builder.go` |
+| Receipt settings (prefs, routes, sample) | `internal/domain/order/receipt_prefs.go`, `internal/transport/server_receipt.go`, `internal/infra/printer/receipt/sample.go` |
 | HTTP route table (single source of truth) | `internal/transport/routes.go` — `routeDef` slice drives the mux **and** `GET /__routes` |
 | HTTP server wiring | `internal/transport/server.go` (`Start` iterates the table) |
 | Schema | `sql/schema.sql` + `internal/migrate/sql/*.sql` |

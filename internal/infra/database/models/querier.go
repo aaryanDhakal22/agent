@@ -53,6 +53,7 @@ type Querier interface {
 	GetOpenShift(ctx context.Context, driverID string) (DriverShift, error)
 	GetOrderByID(ctx context.Context, id string) (Order, error)
 	GetPairedDeviceByHash(ctx context.Context, keyHash string) (PairedDevice, error)
+	GetReceiptPrefs(ctx context.Context) (string, error)
 	GetSessionSecret(ctx context.Context) (string, error)
 	GetStoreAPIKey(ctx context.Context) (string, error)
 	// Store config (starter pack from main/'s SSE handshake) --------------------
@@ -127,6 +128,7 @@ type Querier interface {
 	// Link + restore (00008) --------------------------------------------------------
 	SetLinkInfo(ctx context.Context, arg SetLinkInfoParams) error
 	SetManagerPasswordHash(ctx context.Context, uiPasswordHash string) error
+	SetReceiptPrefs(ctx context.Context, receiptPrefs string) error
 	SetSessionSecret(ctx context.Context, sessionSecret string) error
 	SetStoreAPIKey(ctx context.Context, storeApiKey string) error
 	SetUIPassword(ctx context.Context, arg SetUIPasswordParams) error

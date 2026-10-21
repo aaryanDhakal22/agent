@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync/atomic"
 
 	"quiccpos/agent/internal/domain/order"
 	"quiccpos/agent/internal/domain/printer"
@@ -56,6 +57,9 @@ type Service struct {
 	// Driver-report printing (SetDocumentPrinting).
 	printDoc    DocPrinter
 	buildReport ReportBuilder
+	// receiptPrefs is the in-memory copy of the receipt settings the
+	// printing path reads (LoadReceiptPrefs / SetReceiptPrefs keep it).
+	receiptPrefs atomic.Pointer[order.ReceiptPrefs]
 }
 
 func NewService(

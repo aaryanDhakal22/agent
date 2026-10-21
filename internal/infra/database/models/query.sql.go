@@ -567,6 +567,17 @@ func (q *Queries) GetPairedDeviceByHash(ctx context.Context, keyHash string) (Pa
 	return i, err
 }
 
+const getReceiptPrefs = `-- name: GetReceiptPrefs :one
+SELECT receipt_prefs FROM settings WHERE id = 1
+`
+
+func (q *Queries) GetReceiptPrefs(ctx context.Context) (string, error) {
+	row := q.db.QueryRowContext(ctx, getReceiptPrefs)
+	var receipt_prefs string
+	err := row.Scan(&receipt_prefs)
+	return receipt_prefs, err
+}
+
 const getSessionSecret = `-- name: GetSessionSecret :one
 SELECT session_secret FROM settings WHERE id = 1
 `
@@ -1963,6 +1974,15 @@ UPDATE settings SET ui_password_hash = ? WHERE id = 1
 
 func (q *Queries) SetManagerPasswordHash(ctx context.Context, uiPasswordHash string) error {
 	_, err := q.db.ExecContext(ctx, setManagerPasswordHash, uiPasswordHash)
+	return err
+}
+
+const setReceiptPrefs = `-- name: SetReceiptPrefs :exec
+UPDATE settings SET receipt_prefs = ? WHERE id = 1
+`
+
+func (q *Queries) SetReceiptPrefs(ctx context.Context, receiptPrefs string) error {
+	_, err := q.db.ExecContext(ctx, setReceiptPrefs, receiptPrefs)
 	return err
 }
 

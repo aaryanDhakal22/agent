@@ -290,6 +290,9 @@ type FloorRepository interface {
 
 	FloorPrefs(ctx context.Context) (FloorPrefs, error)
 	SetFloorPrefs(ctx context.Context, p FloorPrefs) error
+	// ReceiptPrefs returns the receipt settings (defaults for missing keys).
+	ReceiptPrefs(ctx context.Context) (ReceiptPrefs, error)
+	SetReceiptPrefs(ctx context.Context, p ReceiptPrefs) error
 	// DriverReports returns one report per driver who delivered in, or was
 	// clocked in during, the batch (0 = the open batch), sorted by name.
 	// Totals are not filled (see DriverReport.Finish).
