@@ -3,827 +3,780 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="color-scheme" content="light dark" />
   <title>Quicc POS — Agent</title>
-  <style>
-    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #0f0f0f; color: #e8e8e8; min-height: 100vh; }
-    header { background: #1a1a1a; border-bottom: 1px solid #2a2a2a; padding: 14px 24px; display: flex; align-items: center; justify-content: space-between; position: sticky; top: 0; z-index: 10; }
-    header h1 { font-size: 1.05rem; font-weight: 600; color: #fff; }
-    .muted { color: #888; font-size: 0.8rem; }
-    main { max-width: 960px; margin: 0 auto; padding: 20px 16px; }
-    button { cursor: pointer; border-radius: 6px; border: 1px solid #3a3a3a; background: #2a2a2a; color: #e8e8e8; padding: 7px 14px; font-size: 0.82rem; }
-    button:hover { background: #333; }
-    button:disabled { opacity: 0.4; cursor: default; }
-    button.primary { background: #2a4a2a; border-color: #3a5a3a; }
-    button.primary:hover { background: #345a34; }
-    button.danger { background: #4a2a2a; border-color: #5a3a3a; }
-    input, select { background: #0f0f0f; color: #e8e8e8; border: 1px solid #3a3a3a; border-radius: 6px; padding: 8px 10px; font-size: 0.85rem; }
-    label { display: block; font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.05em; color: #888; margin-bottom: 4px; }
-    .card { background: #1a1a1a; border: 1px solid #2a2a2a; border-radius: 10px; padding: 16px 18px; margin-bottom: 14px; }
-    .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
-    .grow { flex: 1; }
-    .tabs { display: flex; gap: 8px; margin-bottom: 18px; }
-    .tabs button.active { background: #1a3a5c; border-color: #1a3a5c; color: #cfe6ff; }
-    .order-head { display: flex; justify-content: space-between; align-items: baseline; }
-    .oid { font-size: 0.72rem; color: #888; text-transform: uppercase; letter-spacing: 0.05em; }
-    .name { font-weight: 600; color: #fff; }
-    .total { font-weight: 700; }
-    .badge { font-size: 0.68rem; padding: 2px 7px; border-radius: 4px; background: #2a2a2a; color: #9ab; text-transform: uppercase; }
-    .actions { display: flex; gap: 8px; margin-top: 10px; }
-    /* !important: an element's own #id display rule (e.g. #flash) must not
-       beat .hidden, or a hidden overlay covers the whole page. */
-    .hidden { display: none !important; }
-    .dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; background: #666; margin-right: 6px; vertical-align: middle; transition: background 0.2s; }
-    .dot.green { background: #33a852; box-shadow: 0 0 6px #33a85288; }
-    .dot.amber { background: #d09a2c; }
-    .dot.red { background: #cc4b4b; box-shadow: 0 0 6px #cc4b4b88; }
-    #sse-wrap { display: inline-flex; align-items: center; }
-    #toast { position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); background: #1a3a1f; border: 1px solid #2a5a2f; color: #cfeed0; padding: 10px 16px; border-radius: 8px; font-size: 0.85rem; opacity: 0; transition: opacity 0.2s; }
-    #toast.err { background: #3a1a1a; border-color: #5a2a2a; color: #eecccc; }
-    #toast.show { opacity: 1; }
-    .pager { display: flex; gap: 10px; align-items: center; justify-content: center; margin-top: 12px; }
-    .prow { display: flex; gap: 8px; margin-bottom: 8px; }
-    h3 { font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.06em; color: #9ab; margin: 18px 0 8px; }
-    .kn { font-size: 1.4rem; font-weight: 800; color: #fff; margin-right: 8px; }
-    .card.arrived { border-color: #8a5a1a; background: #22190e; }
-    .card.flash { animation: flash 1s ease-in-out infinite alternate; }
-    @keyframes flash { from { border-color: #8a5a1a; } to { border-color: #f0a030; } }
-    .late { color: #f08a7a; font-weight: 600; }
-    .floorbar { display: flex; gap: 14px; align-items: center; flex-wrap: wrap; margin-bottom: 6px; }
-    .items { font-size: 0.85rem; margin-top: 6px; line-height: 1.45; color: #ccc; }
-    #flash { position: fixed; inset: 0; background: #0b2a4a; color: #fff; display: flex; flex-direction: column; align-items: center; justify-content: center; z-index: 50; cursor: pointer; }
-    #flash .who { font-size: 7rem; font-weight: 900; letter-spacing: 0.04em; }
-  </style>
+  <link rel="stylesheet" href="/static/app.css" />
+  <!-- app.js registers the Alpine component on alpine:init, so it loads first;
+       both are deferred and run in order. Icons: Lucide (ISC), see static/LICENSES.md. -->
+  <script defer src="/static/app.js"></script>
+  <script defer src="/static/alpine.min.js"></script>
 </head>
-<body>
+<body class="q" x-data="agentApp" :class="themeClass">
+<noscript><p style="padding:24px">The Quicc POS agent dashboard needs JavaScript.</p></noscript>
 
-<header>
-  <h1>Quicc POS <span class="muted">— Agent</span></h1>
-  <div class="row">
-    <span id="sse-wrap" class="muted" title="Checking connection to main…"><span id="sse-dot" class="dot"></span><span id="sse-label"></span></span>
-    <span id="tenant" class="muted"></span>
-    <button id="logout-btn" class="hidden" onclick="logout()">Log out</button>
+<!-- ===================================================================== -->
+<!-- Loading (visible until the first /api/session answer)                  -->
+<!-- ===================================================================== -->
+<div class="auth" x-show="state === 'loading'">
+  <div class="auth-mid"><div class="auth-head"><div class="brand-tile lg" aria-hidden="true">q</div><p>Loading…</p></div></div>
+</div>
+
+<!-- ===================================================================== -->
+<!-- Provisioning + login: unconfigured | needs_password | locked           -->
+<!-- ===================================================================== -->
+<div class="auth" x-show="state !== 'loading' && state !== 'ready'" x-cloak>
+  <div class="auth-top">
+    <button type="button" class="btn btn-g" @click="toggleTheme()">
+      <span style="display:inline-flex" x-html="icon(isDark ? 'sun' : 'moon')"></span><span x-text="isDark ? 'Light mode' : 'Dark mode'"></span>
+    </button>
   </div>
-</header>
-
-<main>
-  <!-- Auth: state-driven (paste token → create password → unlock) -->
-  <div id="auth" class="card hidden" style="max-width:380px;margin:80px auto">
-    <!-- unconfigured: link with the store manager login (or paste a token) -->
-    <div id="auth-setup" class="hidden">
-      <h2 style="margin-bottom:8px">Set up this Pi</h2>
-      <div id="link-box">
-        <div class="muted" style="margin-bottom:14px;line-height:1.4">
-          Sign in with the <strong>store manager login</strong>. The Pi links to your
-          restaurant and brings back the open batch, drivers and settings.
+  <main class="auth-mid">
+    <div class="auth-col">
+      <div class="auth-head">
+        <div class="brand-tile lg" aria-hidden="true">q</div>
+        <div x-show="state === 'unconfigured'">
+          <h1>Set up this Pi</h1>
+          <p x-show="session.link_available !== false">Sign in with the store manager login. The Pi links itself to your store and brings back the open batch, drivers and settings.</p>
+          <p x-show="session.link_available === false">Paste the agent token from the manager dashboard (<b>Locations → Create agent</b>).</p>
         </div>
-        <div style="margin-bottom:10px"><label>Username</label><input id="link-user" style="width:100%" autocomplete="username" autocapitalize="off" /></div>
-        <div style="margin-bottom:14px"><label>Password</label><input id="link-pass" type="password" style="width:100%" autocomplete="current-password" onkeydown="if(event.key==='Enter')submitLink()" /></div>
-        <button id="link-btn" class="primary" style="width:100%" onclick="submitLink()">Link this Pi</button>
-        <div id="link-err" class="muted" style="color:#e88;margin-top:10px"></div>
-        <div style="margin-top:14px"><span class="muted" style="cursor:pointer;text-decoration:underline;color:#9ab" onclick="$('token-box').classList.toggle('hidden')">Use an agent token instead</span></div>
-      </div>
-      <div id="token-box" class="hidden" style="margin-top:14px">
-      <div class="muted" style="margin-bottom:14px;line-height:1.4">
-        Paste the agent token from the manager dashboard
-        (<strong>Locations → Create agent</strong>).
-      </div>
-      <label>Agent token</label>
-      <textarea id="setup-token" rows="3" placeholder="qpos_…"
-        style="width:100%;background:#0f0f0f;color:#e8e8e8;border:1px solid #3a3a3a;border-radius:6px;padding:8px 10px;font-family:monospace;font-size:0.8rem"></textarea>
-      <button id="setup-token-btn" class="primary" style="width:100%;margin-top:12px" onclick="submitToken()">Link device</button>
-      <div id="setup-err" class="muted" style="color:#e88;margin-top:10px"></div>
-      </div>
-    </div>
-
-    <!-- needs_password: choose a local password -->
-    <div id="auth-newpass" class="hidden">
-      <h2 style="margin-bottom:8px">Create a password</h2>
-      <div class="muted" style="margin-bottom:14px;line-height:1.4">
-        Device linked ✓ — choose a password to open this dashboard. From now on
-        you only need the password (it's LAN-only + password-gated).
-      </div>
-      <div style="margin-bottom:10px"><label>New password</label><input id="np-pass" type="password" style="width:100%" autocomplete="new-password" /></div>
-      <div style="margin-bottom:10px"><label>Confirm password</label><input id="np-confirm" type="password" style="width:100%" autocomplete="new-password" /></div>
-      <div style="margin-bottom:14px"><label>Password hint (optional)</label><input id="np-hint" style="width:100%" placeholder="a reminder for later" /></div>
-      <button id="np-btn" class="primary" style="width:100%" onclick="submitNewPassword()">Set password &amp; open</button>
-      <div id="np-err" class="muted" style="color:#e88;margin-top:10px"></div>
-    </div>
-
-    <!-- locked: unlock with the password -->
-    <div id="auth-login" class="hidden">
-      <h2 id="login-title" style="margin-bottom:14px">Enter password</h2>
-      <div id="login-user-row" class="hidden" style="margin-bottom:10px"><label>Username</label><input id="login-user" style="width:100%" autocomplete="username" autocapitalize="off" /></div>
-      <div style="margin-bottom:14px"><label>Password</label><input id="login-pass" type="password" style="width:100%" autocomplete="current-password" onkeydown="if(event.key==='Enter')unlock()" /></div>
-      <button id="login-btn" class="primary" style="width:100%" onclick="unlock()">Unlock</button>
-      <div style="margin-top:10px"><span id="hint-link" class="muted hidden" style="cursor:pointer;text-decoration:underline;color:#9ab" onclick="showHint()">Forgot? Show hint</span></div>
-      <div id="login-hint" class="muted hidden" style="margin-top:8px;color:#9ab"></div>
-      <div id="login-err" class="muted" style="color:#e88;margin-top:10px"></div>
-    </div>
-  </div>
-
-  <!-- App -->
-  <div id="app" class="hidden">
-    <div class="tabs">
-      <button data-tab="live" class="active" onclick="switchTab('live')">Live</button>
-      <button data-tab="drivers" onclick="switchTab('drivers')">Drivers</button>
-      <button data-tab="history" onclick="switchTab('history')">History</button>
-      <button data-tab="config" onclick="switchTab('config')">Store config</button>
-      <button data-tab="settings" onclick="switchTab('settings')">Settings</button>
-    </div>
-
-    <!-- Live: the backup floor screen (the counter tablet is the primary one) -->
-    <section id="tab-live">
-      <div class="floorbar">
-        <span id="live-status" class="muted">Loading…</span>
-        <span class="grow"></span>
-        <label style="margin:0">Prep</label><select id="prep"></select>
-        <button onclick="loadLive()">Refresh</button>
-        <select id="rep-batch" title="Batch for driver reports"></select>
-        <button onclick="printReports()">Print driver reports</button>
-        <button class="danger" onclick="closeBatch(false)">Close batch</button>
-      </div>
-      <h3>Waiting to accept</h3><div id="l-arrived"></div>
-      <h3>In the kitchen</h3><div id="l-accepted"></div>
-      <h3>Ready for delivery</h3>
-      <div id="l-deliv"></div>
-      <div class="row" id="l-assign" style="margin:4px 0 10px">
-        <select id="assign-driver"></select>
-        <button class="primary" onclick="assignSelected()">Send selected out</button>
-      </div>
-      <h3>Out with drivers</h3><div id="l-out"></div>
-      <h3>Done this batch</h3><div id="l-done"></div>
-    </section>
-
-    <!-- Drivers -->
-    <section id="tab-drivers" class="hidden">
-      <div class="card">
-        <div class="muted" style="margin-bottom:10px">Clock a driver in to put them in the queue (the first available driver is next up; a driver who returns goes to the back). Clock out to take them off. Everyone is clocked out daily at <b id="drv-reset">10:00</b> (change in Settings).</div>
-        <div id="drv-list"></div>
-        <div class="row" style="margin-top:12px">
-          <input id="drv-name" placeholder="Driver name" class="grow" onkeydown="if(event.key==='Enter')addDriver()" />
-          <button class="primary" onclick="addDriver()">Add driver</button>
+        <div x-show="state === 'needs_password'">
+          <h1>Create a password</h1>
+          <p>This Pi is linked. Choose a password to open this dashboard — it only works on this network.</p>
+        </div>
+        <div x-show="state === 'locked'">
+          <h1 x-text="storeName"></h1>
+          <p>Quicc POS on <span class="mono" x-text="session.hostname || 'this Pi'"></span></p>
         </div>
       </div>
-    </section>
 
-    <!-- History -->
-    <section id="tab-history" class="hidden">
-      <div class="card">
-        <div class="row">
-          <div class="grow"><label>Search</label><input id="h-q" class="grow" style="width:100%" placeholder="customer or event id" /></div>
-          <div><label>Status</label><input id="h-status" placeholder="any" /></div>
-          <div><label>Sort</label>
-            <select id="h-sort"><option value="desc">Newest</option><option value="asc">Oldest</option></select>
+      <!-- unconfigured: link with the store manager login -->
+      <form class="auth-form" x-show="state === 'unconfigured' && session.link_available !== false" @submit.prevent="submitLink()">
+        <div><label class="lbl" for="link-user">Store manager username</label><input class="field" id="link-user" x-model="link.user" autocomplete="username" autocapitalize="off" spellcheck="false" /></div>
+        <div><label class="lbl" for="link-pass">Password</label><input class="field" id="link-pass" type="password" x-model="link.pass" autocomplete="current-password" /></div>
+        <button class="btn btn-p btn-lg btn-block" type="submit" :disabled="link.busy" x-text="link.busy ? 'Linking… (restoring the batch)' : 'Link this Pi'"></button>
+        <p class="err-text" role="alert" x-show="link.err" x-text="link.err"></p>
+        <button type="button" class="btn btn-g btn-block" @click="showToken = !showToken" :aria-expanded="showToken" aria-controls="token-form" x-text="showToken ? 'Hide the agent token box' : 'Use an agent token instead'"></button>
+      </form>
+
+      <!-- unconfigured: paste an admin-minted token -->
+      <form id="token-form" class="auth-form" x-show="state === 'unconfigured' && (showToken || session.link_available === false)" @submit.prevent="submitToken()">
+        <p class="help" x-show="session.link_available !== false">Paste the agent token from the manager dashboard (<b>Locations → Create agent</b>).</p>
+        <div><label class="lbl" for="setup-token">Agent token</label><textarea class="field mono" id="setup-token" rows="3" placeholder="qpos_…" x-model="tok.token" spellcheck="false" autocapitalize="off"></textarea></div>
+        <button class="btn btn-p btn-lg btn-block" type="submit" :disabled="tok.busy" x-text="tok.busy ? 'Linking…' : 'Link device'"></button>
+        <p class="err-text" role="alert" x-show="tok.err" x-text="tok.err"></p>
+      </form>
+
+      <!-- needs_password: choose the local password -->
+      <form class="auth-form" x-show="state === 'needs_password'" @submit.prevent="submitNewPassword()">
+        <div><label class="lbl" for="np-pass">New password</label><input class="field" id="np-pass" type="password" x-model="np.pass" autocomplete="new-password" /></div>
+        <div><label class="lbl" for="np-confirm">Confirm password</label><input class="field" id="np-confirm" type="password" x-model="np.confirm" autocomplete="new-password" /></div>
+        <div><label class="lbl" for="np-hint">Password hint (optional)</label><input class="field" id="np-hint" x-model="np.hint" placeholder="A reminder for later" /></div>
+        <button class="btn btn-p btn-lg btn-block" type="submit" :disabled="np.busy">Set password &amp; open</button>
+        <p class="err-text" role="alert" x-show="np.err" x-text="np.err"></p>
+      </form>
+
+      <!-- locked: unlock -->
+      <form class="auth-form" x-show="state === 'locked'" @submit.prevent="submitLogin()">
+        <h2 x-text="session.manager_login ? 'Store manager login' : 'Enter password'"></h2>
+        <div x-show="session.manager_login"><label class="lbl" for="login-user">Store manager username</label><input class="field" id="login-user" x-model="login.user" autocomplete="username" autocapitalize="off" spellcheck="false" /></div>
+        <div><label class="lbl" for="login-pass">Password</label><input class="field" id="login-pass" type="password" x-model="login.pass" autocomplete="current-password" /></div>
+        <button class="btn btn-p btn-lg btn-block" type="submit" :disabled="login.busy" x-text="login.busy ? 'Signing in…' : 'Sign in'"></button>
+        <p class="err-text" role="alert" x-show="login.err" x-text="login.err"></p>
+        <div x-show="session.has_hint">
+          <button type="button" class="link-btn" x-show="!login.hintShown" @click="showHint()">Forgot? Show hint</button>
+          <p class="help" x-show="login.hintShown" x-text="login.hint"></p>
+        </div>
+      </form>
+
+      <div class="auth-foot">
+        <span class="badge" :class="'b-' + connTone" :title="connTitle"><span class="dot"></span><span x-text="{ connected: 'Connected to main', connecting: 'Connecting to main…', rejected: 'Token revoked' }[session.sse_state] || 'Not linked yet'"></span></span>
+        <span class="mono" x-show="session.version" x-text="'v' + session.version"></span>
+      </div>
+    </div>
+  </main>
+</div>
+
+<!-- ===================================================================== -->
+<!-- The app (state ready)                                                   -->
+<!-- ===================================================================== -->
+<div class="shell" x-show="state === 'ready'" x-cloak>
+  <header class="topbar">
+    <button type="button" class="btn btn-g icon-btn" @click="navOpen = true" aria-label="Open menu" :aria-expanded="navOpen" aria-controls="side" x-html="icon('menu', 20)"></button>
+    <div class="brand">
+      <div class="brand-tile" aria-hidden="true">q</div>
+      <div style="min-width:0"><div class="brand-name" x-text="storeName"></div>
+        <div class="conn" :class="connTone" :title="connTitle"><span class="dot"></span><span x-text="connLabel"></span></div></div>
+    </div>
+    <a class="wbadge" href="#/live" x-show="waiting.length" :title="waitingText + ' — open Live'" x-text="waiting.length + ' WAITING'"></a>
+    <span class="muted" x-show="!waiting.length" x-text="pageTitle"></span>
+  </header>
+  <div class="scrim" :class="{ open: navOpen }" @click="navOpen = false"></div>
+
+  <aside id="side" class="side" :class="{ open: navOpen }" aria-label="Main menu">
+    <div class="brand">
+      <div class="brand-tile" aria-hidden="true">q</div>
+      <div style="min-width:0;flex:1">
+        <div class="brand-name" x-text="storeName"></div>
+        <div class="conn" :class="connTone" :title="connTitle"><span class="dot"></span><span x-text="connLabel"></span><span class="sr-only" x-text="connTitle"></span></div>
+      </div>
+      <button type="button" class="btn btn-g icon-btn mobile-only" @click="navOpen = false" aria-label="Close menu" x-html="icon('x', 20)"></button>
+    </div>
+    <nav class="navlist" aria-label="Pages">
+      <template x-for="n in nav" :key="n.id">
+        <button type="button" class="nav" :class="{ on: page === n.id }" :aria-current="page === n.id ? 'page' : null" @click="go(n.id)">
+          <span style="display:inline-flex" x-html="icon(n.icon)"></span><span x-text="n.label"></span>
+          <span x-show="n.id === 'live'" style="margin-left:auto;display:inline-flex">
+            <span class="cnt warn" x-show="waiting.length" x-text="waiting.length" :title="waiting.length + ' waiting to be accepted'" :aria-label="waiting.length + ' waiting'"></span>
+            <span class="cnt" x-show="kitchen.length" x-text="kitchen.length" :title="kitchen.length + ' cooking'" :aria-label="kitchen.length + ' cooking'"></span>
+          </span>
+        </button>
+      </template>
+    </nav>
+    <div class="side-foot">
+      <button type="button" class="nav" @click="toggleTheme()"><span style="display:inline-flex" x-html="icon(isDark ? 'sun' : 'moon')"></span><span x-text="isDark ? 'Light mode' : 'Dark mode'"></span></button>
+      <button type="button" class="nav" @click="logout()"><span style="display:inline-flex" x-html="icon('logout')"></span>Log out</button>
+      <div class="side-meta mono" x-text="'v' + (session.version || '?') + (session.hostname ? ' · ' + session.hostname : '')"></div>
+    </div>
+  </aside>
+
+  <main class="content" id="main">
+    <!-- App-wide: the Pi is unreachable (Live has the big banner) -->
+    <div class="banner bad slim" role="alert" x-show="!piReachable && page !== 'live'">
+      <span style="display:inline-flex" x-html="icon('alert', 16)"></span><span>Can't reach the Pi — this screen is out of date.</span>
+    </div>
+    <!-- App-wide: orders waiting while you're on another page -->
+    <div class="wstrip" x-show="page !== 'live' && waiting.length" role="status">
+      <a href="#/live" class="grow" x-text="waitingText + ' — OPEN LIVE'"></a>
+      <button type="button" class="chip" x-show="soundOff" @click="enableSound()"><span style="display:inline-flex" x-html="icon('mute', 16)"></span>Enable sound</button>
+    </div>
+
+    <!-- ================================================================= -->
+    <!-- Overview                                                            -->
+    <!-- ================================================================= -->
+    <section class="stack" style="gap:20px" x-show="page === 'overview'" aria-labelledby="h-overview">
+      <div class="page-head">
+        <div><h1 id="h-overview">Overview</h1><p x-text="batchSubtitle"></p></div>
+        <div class="hrow">
+          <button type="button" class="btn" @click="closeBatch()" :disabled="!!busy.close">Close batch</button>
+        </div>
+      </div>
+
+      <div class="health">
+        <template x-for="c in healthCards" :key="c.k">
+          <div class="card hcard">
+            <span class="badge" :class="'b-' + c.tone"><span class="dot"></span><span x-text="c.k"></span></span>
+            <div><div class="t" x-text="c.t"></div><div class="s" x-text="c.s"></div></div>
+          </div>
+        </template>
+      </div>
+
+      <div class="split">
+        <section class="card card-pad wide stack" aria-labelledby="h-batch">
+          <div class="eyebrow" id="h-batch">This batch</div>
+          <div class="tiles">
+            <button type="button" class="tile" :class="{ warn: counts.waiting }" :disabled="!counts.waiting" @click="go('live')" :aria-label="counts.waiting + ' waiting to be accepted' + (counts.waiting ? ' — open Live' : '')">
+              <span class="n" x-text="counts.waiting"></span><span class="l">waiting</span>
+            </button>
+            <div class="tile"><span class="n" x-text="counts.cooking"></span><span class="l">cooking</span></div>
+            <div class="tile"><span class="n" x-text="counts.ready"></span><span class="l">ready to go</span></div>
+            <div class="tile"><span class="n" x-text="counts.out"></span><span class="l">out</span></div>
+            <div class="tile"><span class="n" x-text="counts.done"></span><span class="l">done</span></div>
+          </div>
+          <div class="moneyrow">
+            <div><div class="small muted">Cash</div><div class="v" x-text="money(batchMoney.cash)"></div></div>
+            <div><div class="small muted">Card &amp; prepaid</div><div class="v" x-text="money(batchMoney.card)"></div></div>
+            <div><div class="small muted">Tips</div><div class="v" x-text="money(batchMoney.tips)"></div></div>
+          </div>
+          <p class="help" x-text="'Totals of ' + batchMoney.orders + ' accepted order' + (batchMoney.orders === 1 ? '' : 's') + ' (waiting and cancelled orders are left out).'"></p>
+        </section>
+
+        <section class="card card-pad narrow stack" style="gap:10px" aria-labelledby="h-attn">
+          <div class="eyebrow" id="h-attn">Needs attention</div>
+          <template x-for="a in attention" :key="a.k">
+            <div class="attn" :class="a.tone">
+              <div class="grow" style="min-width:0" x-text="a.text"></div>
+              <button type="button" class="btn btn-sm" x-show="a.go" @click="go(a.go)">Open</button>
+            </div>
+          </template>
+          <div class="attn" x-show="!systemProblems">
+            <span style="display:inline-flex;color:var(--ok)" x-html="icon('check', 16)"></span>
+            <span x-text="attention.length ? 'Nothing else — all systems normal.' : 'All systems normal.'"></span>
+          </div>
+        </section>
+      </div>
+
+      <section class="card" style="overflow:hidden" aria-labelledby="h-drvtbl">
+        <div class="hrow" style="padding:14px 18px;justify-content:space-between">
+          <span class="eyebrow" id="h-drvtbl" x-text="reportBatch === 'current' ? 'Drivers this batch' : 'Drivers — batch ' + reportBatch"></span>
+          <div class="hrow">
+            <label class="sr-only" for="rep-batch">Batch for the driver reports</label>
+            <select id="rep-batch" class="field field-sm" style="width:auto;max-width:100%" x-model="reportBatch" @change="loadReports()">
+              <option value="current">Open batch</option>
+              <template x-for="b in batches.filter(b => b.closed_at)" :key="b.id">
+                <option :value="String(b.id)" x-text="'Batch ' + b.id + ' (closed ' + dateTime(b.closed_at) + ')'"></option>
+              </template>
+            </select>
+            <button type="button" class="btn" @click="printReports()" :disabled="!!busy.reports">Print driver reports</button>
+            <button type="button" class="link-btn" @click="go('drivers')">Manage drivers</button>
           </div>
         </div>
-        <div class="row" style="margin-top:10px">
-          <div><label>From</label><input id="h-from" type="datetime-local" /></div>
-          <div><label>To</label><input id="h-to" type="datetime-local" /></div>
-          <div style="align-self:flex-end"><button class="primary" onclick="histReset()">Apply</button></div>
+        <p class="err-text" style="padding:0 18px 12px" x-show="reportsErr" x-text="reportsErr"></p>
+        <div class="tbl-wrap" x-show="driverRows.length">
+          <table class="tbl tbl-cards">
+            <thead><tr><th scope="col">Driver</th><th scope="col">Status</th><th scope="col">Deliveries</th><th scope="col">Cash collected</th><th scope="col">Tips (after tax)</th><th scope="col">Settles</th></tr></thead>
+            <tbody>
+              <template x-for="r in driverRows" :key="r.id">
+                <tr>
+                  <td class="c-name" style="font-weight:600" x-text="r.name"></td>
+                  <td class="c-badge"><span class="badge" :class="r.badge.cls" x-text="r.badge.text"></span></td>
+                  <td class="mono" data-l="Deliveries" x-text="r.deliveries"></td>
+                  <td class="mono" data-l="Cash collected" x-text="r.cash"></td>
+                  <td class="mono" data-l="Tips (after tax)" x-text="r.tips"></td>
+                  <td class="mono c-settle" data-l="Settles" style="font-weight:700" :style="{ color: r.owedTone ? 'var(--accent)' : '' }" x-text="r.settle"></td>
+                </tr>
+              </template>
+            </tbody>
+          </table>
         </div>
+        <div class="empty" x-show="!driverRows.length && !reportsErr">No driver has worked this batch yet.</div>
+      </section>
+    </section>
+
+    <!-- ================================================================= -->
+    <!-- Live (the backup floor screen; the counter tablet is the main one)  -->
+    <!-- ================================================================= -->
+    <section class="stack" style="gap:22px" x-show="page === 'live'" aria-label="Live">
+      <div class="banner bad" role="alert" x-show="!piReachable">
+        <span style="display:inline-flex" x-html="icon('alert', 20)"></span><span>Can't reach the Pi — this screen is out of date.</span>
       </div>
-      <div id="hist-list"></div>
-      <div class="pager">
-        <button id="h-prev" onclick="histPage(-1)">Prev</button>
-        <span id="h-page" class="muted">page 1</span>
-        <button id="h-next" onclick="histPage(1)">Next</button>
+      <div class="banner warn" role="alert" x-show="mainDown">
+        <span style="display:inline-flex" x-html="icon('alert', 20)"></span><span>Not connected to main — new online orders can't arrive.</span>
+      </div>
+      <p class="err-text" role="alert" x-show="floorErr && piReachable" x-text="floorErr"></p>
+      <div class="hrow" x-show="soundOff">
+        <button type="button" class="chip" @click="enableSound()"><span style="display:inline-flex" x-html="icon('mute', 16)"></span>Enable sound</button>
+        <span class="small muted">The browser keeps new-order sounds off until you click this page.</span>
+      </div>
+
+      <!-- The oldest waiting order (or the one picked with Show) as the full card -->
+      <template x-for="so in (alertOrder ? [alertOrder] : [])" :key="so.order.id">
+        <section class="alert" :class="{ late: isStill(so) }" :aria-label="(isStill(so) ? 'Still waiting: order from ' : 'New order from ') + custName(so.order)">
+          <div class="body">
+            <div class="hrow" style="gap:10px">
+              <span class="title" x-text="isStill(so) ? 'STILL WAITING' : 'NEW ORDER'"></span>
+              <span class="pill mono" x-text="'waiting ' + sinceText(so)"></span>
+              <span class="pill mono strong" x-show="waiting.length > 1" x-text="waiting.length + ' WAITING'"></span>
+            </div>
+            <div class="who" x-text="custName(so.order)"></div>
+            <div class="mono" style="font-weight:700" x-text="moneyLabel(so.order) + ' · ' + itemCount(so.order) + ' item' + (itemCount(so.order) === 1 ? '' : 's') + ' · ' + ftype(so.order).toUpperCase() + ' · #' + so.order.source_event_id"></div>
+            <div class="addr" x-show="addrLine(so.order)" x-text="addrLine(so.order)"></div>
+            <div class="items">
+              <template x-for="l in itemLines(so.order)" :key="l.k"><div :class="l.cls" x-text="l.text"></div></template>
+              <div class="note" x-show="(so.order.notes || '').trim()" x-text="'“' + (so.order.notes || '').trim() + '”'"></div>
+            </div>
+          </div>
+          <div class="side-col">
+            <div class="k" :id="'pk-' + so.order.id">PREP TIME (MIN)</div>
+            <div class="hrow" role="group" :aria-labelledby="'pk-' + so.order.id">
+              <template x-for="m in prepChoices" :key="m">
+                <button type="button" class="prep" :class="{ on: (prep[so.order.id] || defaultPrep) === m }" :aria-pressed="(prep[so.order.id] || defaultPrep) === m" @click="prep[so.order.id] = m" x-text="m"></button>
+              </template>
+            </div>
+            <button type="button" class="accept" :disabled="!!busy['acc' + so.order.id]" @click="accept(so)" x-text="busy['acc' + so.order.id] ? 'PRINTING…' : 'ACCEPT · ' + (prep[so.order.id] || defaultPrep) + ' MIN'"></button>
+            <div class="msg" role="alert" x-show="errs[so.order.id]" x-text="errs[so.order.id]"></div>
+            <button type="button" class="resend" @click="resendOrder(so)" :disabled="!!busy['rs' + so.order.id]">Resend to the tablets</button>
+          </div>
+        </section>
+      </template>
+
+      <!-- The rest of the waiting orders, compact -->
+      <section class="also" x-show="alsoWaiting.length" aria-labelledby="h-also">
+        <div class="eyebrow" id="h-also">Also waiting</div>
+        <template x-for="so in alsoWaiting" :key="so.order.id">
+          <div class="awrow" :class="{ late: isStill(so) }">
+            <div class="grow" style="min-width:0">
+              <div style="font-weight:700;overflow-wrap:anywhere" x-text="custName(so.order)"></div>
+              <div class="mono small" x-text="ftype(so.order).toUpperCase() + ' · ' + moneyLabel(so.order) + ' · waiting ' + sinceText(so)"></div>
+              <div class="msg" role="alert" x-show="errs[so.order.id]" x-text="errs[so.order.id]"></div>
+            </div>
+            <button type="button" class="btn btn-lg" @click="focusWait = so.order.id" :aria-label="'Show the order from ' + custName(so.order)">Show</button>
+            <button type="button" class="aw-accept" :disabled="!!busy['acc' + so.order.id]" @click="accept(so, defaultPrep)" x-text="busy['acc' + so.order.id] ? 'PRINTING…' : 'ACCEPT · ' + defaultPrep + ' MIN'"></button>
+          </div>
+        </template>
+      </section>
+
+      <section class="stack" style="gap:14px" aria-labelledby="h-kitchen">
+        <div class="sec-head">
+          <h1 id="h-kitchen">Kitchen</h1>
+          <span class="muted" x-text="kitchen.length ? kitchen.length + ' cooking · most urgent first' : ''"></span>
+          <span class="grow"></span>
+          <button type="button" class="btn btn-lg" @click="loadFloor()" aria-label="Refresh the floor"><span style="display:inline-flex" x-html="icon('refresh', 16)"></span>Refresh</button>
+        </div>
+        <div class="tickets">
+          <template x-for="so in kitchen" :key="so.order.id">
+            <article class="tk" :style="toneStyle(so)" :aria-label="'Ticket ' + displayNumber(so) + ', ' + custName(so.order)">
+              <div class="hrow" style="justify-content:space-between"><span class="num" x-text="displayNumber(so)"></span><span class="tag" :class="{ delivery: ftype(so.order) === 'delivery' }" x-text="ftype(so.order).toUpperCase()"></span></div>
+              <div class="hrow" style="align-items:baseline"><span class="age" x-text="sinceText(so)"></span><span class="due" :class="{ late: isLate(so) }" x-text="dueText(so)"></span></div>
+              <div class="who" x-text="custName(so.order)"></div>
+              <div class="lines">
+                <template x-for="l in itemLines(so.order)" :key="l.k"><div :class="l.cls" x-text="l.text"></div></template>
+                <div class="onote" x-show="(so.order.notes || '').trim()" x-text="'“' + (so.order.notes || '').trim() + '”'"></div>
+              </div>
+              <div class="hrow" style="flex-wrap:nowrap;margin-top:4px">
+                <button type="button" class="btn icon-btn" :aria-label="'Reprint ' + displayNumber(so)" :disabled="!!busy['rp' + so.order.id]" @click="reprint(so)" x-html="icon('printer')"></button>
+                <button type="button" class="ready" :disabled="!!busy['rd' + so.order.id]" @click="markReady(so)"><span style="display:inline-flex" x-html="icon('check', 18)"></span>READY</button>
+              </div>
+            </article>
+          </template>
+        </div>
+        <div class="card empty" x-show="floorLoaded && !kitchen.length">Nothing cooking</div>
+      </section>
+
+      <div class="split">
+        <section class="card card-pad wide stack" style="gap:12px" aria-labelledby="h-ready">
+          <div class="hrow" style="justify-content:space-between"><span class="eyebrow" id="h-ready">Ready for delivery</span><span class="small muted" x-text="readyDeliveries.length + ' waiting for a driver'"></span></div>
+          <template x-for="so in readyDeliveries" :key="so.order.id">
+            <label class="dlv">
+              <input type="checkbox" :checked="selected.includes(so.order.id)" @change="toggleSelect(so.order.id)" />
+              <span class="num mono" x-text="displayNumber(so)"></span>
+              <span class="grow" style="min-width:0"><span style="font-weight:600;display:block" x-text="custName(so.order)"></span><span class="small muted" style="display:block;overflow-wrap:anywhere" x-show="addrLine(so.order)" x-text="addrLine(so.order)"></span></span>
+              <span class="mono" style="font-weight:700" x-text="moneyLabel(so.order)"></span>
+            </label>
+          </template>
+          <p class="muted" x-show="!readyDeliveries.length">No delivery orders are ready.</p>
+          <div class="hrow" x-show="readyDeliveries.length > 1">
+            <button type="button" class="btn btn-lg" @click="selectAll()">SELECT ALL</button>
+            <button type="button" class="btn btn-lg" @click="selected = []">CLEAR</button>
+          </div>
+          <div x-show="readyDeliveries.length">
+            <div class="eyebrow" style="margin-bottom:8px" id="h-pick">Driver</div>
+            <div class="hrow" role="radiogroup" aria-labelledby="h-pick">
+              <template x-for="(d, i) in availableDrivers" :key="d.id">
+                <button type="button" class="drv" role="radio" :aria-checked="pickDriver === d.id" :class="{ on: pickDriver === d.id }" @click="pickDriver = d.id"><span x-text="d.name"></span><span class="note" x-text="i === 0 ? ' · next up' : ''"></span></button>
+              </template>
+              <span class="muted" x-show="!availableDrivers.length">No driver is clocked in — <button type="button" class="link-btn" @click="go('drivers')">clock one in</button>.</span>
+            </div>
+          </div>
+          <button type="button" class="send" x-show="readyDeliveries.length" :disabled="!selected.length || !pickedDriver || !!busy.send" @click="sendOut()" x-text="sendLabel"></button>
+        </section>
+
+        <section class="card card-pad narrow stack" style="gap:10px" aria-labelledby="h-out">
+          <span class="eyebrow" id="h-out">Out with drivers</span>
+          <template x-for="o in outDrivers" :key="o.d.id">
+            <div class="outrow">
+              <div>
+                <div style="font-weight:700" x-text="o.d.name"></div>
+                <div class="small muted" x-text="o.orders.length + ' order' + (o.orders.length === 1 ? '' : 's') + (o.outAt ? ' · out ' + mins((now - o.outAt) / 60000) : '') + (o.orders.length ? ' · ' + o.orders.map(x => displayNumber(x)).join(' ') : '')"></div>
+              </div>
+              <button type="button" class="btn btn-lg" :disabled="!!busy['ret' + o.d.id]" @click="driverReturned(o.d)">I HAVE RETURNED</button>
+            </div>
+          </template>
+          <p class="muted" x-show="!outDrivers.length">No drivers are out.</p>
+          <button type="button" class="btn" style="justify-content:space-between" @click="showDone = !showDone" :aria-expanded="showDone" aria-controls="done-list">
+            <span x-text="doneOrders.length + ' done this batch'"></span><span style="display:inline-flex" x-html="icon(showDone ? 'down' : 'right', 16)"></span>
+          </button>
+          <div id="done-list" x-show="showDone">
+            <template x-for="so in doneOrders" :key="so.order.id">
+              <div class="donerow">
+                <span class="mono" style="font-weight:700" x-text="displayNumber(so)"></span>
+                <span class="grow" x-text="custName(so.order)"></span>
+                <span class="badge b-mute" x-text="stateLabel(so.status.state)"></span>
+                <button type="button" class="btn icon-btn" :aria-label="'Reprint ' + displayNumber(so)" :disabled="!!busy['rp' + so.order.id]" @click="reprint(so)" x-html="icon('printer', 16)"></button>
+              </div>
+            </template>
+          </div>
+        </section>
       </div>
     </section>
 
-    <!-- Store config -->
-    <section id="tab-config" class="hidden">
-      <div class="card">
-        <div class="muted" style="margin-bottom:12px">
-          Read-only. The store details and printers are managed by the store manager in the
-          main dashboard (<b>/app/store</b>); changes arrive here automatically.
+    <!-- ================================================================= -->
+    <!-- Drivers                                                             -->
+    <!-- ================================================================= -->
+    <section class="stack" x-show="page === 'drivers'" aria-labelledby="h-drivers">
+      <div class="page-head"><div>
+        <h1 id="h-drivers">Drivers</h1>
+        <p>Clock a driver in to put them in the queue — the first available driver is next up; a driver who returns goes to the back. Everyone is clocked out daily at <b x-text="wallTime(reset.time || '10:00')"></b> (<button type="button" class="link-btn" @click="goSettings('clockout')">change</button>).</p>
+      </div></div>
+      <section class="card card-pad">
+        <div class="list">
+          <template x-for="(d, i) in drivers" :key="d.id">
+            <div class="li">
+              <span class="pos mono" x-text="i + 1"></span>
+              <div class="main hrow">
+                <label class="sr-only" :for="'dn-' + d.id" x-text="'Name of driver ' + (i + 1)"></label>
+                <input class="field field-sm name-input" :id="'dn-' + d.id" x-model="names[d.id]" maxlength="40" @keydown.enter.prevent="renameDriver(d)" />
+                <button type="button" class="btn btn-sm" x-show="(names[d.id] || '').trim() && (names[d.id] || '').trim() !== d.name" @click="renameDriver(d)">Save</button>
+                <span class="badge" :class="driverStatus(d).cls" x-text="driverStatus(d).text"></span>
+                <span class="small muted" x-text="(d.clocked_in_at ? 'in since ' + clock(d.clocked_in_at) + ' · ' : '') + d.deliveries + ' run' + (d.deliveries === 1 ? '' : 's') + ' this batch'"></span>
+              </div>
+              <div class="hrow">
+                <button type="button" class="btn btn-p btn-lg" x-show="d.status === 'off'" :disabled="!!busy['clk' + d.id]" @click="clockDriver(d, 'clock-in')">Clock in</button>
+                <button type="button" class="btn btn-lg" x-show="d.status === 'available'" :disabled="!!busy['clk' + d.id]" @click="clockDriver(d, 'clock-out')">Clock out</button>
+                <button type="button" class="btn icon-btn" :aria-label="'Move ' + d.name + ' up'" :disabled="i === 0" @click="moveDriver(i, -1)" x-html="icon('up')"></button>
+                <button type="button" class="btn icon-btn" :aria-label="'Move ' + d.name + ' down'" :disabled="i === drivers.length - 1" @click="moveDriver(i, 1)" x-html="icon('down')"></button>
+                <button type="button" class="btn icon-btn" :aria-label="'Remove ' + d.name" @click="removeDriver(d)" x-html="icon('trash')"></button>
+              </div>
+            </div>
+          </template>
+          <p class="muted" x-show="floorLoaded && !drivers.length">No drivers yet.</p>
         </div>
-        <div class="row">
-          <div class="grow"><label>Store name</label><div id="c-name"></div></div>
-          <div><label>Phone</label><div id="c-phone"></div></div>
-        </div>
-        <div class="row" style="margin-top:10px">
-          <div class="grow"><label>Address</label><div id="c-addr"></div></div>
-        </div>
-        <div style="margin-top:16px">
-          <label>Printers</label>
-          <div id="c-printers"></div>
-        </div>
+        <form class="hrow" style="margin-top:14px" @submit.prevent="addDriver()">
+          <label class="sr-only" for="new-driver">New driver name</label>
+          <input id="new-driver" class="field" style="flex:1 1 200px;width:auto" placeholder="Driver name" maxlength="40" x-model="newDriver" />
+          <button type="submit" class="btn btn-p btn-lg">Add driver</button>
+        </form>
+      </section>
+    </section>
+
+    <!-- ================================================================= -->
+    <!-- History (proxied from main)                                          -->
+    <!-- ================================================================= -->
+    <section class="stack" x-show="page === 'history'" aria-labelledby="h-history">
+      <div class="page-head"><div>
+        <h1 id="h-history">History</h1>
+        <p>Every order for this store, from main. Reprint prints a copy; Resend runs the order through this Pi again.</p>
+      </div></div>
+      <form class="card card-pad filters" @submit.prevent="histApply()">
+        <div><label class="lbl" for="h-q">Search</label><input id="h-q" class="field" x-model="hist.q" placeholder="Customer or event id" /></div>
+        <div><label class="lbl" for="h-status">Status</label><select id="h-status" class="field" x-model="hist.status"><option value="">Any</option><template x-for="o in histStatuses" :key="o[0]"><option :value="o[0]" x-text="o[1]"></option></template></select></div>
+        <div><label class="lbl" for="h-sort">Sort</label><select id="h-sort" class="field" x-model="hist.sort"><option value="desc">Newest first</option><option value="asc">Oldest first</option></select></div>
+        <div><label class="lbl" for="h-from">From</label><input id="h-from" class="field" type="datetime-local" x-model="hist.from" /></div>
+        <div><label class="lbl" for="h-to">To</label><input id="h-to" class="field" type="datetime-local" x-model="hist.to" /></div>
+        <div><button type="submit" class="btn btn-p btn-lg btn-block">Apply</button></div>
+      </form>
+      <p class="muted" x-show="hist.loading">Loading…</p>
+      <div class="err-box" role="alert" x-show="hist.err">
+        <p x-text="hist.err"></p>
+        <details x-show="hist.errRaw"><summary>Details</summary><code class="mono small" x-text="hist.errRaw"></code></details>
+      </div>
+      <p class="muted" x-show="hist.loaded && !hist.loading && !hist.err && !hist.rows.length">No matching orders.</p>
+      <template x-for="(o, i) in hist.rows" :key="histKey(o, i)">
+        <article class="card order-card">
+          <div class="head">
+            <div class="hrow">
+              <span class="mono small muted" x-text="'#' + (o.source_event_id || String(o.id || '').slice(0, 8))"></span>
+              <b x-text="custName(o)"></b>
+              <span class="badge b-brand" x-show="ftype(o)" x-text="ftype(o)"></span>
+              <span class="badge b-mute" x-show="o.status" :title="o.status" x-text="histStatusLabel(o.status)"></span>
+            </div>
+            <span class="mono" style="font-weight:700" x-text="money((o.money || {}).total_cents)"></span>
+          </div>
+          <div class="small muted" x-text="itemCount(o) + ' item' + (itemCount(o) === 1 ? '' : 's') + ' · ' + dateTime(o.received_at || o.placed_at) + ' · ' + moneyLabel(o)"></div>
+          <div class="hrow">
+            <button type="button" class="btn btn-sm" :disabled="!!busy['hprint' + i]" @click="histAct(o, 'print', i)">Reprint</button>
+            <button type="button" class="btn btn-sm" :disabled="!!busy['hresend' + i]" @click="histAct(o, 'resend', i)">Resend</button>
+          </div>
+        </article>
+      </template>
+      <div class="pager" x-show="hist.loaded && !hist.err && (hist.offset > 0 || histHasNext)">
+        <button type="button" class="btn" x-show="hist.offset > 0" :disabled="!!hist.loading" @click="histPage(-1)">Prev</button>
+        <span class="muted" x-text="'Page ' + histPageNo"></span>
+        <button type="button" class="btn" x-show="histHasNext" :disabled="!!hist.loading" @click="histPage(1)">Next</button>
       </div>
     </section>
 
-    <!-- Settings -->
-    <section id="tab-settings" class="hidden">
-      <div class="card">
-        <label>Connection to main</label>
-        <div id="set-conn" class="muted" style="margin:6px 0 18px">—</div>
-
-        <label>Auto-accept orders</label>
-        <div class="row" style="margin:6px 0 4px">
-          <input type="checkbox" id="set-autoaccept" onchange="toggleAutoAccept()" style="width:auto" />
-          <span class="muted">Print &amp; accept incoming orders automatically (with the last prep time used).</span>
+    <!-- ================================================================= -->
+    <!-- Printers                                                            -->
+    <!-- ================================================================= -->
+    <section class="stack" x-show="page === 'printers'" aria-labelledby="h-printers">
+      <div class="page-head">
+        <div><h1 id="h-printers">Printers</h1><p>Printers are added and named in main (<b>/app/store</b>); their status here is live from this Pi. Tests never fail over to another printer.</p></div>
+        <div class="hrow">
+          <button type="button" class="btn" :disabled="!!printerBusy" @click="printerAction('probe')">Check now</button>
+          <button type="button" class="btn" :disabled="!!printerBusy || !printers.length" @click="printerAction('test')">Test all</button>
+          <button type="button" class="btn btn-p" :disabled="!!printerBusy || !printers.length" @click="printerAction('sample')">Print sample receipt</button>
         </div>
       </div>
-
-      <div class="card">
-        <label>Daily driver clock-out</label>
-        <div class="row" style="margin-top:6px">
-          <input id="set-reset" type="time" style="width:auto" />
-          <button onclick="saveReset()">Save</button>
-          <span class="muted">Everyone still clocked in is clocked out at this time each day (drivers on a run: when they return).</span>
+      <p class="err-text" role="alert" x-show="printersErr" x-text="printersErr"></p>
+      <section class="card card-pad" style="padding-top:6px;padding-bottom:6px">
+        <div class="list">
+          <template x-for="p in printers" :key="p.name">
+            <div class="li">
+              <div class="main">
+                <div class="hrow">
+                  <b x-text="p.name"></b>
+                  <span class="badge" :class="p.is_receipt ? 'b-brand' : 'b-mute'" x-text="p.is_receipt ? 'Receipt printer' : 'Kitchen station'"></span>
+                  <span class="badge" :class="printerTone(p)"><span class="dot"></span><span x-text="printerState(p)"></span></span>
+                </div>
+                <div class="small muted">
+                  <span class="mono" x-text="p.ip || '—'"></span><span x-show="p.last_checked" x-text="' · checked ' + ago(p.last_checked)"></span><span x-show="p.up === false && p.down_since" x-text="' · down since ' + clock(p.down_since)"></span><span x-show="p.up === true && p.up_since" x-text="' · up since ' + clock(p.up_since)"></span>
+                </div>
+                <div class="err-text small" x-show="p.up === false && p.last_error" x-text="p.last_error"></div>
+                <div role="status" :class="resultFor(p) && resultFor(p).ok ? 'ok-text' : 'err-text'" x-show="resultFor(p)" x-text="resultFor(p) ? resultFor(p).text : ''"></div>
+              </div>
+              <div class="hrow">
+                <button type="button" class="btn" :disabled="!!printerBusy || !p.id" @click="printerAction('test', p)" x-text="printerBusy === 'test' + p.id ? 'Printing…' : 'Test print'"></button>
+                <button type="button" class="btn" :disabled="!!printerBusy || !p.id" @click="printerAction('sample', p)" x-text="printerBusy === 'sample' + p.id ? 'Printing…' : 'Print sample'"></button>
+              </div>
+            </div>
+          </template>
+          <div class="empty" x-show="!printers.length">No printers yet — add them in main (<b>/app/store</b>).</div>
         </div>
-      </div>
+      </section>
+    </section>
 
-      <div class="card">
-        <label>Kitchen tickets &amp; driver reports</label>
-        <div class="row" style="margin-top:6px">
-          <span>Tickets green for</span><input id="set-green" type="number" min="1" max="240" style="width:5em" /><span>min</span>
-          <span style="margin-left:14px">Tip tax</span><input id="set-tiptax" type="number" min="0" max="50" step="0.25" style="width:5em" /><span>%</span>
-          <button onclick="saveFloorPrefs()">Save</button>
-        </div>
-        <div class="muted" style="margin-top:6px">Tablet tickets shade from green to red between this time and twice it after an order arrives. The tip tax is taken off drivers' tips on their report.</div>
-      </div>
+    <!-- ================================================================= -->
+    <!-- Settings                                                            -->
+    <!-- ================================================================= -->
+    <section class="stack" x-show="page === 'settings'" aria-labelledby="h-settings">
+      <div class="page-head"><div><h1 id="h-settings">Settings</h1></div></div>
+      <div class="split" style="gap:20px">
+        <nav class="subnav" aria-label="Settings sections">
+          <template x-for="t in settingsTabs" :key="t.id">
+            <button type="button" class="sub" :class="{ on: settingsTab === t.id }" :aria-current="settingsTab === t.id ? 'page' : null" @click="goSettings(t.id)" x-text="t.label"></button>
+          </template>
+        </nav>
 
-      <div class="card">
-        <label>Counter tablets</label>
-        <div class="muted" style="margin:6px 0 10px;line-height:1.4">
-          Pair the tablet app: tap <b>Pair tablet</b>, then type this agent's address and the 6-digit code into the app (valid 5 minutes).
-        </div>
-        <div class="row"><button class="primary" onclick="pairCode()">Pair tablet</button><span id="pair-code" style="font-size:1.6rem;font-weight:800;letter-spacing:0.2em"></span><span id="pair-exp" class="muted"></span></div>
-        <div id="dev-list" style="margin-top:12px"></div>
-        <div id="app-release" class="muted" style="margin-top:10px"></div>
-      </div>
+        <!-- Orders -->
+        <section class="card sbody" x-show="settingsTab === 'orders'" aria-labelledby="h-s-orders">
+          <h2 id="h-s-orders">Orders</h2>
+          <p class="help">How new orders are handled on this Pi.</p>
+          <div class="srow" style="margin-top:10px">
+            <div class="lblcol"><div class="lbl" id="aa-l">Auto-accept orders</div><p class="help">Print and accept incoming orders automatically, with the last prep time used. Leave it off when staff accept on the tablet.</p></div>
+            <button type="button" class="sw" :class="{ on: autoAccept }" role="switch" :aria-checked="autoAccept" aria-labelledby="aa-l" :disabled="!autoAcceptLoaded" @click="toggleAutoAccept()"><span></span></button>
+          </div>
+        </section>
 
-      <div class="card">
-        <label>Change password</label>
-        <div style="margin:8px 0"><input id="cp-current" type="password" placeholder="Current password" style="width:100%" autocomplete="current-password" /></div>
-        <div style="margin:8px 0"><input id="cp-new" type="password" placeholder="New password" style="width:100%" autocomplete="new-password" /></div>
-        <div style="margin:8px 0"><input id="cp-confirm" type="password" placeholder="Confirm new password" style="width:100%" autocomplete="new-password" /></div>
-        <div style="margin:8px 0 12px"><input id="cp-hint" placeholder="Password hint (optional)" style="width:100%" /></div>
-        <button class="primary" onclick="changePassword()">Update password</button>
-        <div id="cp-msg" class="muted" style="margin-top:10px"></div>
-      </div>
+        <!-- Kitchen tickets & driver reports -->
+        <form class="card sbody" x-show="settingsTab === 'kitchen'" @submit.prevent="saveFloorPrefs()" aria-labelledby="h-s-kitchen">
+          <h2 id="h-s-kitchen">Kitchen tickets &amp; driver reports</h2>
+          <p class="help">Used by the tablet's Kitchen screen, this page's Live view and the driver reports.</p>
+          <div class="srow" style="margin-top:10px">
+            <div class="lblcol"><label class="lbl" for="set-green">Tickets stay green for</label><p class="help">Tickets shade from green to amber to red between this time and twice it after an order arrives.</p></div>
+            <div class="hrow"><input id="set-green" class="field field-sm mono" style="width:6em" type="number" min="1" max="240" x-model="floorForm.green" /><span class="muted">min</span></div>
+          </div>
+          <div class="srow">
+            <div class="lblcol"><label class="lbl" for="set-tiptax">Tip tax</label><p class="help">Taken off drivers' tips on their report.</p></div>
+            <div class="hrow"><input id="set-tiptax" class="field field-sm mono" style="width:6em" type="number" min="0" max="50" step="0.25" x-model="floorForm.tiptax" /><span class="muted">%</span></div>
+          </div>
+          <div class="sfoot"><button type="submit" class="btn btn-p" :disabled="!floorDirty">Save</button></div>
+          <p class="help" style="margin-top:8px" x-show="floorDirty">Unsaved changes.</p>
+        </form>
 
-      <div class="card">
-        <label style="color:#e88">Danger zone</label>
-        <div class="muted" style="margin:6px 0 10px;line-height:1.4">
-          Unlinking permanently revokes this device's token on the server and
-          wipes its local password. You'll set the device up again from scratch —
-          paste a new token, then choose a password.
-        </div>
-        <button class="danger" onclick="unlinkDevice()">Unlink device</button>
-        <div id="set-err" class="muted" style="color:#e88;margin-top:10px"></div>
+        <!-- Receipts -->
+        <section class="card sbody" x-show="settingsTab === 'receipts'" aria-labelledby="h-s-rcpt">
+          <h2 id="h-s-rcpt">Receipts &amp; kitchen tickets</h2>
+          <p class="help" style="margin-bottom:6px">The tablet's Settings › Receipts changes the same settings.</p>
+          <p class="err-text" role="alert" x-show="rcptErr" x-text="rcptErr"></p>
+          <template x-if="rcptForm">
+            <div>
+              <div class="srow">
+                <div class="lblcol"><div class="lbl" id="l-num">Kitchen number size</div><p class="help">The big number on top of the kitchen ticket.</p></div>
+                <div class="seg" role="radiogroup" aria-labelledby="l-num"><template x-for="o in numSizes" :key="o[0]"><button type="button" role="radio" :aria-checked="rcptForm.kitchen_number_size === o[0]" :class="{ on: rcptForm.kitchen_number_size === o[0] }" @click="rcptForm.kitchen_number_size = o[0]" x-text="o[1]"></button></template></div>
+              </div>
+              <div class="srow">
+                <div class="lblcol"><div class="lbl" id="l-item">Kitchen item size</div><p class="help">The station's own items on its ticket.</p></div>
+                <div class="seg" role="radiogroup" aria-labelledby="l-item"><template x-for="o in itemSizes" :key="o[0]"><button type="button" role="radio" :aria-checked="rcptForm.kitchen_item_size === o[0]" :class="{ on: rcptForm.kitchen_item_size === o[0] }" @click="rcptForm.kitchen_item_size = o[0]" x-text="o[1]"></button></template></div>
+              </div>
+              <div class="srow top">
+                <div class="lblcol"><div class="lbl" id="l-foot">Receipt footer</div><p class="help">The last line of the customer receipt.</p></div>
+                <div style="flex:1 1 260px;display:flex;flex-direction:column;gap:8px">
+                  <div class="seg" role="radiogroup" aria-labelledby="l-foot"><template x-for="o in footModes" :key="o[0]"><button type="button" role="radio" :aria-checked="footMode === o[0]" :class="{ on: footMode === o[0] }" @click="footMode = o[0]" x-text="o[1]"></button></template></div>
+                  <p class="help" x-show="footMode === 'default'" x-text="'Prints “' + ((rcpt && rcpt.footer_store_default) || 'ONLINE ORDER') + '”' + (rcpt && rcpt.location_footer ? ' — the footer set in main' : '')"></p>
+                  <div x-show="footMode === 'custom'">
+                    <input class="field field-sm mono footer-input" x-model="customFooter" :maxlength="maxFooter" aria-label="Custom footer" aria-describedby="foot-help" />
+                    <p id="foot-help" class="help" :class="{ 'err-text': footerError }" style="margin-top:4px" x-text="footerError || (customFooter.length + ' / ' + maxFooter + ' characters, printed in capitals')"></p>
+                  </div>
+                </div>
+              </div>
+              <div class="srow">
+                <div class="lblcol"><div class="lbl" id="l-fsize">Footer size</div></div>
+                <div class="seg" role="radiogroup" aria-labelledby="l-fsize"><template x-for="o in footSizes" :key="o[0]"><button type="button" role="radio" :aria-checked="rcptForm.footer_size === o[0]" :class="{ on: rcptForm.footer_size === o[0] }" @click="rcptForm.footer_size = o[0]" x-text="o[1]"></button></template></div>
+              </div>
+              <div class="srow">
+                <div class="lblcol"><div class="lbl" id="l-copies">Copies of each receipt</div><p class="help">Kitchen tickets always print once.</p></div>
+                <div class="seg" role="radiogroup" aria-labelledby="l-copies"><template x-for="n in [1, 2]" :key="n"><button type="button" role="radio" :aria-checked="Number(rcptForm.copies) === n" :class="{ on: Number(rcptForm.copies) === n }" @click="rcptForm.copies = n" x-text="n"></button></template></div>
+              </div>
+              <div class="srow">
+                <div class="lblcol"><div class="lbl" id="l-addr">Store name &amp; address at the top</div></div>
+                <button type="button" class="sw" role="switch" :class="{ on: rcptForm.show_store_address }" :aria-checked="!!rcptForm.show_store_address" aria-labelledby="l-addr" @click="rcptForm.show_store_address = !rcptForm.show_store_address"><span></span></button>
+              </div>
+              <div class="srow">
+                <div class="lblcol"><div class="lbl" id="l-phone">Customer phone on the receipt</div></div>
+                <button type="button" class="sw" role="switch" :class="{ on: rcptForm.show_phone }" :aria-checked="!!rcptForm.show_phone" aria-labelledby="l-phone" @click="rcptForm.show_phone = !rcptForm.show_phone"><span></span></button>
+              </div>
+              <div class="srow">
+                <div class="lblcol"><div class="lbl" id="l-paper">Extra paper at the end</div><p class="help">Feed past the footer so the tear is clean.</p></div>
+                <button type="button" class="sw" role="switch" :class="{ on: rcptForm.extra_paper }" :aria-checked="!!rcptForm.extra_paper" aria-labelledby="l-paper" @click="rcptForm.extra_paper = !rcptForm.extra_paper"><span></span></button>
+              </div>
+              <div class="sfoot">
+                <button type="button" class="btn btn-p" :disabled="!rcptDirty || !!rcptBusy || !!footerError" @click="saveReceipt()" x-text="rcptBusy === 'save' ? 'Saving…' : 'Save'"></button>
+                <button type="button" class="btn" :disabled="!!rcptBusy" @click="printSample()" x-text="rcptBusy === 'sample' ? 'Printing…' : 'Print a sample' + (receiptPrinter ? ' on ' + receiptPrinter.name : '')"></button>
+                <span class="grow"></span>
+                <button type="button" class="btn btn-g" @click="resetReceipt()">Reset to defaults</button>
+              </div>
+              <p class="help" style="margin-top:8px" x-show="rcptDirty">Unsaved changes — a sample prints them after saving.</p>
+            </div>
+          </template>
+        </section>
+        <section class="preview" x-show="settingsTab === 'receipts' && rcptForm" aria-label="Paper preview">
+          <template x-if="rcptForm">
+            <div style="display:flex;flex-direction:column;align-items:center;gap:12px;width:100%">
+              <div class="seg" role="tablist" aria-label="Preview">
+                <button type="button" role="tab" :aria-selected="rcptPreview === 'r'" :class="{ on: rcptPreview === 'r' }" @click="rcptPreview = 'r'">Receipt</button>
+                <button type="button" role="tab" :aria-selected="rcptPreview === 'k'" :class="{ on: rcptPreview === 'k' }" @click="rcptPreview = 'k'">Kitchen ticket</button>
+              </div>
+              <div class="paper" x-show="rcptPreview === 'r'" aria-label="Customer receipt preview">
+                <div x-show="rcptForm.show_store_address">
+                  <div class="c b" style="font-size:15px" x-text="storeName.toUpperCase()"></div>
+                  <div class="c" x-text="storeAddress || '[STORE ADDRESS]'"></div>
+                </div>
+                <div class="c b" style="font-size:26px;margin:8px 0">#1116</div>
+                <div>Maria Lopez · DELIVERY</div>
+                <div x-show="rcptForm.show_phone">(555) 010-4477</div>
+                <div class="rule"></div>
+                <div class="ln"><span>1 12 Medium Cheese</span><span>19.99</span></div>
+                <div class="ln"><span>1 Party Wings Combo</span><span>12.99</span></div>
+                <div class="ln"><span>1 2 Liter Soda</span><span>3.49</span></div>
+                <div class="rule"></div>
+                <div class="ln b"><span>CASH</span><span>$36.41</span></div>
+                <div class="c b" style="margin-top:12px;overflow-wrap:anywhere" x-show="footerShown" :style="{ fontSize: sizePx(rcptForm.footer_size) }" x-text="footerShown"></div>
+                <div x-show="rcptForm.extra_paper" style="height:36px"></div>
+                <div class="cut" x-text="'cut' + (Number(rcptForm.copies) === 2 ? ' · prints twice' : '')"></div>
+              </div>
+              <div class="paper" x-show="rcptPreview === 'k'" aria-label="Kitchen ticket preview">
+                <div class="c b" style="line-height:1.1" :style="{ fontSize: sizePx(rcptForm.kitchen_number_size) }">#1116</div>
+                <div class="c" style="margin:4px 0">KITCHEN · DELIVERY · 7:42 PM</div>
+                <div class="rule"></div>
+                <div class="b" :style="{ fontSize: sizePx(rcptForm.kitchen_item_size) }">1 12 Medium Cheese</div>
+                <div class="b" :style="{ fontSize: sizePx(rcptForm.kitchen_item_size) }">1 Party Wings Combo</div>
+                <div style="color:#555">also: 1 2 Liter Soda (Front counter)</div>
+                <div class="cut" style="margin-top:14px">cut</div>
+              </div>
+              <p class="help" style="text-align:center;max-width:300px">Preview is approximate. Print a sample to see it on paper.</p>
+            </div>
+          </template>
+        </section>
+
+        <!-- Daily clock-out -->
+        <form class="card sbody" x-show="settingsTab === 'clockout'" @submit.prevent="saveReset()" aria-labelledby="h-s-reset">
+          <h2 id="h-s-reset">Daily clock-out</h2>
+          <p class="help">Everyone still clocked in is clocked out at this time each day (store time). Drivers on a run are clocked out when they return.</p>
+          <div class="srow" style="margin-top:10px">
+            <div class="lblcol"><label class="lbl" for="set-reset">Clock everyone out at</label><p class="help" x-show="reset.last_run" x-text="'Last ran ' + dateTime(reset.last_run)"></p></div>
+            <input id="set-reset" type="time" class="field field-sm" style="width:auto" x-model="reset.form" />
+          </div>
+          <div class="sfoot"><button type="submit" class="btn btn-p" :disabled="!resetDirty">Save</button></div>
+          <p class="help" style="margin-top:8px" x-show="resetDirty">Unsaved changes.</p>
+        </form>
+
+        <!-- Tablets -->
+        <section class="card sbody" x-show="settingsTab === 'tablets'" aria-labelledby="h-s-tab">
+          <h2 id="h-s-tab">Counter tablets</h2>
+          <p class="help">Pair the Quibase app: tap <b>Pair tablet</b>, then type this Pi's address and the 6-digit code into the app. A code works once, for 5 minutes.</p>
+          <div class="pi-addr"><span class="muted">This Pi's address</span> <b class="mono" x-text="piAddress"></b><span class="muted" x-show="session.hostname" x-text="' · or ' + session.hostname"></span></div>
+          <div class="srow" style="margin-top:10px">
+            <button type="button" class="btn btn-p btn-lg" @click="pairCode()">Pair tablet</button>
+            <div class="hrow" x-show="pair && pairLeft > 0" aria-live="polite">
+              <span class="paircode" x-text="pair ? pair.code : ''"></span>
+              <span class="muted" x-text="pair ? 'valid for ' + dur(pairLeft) + ' · until ' + clock(pair.expires_at) : ''"></span>
+            </div>
+            <span class="muted" x-show="pair && pairLeft <= 0">That code expired — make a new one.</span>
+          </div>
+          <div class="srow top" style="flex-direction:column;align-items:stretch;gap:0">
+            <div class="lbl">Paired tablets</div>
+            <div class="list">
+              <template x-for="d in devices" :key="d.id">
+                <div class="li">
+                  <div class="main"><b x-text="d.name"></b>
+                    <div class="small muted"><span class="mono" x-text="d.key_prefix + '…'"></span> · <span x-text="d.revoked_at ? 'revoked ' + dateTime(d.revoked_at) : (d.last_seen_at ? 'seen ' + ago(d.last_seen_at) : 'never used')"></span></div>
+                  </div>
+                  <button type="button" class="btn" x-show="!d.revoked_at" @click="revokeDevice(d)">Revoke</button>
+                </div>
+              </template>
+              <p class="muted" x-show="devicesLoaded && !devices.length">No tablets paired yet.</p>
+            </div>
+          </div>
+          <div class="srow">
+            <div class="lblcol"><div class="lbl">Quibase update</div><p class="help" x-text="appLatest ? 'Ready for the tablets: Quibase ' + appLatest.version_name + ' (' + appLatest.version_code + ') — they install it themselves.' : 'No Quibase update cached yet.'"></p></div>
+          </div>
+        </section>
+
+        <!-- Store info -->
+        <section class="card sbody" x-show="settingsTab === 'store'" aria-labelledby="h-s-store">
+          <h2 id="h-s-store">Store info</h2>
+          <p class="help">Read-only. The store details and printers are managed in the main dashboard (<b>/app/store</b>); changes arrive here automatically.</p>
+          <div class="err-box" role="alert" x-show="storeCfgErr" style="margin-top:12px">
+            <p x-text="storeCfgErr"></p>
+            <details x-show="storeCfgErrRaw"><summary>Details</summary><code class="mono small" x-text="storeCfgErrRaw"></code></details>
+          </div>
+          <dl class="kv" style="margin:16px 0 0">
+            <dt>Store</dt><dd x-text="(storeCfg && storeCfg.location && storeCfg.location.name) || '—'"></dd>
+            <dt>Phone</dt><dd x-text="(storeCfg && storeCfg.location && storeCfg.location.phone) || '—'"></dd>
+            <dt>Address</dt><dd x-text="storeAddress || '—'"></dd>
+            <dt>Time zone</dt><dd x-text="(storeCfg && storeCfg.location && storeCfg.location.timezone) || '—'"></dd>
+            <dt>Printers</dt>
+            <dd>
+              <template x-for="p in ((storeCfg && storeCfg.printers) || [])" :key="p.id || p.name">
+                <div class="hrow" style="margin-bottom:4px"><b x-text="p.name"></b><span class="mono small muted" x-text="p.ip"></span><span class="badge" :class="p.is_receipt ? 'b-brand' : 'b-mute'" x-text="p.is_receipt ? 'Receipt printer' : 'Kitchen station'"></span></div>
+              </template>
+              <span class="muted" x-show="storeCfg && !(storeCfg.printers || []).length">None — add them in /app/store.</span>
+            </dd>
+            <dt>Connection</dt><dd x-text="connTitle"></dd>
+            <dt>This Pi</dt><dd class="mono" x-text="(session.hostname || '—') + ' · v' + (session.version || '?')"></dd>
+          </dl>
+        </section>
+
+        <!-- Account -->
+        <section class="card sbody" x-show="settingsTab === 'account'" aria-labelledby="h-s-acct">
+          <h2 id="h-s-acct">Account</h2>
+          <p class="help" x-show="session.manager_login">This Pi signs in with the store manager login. Change that password in the main dashboard (Store → Login).</p>
+          <form class="stack" style="gap:12px;margin-top:14px" x-show="!session.manager_login" @submit.prevent="changePassword()">
+            <div class="lbl" style="color:var(--text)">Change password</div>
+            <div><label class="lbl" for="cp-current">Current password</label><input class="field" id="cp-current" type="password" autocomplete="current-password" x-model="cp.current" /></div>
+            <div><label class="lbl" for="cp-new">New password</label><input class="field" id="cp-new" type="password" autocomplete="new-password" x-model="cp.next" /></div>
+            <div><label class="lbl" for="cp-confirm">Confirm new password</label><input class="field" id="cp-confirm" type="password" autocomplete="new-password" x-model="cp.confirm" /></div>
+            <div><label class="lbl" for="cp-hint">Password hint (optional)</label><input class="field" id="cp-hint" x-model="cp.hint" /></div>
+            <div><button type="submit" class="btn btn-p" :disabled="cp.busy">Update password</button></div>
+            <p class="err-text" role="alert" x-show="cp.err" x-text="cp.err"></p>
+          </form>
+          <div class="srow" style="margin-top:18px">
+            <div class="lblcol"><div class="lbl">Log out</div><p class="help">Ends this browser's session; the Pi stays linked.</p></div>
+            <button type="button" class="btn" @click="logout()">Log out</button>
+          </div>
+          <div class="srow">
+            <div class="lblcol"><div class="lbl" style="color:var(--bad)">Unlink this Pi</div><p class="help">Revokes this Pi's token on the server, signs out every paired tablet and wipes the local login. To use it again, link it with the store manager login.</p></div>
+            <button type="button" class="btn btn-danger" @click="unlink()">Unlink this Pi</button>
+          </div>
+        </section>
       </div>
     </section>
-  </div>
-</main>
 
-<div id="toast"></div>
-<div id="flash" class="hidden" onclick="this.classList.add('hidden')"><div class="muted" style="font-size:1.4rem;color:#cfe6ff">YOUR RUN</div><div class="who" id="flash-who"></div><div id="flash-orders" style="font-size:1.4rem;margin-top:12px"></div></div>
+  </main>
+</div>
 
-<script>
-const $ = (id) => document.getElementById(id);
-let histOffset = 0;
-const HIST_NUM = 20;
+<!-- ===================================================================== -->
+<!-- Overlays: dialog, toasts, the "YOUR RUN" driver flash                   -->
+<!-- ===================================================================== -->
+<div id="dialog" class="dlg-wrap" x-show="dialog" x-cloak @click.self="closeDialog(false)" @keydown.tab="trapTab($event)">
+  <template x-if="dialog">
+    <div class="card dlg" role="dialog" aria-modal="true" aria-labelledby="dlg-title" aria-describedby="dlg-body">
+      <h2 id="dlg-title" x-text="dialog.title"></h2>
+      <p id="dlg-body" x-show="dialog.body" x-text="dialog.body"></p>
+      <ul x-show="dialog.list && dialog.list.length"><template x-for="(l, i) in dialog.list" :key="i"><li x-text="l"></li></template></ul>
+      <div class="acts">
+        <button type="button" class="btn" data-role="cancel" x-show="dialog.cancelLabel" @click="closeDialog(false)" x-text="dialog.cancelLabel"></button>
+        <button type="button" class="btn" data-role="ok" :class="dialog.danger ? 'btn-danger' : 'btn-p'" @click="closeDialog(true)" x-text="dialog.confirmLabel"></button>
+      </div>
+    </div>
+  </template>
+</div>
 
-function esc(s) { return String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
-function money(cents) { return '$' + ((cents || 0) / 100).toFixed(2); }
-function toast(msg, isErr) { const t = $('toast'); t.textContent = msg; t.className = 'show' + (isErr ? ' err' : ''); setTimeout(() => t.className = '', 2500); }
+<div id="toasts" class="toasts" x-cloak role="status" aria-live="polite">
+  <template x-for="t in toasts" :key="t.id">
+    <div class="toast">
+      <span :style="{ display: 'inline-flex', color: t.err ? '#F87171' : '#4ADE80' }" x-html="icon(t.err ? 'alert' : 'check')"></span>
+      <span x-text="t.msg"></span>
+      <button type="button" aria-label="Dismiss" @click="dropToast(t.id)" x-html="icon('x', 16)"></button>
+    </div>
+  </template>
+</div>
 
-async function api(path, opts = {}) {
-  const res = await fetch(path, { headers: { 'Content-Type': 'application/json' }, ...opts });
-  // 401 = session expired OR key revoked. Re-check /api/session so we land on the
-  // right screen: login (session gone, key intact) vs setup (key revoked).
-  if (res.status === 401) { refreshSession(); throw new Error('login required'); }
-  return res;
-}
-
-// --- auth / state machine -----------------------------------------------
-async function boot() {
-  await refreshSession();
-  setInterval(pollStatus, 5000);   // keep the header light + state fresh
-}
-
-// refreshSession reads the provisioning state and shows the matching screen.
-async function refreshSession() {
-  try {
-    const s = await (await fetch('/api/session')).json();
-    applyStatus(s);
-    showState(s);
-  } catch { showAuth('login'); }
-}
-
-// pollStatus refreshes the header light and, if a background revoke reset us
-// (ready → unconfigured/locked), bounces the screen so we don't sit on a dead app.
-async function pollStatus() {
-  try {
-    const s = await (await fetch('/api/session')).json();
-    applyStatus(s);
-    if (s.state !== 'ready' && !$('app').classList.contains('hidden')) showState(s);
-  } catch { /* keep last */ }
-}
-
-// showState maps the server's provisioning state onto the right screen.
-function showState(s) {
-  switch (s.state) {
-    case 'ready':          showApp(); break;
-    case 'needs_password': showAuth('newpass'); break;
-    case 'unconfigured':
-      showAuth('setup');
-      $('link-box').classList.toggle('hidden', s.link_available === false);
-      if (s.link_available === false) $('token-box').classList.remove('hidden');
-      break;
-    default:               // locked
-      showAuth('login');
-      $('hint-link').classList.toggle('hidden', !s.has_hint);
-      $('login-user-row').classList.toggle('hidden', !s.manager_login);
-      $('login-title').textContent = s.manager_login ? 'Store manager login' : 'Enter password';
-  }
-}
-
-// applyStatus paints the green/amber/red "connected to main" dot.
-function applyStatus(s) {
-  const dot = $('sse-dot'), label = $('sse-label'), wrap = $('sse-wrap');
-  let cls = '', text = '', title = '';
-  const since = s.sse_connected_since ? new Date(s.sse_connected_since * 1000).toLocaleTimeString() : '';
-  switch (s.sse_state) {
-    case 'connected':
-      cls = 'green'; text = 'Connected to main'; title = 'SSE connected' + (since ? ' since ' + since : ''); break;
-    case 'connecting':
-      cls = 'amber'; text = 'Connecting…';
-      title = 'Connecting to main' + (s.sse_reconnects ? ' (' + s.sse_reconnects + ' attempts)' : '') + (s.sse_last_error ? ' — ' + s.sse_last_error : ''); break;
-    case 'rejected':
-      cls = 'red'; text = 'Token revoked'; title = s.sse_last_error || 'Token revoked by main — re-provision the device'; break;
-    default:
-      cls = ''; text = 'Not linked'; title = 'No token yet — set up the device';
-  }
-  dot.className = 'dot ' + cls; label.textContent = text; wrap.title = title;
-}
-
-// showAuth reveals one of the three auth panels (setup | newpass | login).
-function showAuth(panel) {
-  $('app').classList.add('hidden'); $('auth').classList.remove('hidden'); $('logout-btn').classList.add('hidden');
-  ['setup', 'newpass', 'login'].forEach(p => $('auth-' + p).classList.toggle('hidden', p !== panel));
-  $('login-hint').classList.add('hidden');
-}
-
-function showApp() {
-  $('auth').classList.add('hidden'); $('app').classList.remove('hidden'); $('logout-btn').classList.remove('hidden');
-  loadLive();
-  startEvents();
-  // Populate the header with the linked store name (cosmetic; session-gated GET).
-  fetch('/api/store-config').then(r => r.ok ? r.json() : null).then(c => { if (c && c.location) $('tenant').textContent = c.location.name || ''; }).catch(() => {});
-}
-
-// submitToken — provision an unconfigured device with the admin-minted token.
-async function submitToken() {
-  $('setup-err').textContent = '';
-  const token = $('setup-token').value.trim();
-  if (!token) { $('setup-err').textContent = 'Paste the token first.'; return; }
-  const btn = $('setup-token-btn'); btn.disabled = true; btn.textContent = 'Linking…';
-  try {
-    const res = await fetch('/api/setup/token', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ token }) });
-    if (!res.ok) { const b = await res.json().catch(() => ({})); throw new Error(b.error || ('link failed (' + res.status + ')')); }
-    $('setup-token').value = '';
-    await refreshSession();   // → create-password
-  } catch (e) { $('setup-err').textContent = e.message; }
-  finally { btn.disabled = false; btn.textContent = 'Link device'; }
-}
-
-// submitLink — link a blank Pi with the store manager login (restores the
-// open batch from main; this browser is signed in afterwards).
-async function submitLink() {
-  $('link-err').textContent = '';
-  const username = $('link-user').value.trim(), password = $('link-pass').value;
-  if (!username || !password) { $('link-err').textContent = 'Type the username and password.'; return; }
-  const btn = $('link-btn'); btn.disabled = true; btn.textContent = 'Linking… (restoring the batch)';
-  try {
-    const res = await fetch('/api/setup/link', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username, password }) });
-    const b = await res.json().catch(() => ({}));
-    if (!res.ok) throw new Error(b.error || ('link failed (' + res.status + ')'));
-    $('link-pass').value = '';
-    const r = b.restored;
-    if (r) alert('Linked to ' + (b.tenant || 'your store') + '. Restored ' + r.orders + ' orders (' + r.waiting + ' waiting), ' + r.drivers + ' drivers. Next kitchen # ' + r.kitchen_next + '.');
-    await refreshSession();
-    pollStatus();
-  } catch (e) { $('link-err').textContent = e.message; }
-  finally { btn.disabled = false; btn.textContent = 'Link this Pi'; }
-}
-
-// submitNewPassword — set the initial local password after linking.
-async function submitNewPassword() {
-  $('np-err').textContent = '';
-  const password = $('np-pass').value, conf = $('np-confirm').value, hint = $('np-hint').value.trim();
-  if (!password) { $('np-err').textContent = 'Choose a password.'; return; }
-  if (password !== conf) { $('np-err').textContent = "The passwords don't match."; return; }
-  try {
-    const res = await fetch('/api/setup/password', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ password, confirm: conf, hint }) });
-    if (!res.ok) { const b = await res.json().catch(() => ({})); throw new Error(b.error || ('failed (' + res.status + ')')); }
-    $('np-pass').value = $('np-confirm').value = $('np-hint').value = '';
-    await refreshSession();   // → app
-    pollStatus();
-  } catch (e) { $('np-err').textContent = e.message; }
-}
-
-// unlock — open the app with the local password.
-async function unlock() {
-  $('login-err').textContent = '';
-  const password = $('login-pass').value, username = $('login-user').value.trim();
-  try {
-    const res = await fetch('/api/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username, password }) });
-    if (!res.ok) { const b = await res.json().catch(() => ({})); throw new Error(b.error || ('login failed (' + res.status + ')')); }
-    $('login-pass').value = '';
-    await refreshSession();   // → app
-    pollStatus();
-  } catch (e) { $('login-err').textContent = e.message; }
-}
-
-async function showHint() {
-  try {
-    const b = await (await fetch('/api/hint')).json();
-    $('login-hint').textContent = b.hint ? ('Hint: ' + b.hint) : 'No hint was set.';
-  } catch { $('login-hint').textContent = 'Could not load the hint.'; }
-  $('login-hint').classList.remove('hidden');
-}
-
-async function logout() { await fetch('/api/logout', { method: 'POST' }); refreshSession(); }
-
-function switchTab(tab) {
-  document.querySelectorAll('.tabs button').forEach(b => b.classList.toggle('active', b.dataset.tab === tab));
-  ['live', 'drivers', 'history', 'config', 'settings'].forEach(t => $('tab-' + t).classList.toggle('hidden', t !== tab));
-  if (tab === 'live') loadLive();
-  if (tab === 'drivers') loadDrivers();
-  if (tab === 'history') { histOffset = 0; loadHistory(); }
-  if (tab === 'config') loadConfig();
-  if (tab === 'settings') { loadSettings(); loadDevices(); api('/api/settings/driver-reset').then(r => r.json()).then(rs => $('set-reset').value = rs.time).catch(() => {}); loadFloorPrefs(); }
-}
-
-// --- settings -----------------------------------------------------------
-async function loadSettings() {
-  $('set-err').textContent = ''; $('cp-msg').textContent = '';
-  try {
-    const s = await (await fetch('/api/session')).json();
-    const label = { connected: '🟢 Connected to main', connecting: '🟠 Connecting…', rejected: '🔴 Token revoked', unconfigured: '⚪ Not linked' }[s.sse_state] || s.sse_state;
-    $('set-conn').textContent = label + (s.sse_connected_since ? ' · since ' + new Date(s.sse_connected_since * 1000).toLocaleTimeString() : '');
-  } catch { $('set-conn').textContent = 'unknown'; }
-  try {
-    const a = await (await api('/api/settings/auto-accept')).json();
-    $('set-autoaccept').checked = !!a.auto_accept;
-  } catch { /* leave unchecked */ }
-}
-async function toggleAutoAccept() {
-  try {
-    const res = await api('/api/settings/auto-accept', { method: 'PUT', body: JSON.stringify({ auto_accept: $('set-autoaccept').checked }) });
-    if (!res.ok) throw new Error('save failed');
-    toast('Saved');
-  } catch (e) { toast(e.message, true); $('set-autoaccept').checked = !$('set-autoaccept').checked; }
-}
-async function changePassword() {
-  $('cp-msg').textContent = '';
-  const current = $('cp-current').value, nw = $('cp-new').value, conf = $('cp-confirm').value, hint = $('cp-hint').value.trim();
-  if (!nw) { $('cp-msg').textContent = 'Choose a new password.'; return; }
-  if (nw !== conf) { $('cp-msg').textContent = "The passwords don't match."; return; }
-  try {
-    const res = await api('/api/settings/password', { method: 'POST', body: JSON.stringify({ current, new: nw, confirm: conf, hint }) });
-    if (!res.ok) { const b = await res.json().catch(() => ({})); throw new Error(b.error || 'update failed'); }
-    $('cp-current').value = $('cp-new').value = $('cp-confirm').value = $('cp-hint').value = '';
-    toast('Password updated');
-  } catch (e) { $('cp-msg').textContent = e.message; }
-}
-async function unlinkDevice() {
-  if (!confirm("Unlink this device? Its token is revoked on the server and the local password is wiped — you'll set it up again from scratch.")) return;
-  $('set-err').textContent = '';
-  try {
-    const res = await api('/api/settings/unlink', { method: 'POST' });
-    if (!res.ok) { const b = await res.json().catch(() => ({})); throw new Error(b.error || ('unlink failed (' + res.status + ')')); }
-    toast('Device unlinked');
-    refreshSession();   // token + password gone → setup screen
-  } catch (e) { $('set-err').textContent = e.message; }
-}
-
-// --- rendering ----------------------------------------------------------
-// normalize a local StoredOrder ({order, status}) or a flat history snapshot.
-function normalize(entry, isLocal) {
-  const snap = isLocal ? entry.order : entry;
-  const state = isLocal ? (entry.status && entry.status.state) : entry.status;
-  return { snap, state };
-}
-function orderCard(entry, isLocal) {
-  const { snap, state } = normalize(entry, isLocal);
-  const name = (snap.customer && snap.customer.display_name) || 'Order';
-  const total = snap.money && snap.money.total_cents;
-  const ftype = (snap.fulfillment && snap.fulfillment.type) || snap.source || '';
-  const items = (snap.items || []).length;
-  const div = document.createElement('div');
-  div.className = 'card';
-  div.innerHTML =
-    '<div class="order-head"><div><span class="oid">#' + esc((snap.id || '').slice(0, 8)) + '</span> ' +
-    '<span class="name">' + esc(name) + '</span> <span class="badge">' + esc(ftype) + '</span></div>' +
-    '<span class="total">' + money(total) + '</span></div>' +
-    '<div class="muted" style="margin-top:6px">' + items + ' item(s)' + (state ? ' · ' + esc(state) : '') + '</div>' +
-    '<div class="actions"></div>';
-  const actions = div.querySelector('.actions');
-  const reprint = document.createElement('button');
-  reprint.textContent = 'Reprint';
-  const resend = document.createElement('button');
-  resend.textContent = 'Resend';
-  if (isLocal) {
-    reprint.onclick = () => act(reprint, 'POST', '/api/orders/' + snap.id + '/reprint');
-    resend.onclick = () => act(resend, 'POST', '/api/orders/' + snap.id + '/resend');
-  } else {
-    reprint.onclick = () => act(reprint, 'POST', '/api/print', snap);
-    resend.onclick = () => act(resend, 'POST', '/api/resend', snap);
-  }
-  actions.append(reprint, resend);
-  return div;
-}
-async function act(btn, method, path, body, after) {
-  btn.disabled = true; const orig = btn.textContent; btn.textContent = '…';
-  try {
-    const res = await api(path, { method, body: body ? JSON.stringify(body) : undefined });
-    if (!res.ok) { const b = await res.json().catch(() => ({})); throw new Error(res.status === 502 ? 'Printer problem — nothing printed: ' + (b.error || '') : (b.error || res.status)); }
-    toast('Done'); btn.textContent = '✓';
-    if (after) after();
-  } catch (e) { toast(e.message, true); btn.textContent = 'Failed'; }
-  finally { setTimeout(() => { btn.disabled = false; btn.textContent = orig; }, 1500); }
-}
-
-// --- live floor ---------------------------------------------------------
-let floor = null, drivers = [];
-function ago(t) { if (!t) return ''; const m = Math.round((Date.now() - new Date(t)) / 60000); return m < 1 ? 'just now' : m + ' min ago'; }
-function hhmm(t) { return t ? new Date(t).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) : ''; }
-function itemsHtml(snap) {
-  return (snap.items || []).map(i => esc(i.quantity + ' x ' + i.name + (i.size ? ' (' + i.size + ')' : ''))).join('<br>');
-}
-function floorCard(so, kind) {
-  const snap = so.order, st = so.status;
-  const div = document.createElement('div');
-  div.className = 'card' + (kind === 'arrived' ? ' arrived flash' : '');
-  const kn = st.kitchen_number ? '<span class="kn">' + st.kitchen_number + '</span>' : '';
-  const name = (snap.customer && snap.customer.display_name) || 'Order';
-  const ftype = (snap.fulfillment && snap.fulfillment.type) || '';
-  let meta = '#' + esc(snap.source_event_id) + ' · arrived ' + ago(st.arrival_date);
-  if (st.estimated_ready_at && kind === 'accepted') {
-    const late = new Date(st.estimated_ready_at) < new Date();
-    meta += ' · <span class="' + (late ? 'late' : '') + '">ready by ' + hhmm(st.estimated_ready_at) + '</span>';
-  }
-  if (st.driver_name) meta += ' · driver ' + esc(st.driver_name) + ' (out ' + ago(st.out_at) + ')';
-  div.innerHTML =
-    '<div class="order-head"><div>' + kn + (kind === 'deliv' ? '<input type="checkbox" class="dsel" value="' + snap.id + '" style="width:auto;margin-right:8px">' : '') +
-    '<span class="name">' + esc(name) + '</span> <span class="badge">' + esc(ftype) + '</span></div>' +
-    '<span class="total">' + money(snap.money && snap.money.total_cents) + '</span></div>' +
-    '<div class="muted" style="margin-top:4px">' + meta + '</div>' +
-    '<div class="items">' + itemsHtml(snap) + '</div><div class="actions"></div>';
-  const actions = div.querySelector('.actions');
-  const btn = (label, cls, fn) => { const b = document.createElement('button'); b.textContent = label; if (cls) b.className = cls; b.onclick = () => fn(b); actions.append(b); };
-  if (kind === 'arrived') btn('Accept', 'primary', b => act(b, 'POST', '/api/orders/' + snap.id + '/accept', { prep_minutes: Number($('prep').value) }, loadLive));
-  if (kind === 'accepted') btn('Ready', 'primary', b => act(b, 'POST', '/api/orders/' + snap.id + '/ready', null, loadLive));
-  btn('Reprint', '', b => act(b, 'POST', '/api/orders/' + snap.id + '/reprint'));
-  if (kind === 'arrived') btn('Resend', '', b => act(b, 'POST', '/api/orders/' + snap.id + '/resend'));
-  return div;
-}
-function fill(id, rows, kind, empty) {
-  const el = $(id); el.innerHTML = '';
-  if (!rows.length) { el.innerHTML = '<div class="muted">' + empty + '</div>'; return; }
-  rows.forEach(r => el.appendChild(floorCard(r, kind)));
-}
-async function loadLive() {
-  loadReportBatches();
-  try {
-    floor = await (await api('/api/floor')).json();
-    drivers = await (await api('/api/drivers')).json();
-    const rows = await (await api('/api/orders?batch=current&limit=200')).json();
-    const isDel = so => so.order.fulfillment && so.order.fulfillment.type === 'delivery';
-    const by = st => rows.filter(r => r.status.state === st);
-    const arrived = by('arrived').reverse();
-    fill('l-arrived', arrived, 'arrived', 'Nothing waiting.');
-    fill('l-accepted', by('accepted').reverse(), 'accepted', 'Nothing cooking.');
-    const deliv = by('ready').filter(isDel).reverse();
-    fill('l-deliv', deliv, 'deliv', 'No deliveries waiting for a driver.');
-    $('l-assign').classList.toggle('hidden', !deliv.length);
-    fill('l-out', by('on_delivery'), 'out', 'No drivers out.');
-    fill('l-done', rows.filter(r => r.status.state === 'delivered' || r.status.state === 'cancelled' || (r.status.state === 'ready' && !isDel(r))), 'done', '—');
-    const ps = $('prep'), keep = ps.value || floor.last_prep_minutes;
-    ps.innerHTML = floor.prep_choices.map(m => '<option value="' + m + '">' + m + ' min</option>').join('');
-    ps.value = String(keep);
-    $('assign-driver').innerHTML = drivers.filter(d => d.status === 'available').map(d => '<option value="' + d.id + '">' + esc(d.name) + '</option>').join('') || '<option value="">no driver clocked in</option>';
-    const openH = (Date.now() - new Date(floor.batch.opened_at)) / 3600000;
-    const since = 'open since ' + new Date(floor.batch.opened_at).toLocaleString([], { weekday: 'short', hour: 'numeric', minute: '2-digit' });
-    $('live-status').innerHTML = 'Batch ' + floor.batch.id + ' · <span class="' + (openH > 24 ? 'late' : '') + '">' + since +
-      (openH > 24 ? ' — over a day, close it?' : '') + '</span> · next kitchen # ' + floor.kitchen_next + ' · ' + rows.length + ' order(s)' +
-      (floor.unsynced_events ? ' · ' + floor.unsynced_events + ' change(s) waiting to sync to main' : '');
-    renderOut();
-  } catch (e) { $('live-status').textContent = e.message; }
-}
-// "Out with drivers": one card per driver with a "Returned" button.
-function renderOut() {
-  const out = drivers.filter(d => d.status === 'out');
-  if (!out.length) return;
-  const el = $('l-out'); el.innerHTML = '';
-  out.forEach(d => {
-    const div = document.createElement('div'); div.className = 'card';
-    div.innerHTML = '<div class="order-head"><span class="name">' + esc(d.name) + '</span><span class="muted">' + d.deliveries + ' run(s) this batch</span></div><div class="actions"></div>';
-    const b = document.createElement('button'); b.className = 'primary'; b.textContent = 'Returned';
-    b.onclick = () => act(b, 'POST', '/api/drivers/' + d.id + '/returned', null, loadLive);
-    div.querySelector('.actions').append(b); el.append(div);
-  });
-}
-async function assignSelected() {
-  const ids = [...document.querySelectorAll('.dsel:checked')].map(c => c.value);
-  const driver = $('assign-driver').value;
-  if (!ids.length) return toast('Tick the deliveries to send out', true);
-  if (!driver) return toast('No driver clocked in — clock one in on the Drivers tab', true);
-  const res = await api('/api/deliveries/assign', { method: 'POST', body: JSON.stringify({ driver_id: driver, order_ids: ids }) });
-  if (!res.ok) { const b = await res.json().catch(() => ({})); return toast(b.error || 'failed', true); }
-  toast('Sent out'); loadLive();
-}
-async function loadReportBatches() {
-  try {
-    const bs = await (await api('/api/batches')).json();
-    const sel = $('rep-batch'); const keep = sel.value;
-    sel.innerHTML = bs.map(b => '<option value="' + b.id + '">' + (b.closed_at ? 'Batch ' + b.id + ' (closed)' : 'Batch ' + b.id + ' (open)') + '</option>').join('');
-    if (keep && bs.some(b => String(b.id) === keep)) sel.value = keep;
-  } catch { /* keep the old list */ }
-}
-async function printReports() {
-  const id = $('rep-batch').value || 'current';
-  const res = await api('/api/batches/' + id + '/driver-reports/print', { method: 'POST' });
-  const b = await res.json().catch(() => ({}));
-  if (!res.ok) return toast(b.error || 'printer problem — nothing printed', true);
-  if (!b.printed.length && !b.failed.length) return toast('No drivers in batch ' + id);
-  toast('Printed ' + b.printed.length + ' report(s)' + (b.failed.length ? ' — ' + b.failed.length + ' FAILED' : ''), b.failed.length > 0);
-}
-async function loadFloorPrefs() {
-  try {
-    const f = await (await api('/api/floor')).json();
-    $('set-green').value = f.green_till_minutes; $('set-tiptax').value = f.tip_tax_percent;
-  } catch { /* leave blank */ }
-  try {
-    const r = await api('/api/app/latest');
-    $('app-release').textContent = r.status === 200
-      ? (b => 'Quibase update ready for tablets: v' + b.version_name + ' (' + b.version_code + ')')(await r.json())
-      : 'No Quibase update cached yet.';
-  } catch { $('app-release').textContent = ''; }
-}
-async function saveFloorPrefs() {
-  const r = await api('/api/settings/floor', { method: 'PUT', body: JSON.stringify({
-    green_till_minutes: parseInt($('set-green').value, 10), tip_tax_percent: parseFloat($('set-tiptax').value) }) });
-  if (!r.ok) { const b = await r.json().catch(() => ({})); return toast(b.error || 'save failed', true); }
-  toast('Saved');
-}
-async function closeBatch(force) {
-  if (!force && !confirm('Close this batch? Kitchen numbers restart at 1100.')) return;
-  const res = await api('/api/batch/close', { method: 'POST', body: JSON.stringify({ force }) });
-  const b = await res.json().catch(() => ({}));
-  if (res.status === 409 && b.code === 'batch_has_leftovers') {
-    const list = b.leftovers.map(so => '#' + so.order.source_event_id + ' ' + ((so.order.customer && so.order.customer.display_name) || '') + ' (' + so.status.state + ')').join('\n');
-    if (confirm(b.leftovers.length + ' order(s) are not finished:\n\n' + list + '\n\nClose anyway? Orders in progress are marked finished; orders nobody accepted are CANCELLED.')) return closeBatch(true);
-    return;
-  }
-  if (!res.ok) return toast(b.error || 'close failed', true);
-  toast('Batch ' + b.closed.id + ' closed — printing driver reports'); loadLive();
-}
-
-// Live updates from the agent's own SSE (same-origin, session cookie).
-let es = null;
-function startEvents() {
-  if (es) return;
-  es = new EventSource('/api/events');
-  const reload = () => { if (!$('tab-live').classList.contains('hidden')) loadLive(); if (!$('tab-drivers').classList.contains('hidden')) loadDrivers(); };
-  ['order.arrived', 'order.escalated'].forEach(t => es.addEventListener(t, () => { beep(); reload(); }));
-  ['order.updated', 'drivers.updated', 'batch.closed'].forEach(t => es.addEventListener(t, reload));
-  es.addEventListener('drivers.dispatched', e => {
-    const d = JSON.parse(e.data);
-    $('flash-who').textContent = d.driver.name;
-    $('flash-orders').textContent = d.orders.map(o => '#' + (o.status.kitchen_number || o.order.source_event_id)).join('  ');
-    $('flash').classList.remove('hidden');
-    setTimeout(() => $('flash').classList.add('hidden'), 8000);
-  });
-  es.onerror = () => { es.close(); es = null; setTimeout(startEvents, 5000); };
-}
-function beep() {
-  try {
-    const ctx = new (window.AudioContext || window.webkitAudioContext)(), o = ctx.createOscillator(), g = ctx.createGain();
-    o.frequency.value = 880; o.connect(g); g.connect(ctx.destination); g.gain.value = 0.2; o.start(); o.stop(ctx.currentTime + 0.4);
-  } catch { /* audio blocked until the page is clicked */ }
-}
-
-// --- drivers ------------------------------------------------------------
-async function loadDrivers() {
-  try {
-    drivers = await (await api('/api/drivers')).json();
-    api('/api/settings/driver-reset').then(r => r.json()).then(rs => { $('drv-reset').textContent = rs.time; if ($('set-reset')) $('set-reset').value = rs.time; }).catch(() => {});
-    const el = $('drv-list'); el.innerHTML = '';
-    if (!drivers.length) { el.innerHTML = '<div class="muted">No drivers yet.</div>'; return; }
-    drivers.forEach((d, i) => {
-      const row = document.createElement('div'); row.className = 'prow'; row.style.alignItems = 'center';
-      const st = { off: 'clocked out', available: 'in queue', out: 'on a run' }[d.status] || d.status;
-      row.innerHTML = '<b style="width:22px">' + (i + 1) + '</b><input class="grow" value="' + esc(d.name) + '">' +
-        '<span class="badge">' + esc(st) + '</span><span class="muted">' + (d.clocked_in_at ? 'in since ' + hhmm(d.clocked_in_at) + ' · ' : '') + d.deliveries + ' run(s)</span>';
-      const mk = (t, fn, cls) => { const b = document.createElement('button'); b.textContent = t; if (cls) b.className = cls; b.onclick = fn; row.append(b); };
-      if (d.status === 'off') mk('Clock in', () => clock(d, 'clock-in'), 'primary');
-      if (d.status === 'available') mk('Clock out', () => clock(d, 'clock-out'));
-      mk('↑', () => moveDriver(i, -1)); mk('↓', () => moveDriver(i, 1));
-      mk('Save', async () => { const r = await api('/api/drivers/' + d.id, { method: 'PATCH', body: JSON.stringify({ name: row.querySelector('input').value }) }); r.ok ? toast('Saved') : toast('save failed', true); loadDrivers(); });
-      mk('Remove', async () => { if (!confirm('Remove ' + d.name + '?')) return; await api('/api/drivers/' + d.id, { method: 'DELETE' }); loadDrivers(); }, 'danger');
-      el.append(row);
-    });
-  } catch (e) { toast(e.message, true); }
-}
-async function clock(d, what) {
-  const r = await api('/api/drivers/' + d.id + '/' + what, { method: 'POST' });
-  if (!r.ok) { const b = await r.json().catch(() => ({})); toast(b.error || 'failed', true); }
-  loadDrivers();
-}
-async function moveDriver(i, dir) {
-  const ids = drivers.map(d => d.id), j = i + dir;
-  if (j < 0 || j >= ids.length) return;
-  [ids[i], ids[j]] = [ids[j], ids[i]];
-  await api('/api/drivers/reorder', { method: 'POST', body: JSON.stringify({ ids }) });
-  loadDrivers();
-}
-async function addDriver() {
-  const name = $('drv-name').value.trim(); if (!name) return;
-  const r = await api('/api/drivers', { method: 'POST', body: JSON.stringify({ name }) });
-  if (!r.ok) { const b = await r.json().catch(() => ({})); return toast(b.error || 'failed', true); }
-  $('drv-name').value = ''; loadDrivers();
-}
-
-// --- tablet pairing -----------------------------------------------------
-async function saveReset() {
-  const r = await api('/api/settings/driver-reset', { method: 'PUT', body: JSON.stringify({ time: $('set-reset').value }) });
-  if (!r.ok) { const b = await r.json().catch(() => ({})); return toast(b.error || 'save failed', true); }
-  toast('Saved');
-}
-async function pairCode() {
-  const r = await api('/api/pairing/code', { method: 'POST' });
-  const b = await r.json();
-  $('pair-code').textContent = b.code;
-  $('pair-exp').textContent = 'valid until ' + hhmm(b.expires_at);
-}
-async function loadDevices() {
-  try {
-    const ds = await (await api('/api/devices')).json();
-    const el = $('dev-list'); el.innerHTML = '';
-    if (!ds.length) { el.innerHTML = '<div class="muted">No tablets paired yet.</div>'; return; }
-    ds.forEach(d => {
-      const row = document.createElement('div'); row.className = 'prow'; row.style.alignItems = 'center';
-      row.innerHTML = '<b class="grow">' + esc(d.name) + '</b><span class="muted">' + esc(d.key_prefix) + '… · ' +
-        (d.revoked_at ? 'revoked' : (d.last_seen_at ? 'seen ' + ago(d.last_seen_at) : 'never used')) + '</span>';
-      if (!d.revoked_at) {
-        const b = document.createElement('button'); b.className = 'danger'; b.textContent = 'Revoke';
-        b.onclick = async () => { if (!confirm('Revoke ' + d.name + '? It will need to pair again.')) return; await api('/api/devices/' + d.id + '/revoke', { method: 'POST' }); loadDevices(); };
-        row.append(b);
-      }
-      el.append(row);
-    });
-  } catch (e) { toast(e.message, true); }
-}
-
-// --- history ------------------------------------------------------------
-function histReset() { histOffset = 0; loadHistory(); }
-function histPage(dir) { histOffset = Math.max(0, histOffset + dir * HIST_NUM); loadHistory(); }
-function isoOrEmpty(v) { return v ? new Date(v).toISOString() : ''; }
-async function loadHistory() {
-  const p = new URLSearchParams();
-  p.set('offset', histOffset); p.set('num', HIST_NUM);
-  if ($('h-q').value.trim()) p.set('q', $('h-q').value.trim());
-  if ($('h-status').value.trim()) p.set('status', $('h-status').value.trim());
-  if ($('h-sort').value) p.set('sort', $('h-sort').value);
-  if ($('h-from').value) p.set('from', isoOrEmpty($('h-from').value));
-  if ($('h-to').value) p.set('to', isoOrEmpty($('h-to').value));
-  const list = $('hist-list'); list.innerHTML = '<div class="muted">Loading…</div>';
-  try {
-    const res = await api('/api/history?' + p.toString());
-    if (!res.ok) { const b = await res.json().catch(() => ({})); throw new Error(b.error || res.status); }
-    const rows = await res.json();
-    list.innerHTML = '';
-    if (!rows || !rows.length) list.innerHTML = '<div class="muted">No matching orders.</div>';
-    else rows.forEach(r => list.appendChild(orderCard(r, false)));
-    $('h-page').textContent = 'page ' + (histOffset / HIST_NUM + 1);
-    $('h-prev').disabled = histOffset === 0;
-    $('h-next').disabled = !rows || rows.length < HIST_NUM;
-  } catch (e) { list.innerHTML = '<div class="muted" style="color:#e88">' + esc(e.message) + '</div>'; }
-}
-
-// --- store config -------------------------------------------------------
-async function loadConfig() {
-  try {
-    const res = await api('/api/store-config');
-    if (!res.ok) { const b = await res.json().catch(() => ({})); throw new Error(b.error || res.status); }
-    const cfg = await res.json();
-    const loc = cfg.location || {};
-    $('c-name').textContent = loc.name || '—';
-    $('c-phone').textContent = loc.phone || '—';
-    $('c-addr').textContent = [loc.address_line1, loc.address_line2].filter(Boolean).join(', ') || '—';
-    const printers = cfg.printers || [];
-    $('c-printers').innerHTML = printers.length
-      ? printers.map(p => '<div class="prow"><b>' + esc(p.name) + '</b><span class="muted">' + esc(p.ip) + '</span>' + (p.is_receipt ? '<span class="badge">receipt printer</span>' : '<span class="badge">kitchen station</span>') + '</div>').join('')
-      : '<div class="muted">No printers configured — add them in /app/store.</div>';
-  } catch (e) { toast(e.message, true); }
-}
-
-boot();
-</script>
+<button id="flash" type="button" class="flash" x-show="flash && state === 'ready'" x-cloak @click="flash = null" aria-live="assertive">
+  <span class="k">YOUR RUN</span>
+  <span class="who" x-text="flash ? flash.name : ''"></span>
+  <span class="nums" x-text="flash ? flash.nums.join('   ') : ''"></span>
+  <span class="hint">Tap anywhere to close</span>
+</button>
 </body>
 </html>

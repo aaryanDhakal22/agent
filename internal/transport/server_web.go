@@ -2,12 +2,15 @@ package transport
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"io/fs"
 	"net"
 	"net/http"
 	"os"
+	"path"
 	"strconv"
 	"strings"
 	"sync"
@@ -47,8 +50,78 @@ func (s *Server) handleUI(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	// The page names its scripts/styles by fixed paths: always revalidate so
+	// an upgraded binary's UI shows up on the next load.
+	w.Header().Set("Cache-Control", "no-cache")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(body)
+}
+
+// staticTypes pins the Content-Type of what static/ holds, so it never
+// depends on the host's mime tables (a bare Pi has none for .woff2).
+var staticTypes = map[string]string{
+	".js":    "text/javascript; charset=utf-8",
+	".css":   "text/css; charset=utf-8",
+	".woff2": "font/woff2",
+	".svg":   "image/svg+xml",
+	".md":    "text/markdown; charset=utf-8",
+}
+
+// staticFiles serves web.Static; staticETags holds a content hash per file
+// (computed once) so a no-cache revalidation is a cheap 304.
+var (
+	staticFiles     = http.StripPrefix("/static/", http.FileServerFS(web.Static))
+	staticETagsOnce sync.Once
+	staticETags     map[string]string
+)
+
+func staticETag(name string) string {
+	staticETagsOnce.Do(func() {
+		staticETags = map[string]string{}
+		_ = fs.WalkDir(web.Static, ".", func(p string, d fs.DirEntry, err error) error {
+			if err != nil || d.IsDir() {
+				return nil
+			}
+			if b, err := fs.ReadFile(web.Static, p); err == nil {
+				sum := sha256.Sum256(b)
+				staticETags[p] = `"` + hex.EncodeToString(sum[:8]) + `"`
+			}
+			return nil
+		})
+	})
+	return staticETags[name]
+}
+
+// handleStatic serves the UI's embedded assets under /static/. Only files: a
+// missing path or a directory (no listings) is a plain 404 — never the SPA
+// page, so a broken asset reference fails loudly. Scripts and styles are
+// revalidated on every load (they change with the binary); fonts never change
+// under a name, so they're cached for a year.
+func (s *Server) handleStatic(w http.ResponseWriter, r *http.Request) {
+	name := strings.TrimPrefix(r.URL.Path, "/static/")
+	if name == "" || !fs.ValidPath(name) {
+		http.NotFound(w, r)
+		return
+	}
+	info, err := fs.Stat(web.Static, name)
+	if err != nil || info.IsDir() {
+		http.NotFound(w, r)
+		return
+	}
+	ext := strings.ToLower(path.Ext(name))
+	if ct, ok := staticTypes[ext]; ok {
+		w.Header().Set("Content-Type", ct)
+	}
+	if ext == ".woff2" {
+		w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+	} else {
+		w.Header().Set("Cache-Control", "no-cache")
+	}
+	if tag := staticETag(name); tag != "" {
+		w.Header().Set("ETag", tag)
+	}
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	staticFiles.ServeHTTP(w, r)
 }
 
 // --- auth / provisioning --------------------------------------------------
