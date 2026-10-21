@@ -259,7 +259,8 @@ func (s *Server) handleAccept(w http.ResponseWriter, r *http.Request) {
 	s.writeJSON(w, http.StatusOK, so)
 }
 
-// POST /api/orders/{id}/reprint — works in any state, does not touch printed_date.
+// POST /api/orders/{id}/reprint — the customer receipt only; works in any
+// state, does not touch printed_date.
 func (s *Server) handleReprint(w http.ResponseWriter, r *http.Request) {
 	id, err := parseID(r)
 	if err != nil {
@@ -276,6 +277,56 @@ func (s *Server) handleReprint(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.writeJSON(w, http.StatusOK, so)
+}
+
+// reroutedDTO is one station ticket that printed on a fallback printer.
+type reroutedDTO struct {
+	Station   string `json:"station"`
+	PrintedOn string `json:"printed_on"`
+}
+
+// POST /api/orders/{id}/kitchen — "Resend to kitchen": print the order's
+// station tickets again (no receipt, ignores the pickup-cash rule; no state
+// change). 200 {order, printed: [station], failed: [station], rerouted:
+// [{station, printed_on}]} — printed lists every station whose ticket printed
+// somewhere (rerouted ones included); 409 not_accepted (no kitchen number
+// yet) / nothing_for_kitchen (no station tickets); 502 print_failed; 404.
+func (s *Server) handleResendKitchen(w http.ResponseWriter, r *http.Request) {
+	id, err := parseID(r)
+	if err != nil {
+		s.writeError(w, r, http.StatusBadRequest, err)
+		return
+	}
+	so, out, err := s.service.ResendKitchen(r.Context(), id)
+	switch {
+	case err == nil:
+	case errors.Is(err, order.ErrNotFound):
+		s.writeJSON(w, http.StatusNotFound, errCodeMap(err.Error(), "not_found"))
+		return
+	case errors.Is(err, orderApp.ErrNotAccepted):
+		s.writeJSON(w, http.StatusConflict, errCodeMap(err.Error(), "not_accepted"))
+		return
+	case errors.Is(err, orderApp.ErrNothingForKitchen):
+		s.writeJSON(w, http.StatusConflict, errCodeMap(err.Error(), "nothing_for_kitchen"))
+		return
+	case errors.Is(err, orderApp.ErrKitchenNotPrinted):
+		s.writeJSON(w, http.StatusBadGateway, errCodeMap(err.Error(), "print_failed"))
+		return
+	default:
+		s.writeError(w, r, http.StatusInternalServerError, err)
+		return
+	}
+	printed, failed, rerouted := []string{}, []string{}, []reroutedDTO{}
+	for _, p := range out.Printed {
+		printed = append(printed, p.Station)
+		if p.ReroutedFrom != "" {
+			rerouted = append(rerouted, reroutedDTO{Station: p.Station, PrintedOn: p.PrintedOn})
+		}
+	}
+	for _, f := range out.Failed {
+		failed = append(failed, f.Station)
+	}
+	s.writeJSON(w, http.StatusOK, map[string]any{"order": so, "printed": printed, "failed": failed, "rerouted": rerouted})
 }
 
 // --- settings -------------------------------------------------------------

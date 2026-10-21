@@ -13,7 +13,7 @@ import (
 
 func TestAccept_NothingPrintedRevertsClaim(t *testing.T) {
 	svc, repo, _, _ := newTestService(t, false)
-	svc.print = func(context.Context, order.Snapshot) (printer.Outcome, error) {
+	svc.print = func(context.Context, order.Snapshot, printer.Mode) (printer.Outcome, error) {
 		return printer.Outcome{Failed: []printer.TicketResult{{Kind: printer.TicketFull, Station: "Front", Err: "down"}}}, errors.New("nothing printed")
 	}
 	s := snap()
@@ -25,7 +25,7 @@ func TestAccept_NothingPrintedRevertsClaim(t *testing.T) {
 		t.Fatalf("claim not reverted: %s", repo.orders[s.ID].Status.State)
 	}
 	// …so it can be accepted again once a printer is back.
-	svc.print = func(context.Context, order.Snapshot) (printer.Outcome, error) {
+	svc.print = func(context.Context, order.Snapshot, printer.Mode) (printer.Outcome, error) {
 		return printer.Outcome{Printed: []printer.TicketResult{{Kind: printer.TicketFull}}}, nil
 	}
 	if _, err := svc.Accept(context.Background(), uuid.MustParse(s.ID), nil); err != nil {
@@ -35,7 +35,7 @@ func TestAccept_NothingPrintedRevertsClaim(t *testing.T) {
 
 func TestAccept_PartialPrintStaysAccepted(t *testing.T) {
 	svc, repo, _, _ := newTestService(t, false)
-	svc.print = func(context.Context, order.Snapshot) (printer.Outcome, error) {
+	svc.print = func(context.Context, order.Snapshot, printer.Mode) (printer.Outcome, error) {
 		return printer.Outcome{
 			Printed: []printer.TicketResult{{Kind: printer.TicketStation, Station: "Pizza", PrintedOn: "Pizza"}},
 			Failed:  []printer.TicketResult{{Kind: printer.TicketReceipt, Station: "Front", Err: "down"}},
@@ -84,7 +84,7 @@ func TestAcceptRecordsEventEvenIfRequestCancelled(t *testing.T) {
 	repo := &recordingRepo{fakeRepo: base}
 	svc.repo = repo
 	ctx, cancel := context.WithCancel(context.Background())
-	svc.print = func(context.Context, order.Snapshot) (printer.Outcome, error) {
+	svc.print = func(context.Context, order.Snapshot, printer.Mode) (printer.Outcome, error) {
 		cancel() // client disconnects mid-print
 		return printer.Outcome{Printed: []printer.TicketResult{{Kind: printer.TicketFull}}}, nil
 	}

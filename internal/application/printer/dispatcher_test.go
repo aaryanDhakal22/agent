@@ -237,3 +237,33 @@ func TestPrintDocument_ReceiptPrinterThenFailover(t *testing.T) {
 		t.Fatal("expected an error with every printer down")
 	}
 }
+
+func TestExecuteMode_ReceiptAndKitchen(t *testing.T) {
+	d, fk := newTestDispatcher(t)
+	if out, err := d.ExecuteMode(context.Background(), routedSnap(), printer.ModeReceipt); err != nil || len(out.Printed) != 1 {
+		t.Fatalf("receipt: err=%v out=%+v", err, out)
+	}
+	if jobs(fk["Front"]) != "receipt:Front" || jobs(fk["Pizza"]) != "" || jobs(fk["Wings"]) != "" {
+		t.Fatalf("receipt mode: front=%q pizza=%q wings=%q", jobs(fk["Front"]), jobs(fk["Pizza"]), jobs(fk["Wings"]))
+	}
+
+	d, fk = newTestDispatcher(t)
+	fk["Wings"].setDown(true)
+	out, err := d.ExecuteMode(context.Background(), routedSnap(), printer.ModeKitchen)
+	if err != nil || len(out.Printed) != 2 || len(out.Failed) != 0 {
+		t.Fatalf("kitchen: err=%v out=%+v", err, out)
+	}
+	if jobs(fk["Pizza"]) != "station:Pizza" || jobs(fk["Front"]) != "station:Wings:rerouted=Wings" {
+		t.Fatalf("kitchen mode: front=%q pizza=%q", jobs(fk["Front"]), jobs(fk["Pizza"]))
+	}
+
+	// Nothing for the kitchen: ErrNoTickets, nothing printed.
+	d, fk = newTestDispatcher(t)
+	soda := order.Snapshot{ID: "o3", Items: []order.LineItem{item("Soda", order.RoutingMatched, "p-front")}}
+	if _, err := d.ExecuteMode(context.Background(), soda, printer.ModeKitchen); !errors.Is(err, printer.ErrNoTickets) {
+		t.Fatalf("want ErrNoTickets, got %v", err)
+	}
+	if jobs(fk["Front"]) != "" {
+		t.Fatalf("front printed %q", jobs(fk["Front"]))
+	}
+}

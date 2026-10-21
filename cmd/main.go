@@ -210,8 +210,9 @@ func main() {
 			Msg("store_config hydrated from DB")
 	}
 
-	// printFn plans the order's tickets (stations + receipt) and prints them.
-	printFn := dispatcher.Execute
+	// printFn plans the order's tickets for a mode (accept: stations + receipt;
+	// reprint: receipt only; kitchen resend: stations only) and prints them.
+	printFn := dispatcher.ExecuteMode
 
 	// --- Order service + mobile-facing SSE broker -------------------------
 	broker := ssebroker.New()

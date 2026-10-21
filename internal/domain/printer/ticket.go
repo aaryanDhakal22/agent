@@ -17,6 +17,22 @@ const (
 	TicketStation TicketKind = "station"
 )
 
+// Mode is which of an order's tickets a print job produces
+// (application/printer.PlanFor).
+type Mode string
+
+const (
+	// ModeAccept is the accept print: the kitchen station tickets + the
+	// customer receipt, with the pickup-cash rule (receipt only) applied.
+	ModeAccept Mode = "accept"
+	// ModeReceipt is "Reprint": only the customer receipt (the full receipt
+	// for an order that predates kitchen routing).
+	ModeReceipt Mode = "receipt"
+	// ModeKitchen is "Resend to kitchen": only the station tickets accept
+	// would print, ignoring the pickup-cash rule.
+	ModeKitchen Mode = "kitchen"
+)
+
 // Ticket is one thing to print for an order. A planned order is a set of
 // Tickets (see application/printer.Plan); the receipt builder renders each.
 type Ticket struct {

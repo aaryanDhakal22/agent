@@ -77,7 +77,7 @@ func newTestService(t *testing.T, autoAccept bool) (*Service, *fakeRepo, *int, c
 	}
 	repo := &fakeRepo{orders: map[string]*order.StoredOrder{}}
 	prints := 0
-	print := func(context.Context, order.Snapshot) (printer.Outcome, error) {
+	print := func(context.Context, order.Snapshot, printer.Mode) (printer.Outcome, error) {
 		prints++
 		return printer.Outcome{Printed: []printer.TicketResult{{Kind: printer.TicketFull}}}, nil
 	}

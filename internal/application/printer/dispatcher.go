@@ -166,6 +166,16 @@ func (d *Dispatcher) Apply(ctx context.Context, printers []storeconfig.PrinterCo
 // reported in the Outcome (and counted in orders.print.failed) so the caller
 // can alert without un-accepting an order whose kitchen tickets did print.
 func (d *Dispatcher) Execute(ctx context.Context, snap order.Snapshot) (printer.Outcome, error) {
+	return d.ExecuteMode(ctx, snap, printer.ModeAccept)
+}
+
+// ExecuteMode is Execute for one print mode (PlanFor): ModeAccept (stations +
+// receipt), ModeReceipt ("Reprint": the customer receipt only) or ModeKitchen
+// ("Resend to kitchen": the station tickets only). Same failover, REROUTED
+// banner and Outcome semantics. A plan with no tickets (a kitchen resend of an
+// order with only receipt-only items) returns printer.ErrNoTickets without
+// printing anything or counting a failure.
+func (d *Dispatcher) ExecuteMode(ctx context.Context, snap order.Snapshot, mode printer.Mode) (printer.Outcome, error) {
 	// Bound the whole job: with the network down every candidate times out,
 	// and staff are waiting on the accept.
 	ctx, cancel := context.WithTimeout(ctx, printBudget)
@@ -185,8 +195,11 @@ func (d *Dispatcher) Execute(ctx context.Context, snap order.Snapshot) (printer.
 		byID[sl.entry.ID] = sl
 	}
 
-	tickets, unrouted := Plan(snap, entries)
+	tickets, unrouted := PlanFor(snap, entries, mode)
 	out := printer.Outcome{Unrouted: unrouted}
+	if len(tickets) == 0 {
+		return out, printer.ErrNoTickets
+	}
 	var lastErr error
 	allUnreachable := true
 	for _, t := range tickets {

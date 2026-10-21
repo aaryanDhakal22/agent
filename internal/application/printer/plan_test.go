@@ -169,3 +169,115 @@ func TestPlan_PickupCashPrintsOnlyTheReceipt(t *testing.T) {
 		}
 	}
 }
+
+func kinds(tk []printer.Ticket) []string {
+	out := []string{}
+	for _, t := range tk {
+		out = append(out, string(t.Kind)+":"+t.TargetID)
+	}
+	return out
+}
+
+func TestPlanReceipt_OnlyTheCustomerReceipt(t *testing.T) {
+	roster := []RosterEntry{pizza, front, wings}
+	routed := order.Snapshot{Fulfillment: order.Fulfillment{Type: "delivery"}, Items: []order.LineItem{
+		item("Pepperoni", order.RoutingMatched, pizza.ID),
+		item("Mystery", order.RoutingUnmatched, ""),
+	}}
+	tk, un := PlanFor(routed, roster, printer.ModeReceipt)
+	if un != nil || !reflect.DeepEqual(kinds(tk), []string{"receipt:p-front"}) {
+		t.Fatalf("routed reprint: %v unrouted=%v", kinds(tk), un)
+	}
+	// Pickup cash: the same single receipt.
+	pc := routed
+	pc.Fulfillment.Type = "pickup"
+	if tk, _ := PlanFor(pc, roster, printer.ModeReceipt); !reflect.DeepEqual(kinds(tk), []string{"receipt:p-front"}) {
+		t.Fatalf("pickup cash reprint: %v", kinds(tk))
+	}
+	// Legacy (unrouted) order: its one full receipt.
+	legacy := order.Snapshot{Items: []order.LineItem{item("Old", "", "")}}
+	if tk, _ := PlanFor(legacy, roster, printer.ModeReceipt); !reflect.DeepEqual(kinds(tk), []string{"full:p-front"}) {
+		t.Fatalf("legacy reprint: %v", kinds(tk))
+	}
+	// Single printer: still just the receipt.
+	if tk, _ := PlanFor(routed, []RosterEntry{front}, printer.ModeReceipt); !reflect.DeepEqual(kinds(tk), []string{"receipt:p-front"}) {
+		t.Fatalf("single printer reprint: %v", kinds(tk))
+	}
+	if tk, _ := PlanFor(routed, nil, printer.ModeReceipt); tk != nil {
+		t.Fatalf("empty roster: %v", tk)
+	}
+}
+
+func TestPlanKitchen_StationsWithoutTheReceipt(t *testing.T) {
+	snap := order.Snapshot{Fulfillment: order.Fulfillment{Type: "delivery"}, Items: []order.LineItem{
+		item("Pepperoni", order.RoutingMatched, pizza.ID),
+		item("Hot Wings", order.RoutingMatched, wings.ID),
+	}}
+	tk, un := PlanFor(snap, []RosterEntry{front, pizza, wings}, printer.ModeKitchen)
+	if un != nil || !reflect.DeepEqual(kinds(tk), []string{"station:p-pizza", "station:p-wings"}) {
+		t.Fatalf("kitchen: %v unrouted=%v", kinds(tk), un)
+	}
+	if !reflect.DeepEqual(names(tk[0].Mine), []string{"Pepperoni"}) || !reflect.DeepEqual(names(tk[0].Others), []string{"Hot Wings"}) {
+		t.Fatalf("pizza ticket = %+v", tk[0])
+	}
+}
+
+func TestPlanKitchen_PickupCashStillPrintsStations(t *testing.T) {
+	snap := order.Snapshot{Fulfillment: order.Fulfillment{Type: "pickup"}, Money: order.Money{Total: 2500},
+		Items: []order.LineItem{item("Pepperoni", order.RoutingMatched, pizza.ID), item("Hot Wings", order.RoutingMatched, wings.ID)}}
+	roster := []RosterEntry{front, pizza, wings}
+	if tk, _ := Plan(snap, roster); !reflect.DeepEqual(kinds(tk), []string{"receipt:p-front"}) {
+		t.Fatalf("accept of pickup cash should be receipt only: %v", kinds(tk))
+	}
+	if tk, _ := PlanFor(snap, roster, printer.ModeKitchen); !reflect.DeepEqual(kinds(tk), []string{"station:p-pizza", "station:p-wings"}) {
+		t.Fatalf("kitchen resend of pickup cash: %v", kinds(tk))
+	}
+}
+
+func TestPlanKitchen_ReceiptOnlyItemsExcluded(t *testing.T) {
+	roster := []RosterEntry{front, pizza}
+	snap := order.Snapshot{Items: []order.LineItem{
+		item("Soda", order.RoutingMatched, front.ID),
+		item("Pepperoni", order.RoutingMatched, pizza.ID),
+	}}
+	tk, _ := PlanFor(snap, roster, printer.ModeKitchen)
+	if !reflect.DeepEqual(kinds(tk), []string{"station:p-pizza"}) ||
+		!reflect.DeepEqual(names(tk[0].Mine), []string{"Pepperoni"}) || !reflect.DeepEqual(names(tk[0].Others), []string{"Soda"}) {
+		t.Fatalf("kitchen: %+v", tk)
+	}
+	// Only receipt-only items: nothing for the kitchen.
+	only := order.Snapshot{Items: []order.LineItem{item("Soda", order.RoutingMatched, front.ID)}}
+	if tk, un := PlanFor(only, roster, printer.ModeKitchen); len(tk) != 0 || un != nil {
+		t.Fatalf("receipt-only order: want no tickets, got %v %v", kinds(tk), un)
+	}
+}
+
+func TestPlanKitchen_SinglePrinterIsTheStation(t *testing.T) {
+	snap := order.Snapshot{Fulfillment: order.Fulfillment{Type: "pickup"}, Items: []order.LineItem{
+		item("Soda", order.RoutingMatched, front.ID),
+		item("Mystery", order.RoutingUnmatched, ""),
+	}}
+	tk, _ := PlanFor(snap, []RosterEntry{front}, printer.ModeKitchen)
+	if !reflect.DeepEqual(kinds(tk), []string{"station:p-front"}) || !reflect.DeepEqual(names(tk[0].Mine), []string{"Soda", "Mystery"}) {
+		t.Fatalf("single printer kitchen: %+v", tk)
+	}
+}
+
+func TestPlanKitchen_UnroutedGoesToEveryStation(t *testing.T) {
+	snap := order.Snapshot{Items: []order.LineItem{
+		item("Pepperoni", order.RoutingMatched, pizza.ID),
+		item("Mystery", order.RoutingUnmatched, ""),
+	}}
+	tk, un := PlanFor(snap, []RosterEntry{front, pizza, wings}, printer.ModeKitchen)
+	if !reflect.DeepEqual(un, []string{"Mystery"}) || !reflect.DeepEqual(kinds(tk), []string{"station:p-pizza", "station:p-wings"}) {
+		t.Fatalf("kitchen: %v unrouted=%v", kinds(tk), un)
+	}
+	if !reflect.DeepEqual(names(tk[0].Mine), []string{"Pepperoni", "Mystery"}) || !reflect.DeepEqual(names(tk[1].Mine), []string{"Mystery"}) {
+		t.Fatalf("mine: pizza=%v wings=%v", names(tk[0].Mine), names(tk[1].Mine))
+	}
+	// A legacy order (no routing at all): every item to every station.
+	legacy := order.Snapshot{Items: []order.LineItem{item("Old", "", "")}}
+	if tk, _ := PlanFor(legacy, []RosterEntry{front, pizza, wings}, printer.ModeKitchen); !reflect.DeepEqual(kinds(tk), []string{"station:p-pizza", "station:p-wings"}) {
+		t.Fatalf("legacy kitchen: %v", kinds(tk))
+	}
+}

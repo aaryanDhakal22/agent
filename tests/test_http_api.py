@@ -28,7 +28,8 @@ def test_floor_routes_need_a_device_key_or_session(blank_agent) -> None:
     """Orders carry customer names/phones/addresses: no longer LAN-open."""
     for method, path in [("GET", "/api/orders"), ("GET", "/api/orders/arrived"), ("GET", "/api/printers"),
                          ("GET", "/api/floor"), ("GET", "/api/drivers"), ("GET", "/api/events"),
-                         ("POST", "/api/batch/close"), ("POST", "/api/deliveries/assign")]:
+                         ("POST", "/api/batch/close"), ("POST", "/api/deliveries/assign"),
+                         ("POST", "/api/orders/00000000-0000-0000-0000-000000000001/kitchen")]:
         r = requests.request(method, f"{blank_agent.base}{path}", timeout=5)
         assert r.status_code == 401 and r.json()["code"] == "device_required", (method, path, r.status_code)
     bad = requests.get(f"{blank_agent.base}/api/orders", headers={"X-Agent-Device-Key": "qagt_nope"}, timeout=5)

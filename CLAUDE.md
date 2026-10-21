@@ -115,7 +115,8 @@ manually and runs from an env-file snapshot rendered from Doppler (not live
   StoredOrder, repository interfaces.
 - `domain/storeconfig/` — agent-side mirror of main's `StoreContext`.
 - `domain/printer/` — Printer interface, PrintJob value type.
-- `application/order/` — order service: OnArrival, Accept, Reprint. Owns
+- `application/order/` — order service: OnArrival, Accept, Reprint (receipt
+  only), ResendKitchen (stations only). Owns
   the Pushover sound decision (cash/credit/big-ticket).
 - `application/printer/` — Dispatcher (dynamic roster from store_config),
   Service (per-printer KeepCheck + Print), Registry (in-memory reachability
@@ -463,10 +464,28 @@ their own — drinks/desserts the driver or counter picks up from the receipt)
 unless it is the only printer (then it is the kitchen too, e.g. staging);
 a **pickup order with cash to collect** (`Snapshot.CashDue() > 0`, the one cash
 rule) prints **only the customer receipt** — staff type those into the store's
-old POS, which prints the kitchen tickets (2.0.7; always on, also on reprint);
+old POS, which prints the kitchen tickets (2.0.7; always on);
 orders with no `routing` at all print one full receipt (legacy). Each
 ticket fails over (receipt printer → others) with a REROUTED banner; Execute
 errors only if nothing printed. Roster is keyed by printer **id** (rename-safe).
+
+- **Print modes (2.0.8)** — `PlanFor(snap, roster, printer.Mode)` /
+  `Dispatcher.ExecuteMode` (`Plan`/`Execute` = `ModeAccept`; the order
+  service's `PrintFunc` takes the mode). **Reprint = receipt only**
+  (`ModeReceipt`: `POST /api/orders/{id}/reprint`, the web UI's History
+  `/api/print`; the `full` ticket for a legacy order). **Resend to kitchen =
+  stations only** (`ModeKitchen`: `POST /api/orders/{id}/kitchen`, device auth,
+  Quibase only — the web UI has no such button): the same station tickets as
+  accept, **ignoring the pickup-cash rule**, no receipt; receipt-only items stay
+  off it (sole printer = kitchen); a legacy order's items go to every station.
+  `Service.ResendKitchen`: no kitchen number (`arrived`/`cancelled`) → 409
+  `not_accepted`; empty plan (`printer.ErrNoTickets`, nothing dialled) → 409
+  `nothing_for_kitchen`; nothing printed → 502 `print_failed`; 200 `{order,
+  printed:[station], failed:[station], rerouted:[{station, printed_on}]}`
+  (always arrays). Alerts like reprint; `orders.reprinted{source=kitchen_resend}`;
+  span `order.resend_kitchen`. Tests: `plan_test.go` (`TestPlanReceipt_*`,
+  `TestPlanKitchen_*`), `dispatcher_test.go` (`TestExecuteMode_*`),
+  `order/resend_kitchen_test.go`, `tests/test_kitchen_printing.py`.
 
 - **Accept = claim, then print** (`ClaimAccept` conditional UPDATE → print
   outside any tx → `RevertAccept` only if nothing printed). Don't move printing
@@ -610,11 +629,12 @@ JS/CSS `no-cache` + content ETag, fonts immutable for a year.
   reports, Close batch (styled confirm → 409 leftovers → "Close anyway").
   **Live** = the backup floor screen mirroring Quibase's Kitchen: the OLDEST
   waiting order (Quibase arrived sort; "Show" promotes another) as the full
-  lavender alert card (prep chips, ACCEPT, Resend, delivery address, "{n} WAITING"
+  lavender alert card (prep chips, ACCEPT, "Ring the tablet again" (re-announce
+  via `/api/orders/{id}/resend`), delivery address, "{n} WAITING"
   pill; amber "STILL WAITING" after 2 min), the rest in a compact "Also waiting"
   list (ACCEPT at the default prep), kitchen tickets sorted by
   estimated ready time with the green→amber→red tone from `green_till_minutes`,
-  READY / Reprint, ready deliveries + driver chips → assign, out with drivers →
+  READY / Reprint (receipt only; tooltip "Print the receipt again"), ready deliveries + driver chips → assign, out with drivers →
   Returned, done list; agent SSE `/api/events` (beep on arrival/escalation, flash
   on `drivers.dispatched`, reload on the rest incl. `floor.updated`, and reload on
   every (re)open — `es.onopen` — since events sent while it was down are lost).
@@ -634,10 +654,11 @@ JS/CSS `no-cache` + content ETag, fonts immutable for a year.
   proxy into a friendly line with the raw error under Details (no toast). A
   failed `/api/diag` → Printers/Pi cards "Couldn't check · retrying…".
 - Destructive/risky confirms focus Cancel (`danger` or `focusCancel`): close
-  batch, auto-accept ON, revoke, unlink. History Resend asks first; History
+  batch, auto-accept ON, revoke, unlink. History "Bring back as new order"
+  (was "Resend") asks first; History
   pages fetch `num+1` rows to know if Next exists.
-  **Drivers**, **History** (`/api/history` proxy; Reprint `/api/print`, Resend
-  `/api/resend`), **Printers** (`/api/printers` + diag roster ids/roles; test,
+  **Drivers**, **History** (`/api/history` proxy; Reprint `/api/print` =
+  receipt only, Bring back as new order `/api/resend`), **Printers** (`/api/printers` + diag roster ids/roles; test,
   probe, sample), **Settings**: Orders (auto-accept), Kitchen tickets (floor
   prefs), Receipts (`/api/settings/receipt` + paper preview; Print a sample saves
   first — the sample uses saved prefs), Daily clock-out, Tablets (pairing code,
@@ -655,7 +676,8 @@ JS/CSS `no-cache` + content ETag, fonts immutable for a year.
 - UI check without a main: a mock API (any static server that answers the
   `/api/*` shapes) + `chrome-headless-shell` from `~/.cache/ms-playwright`.
 
-**Auth split**: floor routes (`/api/floor`, `/api/orders*`, `/api/deliveries/*`,
+**Auth split**: floor routes (`/api/floor`, `/api/orders*` — incl. `…/reprint`
+(receipt only) and `…/kitchen` (resend to kitchen, 2.0.8) — `/api/deliveries/*`,
 `/api/drivers*`, `/api/batches`, `/api/batch/close`, `/api/printers*`,
 `/api/events`) and the Quibase setup/diagnostics routes (`/api/pairing/code`,
 `/api/device/self`, `/api/device/report-token`, `/api/diag`, `/api/diag/report`,

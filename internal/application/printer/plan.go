@@ -14,8 +14,16 @@ type RosterEntry struct {
 	IsReceipt bool
 }
 
-// Plan turns an order into the tickets to print, given the printer roster
-// (in roster order). Pure — no I/O — so it's exhaustively unit-testable.
+// Plan is the accept print: PlanFor(snap, roster, printer.ModeAccept).
+func Plan(snap order.Snapshot, roster []RosterEntry) (tickets []printer.Ticket, unrouted []string) {
+	return PlanFor(snap, roster, printer.ModeAccept)
+}
+
+// PlanFor turns an order into the tickets to print for one mode, given the
+// printer roster (in roster order). Pure — no I/O — so it's exhaustively
+// unit-testable.
+//
+// ModeAccept (what accept prints):
 //
 //   - No line item carries a routing value (order predates kitchen routing):
 //     one full receipt on the receipt printer — the old behaviour.
@@ -34,9 +42,18 @@ type RosterEntry struct {
 //     up from the receipt) — unless the receipt printer is the only printer,
 //     in which case it is also the kitchen station.
 //
+// ModeReceipt ("Reprint"): only the customer receipt on the receipt printer
+// (the full receipt for an order that predates kitchen routing).
+//
+// ModeKitchen ("Resend to kitchen"): only the station tickets, built exactly
+// as above but WITHOUT the pickup-cash shortcut (a deliberate tap sends the
+// order to the kitchen) and without the receipt. An unrouted (legacy) order's
+// items count as unrouted and go to every station. May be empty (e.g. only
+// receipt-only items).
+//
 // With no receipt printer flagged, the first printer is used as the receipt
 // printer. An empty roster yields no tickets.
-func Plan(snap order.Snapshot, roster []RosterEntry) (tickets []printer.Ticket, unrouted []string) {
+func PlanFor(snap order.Snapshot, roster []RosterEntry, mode printer.Mode) (tickets []printer.Ticket, unrouted []string) {
 	if len(roster) == 0 {
 		return nil, nil
 	}
@@ -47,15 +64,31 @@ func Plan(snap order.Snapshot, roster []RosterEntry) (tickets []printer.Ticket, 
 			break
 		}
 	}
+	receiptTicket := printer.Ticket{Kind: printer.TicketReceipt, TargetID: receipt.ID, Station: receipt.Name}
+	fullTicket := printer.Ticket{Kind: printer.TicketFull, TargetID: receipt.ID, Station: receipt.Name}
+
+	switch mode {
+	case printer.ModeReceipt:
+		if !isRouted(snap) {
+			return []printer.Ticket{fullTicket}, nil
+		}
+		return []printer.Ticket{receiptTicket}, nil
+	case printer.ModeKitchen:
+		return stationTickets(snap, roster, receipt)
+	}
 
 	if isPickupCash(snap) {
-		return []printer.Ticket{{Kind: printer.TicketReceipt, TargetID: receipt.ID, Station: receipt.Name}}, nil
+		return []printer.Ticket{receiptTicket}, nil
 	}
-
 	if !isRouted(snap) {
-		return []printer.Ticket{{Kind: printer.TicketFull, TargetID: receipt.ID, Station: receipt.Name}}, nil
+		return []printer.Ticket{fullTicket}, nil
 	}
+	tickets, unrouted = stationTickets(snap, roster, receipt)
+	return append(tickets, receiptTicket), unrouted
+}
 
+// stationTickets builds the kitchen station tickets (see PlanFor).
+func stationTickets(snap order.Snapshot, roster []RosterEntry, receipt RosterEntry) (tickets []printer.Ticket, unrouted []string) {
 	stations := make([]RosterEntry, 0, len(roster))
 	for _, p := range roster {
 		if p.ID != receipt.ID {
@@ -107,7 +140,6 @@ func Plan(snap order.Snapshot, roster []RosterEntry) (tickets []printer.Ticket, 
 			Kind: printer.TicketStation, TargetID: p.ID, Station: p.Name, Mine: mine, Others: others,
 		})
 	}
-	tickets = append(tickets, printer.Ticket{Kind: printer.TicketReceipt, TargetID: receipt.ID, Station: receipt.Name})
 	return tickets, unrouted
 }
 
