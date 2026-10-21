@@ -320,8 +320,10 @@ textarea.field { resize: vertical; min-height: 84px; }
 .sub:hover { background: var(--hover); }
 .sub.on { background: var(--elev); color: var(--text); font-weight: 600; }
 @media (max-width: 760px) {
-  .subnav { flex-direction: row; flex-wrap: nowrap; overflow-x: auto; flex-basis: 100%; }
-  .sub { width: auto; white-space: nowrap; }
+  /* phones: wrap the tabs into chips (a sideways scroll hid half of them) */
+  .subnav { flex-direction: row; flex-wrap: wrap; gap: 6px; flex-basis: 100%; }
+  .sub { width: auto; white-space: nowrap; min-height: 40px; padding: 8px 14px; border: 1px solid var(--border); border-radius: 999px; }
+  .sub.on { border-color: var(--brand); background: var(--brand-soft); color: var(--accent); }
 }
 .sbody { flex: 999 1 420px; min-width: 0; padding: 20px 22px; display: flex; flex-direction: column; }
 .sbody > h2 { margin-bottom: 4px; }
