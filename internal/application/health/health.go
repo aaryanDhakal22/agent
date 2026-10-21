@@ -54,6 +54,7 @@ type Report struct {
 	PrintersDown   int            `json:"printers_down"`
 	LastBackupAt   string         `json:"last_backup_at,omitempty"`
 	System         map[string]any `json:"system,omitempty"` // from HealthFile (sd_errors, throttled, …)
+	Pi             SystemHealth   `json:"pi"`               // System, parsed (throttled bits, staleness)
 	Problems       []string       `json:"problems,omitempty"`
 }
 
@@ -142,6 +143,10 @@ const (
 	maxTempC     = 80
 )
 
+// Snapshot takes a fresh reading now (GET /api/diag, the diag.report RPC) —
+// the same report the heartbeat sends, without sending it.
+func (h *Heartbeat) Snapshot(ctx context.Context) Report { return h.collect(ctx) }
+
 func (h *Heartbeat) collect(ctx context.Context) Report {
 	r := Report{At: time.Now().UTC(), Version: h.version, ProcessUptimeS: int64(time.Since(h.started).Seconds())}
 	r.Hostname, _ = os.Hostname()
@@ -203,6 +208,7 @@ func (h *Heartbeat) collect(ctx context.Context) Report {
 			r.System = sys
 		}
 	}
+	r.Pi = ParseSystem(r.System, r.At)
 
 	if r.DiskTotalBytes > 0 && r.DiskFreeBytes < minFreeBytes {
 		r.Problems = append(r.Problems, "disk_low")

@@ -12,6 +12,7 @@ const (
 	MsgPing                 = "ping"
 	MsgPrinterReport        = "printer.report"         // agent → main, unsolicited push
 	MsgPrinterReportRequest = "printer.report.request" // main → agent, pull
+	MsgDiagReport           = "diag.report"            // agent → main, a tablet's diagnostics report (Send: main replies {id, stored, duplicate})
 )
 
 // Envelope is the wire shape for every duplex message, both directions.

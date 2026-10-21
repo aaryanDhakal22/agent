@@ -174,7 +174,7 @@ def agent_binary(tmp_path_factory) -> Path:
 
 
 class AgentProc:
-    def __init__(self, binary: Path) -> None:
+    def __init__(self, binary: Path, extra_env: dict | None = None) -> None:
         self.port = _free_port()
         self.base = f"http://127.0.0.1:{self.port}"
         self.dir = Path(tempfile.mkdtemp(prefix="quicc-agent-test-"))
@@ -188,6 +188,10 @@ class AgentProc:
             "HTTP_PORT": str(self.port),
             "LOG_LEVEL": "debug",
             "OTEL_EXPORTER_OTLP_ENDPOINT": "",  # no-op telemetry
+            # LAN discovery off unless a test asks: the roster agent (or another
+            # throwaway one) may already hold UDP 48080 on this host.
+            "AGENT_DISCOVERY_PORT": "0",
+            **(extra_env or {}),
         }
         self._binary, self._env = binary, env
         self.proc = subprocess.Popen([str(binary)], cwd=self.dir, env=env, stdout=self.log, stderr=subprocess.STDOUT)
@@ -229,8 +233,8 @@ class AgentProc:
 def spawn_agent(agent_binary):
     procs: list[AgentProc] = []
 
-    def _spawn() -> AgentProc:
-        p = AgentProc(agent_binary)
+    def _spawn(**env: str) -> AgentProc:
+        p = AgentProc(agent_binary, env)
         procs.append(p)
         return p
 

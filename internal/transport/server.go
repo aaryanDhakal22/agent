@@ -55,6 +55,10 @@ type Server struct {
 	recovery      *recovery.Service
 	onLinked      func(*recovery.Outcome)
 	linkMu        sync.Mutex
+	diag          DiagDeps
+	testMu        sync.Mutex // one printer test at a time
+	mainReach     mainProbe
+	started       time.Time
 }
 
 // SetAppUpdater wires the tablet-app release cache (/api/app/*).
@@ -88,6 +92,7 @@ func NewServer(
 		version:       version,
 		commit:        commit,
 		port:          port,
+		started:       time.Now(),
 		logger:        logger.With().Str("module", "http-server").Logger(),
 	}
 }

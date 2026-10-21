@@ -1555,6 +1555,23 @@ func (q *Queries) RenameDriver(ctx context.Context, arg RenameDriverParams) (int
 	return result.RowsAffected()
 }
 
+const renamePairedDevice = `-- name: RenamePairedDevice :execrows
+UPDATE paired_devices SET name = ? WHERE id = ? AND revoked_at IS NULL
+`
+
+type RenamePairedDeviceParams struct {
+	Name string `json:"name"`
+	ID   string `json:"id"`
+}
+
+func (q *Queries) RenamePairedDevice(ctx context.Context, arg RenamePairedDeviceParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, renamePairedDevice, arg.Name, arg.ID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const resetDriversAvailable = `-- name: ResetDriversAvailable :exec
 UPDATE drivers SET status = 'available' WHERE status = 'out'
 `

@@ -84,8 +84,15 @@ func (s *Server) routes() []routeDef {
 		{"GET", "/api/app/apk", "device", "Download the cached Quibase APK", s.handleAppAPK},
 		{"GET", "/api/events", "device", "SSE: order.arrived|updated|escalated, drivers.updated|dispatched, batch.closed", s.handleEvents},
 
+		// Quibase setup + diagnostics — paired tablet (or web-UI session).
+		{"POST", "/api/pairing/code", "device", "Show a 6-digit tablet pairing code (5 min) — web UI or a paired tablet (Pair another tablet)", s.handlePairingCode},
+		{"PATCH", "/api/device/self", "device", "A paired tablet renames itself {name} (1-40) -> {id, name}", s.handleRenameSelf},
+		{"POST", "/api/device/report-token", "device", "Mint this tablet's diagnostics report token on main -> {token, main_url} (never stored here)", s.handleReportToken},
+		{"GET", "/api/diag", "device", "Diagnostics snapshot: main link, Pi health, printers, orders, open_now, problems", s.handleDiag},
+		{"POST", "/api/diag/report", "device", "Relay a tablet's diagnostics report (v1, <=256 KB) to main as RPC diag.report", s.handleDiagReport},
+		{"POST", "/api/printers/test", "device", "Test print {printer_id?, probe_only?}: per-printer results, never fails over (409 while one runs)", s.handlePrinterTest},
+
 		// Web-UI-only — session-gated.
-		{"POST", "/api/pairing/code", "session", "Show a 6-digit tablet pairing code (5 min)", s.handlePairingCode},
 		{"GET", "/api/devices", "session", "Paired tablets", s.handleListDevices},
 		{"POST", "/api/devices/{id}/revoke", "session", "Revoke a paired tablet", s.handleRevokeDevice},
 		{"POST", "/api/orders/{id}/resend", "session", "Re-run the full arrival pipeline for a local order", s.handleResendByID},

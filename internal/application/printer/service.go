@@ -204,8 +204,8 @@ func (s *Service) Printer() printer.Printer {
 // immediate feedback ("did that new IP work?") rather than waiting up to
 // PRINTER_DETECT_DELAY for the next scheduled probe. Intentionally does not
 // send Pushover notifications — those are for unattended transitions, not
-// actions the user just took.
-func (s *Service) ProbeNow(ctx context.Context) {
+// actions the user just took. Returns the Detect error (nil = reachable).
+func (s *Service) ProbeNow(ctx context.Context) error {
 	name := s.printer.Name()
 	nameAttr := attribute.String("printer.name", name)
 
@@ -234,7 +234,8 @@ func (s *Service) ProbeNow(ctx context.Context) {
 	if err != nil {
 		span.RecordError(err)
 		s.logger.Warn().Ctx(ctx).Err(err).Msg("ProbeNow: printer unreachable")
-		return
+		return err
 	}
 	s.logger.Info().Ctx(ctx).Msg("ProbeNow: printer reachable")
+	return nil
 }

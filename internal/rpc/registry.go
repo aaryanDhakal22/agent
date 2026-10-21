@@ -3,6 +3,7 @@ package rpc
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"sync"
 	"time"
 
@@ -23,6 +24,12 @@ const tracerName = "quiccpos/agent/rpc"
 // the store key). Satisfied by a thin adapter over mainclient in cmd/main.go.
 type ReplyPoster interface {
 	PostRPC(ctx context.Context, body []byte) error
+}
+
+// Exchanger is a ReplyPoster that can also hand back main's answer (HTTP
+// status + body), for the reports whose reply matters (Registry.Send).
+type Exchanger interface {
+	ExchangeRPC(ctx context.Context, body []byte) (status int, respBody []byte, err error)
 }
 
 // CommandHandler processes a main→agent command; a non-nil reply is POSTed back
@@ -135,6 +142,52 @@ func (r *Registry) Report(ctx context.Context, msgType string, payload any) erro
 	}
 	r.meters.RPCReportsSent.Add(ctx, 1, metric.WithAttributes(typeAttr, attribute.String("result", "ok")))
 	return nil
+}
+
+// Send is Report for a message whose reply matters: it returns main's HTTP
+// status and, on a 200, the reply envelope's payload (any other status: the
+// raw body). The poster must implement Exchanger.
+func (r *Registry) Send(ctx context.Context, msgType string, payload any) (int, json.RawMessage, error) {
+	ex, ok := r.poster.(Exchanger)
+	if !ok {
+		return 0, nil, errors.New("rpc: poster can't return replies")
+	}
+	typeAttr := attribute.String("type", msgType)
+	ctx, span := r.tracer.Start(ctx, "rpc.report.send",
+		trace.WithAttributes(attribute.String("rpc.type", msgType)),
+	)
+	defer span.End()
+
+	raw, err := marshal(payload)
+	if err != nil {
+		span.RecordError(err)
+		return 0, nil, err
+	}
+	out, err := json.Marshal(Envelope{Type: msgType, ID: uuid.NewString(), Payload: raw})
+	if err != nil {
+		span.RecordError(err)
+		return 0, nil, err
+	}
+	status, body, err := ex.ExchangeRPC(ctx, out)
+	if err != nil {
+		r.meters.RPCReportsSent.Add(ctx, 1, metric.WithAttributes(typeAttr, attribute.String("result", "post_error")))
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "post failed")
+		return 0, nil, err
+	}
+	span.SetAttributes(attribute.Int("http.status_code", status))
+	result := "ok"
+	if status >= 300 {
+		result = "rejected"
+	}
+	r.meters.RPCReportsSent.Add(ctx, 1, metric.WithAttributes(typeAttr, attribute.String("result", result)))
+	if status == 200 {
+		var env Envelope
+		if json.Unmarshal(body, &env) == nil {
+			return status, env.Payload, nil
+		}
+	}
+	return status, body, nil
 }
 
 func marshal(p any) (json.RawMessage, error) {

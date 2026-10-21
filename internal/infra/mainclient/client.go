@@ -80,6 +80,15 @@ func (c *Client) Post(ctx context.Context, key, path string, body []byte) (int, 
 	return c.do(ctx, http.MethodPost, key, path, "", body)
 }
 
+// Delete sends an authenticated DELETE to main (e.g. revoking a tablet's
+// report token).
+func (c *Client) Delete(ctx context.Context, key, path string) (int, []byte, error) {
+	return c.do(ctx, http.MethodDelete, key, path, "", nil)
+}
+
+// BaseURL is main's base URL as configured (MAIN_SERVER_URL, no trailing /).
+func (c *Client) BaseURL() string { return c.baseURL }
+
 // PostRPC posts a duplex-channel envelope to main's /store/v1/agent/rpc using
 // the store key.
 func (c *Client) PostRPC(ctx context.Context, key string, body []byte) (int, []byte, error) {

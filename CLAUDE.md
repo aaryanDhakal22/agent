@@ -349,6 +349,32 @@ nginx :80) — the switch is in `../CUTOVER.md`; never run both agents at once.
   `tests/test_link.py`; the full mid-shift swap is the root `tests/test_swap.py`
   and the delivery torture is `task test-torture` (root).
 
+## Quibase setup + diagnostics (2.0.1)
+
+- **LAN discovery** (`infra/discovery/responder.go`, `AGENT_DISCOVERY_PORT`,
+  default 48080, `0` off): UDP probe `{"q":"quibase-discover","v":1,"nonce"}`
+  padded to ≥ 200 bytes → unicast reply `{v, svc, nonce, port, linked,
+  link_available, store, version, host}`, always smaller than the probe (store/
+  host dropped if needed), 20 replies/s. Bind failure only warns — the dev
+  roster's 2nd/3rd agents can't get 48080; pytest spawns agents with
+  `AGENT_DISCOVERY_PORT=0` unless a test passes a free port.
+- **Device routes** in `transport/server_diag.go` (wired by `SetDiag` in
+  `cmd/main.go`): `GET /api/diag` (main link + live `/health` reachability
+  cached 20 s, `health.Snapshot` incl. parsed throttled bits/staleness, roster,
+  orders, `open_now` from `storeconfig/hours.go` — a port of main's
+  `tenancy/hours.go`, keep in step — `quiet_alert_minutes` location config,
+  default 90, `problems`), `POST /api/printers/test` (`Dispatcher.PrintTest` /
+  `Probe` — **never fails over**; `testMu` → 409), `PATCH /api/device/self`
+  (sqlc `RenamePairedDevice`), `POST /api/device/report-token` (proxies main's
+  `/store/v1/agent/tablet-tokens`; never stored), `POST /api/diag/report`
+  (≤ 256 KB → RPC `diag.report` via `Registry.Send`, which returns main's reply;
+  tablet id/name from the device key only). `POST /api/pairing/code` now takes a
+  device key too. Unpair/revoke fire a background `DELETE
+  /store/v1/agent/tablet-tokens/<device id>`.
+- `GET /api/session` adds `store_name`, `version`, `hostname`.
+- `internal/infra/database/ascii_test.go` fails the Go suite if `sql/query.sql`
+  gains a non-ASCII byte.
+
 ## Printing (station tickets + receipt)
 
 main stamps `printer_id` + `routing` on each line item at ingest; the agent
@@ -400,7 +426,8 @@ Optional: `AGENT_DB_PATH` (SQLite file, default `~/.quicc/agent.db`),
 `HTTP_PORT` (8080), `PRINTER_DETECT_DELAY` (25 s), `LOG_LEVEL`,
 `LOG_OUTPUT` (`console`|`json`|`file`; `file` → lumberjack-rotated
 `log/agent.log`), `PUSHOVER_APP_TOKEN`, `PUSHOVER_USER_KEY`, `PUSHOVER_BOSS_KEY`,
-`OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_SERVICE_NAME` (default `quicc-agent`).
+`OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_SERVICE_NAME` (default `quicc-agent`),
+`AGENT_DISCOVERY_PORT` (UDP LAN discovery, default 48080, `0` off).
 
 `OTEL_EXPORTER_OTLP_ENDPOINT` accepts a full URL or a bare `host:port`
 (defaults to `http://`). OTLP transport is **HTTP** here, not gRPC; use
@@ -475,10 +502,12 @@ the agent itself — no nginx. It's a password-gated SPA whose three auth panels
 
 **Auth split**: floor routes (`/api/floor`, `/api/orders*`, `/api/deliveries/*`,
 `/api/drivers*`, `/api/batches`, `/api/batch/close`, `/api/printers*`,
-`/api/events`) need a paired tablet key **or** the web-UI session — no longer
-LAN-open; `POST /api/pair` is open (needs a live code); the web-UI surface
-(history, print/resend, store-config, settings, pairing code, devices) is
-session-gated. `internal/infra/mainclient` is the agent's HTTP client to main.
+`/api/events`) and the Quibase setup/diagnostics routes (`/api/pairing/code`,
+`/api/device/self`, `/api/device/report-token`, `/api/diag`, `/api/diag/report`,
+`/api/printers/test`) need a paired tablet key **or** the web-UI session — no
+longer LAN-open; `POST /api/pair` is open (needs a live code); the web-UI surface
+(history, print/resend, store-config, settings, devices) is session-gated.
+`internal/infra/mainclient` is the agent's HTTP client to main.
 
 ## Files to look at for…
 
@@ -489,6 +518,11 @@ session-gated. `internal/infra/mainclient` is the agent's HTTP client to main.
 | Order domain (canonical Snapshot mirror) | `internal/domain/order/order.go` |
 | store_config domain | `internal/domain/storeconfig/entity.go` |
 | Printer dispatcher (dynamic roster, failover) | `internal/application/printer/dispatcher.go` |
+| Test print / probe (no failover) + test slip | `internal/application/printer/testprint.go`, `internal/infra/printer/receipt/test_slip.go` (golden `testdata/test_slip.golden`) |
+| Diagnostics, self-rename, report token/relay | `internal/transport/server_diag.go` |
+| LAN discovery (UDP responder) | `internal/infra/discovery/responder.go` |
+| Opening hours (port of main's) | `internal/domain/storeconfig/hours.go` |
+| Pi health (heartbeat, `Snapshot`, throttled bits) | `internal/application/health/{health.go,system.go}` |
 | Ticket planning (station split) | `internal/application/printer/plan.go` + `internal/domain/printer/ticket.go` |
 | Floor transitions (tx + outbox) | `internal/infra/database/repositories/floor_repo.go` |
 | Floor service / escalation / sync | `internal/application/order/floor.go`, `application/escalation/`, `application/floorsync/` |

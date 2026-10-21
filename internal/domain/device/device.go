@@ -28,5 +28,7 @@ type Repository interface {
 	Touch(ctx context.Context, id string, at time.Time) error
 	List(ctx context.Context) ([]Device, error)
 	Revoke(ctx context.Context, id string, at time.Time) error
+	// Rename changes an active device's name (ErrNotFound if revoked/unknown).
+	Rename(ctx context.Context, id, name string) error
 	RevokeAll(ctx context.Context, at time.Time) error
 }
