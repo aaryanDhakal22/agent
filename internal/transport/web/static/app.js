@@ -723,8 +723,8 @@ function agentApp() {
       this.busy[key] = true;
       try {
         await this.call('/api/orders/' + so.order.id + '/resend', { method: 'POST' });
-        this.toast('Resent to the tablets');
-      } catch (e) { this.toast('Not resent. ' + e.message, true); } finally { this.busy[key] = false; }
+        this.toast('Rang the tablet again');
+      } catch (e) { this.toast("Couldn't ring the tablet. " + e.message, true); } finally { this.busy[key] = false; }
     },
     async markReady(so) {
       const key = 'rd' + so.order.id;
@@ -742,7 +742,7 @@ function agentApp() {
       this.busy[key] = true;
       try {
         await this.call('/api/orders/' + so.order.id + '/reprint', { method: 'POST' });
-        this.toast('Reprinted ' + displayNumber(so));
+        this.toast('Receipt reprinted · ' + displayNumber(so));
       } catch (e) {
         this.toast(e.status === 502 ? 'Printer problem — nothing printed. ' + e.message : 'Not reprinted. ' + e.message, true);
       } finally { this.busy[key] = false; }
@@ -1029,11 +1029,11 @@ function agentApp() {
     histKey(snap, i) { return (snap.id || 'r') + ':' + i; },
     async histAct(snap, what, i) {
       const key = 'h' + what + i; if (this.busy[key]) return;
-      if (what === 'resend' && !(await this.ask({ title: 'Resend ' + custName(snap) + "'s order?", body: 'It comes back as a new order to accept on the tablet.', confirmLabel: 'Resend' }))) return;
+      if (what === 'resend' && !(await this.ask({ title: 'Bring back ' + custName(snap) + "'s order as a new order?", body: 'It comes back as a new order to accept on the tablet. If this Pi already accepted it, its receipt prints again instead.', confirmLabel: 'Bring back' }))) return;
       this.busy[key] = true;
       try {
         await this.call(what === 'print' ? '/api/print' : '/api/resend', { method: 'POST', body: snap });
-        this.toast(what === 'print' ? 'Reprinted' : 'Resent');
+        this.toast(what === 'print' ? 'Receipt reprinted' : 'Brought back as a new order');
       } catch (e) { this.toast(e.status === 502 ? 'Printer problem — nothing printed: ' + e.message : e.message, true); }
       finally { this.busy[key] = false; }
     },

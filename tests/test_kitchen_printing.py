@@ -177,3 +177,119 @@ def test_legacy_order_prints_one_full_receipt(kitchen, fakes) -> None:
     time.sleep(0.5)
     assert fakes["Pizza"].jobs == [] and fakes["Wings"].jobs == []
     assert "Old Style Pizza" in fakes["Front"].text()
+
+
+def _reset(fakes) -> None:
+    for f in fakes.values():
+        f.jobs.clear()
+
+
+def test_reprint_prints_only_the_receipt(kitchen, fakes) -> None:
+    """Reprint = the customer receipt again, on Front only."""
+    a, ids = kitchen["agent"], kitchen["ids"]
+    snap = _snap(kitchen["main_store"], [_item("Pepperoni Pizza", ids["Pizza"]), _item("Hot Wings", ids["Wings"])])
+    assert _accept(a, snap).status_code == 200
+    for f in fakes.values():
+        _wait_jobs(f, 1)
+    time.sleep(0.5)
+    _reset(fakes)
+
+    r = a.http.post(f"{a.base}/api/orders/{snap['id']}/reprint", timeout=30)
+    assert r.status_code == 200 and r.json()["order"]["id"] == snap["id"], r.text
+    _wait_jobs(fakes["Front"], 1)
+    time.sleep(1.5)  # nothing else may follow
+    assert len(fakes["Front"].jobs) == 1 and "Total:" in fakes["Front"].text()
+    assert fakes["Pizza"].jobs == [] and fakes["Wings"].jobs == [], "reprint must not print kitchen tickets"
+
+    # History's /api/print (a fetched snapshot) is receipt-only too.
+    _reset(fakes)
+    r = a.http.post(f"{a.base}/api/print", json=snap, timeout=30)
+    assert r.status_code == 200, r.text
+    _wait_jobs(fakes["Front"], 1)
+    time.sleep(1.5)
+    assert len(fakes["Front"].jobs) == 1 and "Total:" in fakes["Front"].text()
+    assert fakes["Pizza"].jobs == [] and fakes["Wings"].jobs == []
+
+
+def test_resend_to_kitchen_prints_only_the_stations(kitchen, fakes) -> None:
+    a, ids = kitchen["agent"], kitchen["ids"]
+    snap = _snap(kitchen["main_store"], [_item("Pepperoni Pizza", ids["Pizza"]), _item("Hot Wings", ids["Wings"])])
+    assert _accept(a, snap).status_code == 200
+    for f in fakes.values():
+        _wait_jobs(f, 1)
+    time.sleep(0.5)
+    _reset(fakes)
+
+    r = a.http.post(f"{a.base}/api/orders/{snap['id']}/kitchen", timeout=30)
+    assert r.status_code == 200, r.text + a.log_tail()
+    body = r.json()
+    assert body["order"]["order"]["id"] == snap["id"], body
+    assert sorted(body["printed"]) == ["Pizza", "Wings"] and body["failed"] == [] and body["rerouted"] == [], body
+    _wait_jobs(fakes["Pizza"], 1)
+    _wait_jobs(fakes["Wings"], 1)
+    time.sleep(1.5)
+    assert "1 Pepperoni Pizza" in fakes["Pizza"].text() and "1 Hot Wings" in fakes["Wings"].text()
+    assert fakes["Front"].jobs == [], "a kitchen resend prints no receipt"
+    got = a.http.get(f"{a.base}/api/orders/{snap['id']}", timeout=5).json()
+    assert got["status"]["state"] == "accepted", got
+
+    # A station down: rerouted to Front with the banner, reported in the body.
+    _reset(fakes)
+    fakes["Wings"].stop()
+    r = a.http.post(f"{a.base}/api/orders/{snap['id']}/kitchen", timeout=30)
+    assert r.status_code == 200, r.text
+    assert r.json()["rerouted"] == [{"station": "Wings", "printed_on": "Front"}], r.text
+    assert "REROUTED from WINGS" in fakes["Front"].text() and "Total:" not in fakes["Front"].text()
+
+
+def test_resend_to_kitchen_of_pickup_cash_prints_the_stations(kitchen, fakes) -> None:
+    """Accept of a pickup paid in cash prints only the receipt; a deliberate
+    resend to the kitchen prints the station tickets anyway."""
+    a, ids = kitchen["agent"], kitchen["ids"]
+    snap = _snap(kitchen["main_store"], [_item("Pepperoni Pizza", ids["Pizza"]), _item("Hot Wings", ids["Wings"])])
+    snap.pop("payments")
+    assert _accept(a, snap).status_code == 200
+    _wait_jobs(fakes["Front"], 1)
+    time.sleep(1.5)
+    assert fakes["Pizza"].jobs == [] and fakes["Wings"].jobs == []
+    _reset(fakes)
+
+    r = a.http.post(f"{a.base}/api/orders/{snap['id']}/kitchen", timeout=30)
+    assert r.status_code == 200 and sorted(r.json()["printed"]) == ["Pizza", "Wings"], r.text
+    _wait_jobs(fakes["Pizza"], 1)
+    _wait_jobs(fakes["Wings"], 1)
+    time.sleep(1.5)
+    assert fakes["Front"].jobs == []
+
+
+def test_resend_to_kitchen_refusals(kitchen, fakes) -> None:
+    a, ids = kitchen["agent"], kitchen["ids"]
+    # Waiting (not accepted): 409 not_accepted, nothing printed.
+    waiting = _snap(kitchen["main_store"], [_item("Pepperoni Pizza", ids["Pizza"])])
+    assert a.http.post(f"{a.base}/api/resend", json=waiting, timeout=15).status_code == 200
+    r = a.http.post(f"{a.base}/api/orders/{waiting['id']}/kitchen", timeout=30)
+    assert r.status_code == 409 and r.json()["code"] == "not_accepted", r.text
+
+    # Only receipt-only items: 409 nothing_for_kitchen.
+    soda = _snap(kitchen["main_store"], [_item("Can Soda", ids["Front"])])
+    assert _accept(a, soda).status_code == 200
+    _wait_jobs(fakes["Front"], 1)
+    r = a.http.post(f"{a.base}/api/orders/{soda['id']}/kitchen", timeout=30)
+    assert r.status_code == 409 and r.json()["code"] == "nothing_for_kitchen", r.text
+
+    # Unknown id: 404.
+    r = a.http.post(f"{a.base}/api/orders/{uuid.uuid4()}/kitchen", timeout=10)
+    assert r.status_code == 404, r.text
+
+    # Every printer down: 502 print_failed.
+    accepted = _snap(kitchen["main_store"], [_item("Pepperoni Pizza", ids["Pizza"])])
+    assert _accept(a, accepted).status_code == 200
+    _wait_jobs(fakes["Pizza"], 1)
+    time.sleep(0.5)
+    before = {n: len(f.jobs) for n, f in fakes.items()}
+    for f in fakes.values():
+        f.stop()
+    r = a.http.post(f"{a.base}/api/orders/{accepted['id']}/kitchen", timeout=60)
+    assert r.status_code == 502 and r.json()["code"] == "print_failed", r.text
+    time.sleep(0.5)
+    assert {n: len(f.jobs) for n, f in fakes.items()} == before, "nothing new printed"

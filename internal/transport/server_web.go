@@ -480,9 +480,9 @@ func (s *Server) handleHistory(w http.ResponseWriter, r *http.Request) {
 
 // --- reprint / resend from a payload --------------------------------------
 
-// handlePrint prints a snapshot the history page already fetched from main/,
-// with no persistence or fan-out. Backs "Reprint" for orders older than the
-// local window.
+// handlePrint prints the customer receipt of a snapshot the history page
+// already fetched from main/, with no persistence or fan-out. Backs History
+// "Reprint" (receipt only, like /api/orders/{id}/reprint).
 func (s *Server) handlePrint(w http.ResponseWriter, r *http.Request) {
 	var snap order.Snapshot
 	if err := json.NewDecoder(r.Body).Decode(&snap); err != nil {

@@ -284,7 +284,7 @@
             </div>
             <button type="button" class="accept" :disabled="!!busy['acc' + so.order.id]" @click="accept(so)" x-text="busy['acc' + so.order.id] ? 'PRINTING…' : 'ACCEPT · ' + (prep[so.order.id] || defaultPrep) + ' MIN'"></button>
             <div class="msg" role="alert" x-show="errs[so.order.id]" x-text="errs[so.order.id]"></div>
-            <button type="button" class="resend" @click="resendOrder(so)" :disabled="!!busy['rs' + so.order.id]">Resend to the tablets</button>
+            <button type="button" class="resend" @click="resendOrder(so)" :disabled="!!busy['rs' + so.order.id]">Ring the tablet again</button>
           </div>
         </section>
       </template>
@@ -323,7 +323,7 @@
                 <div class="onote" x-show="(so.order.notes || '').trim()" x-text="'“' + (so.order.notes || '').trim() + '”'"></div>
               </div>
               <div class="hrow" style="flex-wrap:nowrap;margin-top:4px">
-                <button type="button" class="btn icon-btn" :aria-label="'Reprint ' + displayNumber(so)" :disabled="!!busy['rp' + so.order.id]" @click="reprint(so)" x-html="icon('printer')"></button>
+                <button type="button" class="btn icon-btn" title="Print the receipt again" :aria-label="'Print the receipt again for ' + displayNumber(so)" :disabled="!!busy['rp' + so.order.id]" @click="reprint(so)" x-html="icon('printer')"></button>
                 <button type="button" class="ready" :disabled="!!busy['rd' + so.order.id]" @click="markReady(so)"><span style="display:inline-flex" x-html="icon('check', 18)"></span>READY</button>
               </div>
             </article>
@@ -381,7 +381,7 @@
                 <span class="mono" style="font-weight:700" x-text="displayNumber(so)"></span>
                 <span class="grow" x-text="custName(so.order)"></span>
                 <span class="badge b-mute" x-text="stateLabel(so.status.state)"></span>
-                <button type="button" class="btn icon-btn" :aria-label="'Reprint ' + displayNumber(so)" :disabled="!!busy['rp' + so.order.id]" @click="reprint(so)" x-html="icon('printer', 16)"></button>
+                <button type="button" class="btn icon-btn" title="Print the receipt again" :aria-label="'Print the receipt again for ' + displayNumber(so)" :disabled="!!busy['rp' + so.order.id]" @click="reprint(so)" x-html="icon('printer', 16)"></button>
               </div>
             </template>
           </div>
@@ -434,7 +434,7 @@
     <section class="stack" x-show="page === 'history'" aria-labelledby="h-history">
       <div class="page-head"><div>
         <h1 id="h-history">History</h1>
-        <p>Every order for this store, from main. Reprint prints a copy; Resend runs the order through this Pi again.</p>
+        <p>Every order for this store, from main. Reprint prints the receipt again; Bring back as new order runs the order through this Pi again.</p>
       </div></div>
       <form class="card card-pad filters" @submit.prevent="histApply()">
         <div><label class="lbl" for="h-q">Search</label><input id="h-q" class="field" x-model="hist.q" placeholder="Customer or event id" /></div>
@@ -463,8 +463,8 @@
           </div>
           <div class="small muted" x-text="itemCount(o) + ' item' + (itemCount(o) === 1 ? '' : 's') + ' · ' + dateTime(o.received_at || o.placed_at) + ' · ' + moneyLabel(o)"></div>
           <div class="hrow">
-            <button type="button" class="btn btn-sm" :disabled="!!busy['hprint' + i]" @click="histAct(o, 'print', i)">Reprint</button>
-            <button type="button" class="btn btn-sm" :disabled="!!busy['hresend' + i]" @click="histAct(o, 'resend', i)">Resend</button>
+            <button type="button" class="btn btn-sm" title="Print the receipt again" :disabled="!!busy['hprint' + i]" @click="histAct(o, 'print', i)">Reprint</button>
+            <button type="button" class="btn btn-sm" :disabled="!!busy['hresend' + i]" @click="histAct(o, 'resend', i)">Bring back as new order</button>
           </div>
         </article>
       </template>

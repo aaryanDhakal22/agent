@@ -24,10 +24,12 @@ import (
 )
 
 // PrintFunc is the seam between the order service and "actually printing":
-// the printer.Dispatcher's Execute (plan the order's tickets, print each with
-// failover). It errors only when nothing printed; partial trouble is in the
-// Outcome. Tests swap in a recording fake.
-type PrintFunc = func(ctx context.Context, snap order.Snapshot) (printer.Outcome, error)
+// the printer.Dispatcher's ExecuteMode (plan the order's tickets for a mode —
+// accept, receipt-only reprint, kitchen-only resend — and print each with
+// failover). It errors only when nothing printed (printer.ErrNoTickets when
+// the mode had nothing to print); partial trouble is in the Outcome. Tests
+// swap in a recording fake.
+type PrintFunc = func(ctx context.Context, snap order.Snapshot, mode printer.Mode) (printer.Outcome, error)
 
 const tracerName = "quiccpos/agent/order"
 
@@ -201,7 +203,7 @@ func (s *Service) Accept(ctx context.Context, id uuid.UUID, prepMinutes *int) (*
 	// Once claimed, the print runs to the end even if the tablet's request is
 	// cancelled (Wi-Fi blip, app killed) — otherwise the remaining stations
 	// and failovers are skipped mid-job. The dispatcher caps a job at 25 s.
-	out, err := s.print(context.WithoutCancel(ctx), printable(*so))
+	out, err := s.print(context.WithoutCancel(ctx), printable(*so), printer.ModeAccept)
 	if err != nil {
 		// Revert even if the request was cancelled mid-print.
 		rctx := context.WithoutCancel(ctx)
@@ -282,15 +284,15 @@ func (s *Service) publishUpdated(so order.StoredOrder) {
 	}
 }
 
-// PrintSnapshot prints a snapshot directly, with no persistence, notification,
-// or mobile broadcast. Backs the web UI's "Reprint" for a historical order that
-// was fetched from main/ and isn't in the agent's local rolling window.
+// PrintSnapshot prints a snapshot's customer receipt directly, with no
+// persistence, notification, or mobile broadcast. Backs the web UI's History
+// "Reprint" for an order fetched from main/ (receipt only, like Reprint).
 func (s *Service) PrintSnapshot(ctx context.Context, snap order.Snapshot) error {
 	ctx, span := s.tracer.Start(ctx, "order.print_snapshot",
 		trace.WithAttributes(attribute.String("order.id", snap.ID)),
 	)
 	defer span.End()
-	out, err := s.print(ctx, snap)
+	out, err := s.print(ctx, snap, printer.ModeReceipt)
 	s.alertPrintIssues(ctx, snap, out, false)
 	if err != nil {
 		span.RecordError(err)
@@ -347,7 +349,8 @@ func (s *Service) resendExisting(ctx context.Context, so *order.StoredOrder) err
 	return nil
 }
 
-// Reprint prints the order again without changing its state or PrintedDate.
+// Reprint prints the order's customer receipt again (receipt only, normal
+// failover) without changing its state or PrintedDate.
 func (s *Service) Reprint(ctx context.Context, id uuid.UUID) (*order.StoredOrder, error) {
 	ctx, span := s.tracer.Start(ctx, "order.reprint",
 		trace.WithAttributes(attribute.String("order.id", id.String())),
@@ -360,7 +363,7 @@ func (s *Service) Reprint(ctx context.Context, id uuid.UUID) (*order.StoredOrder
 		return nil, err
 	}
 
-	out, err := s.print(ctx, printable(*so))
+	out, err := s.print(ctx, printable(*so), printer.ModeReceipt)
 	s.alertPrintIssues(ctx, so.Order, out, false)
 	if err != nil {
 		span.RecordError(err)
@@ -368,8 +371,58 @@ func (s *Service) Reprint(ctx context.Context, id uuid.UUID) (*order.StoredOrder
 		return nil, err
 	}
 	s.meters.OrdersReprinted.Add(ctx, 1, metric.WithAttributes(attribute.String("source", "mobile")))
-	s.logger.Info().Ctx(ctx).Str("order_id", id.String()).Msg("Order reprinted")
+	s.logger.Info().Ctx(ctx).Str("order_id", id.String()).Msg("Order receipt reprinted")
 	return so, nil
+}
+
+// ErrNotAccepted: a kitchen resend of an order that has no kitchen number
+// (still waiting, or cancelled) — mapped to 409 not_accepted.
+var ErrNotAccepted = errors.New("order is not accepted")
+
+// ErrNothingForKitchen: a kitchen resend of an order with no station tickets
+// (e.g. only receipt-only items) — mapped to 409 nothing_for_kitchen.
+var ErrNothingForKitchen = errors.New("nothing on this order goes to the kitchen")
+
+// ErrKitchenNotPrinted: a kitchen resend where no ticket printed anywhere —
+// mapped to 502 print_failed.
+var ErrKitchenNotPrinted = errors.New("nothing printed")
+
+// ResendKitchen prints the order's kitchen station tickets again ("Resend to
+// kitchen", Quibase only): exactly the stations accept would print, minus the
+// receipt, and ignoring the pickup-cash rule. No state change. The Outcome
+// says which stations printed, failed or were rerouted.
+func (s *Service) ResendKitchen(ctx context.Context, id uuid.UUID) (*order.StoredOrder, printer.Outcome, error) {
+	ctx, span := s.tracer.Start(ctx, "order.resend_kitchen",
+		trace.WithAttributes(attribute.String("order.id", id.String())),
+	)
+	defer span.End()
+	fail := func(out printer.Outcome, err error) (*order.StoredOrder, printer.Outcome, error) {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+		return nil, out, err
+	}
+
+	so, err := s.repo.GetByID(ctx, id)
+	if err != nil {
+		return fail(printer.Outcome{}, err)
+	}
+	if so.Status.KitchenNumber == nil || so.Status.State == order.StateArrived || so.Status.State == order.StateCancelled {
+		return fail(printer.Outcome{}, fmt.Errorf("%w (state %s)", ErrNotAccepted, so.Status.State))
+	}
+
+	out, err := s.print(ctx, printable(*so), printer.ModeKitchen)
+	if errors.Is(err, printer.ErrNoTickets) {
+		return fail(out, ErrNothingForKitchen)
+	}
+	s.alertPrintIssues(ctx, so.Order, out, false)
+	if err != nil {
+		s.logger.Error().Ctx(ctx).Err(err).Str("order_id", id.String()).Msg("Kitchen resend printed nothing")
+		return fail(out, fmt.Errorf("%w: %w", ErrKitchenNotPrinted, err))
+	}
+	s.meters.OrdersReprinted.Add(ctx, 1, metric.WithAttributes(attribute.String("source", "kitchen_resend")))
+	s.logger.Info().Ctx(ctx).Str("order_id", id.String()).Int64("kitchen_number", deref(so.Status.KitchenNumber)).
+		Int("tickets", len(out.Printed)).Int("failed", len(out.Failed)).Msg("Order resent to the kitchen")
+	return so, out, nil
 }
 
 func (s *Service) GetByID(ctx context.Context, id uuid.UUID) (*order.StoredOrder, error) {
