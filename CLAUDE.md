@@ -509,35 +509,81 @@ history — the web UI's History tab reads it via proxy.
 
 ## Web UI (served by the binary)
 
-`internal/transport/web/index.html` is embedded (`go:embed`) and served at `/` by
-the agent itself — no nginx. It's a password-gated SPA whose three auth panels
-(setup / create-password / unlock) are driven by `GET /api/session`'s `state`:
+Buildless and embedded (`internal/transport/web/embed.go`, `//go:embed index.html
+static`): `index.html` is the markup (Alpine.js `x-data="agentApp"` on `<body>`),
+`static/app.js` holds the one Alpine component + every API call, `static/app.css`
+the design tokens (light `.q`, dark `.q.dark`; follows `prefers-color-scheme`
+unless the sidebar toggle pinned one in localStorage `quicc.agent.theme`),
+`static/alpine.min.js` is vendored Alpine **3.14.9** (header has the upstream
+sha256) and `static/fonts/` Inter 400-700 + JetBrains Mono 500-800 (latin,
+@fontsource 5.2.8). Third-party notices: `static/LICENSES.md`. No CDN — the Pi
+works offline. `GET /` (catch-all) serves index.html; `GET /static/`
+(`handleStatic`) serves files only — 404 for a missing file or a directory;
+JS/CSS `no-cache` + content ETag, fonts immutable for a year.
 
-- **Provisioning**: paste the admin-minted token (`POST /api/setup/token`) →
-  create a local password (`POST /api/setup/password`) → the app. Thereafter
-  `POST /api/login {password}` unlocks; `POST /api/logout` ends the session. A
-  signed session cookie (persisted secret, `session.go`) gates the web-UI-only
-  routes. See "Provisioning: token + local password" above for the full lifecycle.
-- **Live tab** = the **backup floor screen**: waiting (Accept with a prep pick)
-  / in kitchen (Ready) / ready deliveries (tick + Send out with a driver) / out
-  with drivers (Returned) / done, batch + next kitchen #, Close batch (confirms
-  leftovers). Live via its own `/api/events` (session cookie). **Drivers** tab:
-  add/rename/remove/reorder. **Settings**: Pair tablet (6-digit code) + paired
-  tablets (revoke). Cards also have **Reprint**
-  (`POST /api/orders/{id}/reprint`, print only) and **Resend**
-  (`POST /api/orders/{id}/resend`): an order still `arrived` is re-announced to
-  mobile (and printed if auto-accept is on); an `accepted` one is reprinted. (The
-  arrival upsert is insert-only, so Resend can't just re-run `OnArrival`.)
-- **History tab**: `GET /api/history` proxies main's `GET /api/v1/orders`
-  (paginated + search/filter/sort) using the stored key. Reprint of an old order
-  POSTs its fetched payload to `POST /api/print` (print only); Resend →
-  `POST /api/resend` (full arrival pipeline if the agent never had it, else as
-  above).
-- **Store-config tab** (read-only): `GET /api/store-config` proxies main's
-  `GET /store/v1/store-config`. Store details + printers are edited only in
-  main's `/app/store`, which pushes a fresh `store_config` frame over SSE; the SSE
-  client applies mid-stream frames exactly like the handshake (roster rebuild,
-  persist, printer report). The old POST/write-through + forced reconnect is gone.
+- **Alpine gotchas**: an `x-bind` whose value is `undefined` and whose expression
+  contains a `.` becomes `""` — so `:disabled="busy.x"` DISABLES the button; always
+  `!!`. `x-show` removes an inline `display`, so don't put `style="display:…"` on
+  an `x-show` element. Never keep an EventSource/timer in the reactive data (native
+  methods throw "Illegal invocation") — they live in the `priv` closure. Overlays
+  start `x-cloak` (`web/embed_test.go` checks it + `[x-cloak]{display:none !important}`).
+  A component property name shadows a helper of the same name (a driver `clock()`
+  once replaced the time formatter `clock()`).
+- **Provisioning screens** follow `/api/session` `state`: `unconfigured` → link with
+  the store manager login (`POST /api/setup/link`; result dialog lists `restored`)
+  or "Use an agent token instead" (`POST /api/setup/token`, forced when
+  `link_available` is false); `needs_password` → `POST /api/setup/password`;
+  `locked` → `POST /api/login` (username row only when `manager_login`; hint via
+  `GET /api/hint`). The 5 s session poll bounces out when `ready` is lost; any 401
+  from `api()` re-reads the session.
+- **Pages** (hash routes `#/overview`, `#/live`, … `#/settings/<tab>`):
+  **Overview** (home) — health strip (session SSE state, `/api/diag` printers +
+  Pi health, `/api/devices` + `/api/app/latest`), batch counts and money from
+  `/api/orders?batch=current` (cash = the one cash rule, card & prepaid = the
+  rest of the total, tips; waiting + cancelled orders excluded), needs-attention
+  (waiting orders, diag `problems`, `floor_backlog`, `acks_pending`), the drivers
+  table from `/api/batches/{id}/driver-reports` (batch picker), Print driver
+  reports, Close batch (styled confirm → 409 leftovers → "Close anyway").
+  **Live** = the backup floor screen mirroring Quibase's Kitchen: the OLDEST
+  waiting order (Quibase arrived sort; "Show" promotes another) as the full
+  lavender alert card (prep chips, ACCEPT, Resend, delivery address, "{n} WAITING"
+  pill; amber "STILL WAITING" after 2 min), the rest in a compact "Also waiting"
+  list (ACCEPT at the default prep), kitchen tickets sorted by
+  estimated ready time with the green→amber→red tone from `green_till_minutes`,
+  READY / Reprint, ready deliveries + driver chips → assign, out with drivers →
+  Returned, done list; agent SSE `/api/events` (beep on arrival/escalation, flash
+  on `drivers.dispatched`, reload on the rest incl. `floor.updated`, and reload on
+  every (re)open — `es.onopen` — since events sent while it was down are lost).
+- **Alerting while orders wait**: the AudioContext is created/resumed on the first
+  pointerdown/keydown (an "Enable sound" chip shows while it isn't running); the
+  1 s tick repeats the beep every 10 s while anything waits and sets
+  `document.title` to `(N) NEW ORDER — {store}`; a phone topbar badge and, off
+  Live, an "N ORDERS WAITING — OPEN LIVE" strip link to `#/live`. Needs attention
+  folds waiting orders into ONE row (never the vendor id).
+- **Connection state**: `piReachable` goes false when the 5 s `/api/session`
+  poll (or any `api()` fetch) can't reach the Pi → header `NO PI` + red "Can't
+  reach the Pi — this screen is out of date." banner (big on Live, slim
+  elsewhere); coming back restarts SSE + reloads. A fetch TypeError becomes
+  `ApiError(code 'network')` with that text. Main down (`sse_state` ≠ connected)
+  → `RECONNECTING` / `OFFLINE` + the Live banner "Not connected to main — new
+  online orders can't arrive." History / Store info turn a 502-504 from the main
+  proxy into a friendly line with the raw error under Details (no toast). A
+  failed `/api/diag` → Printers/Pi cards "Couldn't check · retrying…".
+- Destructive/risky confirms focus Cancel (`danger` or `focusCancel`): close
+  batch, auto-accept ON, revoke, unlink. History Resend asks first; History
+  pages fetch `num+1` rows to know if Next exists.
+  **Drivers**, **History** (`/api/history` proxy; Reprint `/api/print`, Resend
+  `/api/resend`), **Printers** (`/api/printers` + diag roster ids/roles; test,
+  probe, sample), **Settings**: Orders (auto-accept), Kitchen tickets (floor
+  prefs), Receipts (`/api/settings/receipt` + paper preview; Print a sample saves
+  first — the sample uses saved prefs), Daily clock-out, Tablets (pairing code,
+  revoke, cached Quibase), Store info (read-only `/api/store-config`), Account
+  (password change hidden when `manager_login`; Log out; Unlink).
+- Toasts + styled dialogs replace every `alert()`/`confirm()`.
+- Dev hot reload: `.air.toml` `include_ext` includes js/css, so editing
+  `static/app.js`/`app.css` rebuilds the embedded binary like index.html does.
+- UI check without a main: a mock API (any static server that answers the
+  `/api/*` shapes) + `chrome-headless-shell` from `~/.cache/ms-playwright`.
 
 **Auth split**: floor routes (`/api/floor`, `/api/orders*`, `/api/deliveries/*`,
 `/api/drivers*`, `/api/batches`, `/api/batch/close`, `/api/printers*`,
@@ -574,7 +620,7 @@ longer LAN-open; `POST /api/pair` is open (needs a live code); the web-UI surfac
 | HTTP server wiring | `internal/transport/server.go` (`Start` iterates the table) |
 | Schema | `sql/schema.sql` + `internal/migrate/sql/*.sql` |
 | Env vars | `internal/config/config.go` |
-| Web UI (login, tabs, reprint/resend) | `internal/transport/web/index.html` |
+| Web UI (markup / logic / styles) | `internal/transport/web/index.html`, `web/static/app.js`, `web/static/app.css` |
 | Web-UI handlers + session gate | `internal/transport/server_web.go`, `session.go` |
 | HTTP client to main/ (verify + proxy + self-revoke) | `internal/infra/mainclient/client.go` |
 | CI (arm64 releases) | `.github/workflows/build.yml` |

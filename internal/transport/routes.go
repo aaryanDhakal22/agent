@@ -32,6 +32,7 @@ func (s *Server) routes() []routeDef {
 	return []routeDef{
 		// Web UI — served by the agent binary itself (no nginx).
 		{"GET", "/", "none", "Embedded web UI (SPA); 404s unmatched /api/* GETs", s.handleUI},
+		{"GET", "/static/", "none", "Web UI assets (app.js/css, Alpine.js, fonts); 404 for a missing file or a directory", s.handleStatic},
 		{"OPTIONS", "/", "none", "CORS preflight for any route", s.handleCORSPreflight},
 
 		// Introspection.
