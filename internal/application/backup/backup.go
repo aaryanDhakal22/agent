@@ -35,11 +35,13 @@ type Service struct {
 
 	// Hour is the local hour the nightly backup runs at.
 	Hour int
+	// TempDir holds the VACUUM INTO copy while it uploads (os.TempDir()).
+	TempDir string
 }
 
 func New(db *sql.DB, dbPath string, upload Uploader, settings Settings, configured func() bool, loc func() *time.Location, logger zerolog.Logger) *Service {
 	return &Service{db: db, dbPath: dbPath, upload: upload, settings: settings, configured: configured, loc: loc,
-		Hour: 4, logger: logger.With().Str("module", "backup").Logger()}
+		Hour: 4, TempDir: os.TempDir(), logger: logger.With().Str("module", "backup").Logger()}
 }
 
 // Run checks every 10 minutes whether a backup is due: once a day after Hour
@@ -85,7 +87,10 @@ func (s *Service) due(ctx context.Context, now time.Time) bool {
 
 // Now takes a backup and uploads it; returns the uploaded size.
 func (s *Service) Now(ctx context.Context) (int, error) {
-	tmp := filepath.Join(filepath.Dir(s.dbPath), fmt.Sprintf(".backup-%d.db", time.Now().UnixNano()))
+	// The copy goes to the temp dir, not next to the database: on the Pi the
+	// agent unit has PrivateTmp and /tmp is RAM, so the nightly copy costs no
+	// SD-card writes.
+	tmp := filepath.Join(s.TempDir, fmt.Sprintf("quicc-backup-%d.db", time.Now().UnixNano()))
 	defer os.Remove(tmp)
 	// VACUUM INTO writes a consistent, compacted copy without stopping writers.
 	if _, err := s.db.ExecContext(ctx, "VACUUM INTO ?", tmp); err != nil {

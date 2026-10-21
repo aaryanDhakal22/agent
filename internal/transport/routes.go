@@ -80,9 +80,12 @@ func (s *Server) routes() []routeDef {
 		{"GET", "/api/batches/{id}/driver-reports", "device", "Per-driver delivery/cash/tip reports for a batch (0 = open)", s.handleDriverReports},
 		{"POST", "/api/batches/{id}/driver-reports/print", "device", "Print one driver-report slip per driver (receipt printer)", s.handlePrintDriverReports},
 		{"GET", "/api/printers", "device", "Printer reachability snapshot", s.handleListPrinters},
+		{"GET", "/api/printers/found", "device", "Printers seen on the LAN (TCP 9100) {scanned_at, scanning, printers:[{ip, mac, known, printer_name}]}; ?refresh=1 scans now", s.handlePrintersFound},
+		{"POST", "/api/printers/add", "device", "Add a found printer {name, ip, mac} -> RPC printer.add -> 201 {id, name, ip} | 409 name_taken | 400 | 503 main_offline", s.handlePrinterAdd},
 		{"GET", "/api/printers/{name}", "device", "One printer's status", s.handleGetPrinter},
 		{"GET", "/api/app/latest", "device", "Newest Quibase release cached for tablets (204 none)", s.handleAppLatest},
 		{"GET", "/api/app/apk", "device", "Download the cached Quibase APK", s.handleAppAPK},
+		{"GET", "/api/update/status", "device", "Pi update state: versions, latest, pending request, last result, can_update_now/blocked_reason", s.handleUpdateStatus},
 		{"GET", "/api/events", "device", "SSE: order.arrived|updated|escalated, drivers.updated|dispatched, batch.closed", s.handleEvents},
 
 		// Quibase setup + diagnostics — paired tablet (or web-UI session).
@@ -111,6 +114,8 @@ func (s *Server) routes() []routeDef {
 		{"GET", "/api/settings/auto-accept", "session", "Read the auto-accept toggle", s.handleGetAutoAccept},
 		{"PUT", "/api/settings/auto-accept", "session", "Write the auto-accept toggle", s.handleSetAutoAccept},
 		{"POST", "/api/settings/password", "session", "Change the local UI password (current + new + hint)", s.handleChangePassword},
+		{"POST", "/api/update", "session", "Update this Pi now (right after Close batch only) -> 202 {id, state} | 409 {code} | 501 not_supported", s.handleUpdate},
+		{"POST", "/api/update/rollback", "session", "Roll this Pi back to the previous release (no open orders) -> 202 | 409 | 501", s.handleRollback},
 		{"POST", "/api/settings/unlink", "session", "Revoke this device on main + wipe local token & password", s.handleUnlink},
 	}
 }

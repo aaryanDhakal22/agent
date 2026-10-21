@@ -183,6 +183,27 @@ func (q *Queries) CountDeliveriesInBatch(ctx context.Context, batchID int64) ([]
 	return items, nil
 }
 
+const countOpenBatchOrders = `-- name: CountOpenBatchOrders :one
+
+SELECT CAST(count(*) AS INTEGER) AS total,
+       CAST(COALESCE(SUM(CASE WHEN state IN ('arrived', 'accepted', 'ready', 'on_delivery') THEN 1 ELSE 0 END), 0) AS INTEGER) AS active
+FROM orders
+WHERE batch_id = (SELECT id FROM batches WHERE closed_at IS NULL ORDER BY id DESC LIMIT 1)
+`
+
+type CountOpenBatchOrdersRow struct {
+	Total  int64 `json:"total"`
+	Active int64 `json:"active"`
+}
+
+// Pi updates (2.0.6) ----------------------------------------------------------
+func (q *Queries) CountOpenBatchOrders(ctx context.Context) (CountOpenBatchOrdersRow, error) {
+	row := q.db.QueryRowContext(ctx, countOpenBatchOrders)
+	var i CountOpenBatchOrdersRow
+	err := row.Scan(&i.Total, &i.Active)
+	return i, err
+}
+
 const countUnsyncedFloorEvents = `-- name: CountUnsyncedFloorEvents :one
 SELECT count(*) FROM floor_events WHERE synced_at IS NULL
 `
@@ -631,6 +652,22 @@ func (q *Queries) GetUIPassword(ctx context.Context) (GetUIPasswordRow, error) {
 	row := q.db.QueryRowContext(ctx, getUIPassword)
 	var i GetUIPasswordRow
 	err := row.Scan(&i.UiPasswordHash, &i.UiPasswordHint)
+	return i, err
+}
+
+const getUpdateState = `-- name: GetUpdateState :one
+SELECT update_job, update_notified FROM settings WHERE id = 1
+`
+
+type GetUpdateStateRow struct {
+	UpdateJob      string `json:"update_job"`
+	UpdateNotified string `json:"update_notified"`
+}
+
+func (q *Queries) GetUpdateState(ctx context.Context) (GetUpdateStateRow, error) {
+	row := q.db.QueryRowContext(ctx, getUpdateState)
+	var i GetUpdateStateRow
+	err := row.Scan(&i.UpdateJob, &i.UpdateNotified)
 	return i, err
 }
 
@@ -1257,6 +1294,40 @@ func (q *Queries) ListPairedDevices(ctx context.Context) ([]PairedDevice, error)
 			&i.CreatedAt,
 			&i.LastSeenAt,
 			&i.RevokedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listPrinterMACs = `-- name: ListPrinterMACs :many
+
+SELECT printer_id, mac, ip, seen_at FROM printer_macs ORDER BY printer_id
+`
+
+// Printer MACs (2.0.6) --------------------------------------------------------
+func (q *Queries) ListPrinterMACs(ctx context.Context) ([]PrinterMac, error) {
+	rows, err := q.db.QueryContext(ctx, listPrinterMACs)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []PrinterMac
+	for rows.Next() {
+		var i PrinterMac
+		if err := rows.Scan(
+			&i.PrinterID,
+			&i.Mac,
+			&i.Ip,
+			&i.SeenAt,
 		); err != nil {
 			return nil, err
 		}
@@ -2026,6 +2097,24 @@ func (q *Queries) SetUIPassword(ctx context.Context, arg SetUIPasswordParams) er
 	return err
 }
 
+const setUpdateJob = `-- name: SetUpdateJob :exec
+UPDATE settings SET update_job = ? WHERE id = 1
+`
+
+func (q *Queries) SetUpdateJob(ctx context.Context, updateJob string) error {
+	_, err := q.db.ExecContext(ctx, setUpdateJob, updateJob)
+	return err
+}
+
+const setUpdateNotified = `-- name: SetUpdateNotified :exec
+UPDATE settings SET update_notified = ? WHERE id = 1
+`
+
+func (q *Queries) SetUpdateNotified(ctx context.Context, updateNotified string) error {
+	_, err := q.db.ExecContext(ctx, setUpdateNotified, updateNotified)
+	return err
+}
+
 const touchPairedDevice = `-- name: TouchPairedDevice :exec
 UPDATE paired_devices SET last_seen_at = ? WHERE id = ?
 `
@@ -2074,6 +2163,28 @@ func (q *Queries) UpsertArrivedOrder(ctx context.Context, arg UpsertArrivedOrder
 		return 0, err
 	}
 	return result.RowsAffected()
+}
+
+const upsertPrinterMAC = `-- name: UpsertPrinterMAC :exec
+INSERT INTO printer_macs (printer_id, mac, ip, seen_at) VALUES (?, ?, ?, ?)
+ON CONFLICT (printer_id) DO UPDATE SET mac = excluded.mac, ip = excluded.ip, seen_at = excluded.seen_at
+`
+
+type UpsertPrinterMACParams struct {
+	PrinterID string `json:"printer_id"`
+	Mac       string `json:"mac"`
+	Ip        string `json:"ip"`
+	SeenAt    string `json:"seen_at"`
+}
+
+func (q *Queries) UpsertPrinterMAC(ctx context.Context, arg UpsertPrinterMACParams) error {
+	_, err := q.db.ExecContext(ctx, upsertPrinterMAC,
+		arg.PrinterID,
+		arg.Mac,
+		arg.Ip,
+		arg.SeenAt,
+	)
+	return err
 }
 
 const upsertStoreConfig = `-- name: UpsertStoreConfig :exec

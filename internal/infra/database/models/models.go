@@ -80,6 +80,13 @@ type PairedDevice struct {
 	RevokedAt  sql.NullString `json:"revoked_at"`
 }
 
+type PrinterMac struct {
+	PrinterID string `json:"printer_id"`
+	Mac       string `json:"mac"`
+	Ip        string `json:"ip"`
+	SeenAt    string `json:"seen_at"`
+}
+
 type Setting struct {
 	ID                     int64  `json:"id"`
 	AutoAccept             bool   `json:"auto_accept"`
@@ -107,6 +114,8 @@ type Setting struct {
 	DeviceID               string `json:"device_id"`
 	LastBackupAt           string `json:"last_backup_at"`
 	ReceiptPrefs           string `json:"receipt_prefs"`
+	UpdateJob              string `json:"update_job"`
+	UpdateNotified         string `json:"update_notified"`
 }
 
 type StoreConfig struct {

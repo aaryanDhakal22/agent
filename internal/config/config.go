@@ -45,6 +45,16 @@ type Config struct {
 	// (AGENT_DISCOVERY_PORT, default 48080; 0 disables discovery).
 	DiscoveryPort int
 
+	// UpdateDir (AGENT_UPDATE_DIR, default: the database's directory) is where
+	// update.request / update.status live. Self-update works only on a Pi
+	// (APP_ENV prod|staging, dir /var/lib/quicc-agent, root updater
+	// installed) or with AGENT_UPDATE_ENABLED=1 (tests).
+	UpdateDir     string
+	UpdateEnabled bool
+	// UtilityURL (UTILITY_URL) serves the signed manifests the latest-version
+	// check reads; default https://utility.quiccpos.com.
+	UtilityURL string
+
 	// OpenTelemetry
 	OTELEndpoint    string // e.g. "home-server.lan:4317"; empty → noop providers
 	OTELServiceName string // default "quicc-agent"
@@ -68,9 +78,14 @@ func Load() (*Config, error) {
 
 		DiscoveryPort: getDiscoveryPort(),
 
+		UpdateEnabled: os.Getenv("AGENT_UPDATE_ENABLED") == "1",
+		UtilityURL:    os.Getenv("UTILITY_URL"),
+
 		OTELEndpoint:    os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT"),
 		OTELServiceName: getEnvDefault("OTEL_SERVICE_NAME", "quicc-agent"),
 	}
+
+	cfg.UpdateDir = getEnvDefault("AGENT_UPDATE_DIR", filepath.Dir(cfg.AgentDBPath))
 
 	if cfg.MainServerURL == "" {
 		return nil, fmt.Errorf("MAIN_SERVER_URL is required")

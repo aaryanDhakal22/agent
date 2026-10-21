@@ -25,6 +25,8 @@ type Querier interface {
 	CountAllDrivers(ctx context.Context) (int64, error)
 	CountAllOrders(ctx context.Context) (int64, error)
 	CountDeliveriesInBatch(ctx context.Context, batchID int64) ([]CountDeliveriesInBatchRow, error)
+	// Pi updates (2.0.6) ----------------------------------------------------------
+	CountOpenBatchOrders(ctx context.Context) (CountOpenBatchOrdersRow, error)
 	CountUnsyncedFloorEvents(ctx context.Context) (int64, error)
 	CreateDriver(ctx context.Context, arg CreateDriverParams) error
 	// Paired devices (counter tablets) -------------------------------------------
@@ -59,6 +61,7 @@ type Querier interface {
 	// Store config (starter pack from main/'s SSE handshake) --------------------
 	GetStoreConfig(ctx context.Context) (GetStoreConfigRow, error)
 	GetUIPassword(ctx context.Context) (GetUIPasswordRow, error)
+	GetUpdateState(ctx context.Context) (GetUpdateStateRow, error)
 	InsertBatchWithID(ctx context.Context, arg InsertBatchWithIDParams) error
 	// Floor events (sync outbox to main) -------------------------------------------
 	InsertFloorEvent(ctx context.Context, arg InsertFloorEventParams) error
@@ -81,6 +84,8 @@ type Querier interface {
 	// Arrived orders older than the cutoff that haven't been alerted since the cutoff.
 	ListOverdueArrived(ctx context.Context, cutoff string) ([]Order, error)
 	ListPairedDevices(ctx context.Context) ([]PairedDevice, error)
+	// Printer MACs (2.0.6) --------------------------------------------------------
+	ListPrinterMACs(ctx context.Context) ([]PrinterMac, error)
 	// Driver report: shifts that overlap a batch window (opened_at .. closed_at).
 	ListShiftsOverlapping(ctx context.Context, arg ListShiftsOverlappingParams) ([]DriverShift, error)
 	ListShiftsSince(ctx context.Context, clockIn string) ([]DriverShift, error)
@@ -132,12 +137,15 @@ type Querier interface {
 	SetSessionSecret(ctx context.Context, sessionSecret string) error
 	SetStoreAPIKey(ctx context.Context, storeApiKey string) error
 	SetUIPassword(ctx context.Context, arg SetUIPasswordParams) error
+	SetUpdateJob(ctx context.Context, updateJob string) error
+	SetUpdateNotified(ctx context.Context, updateNotified string) error
 	TouchPairedDevice(ctx context.Context, arg TouchPairedDeviceParams) error
 	// Orders -------------------------------------------------------------------
 	// Idempotent: SSE redelivery (or a reconnect-backlog replay) for the same
 	// canonical id is a no-op so we don't reset state to 'arrived'. The order joins
 	// the currently open batch; arrival_date falls back to the column DEFAULT.
 	UpsertArrivedOrder(ctx context.Context, arg UpsertArrivedOrderParams) (int64, error)
+	UpsertPrinterMAC(ctx context.Context, arg UpsertPrinterMACParams) error
 	UpsertStoreConfig(ctx context.Context, argContext string) error
 }
 

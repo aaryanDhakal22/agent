@@ -25,6 +25,9 @@ type StatusSnapshot struct {
 	// is updated; the old one is left untouched as historical context.
 	UpSince   *time.Time `json:"up_since,omitempty"`
 	DownSince *time.Time `json:"down_since,omitempty"`
+	// MAC is the hardware address the Pi learned for this printer from the
+	// ARP table after a successful probe ("" until then).
+	MAC string `json:"mac"`
 }
 
 // Registry is a small in-memory cache of the last probe result per printer.
@@ -38,6 +41,16 @@ type Registry struct {
 	// then). A probe that was already running when the roster changed must
 	// not bring a removed printer back.
 	roster map[string]bool
+	// macFor fills StatusSnapshot.MAC (printernet.Watcher). Called after
+	// the lock is released: it reads the dispatcher roster.
+	macFor func(name string) string
+}
+
+// SetMACLookup wires the learned-MAC lookup used by Get/All.
+func (r *Registry) SetMACLookup(f func(name string) string) {
+	r.mu.Lock()
+	r.macFor = f
+	r.mu.Unlock()
 }
 
 func NewRegistry() *Registry {
@@ -98,8 +111,12 @@ func (r *Registry) Record(name, ip string, up bool, probeErr error, at time.Time
 // registered.
 func (r *Registry) Get(name string) (StatusSnapshot, bool) {
 	r.mu.RLock()
-	defer r.mu.RUnlock()
 	s, ok := r.entries[name]
+	macFor := r.macFor
+	r.mu.RUnlock()
+	if ok && macFor != nil {
+		s.MAC = macFor(name)
+	}
 	return s, ok
 }
 
@@ -107,10 +124,16 @@ func (r *Registry) Get(name string) (StatusSnapshot, bool) {
 // mobile UI has a stable order.
 func (r *Registry) All() []StatusSnapshot {
 	r.mu.RLock()
-	defer r.mu.RUnlock()
 	out := make([]StatusSnapshot, 0, len(r.entries))
 	for _, s := range r.entries {
 		out = append(out, s)
+	}
+	macFor := r.macFor
+	r.mu.RUnlock()
+	if macFor != nil {
+		for i := range out {
+			out[i].MAC = macFor(out[i].Name)
+		}
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out

@@ -29,10 +29,12 @@ import (
 	"quiccpos/agent/internal/application/health"
 	orderApp "quiccpos/agent/internal/application/order"
 	printerApp "quiccpos/agent/internal/application/printer"
+	"quiccpos/agent/internal/application/printernet"
 	"quiccpos/agent/internal/application/recovery"
 	"quiccpos/agent/internal/application/retention"
 	ssecontroller "quiccpos/agent/internal/application/sseclient"
 	"quiccpos/agent/internal/application/statesync"
+	"quiccpos/agent/internal/application/update"
 	"quiccpos/agent/internal/config"
 	"quiccpos/agent/internal/domain/order"
 	domainprinter "quiccpos/agent/internal/domain/printer"
@@ -184,6 +186,20 @@ func main() {
 
 	dispatcher := printerApp.NewDispatcher(ctx, factory, printerRegistry, notifier, cfg.PrinterDetectDelay, receiptBuilder, logger, meters)
 
+	// Printers on the LAN: learn each roster printer's MAC after a good probe,
+	// follow one that moved to a new IP, list unknown ones for "add". The
+	// probe hook must be set before the first roster Apply (hydrate below);
+	// the RPC side is wired once the registry exists.
+	printerWatcher := printernet.New(printernet.Deps{
+		Store:  repositories.NewPrinterNetRepository(db),
+		Roster: dispatcher.RosterPrinters,
+		Status: printerRegistry.All,
+		Notify: notifier.Send,
+	}, logger)
+	printerWatcher.Load(ctx)
+	printerRegistry.SetMACLookup(printerWatcher.MACByName)
+	dispatcher.SetProbeHook(printerWatcher.OnProbe)
+
 	if saved, err := storeConfigRepo.Get(ctx); err == nil && saved != nil {
 		storeCtx.Store(*saved)
 		dispatcher.Apply(ctx, saved.Printers)
@@ -238,11 +254,47 @@ func main() {
 	})
 	// Printer roster: main can pull it on demand …
 	registry.Register(agentrpc.MsgPrinterReportRequest, func(_ context.Context, _ json.RawMessage) (any, error) {
-		return printerApp.BuildReport(printerRegistry, version), nil
+		return printerApp.BuildReport(printerRegistry, version, printerWatcher.Unknown()), nil
 	})
 
 	sseCtrl := ssecontroller.New(ctx, cfg.MainServerURL, orderService, sink, registry, logger, meters)
 	rpcPoster.key = sseCtrl.CurrentKey
+	printerWatcher.SetMain(registry.Send, func() bool { return sseCtrl.Status().Connected })
+
+	// Pi updates: gate + drop update.request for the root updater, follow
+	// update.status, report agent.update.status, Pushover the developer.
+	exe, _ := os.Executable()
+	manifestEnv := update.ManifestEnv(cfg.AppEnv)
+	if manifestEnv == "" && cfg.UtilityURL != "" {
+		manifestEnv = "staging" // tests point UTILITY_URL at a fake
+	}
+	updater := update.New(update.Config{
+		Dir:       cfg.UpdateDir,
+		Supported: update.Supported(cfg.AppEnv, cfg.UpdateDir, cfg.UpdateEnabled),
+		Version:   version,
+		Commit:    commit,
+		Env:       cfg.AppEnv,
+		StoreName: func() string { sc, _ := storeCtx.Load().(storeconfig.StoreContext); return sc.StoreName() },
+	}, orderRepo.CountOpenBatchOrders, settingsRepo, registry.Report, notifier.Send,
+		update.NewLatest(update.ManifestURL(cfg.UtilityURL, manifestEnv), exe), logger)
+	updater.Load(ctx)
+	updateCmd := func(action string) agentrpc.CommandHandler {
+		return func(rc context.Context, payload json.RawMessage) (any, error) {
+			var p struct {
+				ID          string `json:"id"`
+				Force       bool   `json:"force"`
+				RequestedBy string `json:"requested_by"`
+			}
+			_ = json.Unmarshal(payload, &p)
+			// Replies at once: the root updater does the work, the status
+			// loop reports its progress (agent.update.status).
+			return updater.Request(rc, action, p.Force, p.RequestedBy, p.ID), nil
+		}
+	}
+	registry.Register(update.MsgUpdate, updateCmd(update.ActionUpdate))
+	registry.Register(update.MsgRollback, updateCmd(update.ActionRollback))
+	go updater.Run(ctx)
+	go printerWatcher.Run(ctx)
 
 	// Delivery guarantee: every stored order (new or a redelivery) is acked
 	// to main, which re-sends anything unacked after 10 s.
@@ -281,6 +333,7 @@ func main() {
 			at, _ := settingsRepo.GetLastBackup(rc)
 			return at
 		},
+		Update: func(rc context.Context) any { return updater.Health(rc) },
 	}, registry.Report, sseCtrl.Configured, cfg.AgentDBPath, version, logger)
 	go heartbeat.Run(ctx, 5*time.Minute)
 
@@ -355,7 +408,7 @@ func main() {
 		if !sseCtrl.Configured() {
 			return
 		}
-		if err := registry.Report(rc, agentrpc.MsgPrinterReport, printerApp.BuildReport(printerRegistry, version)); err != nil {
+		if err := registry.Report(rc, agentrpc.MsgPrinterReport, printerApp.BuildReport(printerRegistry, version, printerWatcher.Unknown())); err != nil {
 			logger.Debug().Ctx(rc).Err(err).Msg("printer.report push failed")
 		}
 	}
@@ -403,6 +456,7 @@ func main() {
 	httpServer := transport.NewServer(orderService, broker, printerRegistry, settingsRepo, sseCtrl, mainClient, session, deviceRepo, cfg.HTTPPort, version, commit, logger)
 	httpServer.SetAltPort(cfg.HTTPAltPort)
 	httpServer.SetAppUpdater(appUpdater)
+	httpServer.SetUpdates(updater, printerWatcher)
 	httpServer.SetDiag(transport.DiagDeps{
 		Dispatcher:  dispatcher,
 		Health:      heartbeat,

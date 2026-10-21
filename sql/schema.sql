@@ -121,6 +121,10 @@ CREATE TABLE settings (
     last_backup_at            text NOT NULL DEFAULT '',
     -- 00010_receipt_prefs: receipt settings (JSON; missing keys = defaults).
     receipt_prefs             text NOT NULL DEFAULT '{}',
+    -- 00011_updates_printer_macs: the latest Pi update request (JSON) + the
+    -- "<id>:<state>" already announced by Pushover.
+    update_job                text NOT NULL DEFAULT '',
+    update_notified           text NOT NULL DEFAULT '',
     CHECK (id = 1)
 );
 
@@ -129,4 +133,12 @@ CREATE TABLE store_config (
     context    text    NOT NULL DEFAULT '{}',
     updated_at text    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     CHECK (id = 1)
+);
+
+-- 00011_updates_printer_macs: learned printer hardware addresses.
+CREATE TABLE printer_macs (
+    printer_id text PRIMARY KEY,
+    mac        text NOT NULL,
+    ip         text NOT NULL,
+    seen_at    text NOT NULL
 );
