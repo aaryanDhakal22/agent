@@ -395,6 +395,7 @@ func main() {
 		return settingsRepo.SetSessionSecret(context.Background(), hexSecret)
 	})
 	httpServer := transport.NewServer(orderService, broker, printerRegistry, settingsRepo, sseCtrl, mainClient, session, deviceRepo, cfg.HTTPPort, version, commit, logger)
+	httpServer.SetAltPort(cfg.HTTPAltPort)
 	httpServer.SetAppUpdater(appUpdater)
 	httpServer.SetDiag(transport.DiagDeps{
 		Dispatcher:  dispatcher,

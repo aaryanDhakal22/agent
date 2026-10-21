@@ -277,3 +277,16 @@ def diag_admin_get(report_id: str) -> dict:
     r = requests.get(f"{ADMIN_V1}/diag-reports/{report_id}", headers={"Authorization": f"Bearer {ADMIN_API_KEY}"}, timeout=10)
     assert r.status_code == 200, r.text
     return r.json()
+
+
+def test_second_http_port_serves_the_same_api(spawn_agent) -> None:
+    """HTTP_ALT_PORT (80 on a Pi) serves the same API + web UI as HTTP_PORT."""
+    with closing(socket.socket(socket.AF_INET, socket.SOCK_STREAM)) as s:
+        s.bind(("127.0.0.1", 0))
+        alt = s.getsockname()[1]
+    a = spawn_agent(HTTP_ALT_PORT=str(alt))
+    alt_base = f"http://127.0.0.1:{alt}"
+    v = wait_until(lambda: requests.get(f"{alt_base}/api/version", timeout=1).json(), timeout=10,
+                   what="second port answering")
+    assert v == requests.get(f"{a.base}/api/version", timeout=5).json()
+    assert requests.get(f"{alt_base}/api/session", timeout=5).json()["state"] == a.session()["state"]

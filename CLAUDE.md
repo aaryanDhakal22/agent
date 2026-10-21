@@ -423,7 +423,7 @@ removed — they buried the real alerts).
 Required: `MAIN_SERVER_URL`.
 Optional: `AGENT_DB_PATH` (SQLite file, default `~/.quicc/agent.db`),
 `AGENT_KEEP_BATCHES` (closed batches kept locally, default 3),
-`HTTP_PORT` (8080), `PRINTER_DETECT_DELAY` (25 s), `LOG_LEVEL`,
+`HTTP_PORT` (8080), `HTTP_ALT_PORT` (second port with the same handler — 80 on a Pi; off by default), `PRINTER_DETECT_DELAY` (25 s), `LOG_LEVEL`,
 `LOG_OUTPUT` (`console`|`json`|`file`; `file` → lumberjack-rotated
 `log/agent.log`), `PUSHOVER_APP_TOKEN`, `PUSHOVER_USER_KEY`, `PUSHOVER_BOSS_KEY`,
 `OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_SERVICE_NAME` (default `quicc-agent`),

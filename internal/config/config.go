@@ -21,9 +21,12 @@ const defaultDiscoveryPort = 48080
 // come from main/'s store_config handshake on SSE connect and persist in
 // the agent's SQLite DB. Same for store identity (name, address, phone).
 type Config struct {
-	AppEnv             string
-	MainServerURL      string
-	HTTPPort           string
+	AppEnv        string
+	MainServerURL string
+	HTTPPort      string
+	// HTTPAltPort (HTTP_ALT_PORT, optional) is a second port serving the same
+	// API + web UI — 80 on a Pi, so the address needs no ":8080". Empty = off.
+	HTTPAltPort        string
 	LogLevel           string // trace|debug|info|warn|error — default "info"
 	LogOutput          string // console|json|file — default "console"
 	PrinterDetectDelay time.Duration
@@ -52,6 +55,7 @@ func Load() (*Config, error) {
 		AppEnv:             getEnvDefault("APP_ENV", "dev"),
 		MainServerURL:      os.Getenv("MAIN_SERVER_URL"),
 		HTTPPort:           getEnvDefault("HTTP_PORT", "8080"),
+		HTTPAltPort:        getEnvDefault("HTTP_ALT_PORT", ""),
 		PrinterDetectDelay: getPrinterDetectDelay(),
 		PushoverAppToken:   os.Getenv("PUSHOVER_APP_TOKEN"),
 		PushoverUserKey:    os.Getenv("PUSHOVER_USER_KEY"),
