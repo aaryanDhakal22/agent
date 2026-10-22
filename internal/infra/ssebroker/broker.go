@@ -65,10 +65,11 @@ func (b *Broker) Subscribers() int {
 // trace on its side. For now mobile is uninstrumented — the fields are there
 // for forward-compat and to keep the pattern consistent across hops.
 type orderArrivedPayload struct {
-	Order       order.Snapshot `json:"order"`
-	Status      order.Status   `json:"status"`
-	Traceparent string         `json:"_traceparent,omitempty"`
-	Tracestate  string         `json:"_tracestate,omitempty"`
+	Order       order.Snapshot  `json:"order"`
+	Status      order.Status    `json:"status"`
+	Geo         *order.OrderGeo `json:"geo,omitempty"`
+	Traceparent string          `json:"_traceparent,omitempty"`
+	Tracestate  string          `json:"_tracestate,omitempty"`
 }
 
 // PublishArrived announces a freshly-arrived order to any connected mobile
@@ -92,6 +93,7 @@ func (b *Broker) PublishArrived(ctx context.Context, so order.StoredOrder) {
 	payload := orderArrivedPayload{
 		Order:       so.Order,
 		Status:      so.Status,
+		Geo:         so.Geo,
 		Traceparent: carrier["traceparent"],
 		Tracestate:  carrier["tracestate"],
 	}
@@ -111,7 +113,11 @@ func (b *Broker) PublishUpdated(so order.StoredOrder) {
 
 // PublishEscalated re-announces an order nobody has accepted yet.
 func (b *Broker) PublishEscalated(so order.StoredOrder, waitingSeconds int64) {
-	b.publishJSON("order.escalated", map[string]any{"order": so.Order, "status": so.Status, "waiting_seconds": waitingSeconds})
+	m := map[string]any{"order": so.Order, "status": so.Status, "waiting_seconds": waitingSeconds}
+	if so.Geo != nil {
+		m["geo"] = so.Geo
+	}
+	b.publishJSON("order.escalated", m)
 }
 
 // PublishDrivers sends the whole driver roster (queue order).

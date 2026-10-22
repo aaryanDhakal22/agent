@@ -23,10 +23,10 @@ func (r *resetRepo) SetDriverResetTime(_ context.Context, hhmm string) error {
 	r.reset.Time = hhmm
 	return nil
 }
-func (r *resetRepo) AutoClockOut(_ context.Context, at time.Time) (int, error) {
+func (r *resetRepo) AutoClockOut(_ context.Context, at time.Time) (int, []order.StoredOrder, error) {
 	r.runs = append(r.runs, at)
 	r.reset.LastRun = &at
-	return 0, nil
+	return 0, nil, nil
 }
 
 func TestDriverResetRunsOncePerDayAtLocalTime(t *testing.T) {

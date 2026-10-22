@@ -33,6 +33,7 @@ func (s *Server) routes() []routeDef {
 		// Web UI — served by the agent binary itself (no nginx).
 		{"GET", "/", "none", "Embedded web UI (SPA); 404s unmatched /api/* GETs", s.handleUI},
 		{"GET", "/static/", "none", "Web UI assets (app.js/css, Alpine.js, fonts); 404 for a missing file or a directory", s.handleStatic},
+		{"GET", "/api/map.pmtiles", "none", "The store's offline map (PMTiles, Range supported, max-age 1 day); 404 until downloaded", s.handleMapFile},
 		{"OPTIONS", "/", "none", "CORS preflight for any route", s.handleCORSPreflight},
 
 		// Introspection.
@@ -55,7 +56,7 @@ func (s *Server) routes() []routeDef {
 		{"POST", "/api/pair", "none", "Pair a tablet: {code, name} -> device key (shown once)", s.handlePair},
 
 		// Floor — paired tablet (X-Agent-Device-Key) or web-UI session.
-		{"GET", "/api/floor", "device", "Open batch, kitchen counter, prep quick-picks, sync backlog", s.handleFloor},
+		{"GET", "/api/floor", "device", "Open batch, kitchen counter, prep quick-picks, sync backlog, delivery settings, store pin + map", s.handleFloor},
 		{"GET", "/api/orders", "device", "Orders newest-first (?batch=current|all|<id>, default current)", s.handleListOrders},
 		{"GET", "/api/orders/arrived", "device", "Orders awaiting acceptance (oldest-first)", s.handleListArrived},
 		{"GET", "/api/orders/{id}", "device", "One local order by canonical UUID", s.handleGetOrder},
@@ -63,7 +64,14 @@ func (s *Server) routes() []routeDef {
 		{"POST", "/api/orders/{id}/ready", "device", "Mark an accepted order ready", s.handleReady},
 		{"POST", "/api/orders/{id}/reprint", "device", "Reprint the customer receipt only (no state change)", s.handleReprint},
 		{"POST", "/api/orders/{id}/kitchen", "device", "Resend to kitchen: the station tickets only (no receipt, ignores pickup-cash) -> 200 {order, printed, failed, rerouted} | 409 not_accepted / nothing_for_kitchen | 502 print_failed | 404", s.handleResendKitchen},
-		{"POST", "/api/deliveries/assign", "device", "Send ready deliveries out with a driver {driver_id, order_ids}", s.handleAssign},
+		{"POST", "/api/deliveries/assign", "device", "Send ready deliveries out with a driver {driver_id, order_ids} (pre-1.4.0 Quibase; the orders leave their pools)", s.handleAssign},
+		{"POST", "/api/deliveries/pool", "device", "Pool deliveries (accepted|ready) with an available driver {order_ids, driver_id|null = unassign}, all or nothing -> []StoredOrder | 400 | 404 not_found/driver_not_found | 409 invalid_state/driver_not_available", s.handlePool},
+		{"POST", "/api/deliveries/auto-plan", "device", "AUTO: suggest runs for the available drivers (changes nothing; stored for confirm) -> {plan_id, runs, unassigned, ...} | 409 no_drivers", s.handleAutoPlan},
+		{"POST", "/api/deliveries/auto-plan/{id}/confirm", "device", "AUTO confirm {order_ids?}: pool each still-valid suggestion (only those ids when given) -> {applied, skipped:[{order_id, reason}]} | 404", s.handleConfirmPlan},
+		{"POST", "/api/drivers/{id}/send-out", "device", "Send the driver out with their pool {mark_ready, include_order_ids?, plan_id?} -> []StoredOrder | 400 pool empty | 409 not_ready {order_ids}/driver_not_available", s.handleSendOut},
+		{"GET", "/api/drivers/{id}/pool/trip", "device", "The pool (or ?order_ids=a,b) in fastest driving order + route via main geo.trip (approximate local order when main is unreachable)", s.handlePoolTrip},
+		{"POST", "/api/orders/{id}/pin", "device", "Drop a pin for a delivery address {lat, lng} -> RPC geo.pin -> 202 {} | 503 main_offline", s.handlePinOrder},
+		{"PUT", "/api/settings/deliveries", "device", "AUTO settings {soon_ready_minutes 0-30, delivery_target_minutes 15-120} -> 200 same | 400", s.handleSetDeliveryPrefs},
 		{"GET", "/api/drivers", "device", "Driver roster in queue order (+ deliveries this batch)", s.handleListDrivers},
 		{"POST", "/api/drivers", "device", "Add a driver {name}", s.handleCreateDriver},
 		{"POST", "/api/drivers/reorder", "device", "Set the queue order {ids}", s.handleReorderDrivers},

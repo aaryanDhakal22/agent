@@ -36,6 +36,7 @@ type Repository interface {
 	RevertAccept(ctx context.Context, id uuid.UUID) error
 
 	FloorRepository
+	PoolRepository
 }
 
 // SettingsRepository owns the singleton settings row.

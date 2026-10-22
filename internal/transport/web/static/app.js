@@ -219,7 +219,7 @@ function agentApp() {
 
     // --- floor (Live, Overview, Drivers) ---
     floor: null, orders: [], drivers: [], floorErr: '', floorLoaded: false,
-    prep: {}, busy: {}, errs: {}, selected: [], pickDriver: '', showDone: false, focusWait: '',
+    prep: {}, busy: {}, errs: {}, showDone: false, focusWait: '',
 
     // --- overview ---
     diag: null, diagErr: false, devices: [], devicesLoaded: false, appLatest: null, batches: [], reportBatch: 'current', reports: [], reportsErr: '',
@@ -238,7 +238,7 @@ function agentApp() {
     upd: null, updErr: '', updBusy: '',
 
     // --- settings ---
-    autoAccept: false, autoAcceptLoaded: false, floorForm: { green: '', tiptax: '' },
+    autoAccept: false, autoAcceptLoaded: false, floorForm: { green: '', tiptax: '' }, deliveryForm: { soon: '', target: '' },
     rcpt: null, rcptForm: null, footMode: 'default', customFooter: '', rcptPreview: 'r', rcptErr: '', rcptBusy: '',
     pair: null, storeCfg: null, storeCfgErr: '', storeCfgErrRaw: '',
     cp: { current: '', next: '', confirm: '', hint: '', err: '', busy: false },
@@ -605,10 +605,6 @@ function agentApp() {
       }
     },
     syncFloorUI() {
-      const ready = new Set(this.readyDeliveries.map(so => so.order.id));
-      this.selected = this.selected.filter(id => ready.has(id));
-      const avail = this.availableDrivers;
-      if (!avail.some(d => d.id === this.pickDriver)) this.pickDriver = avail.length ? avail[0].id : '';
       for (const so of this.waiting) if (!this.prep[so.order.id]) this.prep[so.order.id] = this.defaultPrep;
       for (const d of this.drivers) {
         if (this.names[d.id] === undefined || this.names[d.id] === this.origNames[d.id]) this.names[d.id] = d.name;
@@ -646,7 +642,21 @@ function agentApp() {
         return (ts(a.status.accepted_at) || Infinity) - (ts(b.status.accepted_at) || Infinity);
       });
     },
-    get readyDeliveries() { return this.orders.filter(so => so.status.state === 'ready' && isDelivery(so)).sort(byTime(so => ts(so.status.ready_at))); },
+    // Deliveries no driver's pool holds yet (cooking + ready), oldest placed first.
+    get unassignedDeliveries() {
+      return this.orders.filter(so => isDelivery(so) && (so.status.state === 'accepted' || so.status.state === 'ready') && !so.status.pool_driver_id)
+        .sort(byTime(so => ts(so.order.placed_at) || arrivedAt(so)));
+    },
+    // Read-only pools: one per available driver in queue order (next on top).
+    get driverPools() {
+      return this.availableDrivers.map((d, i) => ({
+        d, next: i === 0,
+        orders: this.orders.filter(so => so.status.pool_driver_id === d.id && (so.status.state === 'accepted' || so.status.state === 'ready'))
+          // Stop order (pool_seq: the plan's or the fastest driving order); unnumbered last.
+          .sort((a, b) => (a.status.pool_seq || 1e9) - (b.status.pool_seq || 1e9) || (ts(a.status.pooled_at) - ts(b.status.pooled_at))),
+      }));
+    },
+    street(snap) { const a = snap && snap.fulfillment && snap.fulfillment.address; return (a && a.line1 ? a.line1 : '').trim(); },
     get onDelivery() { return this.orders.filter(so => so.status.state === 'on_delivery'); },
     get doneOrders() {
       return this.orders.filter(so => {
@@ -660,12 +670,6 @@ function agentApp() {
         const os = this.onDelivery.filter(so => so.status.driver_id === d.id).sort(byTime(so => ts(so.status.out_at)));
         return { d, orders: os, outAt: os.length ? ts(os[0].status.out_at) : 0 };
       });
-    },
-    get pickedDriver() { return this.availableDrivers.find(d => d.id === this.pickDriver) || null; },
-    get sendLabel() {
-      if (!this.availableDrivers.length) return 'NO DRIVER AVAILABLE';
-      const n = this.selected.length, who = this.pickedDriver ? this.pickedDriver.name.toUpperCase() : '…';
-      return n ? 'SEND ' + n + ' OUT WITH ' + who : 'SELECT ORDERS TO SEND OUT';
     },
     get batchOpenHours() { return this.floor && this.floor.batch ? (this.now - ts(this.floor.batch.opened_at)) / 3600000 : 0; },
 
@@ -746,20 +750,6 @@ function agentApp() {
       } catch (e) {
         this.toast(e.status === 502 ? 'Printer problem — nothing printed. ' + e.message : 'Not reprinted. ' + e.message, true);
       } finally { this.busy[key] = false; }
-    },
-    toggleSelect(id) { this.selected = this.selected.includes(id) ? this.selected.filter(x => x !== id) : [...this.selected, id]; },
-    selectAll() { this.selected = this.readyDeliveries.map(so => so.order.id); },
-    async sendOut() {
-      const d = this.pickedDriver;
-      if (!d || !this.selected.length || this.busy.send) return;
-      this.busy.send = true;
-      try {
-        await this.call('/api/deliveries/assign', { method: 'POST', body: { driver_id: d.id, order_ids: this.selected } });
-        this.toast('Sent ' + this.selected.length + ' out with ' + d.name);
-        this.selected = [];
-      } catch (e) {
-        this.toast(e.code === 'driver_not_available' ? d.name + " isn't available any more." : 'Not sent. ' + e.message, true);
-      } finally { this.busy.send = false; this.loadFloor(); }
     },
     async driverReturned(d) {
       const key = 'ret' + d.id;
@@ -1123,7 +1113,7 @@ function agentApp() {
     goSettings(id) { this.go('settings', id); },
     loadSettingsTab() {
       switch (this.settingsTab) {
-        case 'orders': this.loadAutoAccept(); break;
+        case 'orders': this.loadAutoAccept(); this.loadDeliveryPrefs(); break;
         case 'kitchen': this.loadFloorPrefs(); break;
         case 'receipts': this.loadReceipt(); this.loadStoreCfg(); this.loadPrinters(); break;
         case 'clockout': this.loadReset(); break;
@@ -1155,6 +1145,24 @@ function agentApp() {
     get floorDirty() {
       const f = this.floor, x = this.floorForm;
       return !!f && (Number(x.green) !== Number(f.green_till_minutes) || Number(x.tiptax) !== Number(f.tip_tax_percent));
+    },
+    async loadDeliveryPrefs() {
+      await this.loadFloor();
+      if (this.floor) this.deliveryForm = { soon: this.floor.soon_ready_minutes, target: this.floor.delivery_target_minutes };
+    },
+    get deliveryDirty() {
+      const f = this.floor, x = this.deliveryForm;
+      return !!f && (Number(x.soon) !== Number(f.soon_ready_minutes) || Number(x.target) !== Number(f.delivery_target_minutes));
+    },
+    async saveDeliveryPrefs() {
+      const soon = parseInt(this.deliveryForm.soon, 10), target = parseInt(this.deliveryForm.target, 10);
+      if (!(soon >= 0 && soon <= 30)) { this.toast('Soon-ready window: 0 to 30 minutes.', true); return; }
+      if (!(target >= 15 && target <= 120)) { this.toast('Delivery target: 15 to 120 minutes.', true); return; }
+      try {
+        await this.call('/api/settings/deliveries', { method: 'PUT', body: { soon_ready_minutes: soon, delivery_target_minutes: target } });
+        this.toast('Saved');
+        await this.loadDeliveryPrefs();
+      } catch (e) { this.toast('Not saved. ' + e.message, true); }
     },
     get resetDirty() { return !!this.reset.form && this.reset.form !== this.reset.time; },
     async saveFloorPrefs() {

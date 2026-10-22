@@ -16,12 +16,14 @@ type Querier interface {
 	// The kitchen number is kept across a revert + re-accept.
 	ClaimAccept(ctx context.Context, arg ClaimAcceptParams) (int64, error)
 	ClearAcceptPending(ctx context.Context, id string) error
+	ClearOrderPool(ctx context.Context, id string) error
 	// Unlink / definitive revoke: drop the store key AND the local password + hint
 	// in one statement, back to the blank "paste a token" state.
 	ClearProvisioning(ctx context.Context) error
 	ClockOutDriver(ctx context.Context, id string) (int64, error)
 	CloseBatch(ctx context.Context, arg CloseBatchParams) error
 	CloseShift(ctx context.Context, arg CloseShiftParams) error
+	ConfirmAutoPlan(ctx context.Context, arg ConfirmAutoPlanParams) error
 	CountAllDrivers(ctx context.Context) (int64, error)
 	CountAllOrders(ctx context.Context) (int64, error)
 	CountDeliveriesInBatch(ctx context.Context, batchID int64) ([]CountDeliveriesInBatchRow, error)
@@ -33,16 +35,22 @@ type Querier interface {
 	CreatePairedDevice(ctx context.Context, arg CreatePairedDeviceParams) error
 	DeactivateDriver(ctx context.Context, id string) (int64, error)
 	DeleteAllBatches(ctx context.Context) error
+	DeleteOldAutoPlans(ctx context.Context, createdAt string) error
 	DeleteOldClosedBatches(ctx context.Context, limit int64) error
 	DeleteOldSyncedFloorEvents(ctx context.Context, syncedAt sql.NullString) (int64, error)
 	// Batch retention: keep the open batch plus the newest N closed batches.
 	DeleteOrdersOutsideKeptBatches(ctx context.Context, limit int64) (int64, error)
+	DeleteOrphanOrderGeo(ctx context.Context) error
+	DeleteOrphanOrderTimes(ctx context.Context) error
 	// Close-batch auto-finish: force an order to its terminal state.
 	FinishOrder(ctx context.Context, arg FinishOrderParams) error
 	GetAppRelease(ctx context.Context) (string, error)
 	// Settings -----------------------------------------------------------------
 	GetAutoAccept(ctx context.Context) (bool, error)
+	GetAutoPlan(ctx context.Context, id string) (AutoPlan, error)
 	GetBatch(ctx context.Context, id int64) (Batch, error)
+	// Delivery settings + store map (2.0.9) -------------------------------------------
+	GetDeliveryPrefs(ctx context.Context) (GetDeliveryPrefsRow, error)
 	GetDriver(ctx context.Context, id string) (Driver, error)
 	GetDriverReset(ctx context.Context) (GetDriverResetRow, error)
 	GetFloorPrefs(ctx context.Context) (GetFloorPrefsRow, error)
@@ -50,10 +58,12 @@ type Querier interface {
 	GetLastBackup(ctx context.Context) (string, error)
 	GetLastReturn(ctx context.Context) (GetLastReturnRow, error)
 	GetLinkInfo(ctx context.Context) (GetLinkInfoRow, error)
+	GetMapFile(ctx context.Context) (string, error)
 	// Batches -------------------------------------------------------------------
 	GetOpenBatch(ctx context.Context) (Batch, error)
 	GetOpenShift(ctx context.Context, driverID string) (DriverShift, error)
 	GetOrderByID(ctx context.Context, id string) (Order, error)
+	GetOrderGeo(ctx context.Context, orderID string) (OrderGeo, error)
 	GetPairedDeviceByHash(ctx context.Context, keyHash string) (PairedDevice, error)
 	GetReceiptPrefs(ctx context.Context) (string, error)
 	GetSessionSecret(ctx context.Context) (string, error)
@@ -62,6 +72,8 @@ type Querier interface {
 	GetStoreConfig(ctx context.Context) (GetStoreConfigRow, error)
 	GetUIPassword(ctx context.Context) (GetUIPasswordRow, error)
 	GetUpdateState(ctx context.Context) (GetUpdateStateRow, error)
+	// AUTO plans ------------------------------------------------------------------------
+	InsertAutoPlan(ctx context.Context, arg InsertAutoPlanParams) error
 	InsertBatchWithID(ctx context.Context, arg InsertBatchWithIDParams) error
 	// Floor events (sync outbox to main) -------------------------------------------
 	InsertFloorEvent(ctx context.Context, arg InsertFloorEventParams) error
@@ -78,12 +90,18 @@ type Querier interface {
 	// Claimed but never recorded: the agent stopped between claim and record.
 	ListInterruptedAccepts(ctx context.Context) ([]string, error)
 	ListOnDeliveryByDriver(ctx context.Context, driverID sql.NullString) ([]Order, error)
+	// The open batch's deliveries still on the floor (cooking, ready or out).
+	ListOpenDeliveries(ctx context.Context) ([]Order, error)
 	ListOpenShifts(ctx context.Context) ([]DriverShift, error)
+	ListOrderGeo(ctx context.Context, ids []string) ([]OrderGeo, error)
+	// Drive times between the given orders (both ends in the set).
+	ListOrderTimes(ctx context.Context, arg ListOrderTimesParams) ([]OrderTime, error)
 	ListOrdersByBatch(ctx context.Context, arg ListOrdersByBatchParams) ([]Order, error)
 	ListOrdersPage(ctx context.Context, arg ListOrdersPageParams) ([]Order, error)
 	// Arrived orders older than the cutoff that haven't been alerted since the cutoff.
 	ListOverdueArrived(ctx context.Context, cutoff string) ([]Order, error)
 	ListPairedDevices(ctx context.Context) ([]PairedDevice, error)
+	ListPoolByDriver(ctx context.Context, poolDriverID sql.NullString) ([]Order, error)
 	// Printer MACs (2.0.6) --------------------------------------------------------
 	ListPrinterMACs(ctx context.Context) ([]PrinterMac, error)
 	// Driver report: shifts that overlap a batch window (opened_at .. closed_at).
@@ -94,6 +112,7 @@ type Querier interface {
 	MarkDelivered(ctx context.Context, arg MarkDeliveredParams) (int64, error)
 	MarkFloorEventFailed(ctx context.Context, arg MarkFloorEventFailedParams) error
 	MarkFloorEventSynced(ctx context.Context, arg MarkFloorEventSyncedParams) error
+	// Leaving with a driver empties the order's pool slot.
 	MarkOnDelivery(ctx context.Context, arg MarkOnDeliveryParams) (int64, error)
 	MarkReady(ctx context.Context, arg MarkReadyParams) (int64, error)
 	NextDriverPosition(ctx context.Context) (int64, error)
@@ -116,6 +135,7 @@ type Querier interface {
 	RevokePairedDevice(ctx context.Context, arg RevokePairedDeviceParams) (int64, error)
 	SetAppRelease(ctx context.Context, appRelease string) error
 	SetAutoAccept(ctx context.Context, autoAccept bool) error
+	SetDeliveryPrefs(ctx context.Context, arg SetDeliveryPrefsParams) error
 	SetDriverOut(ctx context.Context, id string) error
 	// Undo a mistaken return: back out on the run, at its old queue position.
 	SetDriverOutAt(ctx context.Context, arg SetDriverOutAtParams) (int64, error)
@@ -133,6 +153,14 @@ type Querier interface {
 	// Link + restore (00008) --------------------------------------------------------
 	SetLinkInfo(ctx context.Context, arg SetLinkInfoParams) error
 	SetManagerPasswordHash(ctx context.Context, uiPasswordHash string) error
+	SetMapFile(ctx context.Context, mapFile string) error
+	// Driver pools (2.0.9) ----------------------------------------------------------
+	// Puts a delivery order (accepted or ready) into a driver's pool, or back to
+	// unassigned with a NULL driver. 0 rows = not a pool-able order.
+	// The order's stop number is cleared; the service renumbers the pools.
+	SetOrderPool(ctx context.Context, arg SetOrderPoolParams) (int64, error)
+	// Renumbers one pooled order (0 rows = no longer in that pool, or unchanged).
+	SetPoolSeq(ctx context.Context, arg SetPoolSeqParams) (int64, error)
 	SetReceiptPrefs(ctx context.Context, receiptPrefs string) error
 	SetSessionSecret(ctx context.Context, sessionSecret string) error
 	SetStoreAPIKey(ctx context.Context, storeApiKey string) error
@@ -145,6 +173,9 @@ type Querier interface {
 	// canonical id is a no-op so we don't reset state to 'arrived'. The order joins
 	// the currently open batch; arrival_date falls back to the column DEFAULT.
 	UpsertArrivedOrder(ctx context.Context, arg UpsertArrivedOrderParams) (int64, error)
+	// Order geo (main's order.geo) ----------------------------------------------------
+	UpsertOrderGeo(ctx context.Context, arg UpsertOrderGeoParams) error
+	UpsertOrderTime(ctx context.Context, arg UpsertOrderTimeParams) error
 	UpsertPrinterMAC(ctx context.Context, arg UpsertPrinterMACParams) error
 	UpsertStoreConfig(ctx context.Context, argContext string) error
 }

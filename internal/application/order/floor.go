@@ -36,6 +36,13 @@ type Floor struct {
 	// shade to red at 2x). TipTaxPercent is taken off drivers' tips.
 	GreenTillMinutes int64   `json:"green_till_minutes"`
 	TipTaxPercent    float64 `json:"tip_tax_percent"`
+	// AUTO delivery settings (2.0.9).
+	SoonReadyMinutes      int64 `json:"soon_ready_minutes"`
+	DeliveryTargetMinutes int64 `json:"delivery_target_minutes"`
+	// Store is the store pin (null until main geocoded it); Map the store's
+	// offline map file on this Pi (null until downloaded).
+	Store *FloorStore `json:"store"`
+	Map   *FloorMap   `json:"map"`
 }
 
 func (s *Service) span(ctx context.Context, name string, attrs ...attribute.KeyValue) (context.Context, trace.Span) {
@@ -67,9 +74,13 @@ func (s *Service) Floor(ctx context.Context) (*Floor, error) {
 	n, _ := s.repo.CountUnsyncedEvents(ctx)
 	rs, _ := s.repo.GetDriverReset(ctx)
 	prefs := s.FloorPrefs(ctx)
+	dp := s.DeliveryPrefs(ctx)
+	store, mp := s.floorGeo()
 	return &Floor{Batch: *b, KitchenNext: fs.KitchenNext, LastPrepMinutes: fs.LastPrepMinutes,
 		PrepChoices: PrepChoices, UnsyncedEvents: n, DriverResetTime: rs.Time,
-		GreenTillMinutes: prefs.GreenTillMinutes, TipTaxPercent: float64(prefs.TipTaxBps) / 100}, nil
+		GreenTillMinutes: prefs.GreenTillMinutes, TipTaxPercent: float64(prefs.TipTaxBps) / 100,
+		SoonReadyMinutes: dp.SoonReadyMinutes, DeliveryTargetMinutes: dp.DeliveryTargetMinutes,
+		Store: store, Map: mp}, nil
 }
 
 // Ready marks an accepted order ready (terminal for pickup / dine-in).
@@ -97,16 +108,11 @@ func (s *Service) AssignDriver(ctx context.Context, driverID string, orderIDs []
 	for _, so := range out {
 		s.publishUpdated(so)
 	}
-	s.publishDrivers(ctx)
-	if s.broker != nil {
-		if ds, err := s.repo.ListDrivers(ctx); err == nil {
-			for _, d := range ds {
-				if d.ID == driverID {
-					s.broker.PublishDispatched(d, out)
-				}
-			}
-		}
+	for _, so := range s.resequencePools(ctx, nil) { // sent orders left their pools
+		s.publishUpdated(so)
 	}
+	s.publishDrivers(ctx)
+	s.publishDispatched(ctx, driverID, out)
 	return out, nil
 }
 
@@ -211,9 +217,11 @@ func (s *Service) RenameDriver(ctx context.Context, id, name string) error {
 }
 
 func (s *Service) RemoveDriver(ctx context.Context, id string) error {
-	if err := s.repo.RemoveDriver(ctx, id); err != nil {
+	unpooled, err := s.repo.RemoveDriver(ctx, id)
+	if err != nil {
 		return err
 	}
+	s.publishAll(unpooled)
 	s.driversChanged(ctx)
 	return nil
 }
@@ -238,10 +246,11 @@ func (s *Service) ClockIn(ctx context.Context, id string) (*order.Driver, error)
 
 // ClockOut takes an available driver out of the queue and closes the shift.
 func (s *Service) ClockOut(ctx context.Context, id string) (*order.Driver, error) {
-	d, err := s.repo.ClockOut(ctx, id)
+	d, unpooled, err := s.repo.ClockOut(ctx, id)
 	if err != nil {
 		return nil, err
 	}
+	s.publishAll(unpooled)
 	s.driversChanged(ctx)
 	return d, nil
 }
@@ -318,11 +327,12 @@ func (s *Service) DriverResetDue(ctx context.Context, now time.Time, loc *time.L
 	if local.Before(due) || !rs.LastRun.Before(due) {
 		return 0, nil
 	}
-	n, err := s.repo.AutoClockOut(ctx, now)
+	n, unpooled, err := s.repo.AutoClockOut(ctx, now)
 	if err != nil {
 		return 0, err
 	}
-	s.logger.Info().Ctx(ctx).Int("drivers", n).Str("reset_time", rs.Time).Msg("Daily driver clock-out")
+	s.publishAll(unpooled)
+	s.logger.Info().Ctx(ctx).Int("drivers", n).Int("unpooled", len(unpooled)).Str("reset_time", rs.Time).Msg("Daily driver clock-out")
 	if n > 0 {
 		s.driversChanged(ctx)
 	}

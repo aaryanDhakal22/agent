@@ -65,6 +65,8 @@ type Service struct {
 	// receiptPrefs is the in-memory copy of the receipt settings the
 	// printing path reads (LoadReceiptPrefs / SetReceiptPrefs keep it).
 	receiptPrefs atomic.Pointer[order.ReceiptPrefs]
+	// geo: store pin / map / main geo RPC hooks (SetGeo).
+	geo atomic.Pointer[GeoDeps]
 }
 
 func NewService(

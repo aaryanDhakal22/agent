@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"quiccpos/agent/internal/application/appupdate"
+	"quiccpos/agent/internal/application/mapfile"
 	orderApp "quiccpos/agent/internal/application/order"
 	printerApp "quiccpos/agent/internal/application/printer"
 	"quiccpos/agent/internal/application/printernet"
@@ -65,6 +66,7 @@ type Server struct {
 	started       time.Time
 	updates       *update.Requester
 	printerNet    *printernet.Watcher
+	mapFile       *mapfile.Downloader
 }
 
 // SetAppUpdater wires the tablet-app release cache (/api/app/*).

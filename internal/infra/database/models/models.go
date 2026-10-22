@@ -8,6 +8,13 @@ import (
 	"database/sql"
 )
 
+type AutoPlan struct {
+	ID          string         `json:"id"`
+	CreatedAt   string         `json:"created_at"`
+	PlanJson    string         `json:"plan_json"`
+	ConfirmedAt sql.NullString `json:"confirmed_at"`
+}
+
 type Batch struct {
 	ID       int64          `json:"id"`
 	OpenedAt string         `json:"opened_at"`
@@ -68,6 +75,31 @@ type Order struct {
 	LastAlertAt      sql.NullString `json:"last_alert_at"`
 	CancelledAt      sql.NullString `json:"cancelled_at"`
 	AcceptPending    int64          `json:"accept_pending"`
+	PoolDriverID     sql.NullString `json:"pool_driver_id"`
+	PooledAt         sql.NullString `json:"pooled_at"`
+	PoolSeq          sql.NullInt64  `json:"pool_seq"`
+	PoolPlanID       sql.NullString `json:"pool_plan_id"`
+}
+
+type OrderGeo struct {
+	OrderID     string          `json:"order_id"`
+	State       string          `json:"state"`
+	Lat         sql.NullFloat64 `json:"lat"`
+	Lng         sql.NullFloat64 `json:"lng"`
+	Quality     string          `json:"quality"`
+	DistanceM   int64           `json:"distance_m"`
+	DurationS   int64           `json:"duration_s"`
+	Polyline    string          `json:"polyline"`
+	OutsideArea bool            `json:"outside_area"`
+	StoreToS    sql.NullInt64   `json:"store_to_s"`
+	ToStoreS    sql.NullInt64   `json:"to_store_s"`
+	UpdatedAt   string          `json:"updated_at"`
+}
+
+type OrderTime struct {
+	A       string `json:"a"`
+	B       string `json:"b"`
+	Seconds int64  `json:"seconds"`
 }
 
 type PairedDevice struct {
@@ -116,6 +148,9 @@ type Setting struct {
 	ReceiptPrefs           string `json:"receipt_prefs"`
 	UpdateJob              string `json:"update_job"`
 	UpdateNotified         string `json:"update_notified"`
+	SoonReadyMinutes       int64  `json:"soon_ready_minutes"`
+	DeliveryTargetMinutes  int64  `json:"delivery_target_minutes"`
+	MapFile                string `json:"map_file"`
 }
 
 type StoreConfig struct {

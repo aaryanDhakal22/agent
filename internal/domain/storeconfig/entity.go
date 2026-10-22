@@ -37,6 +37,23 @@ type LocationContext struct {
 	AddressLine1   string         `json:"address_line1"`
 	AddressLine2   string         `json:"address_line2"`
 	Config         map[string]any `json:"config"`
+	// Store pin (2.0.9; null until main geocoded the address or a manager
+	// dropped the pin) and the delivery radius for "outside area".
+	Lat             *float64 `json:"lat"`
+	Lng             *float64 `json:"lng"`
+	DeliveryRadiusM int64    `json:"delivery_radius_m"`
+	// Map is the store's offline map file (PMTiles) the Pi serves to the
+	// tablets; nil when none is published.
+	Map *MapFile `json:"map"`
+}
+
+// MapFile is a published store map: download URL, its sha256, a version that
+// changes with every build, and the bounds [minLng, minLat, maxLng, maxLat].
+type MapFile struct {
+	URL     string    `json:"url"`
+	SHA256  string    `json:"sha256"`
+	Version string    `json:"version"`
+	BBox    []float64 `json:"bbox"`
 }
 
 type PrinterContext struct {

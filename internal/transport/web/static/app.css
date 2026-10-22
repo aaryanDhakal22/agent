@@ -292,6 +292,13 @@ textarea.field { resize: vertical; min-height: 84px; }
 .dlv { display: flex; align-items: center; gap: 12px; padding: 10px 12px; border-radius: 12px; background: var(--elev); cursor: pointer; min-height: 48px; }
 .dlv input { width: 20px; height: 20px; accent-color: #AC94F4; flex-shrink: 0; }
 .dlv .num { font-weight: 800; color: var(--accent); }
+div.dlv { cursor: default; }
+.dlv.cooking { opacity: .6; }
+.pool { padding: 10px 12px; border-radius: 12px; background: var(--elev); }
+.pool .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.chip { display: inline-flex; gap: 6px; align-items: baseline; padding: 4px 10px; border-radius: 999px; border: 1px solid var(--border); background: var(--surface); font-size: 13px; max-width: 100%; overflow-wrap: anywhere; }
+.chip b { color: var(--accent); }
+.chip.cooking { opacity: .6; border-style: dashed; }
 .drv { min-height: 44px; padding: 0 16px; border-radius: 12px; border: 2px solid var(--border); background: var(--surface); color: var(--text); font: 700 14px Inter, system-ui, sans-serif; cursor: pointer; }
 .drv.on { border-color: var(--brand); background: var(--brand-soft); color: var(--accent); }
 .drv .note { font-weight: 500; color: var(--muted); }

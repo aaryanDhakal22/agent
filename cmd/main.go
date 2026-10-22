@@ -27,6 +27,7 @@ import (
 	"quiccpos/agent/internal/application/escalation"
 	"quiccpos/agent/internal/application/floorsync"
 	"quiccpos/agent/internal/application/health"
+	"quiccpos/agent/internal/application/mapfile"
 	orderApp "quiccpos/agent/internal/application/order"
 	printerApp "quiccpos/agent/internal/application/printer"
 	"quiccpos/agent/internal/application/printernet"
@@ -200,9 +201,16 @@ func main() {
 	printerRegistry.SetMACLookup(printerWatcher.MACByName)
 	dispatcher.SetProbeHook(printerWatcher.OnProbe)
 
+	// Store map (PMTiles) for the tablets' delivery maps: downloaded next to
+	// the DB when store_config's map version changes, served at
+	// /api/map.pmtiles.
+	mapFile := mapfile.New(filepath.Join(filepath.Dir(cfg.AgentDBPath), mapfile.FileName), orderRepo, logger)
+	mapFile.Load(ctx)
+
 	if saved, err := storeConfigRepo.Get(ctx); err == nil && saved != nil {
 		storeCtx.Store(*saved)
 		dispatcher.Apply(ctx, saved.Printers)
+		mapFile.Want(saved.Location.Map)
 		logger.Info().Ctx(ctx).
 			Str("tenant", saved.Tenant.Name).
 			Str("location", saved.Location.Name).
@@ -235,6 +243,8 @@ func main() {
 	sink := &storeConfigApplier{
 		repo:       storeConfigRepo,
 		dispatcher: dispatcher,
+		mapFile:    mapFile,
+		onApplied:  broker.PublishFloorChanged,
 		storeCtx:   &storeCtx,
 		logger:     logger.With().Str("module", "storeconfig-sink").Logger(),
 	}
@@ -258,8 +268,35 @@ func main() {
 		return printerApp.BuildReport(printerRegistry, version, printerWatcher.Unknown()), nil
 	})
 
+	// Where main located a delivery address (+ drive times for AUTO).
+	registry.Register(agentrpc.MsgOrderGeo, orderService.HandleGeoCommand)
+
 	sseCtrl := ssecontroller.New(ctx, cfg.MainServerURL, orderService, sink, registry, logger, meters)
 	rpcPoster.key = sseCtrl.CurrentKey
+	// Delivery maps + AUTO: the store pin and map for /api/floor, and the
+	// agent->main geo RPCs (pin, trip).
+	orderService.SetGeo(orderApp.GeoDeps{
+		Floor: func() (*orderApp.FloorStore, *orderApp.FloorMap) {
+			sc, _ := storeCtx.Load().(storeconfig.StoreContext)
+			var store *orderApp.FloorStore
+			if sc.Location.Lat != nil && sc.Location.Lng != nil {
+				store = &orderApp.FloorStore{Lat: *sc.Location.Lat, Lng: *sc.Location.Lng, DeliveryRadiusM: sc.Location.DeliveryRadiusM}
+			}
+			var mp *orderApp.FloorMap
+			if info, _ := mapFile.Current(); info != nil {
+				bbox := info.BBox
+				if bbox == nil {
+					bbox = []float64{}
+				}
+				mp = &orderApp.FloorMap{Version: info.Version, URL: "/api/map.pmtiles", BBox: bbox}
+			}
+			return store, mp
+		},
+		Send:   registry.Send,
+		Linked: sseCtrl.Configured,
+	})
+	mapFile.OnChange(broker.PublishFloorChanged)
+	go mapFile.Run(ctx)
 	printerWatcher.SetMain(registry.Send, func() bool { return sseCtrl.Status().Connected })
 
 	// Pi updates: gate + drop update.request for the root updater, follow
@@ -457,6 +494,7 @@ func main() {
 	httpServer := transport.NewServer(orderService, broker, printerRegistry, settingsRepo, sseCtrl, mainClient, session, deviceRepo, cfg.HTTPPort, version, commit, logger)
 	httpServer.SetAltPort(cfg.HTTPAltPort)
 	httpServer.SetAppUpdater(appUpdater)
+	httpServer.SetMap(mapFile)
 	httpServer.SetUpdates(updater, printerWatcher)
 	httpServer.SetDiag(transport.DiagDeps{
 		Dispatcher:  dispatcher,
@@ -611,8 +649,11 @@ func (p *rpcReplyPoster) PostRPC(ctx context.Context, body []byte) error {
 type storeConfigApplier struct {
 	repo       storeconfig.Repository
 	dispatcher *printerApp.Dispatcher
-	storeCtx   *atomic.Value
-	logger     zerolog.Logger
+	mapFile    *mapfile.Downloader
+	// onApplied tells the tablets to refetch /api/floor (store pin, map).
+	onApplied func()
+	storeCtx  *atomic.Value
+	logger    zerolog.Logger
 	// postApply, if set, runs after the roster is rebuilt (used to push a fresh
 	// printer.report up to main).
 	postApply func(context.Context)
@@ -621,6 +662,12 @@ type storeConfigApplier struct {
 func (a *storeConfigApplier) Apply(ctx context.Context, sc storeconfig.StoreContext) error {
 	a.storeCtx.Store(sc)
 	a.dispatcher.Apply(ctx, sc.Printers)
+	if a.mapFile != nil {
+		a.mapFile.Want(sc.Location.Map) // downloads only when the version changed
+	}
+	if a.onApplied != nil {
+		a.onApplied()
+	}
 	if a.postApply != nil {
 		a.postApply(ctx)
 	}

@@ -333,31 +333,37 @@
       </section>
 
       <div class="split">
-        <section class="card card-pad wide stack" style="gap:12px" aria-labelledby="h-ready">
-          <div class="hrow" style="justify-content:space-between"><span class="eyebrow" id="h-ready">Ready for delivery</span><span class="small muted" x-text="readyDeliveries.length + ' waiting for a driver'"></span></div>
-          <template x-for="so in readyDeliveries" :key="so.order.id">
-            <label class="dlv">
-              <input type="checkbox" :checked="selected.includes(so.order.id)" @change="toggleSelect(so.order.id)" />
-              <span class="num mono" x-text="displayNumber(so)"></span>
-              <span class="grow" style="min-width:0"><span style="font-weight:600;display:block" x-text="custName(so.order)"></span><span class="small muted" style="display:block;overflow-wrap:anywhere" x-show="addrLine(so.order)" x-text="addrLine(so.order)"></span></span>
-              <span class="mono" style="font-weight:700" x-text="moneyLabel(so.order)"></span>
-            </label>
-          </template>
-          <p class="muted" x-show="!readyDeliveries.length">No delivery orders are ready.</p>
-          <div class="hrow" x-show="readyDeliveries.length > 1">
-            <button type="button" class="btn btn-lg" @click="selectAll()">SELECT ALL</button>
-            <button type="button" class="btn btn-lg" @click="selected = []">CLEAR</button>
+        <section class="card card-pad wide stack" style="gap:12px" aria-labelledby="h-dlv">
+          <div class="hrow" style="justify-content:space-between"><span class="eyebrow" id="h-dlv">Deliveries</span><span class="small muted">Pools are built and sent out on the tablet.</span></div>
+          <div class="hrow" style="justify-content:space-between"><span class="lbl" id="h-unassigned" x-text="'Unassigned · ' + unassignedDeliveries.length"></span></div>
+          <div role="list" aria-labelledby="h-unassigned" class="stack" style="gap:8px">
+            <template x-for="so in unassignedDeliveries" :key="so.order.id">
+              <div class="dlv" role="listitem" :class="{ cooking: so.status.state === 'accepted' }">
+                <span class="num mono" x-text="displayNumber(so)"></span>
+                <span class="grow" style="min-width:0"><span style="font-weight:600;display:block" x-text="custName(so.order)"></span><span class="small muted" style="display:block;overflow-wrap:anywhere" x-show="addrLine(so.order)" x-text="addrLine(so.order)"></span></span>
+                <span class="small muted" x-show="so.status.state === 'accepted'">cooking</span>
+                <span class="mono" style="font-weight:700" x-text="moneyLabel(so.order)"></span>
+              </div>
+            </template>
           </div>
-          <div x-show="readyDeliveries.length">
-            <div class="eyebrow" style="margin-bottom:8px" id="h-pick">Driver</div>
-            <div class="hrow" role="radiogroup" aria-labelledby="h-pick">
-              <template x-for="(d, i) in availableDrivers" :key="d.id">
-                <button type="button" class="drv" role="radio" :aria-checked="pickDriver === d.id" :class="{ on: pickDriver === d.id }" @click="pickDriver = d.id"><span x-text="d.name"></span><span class="note" x-text="i === 0 ? ' · next up' : ''"></span></button>
-              </template>
-              <span class="muted" x-show="!availableDrivers.length">No driver is clocked in — <button type="button" class="link-btn" @click="go('drivers')">clock one in</button>.</span>
-            </div>
+          <p class="muted" x-show="!unassignedDeliveries.length">No deliveries waiting for a driver.</p>
+          <span class="lbl" id="h-pools" style="margin-top:6px">Driver pools</span>
+          <div role="list" aria-labelledby="h-pools" class="stack" style="gap:8px">
+            <template x-for="p in driverPools" :key="p.d.id">
+              <div class="pool" role="listitem">
+                <div class="hrow" style="justify-content:space-between">
+                  <span><b x-text="p.d.name"></b> <span class="badge b-ok" x-show="p.next">NEXT</span></span>
+                  <span class="small muted" x-text="p.orders.length ? p.orders.length + ' pooled' : 'Nothing pooled'"></span>
+                </div>
+                <div class="chips" x-show="p.orders.length">
+                  <template x-for="so in p.orders" :key="so.order.id">
+                    <span class="chip" :class="{ cooking: so.status.state === 'accepted' }" :title="so.status.state === 'accepted' ? 'Still cooking' : 'Ready'"><span class="small muted" x-show="so.status.pool_seq" x-text="so.status.pool_seq + '.'"></span><b class="mono" x-text="displayNumber(so)"></b> <span x-text="street(so.order)"></span></span>
+                  </template>
+                </div>
+              </div>
+            </template>
           </div>
-          <button type="button" class="send" x-show="readyDeliveries.length" :disabled="!selected.length || !pickedDriver || !!busy.send" @click="sendOut()" x-text="sendLabel"></button>
+          <p class="muted" x-show="!driverPools.length">No driver is clocked in — <button type="button" class="link-btn" @click="go('drivers')">clock one in</button>.</p>
         </section>
 
         <section class="card card-pad narrow stack" style="gap:10px" aria-labelledby="h-out">
@@ -554,6 +560,20 @@
             <div class="lblcol"><div class="lbl" id="aa-l">Auto-accept orders</div><p class="help">Print and accept incoming orders automatically, with the last prep time used. Leave it off when staff accept on the tablet.</p></div>
             <button type="button" class="sw" :class="{ on: autoAccept }" role="switch" :aria-checked="autoAccept" aria-labelledby="aa-l" :disabled="!autoAcceptLoaded" @click="toggleAutoAccept()"><span></span></button>
           </div>
+          <form @submit.prevent="saveDeliveryPrefs()" aria-labelledby="h-s-dlv">
+            <h3 id="h-s-dlv" style="margin-top:18px">Deliveries (AUTO)</h3>
+            <p class="help">Used by the tablet's AUTO button when it suggests driver runs.</p>
+            <div class="srow" style="margin-top:10px">
+              <div class="lblcol"><label class="lbl" for="set-soon">Soon-ready window</label><p class="help">A delivery still cooking but due ready within this many minutes can be planned into a run (0-30).</p></div>
+              <div class="hrow"><input id="set-soon" class="field field-sm mono" style="width:6em" type="number" min="0" max="30" x-model="deliveryForm.soon" /><span class="muted">min</span></div>
+            </div>
+            <div class="srow">
+              <div class="lblcol"><label class="lbl" for="set-target">Delivery target</label><p class="help">From order placed to the door. AUTO hurries orders in the last 10 minutes before it and sends late ones first (15-120).</p></div>
+              <div class="hrow"><input id="set-target" class="field field-sm mono" style="width:6em" type="number" min="15" max="120" x-model="deliveryForm.target" /><span class="muted">min</span></div>
+            </div>
+            <div class="sfoot"><button type="submit" class="btn btn-p" :disabled="!deliveryDirty">Save</button></div>
+            <p class="help" style="margin-top:8px" x-show="deliveryDirty">Unsaved changes.</p>
+          </form>
         </section>
 
         <!-- Kitchen tickets & driver reports -->
