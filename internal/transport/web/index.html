@@ -357,7 +357,7 @@
                 </div>
                 <div class="chips" x-show="p.orders.length">
                   <template x-for="so in p.orders" :key="so.order.id">
-                    <span class="chip" :class="{ cooking: so.status.state === 'accepted' }" :title="so.status.state === 'accepted' ? 'Still cooking' : 'Ready'"><b class="mono" x-text="displayNumber(so)"></b> <span x-text="street(so.order)"></span></span>
+                    <span class="chip" :class="{ cooking: so.status.state === 'accepted' }" :title="so.status.state === 'accepted' ? 'Still cooking' : 'Ready'"><span class="small muted" x-show="so.status.pool_seq" x-text="so.status.pool_seq + '.'"></span><b class="mono" x-text="displayNumber(so)"></b> <span x-text="street(so.order)"></span></span>
                   </template>
                 </div>
               </div>

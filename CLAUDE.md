@@ -465,6 +465,13 @@ nginx :80) — the switch is in `../CUTOVER.md`; never run both agents at once.
   remove driver, `clockOutIfResetPassed`, and in SQL by `MarkOnDelivery`,
   `FinishOrder`, `CancelOrder` — ClockOut/AutoClockOut/RemoveDriver now also
   return the unpooled orders (the service publishes them).
+- **Stop order** (`00013_pool_seq`): `orders.pool_seq` (1..n) + `pool_plan_id`
+  (set by confirm, nulled by `SetOrderPool` / every pool-clearing query). The
+  service's `resequencePools` (after Pool, ConfirmPlan with the plan's run as
+  `prefer`, SendOut, AssignDriver) renumbers pools that aren't 1..n via
+  `SetPoolSeq`. A plain Send Out takes `plan_id` from the pool's majority
+  `pool_plan_id`. **Every served StoredOrder must come from `loadOrder` /
+  `mapRowsGeo`** (geo attached); `toStored` / `mapRowsBare` are internal.
 - **Send Out** (`POST /api/drivers/{id}/send-out`): include → pool → read the
   pool → `*order.ErrNotReady{IDs}` (409 `not_ready`) unless `mark_ready` → ready
   events → `sendRun` → `delivery.run` floor event (plan id, the plan's

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -396,4 +397,218 @@ func TestDeliveryPrefsValidation(t *testing.T) {
 	if err != nil || f.SoonReadyMinutes != 0 || f.DeliveryTargetMinutes != 120 || f.Store != nil || f.Map != nil {
 		t.Fatalf("floor: %v %+v", err, f)
 	}
+}
+
+func seqs(t *testing.T, repo *repositories.OrderRepository, ids ...string) []int64 {
+	t.Helper()
+	out := make([]int64, 0, len(ids))
+	for _, id := range ids {
+		so, err := repo.GetByID(context.Background(), uuid.MustParse(id))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if so.Status.PoolSeq == nil {
+			out = append(out, 0)
+		} else {
+			out = append(out, *so.Status.PoolSeq)
+		}
+	}
+	return out
+}
+
+func TestPoolSeqFollowsTripOrder(t *testing.T) {
+	ctx := context.Background()
+	svc, repo, events := newPoolService(t)
+	svc.SetGeo(GeoDeps{Floor: func() (*FloorStore, *FloorMap) { return &FloorStore{Lat: 40.66, Lng: -74.11}, nil }})
+	ann, _ := svc.CreateDriver(ctx, "Ann")
+	bob, _ := svc.CreateDriver(ctx, "Bob")
+	svc.ClockIn(ctx, ann.ID)
+	svc.ClockIn(ctx, bob.ID)
+	// Placed order far, near, mid; driving order near -> mid -> far.
+	far := readyDelivery(t, svc, 30*time.Minute)
+	near := readyDelivery(t, svc, 20*time.Minute)
+	mid := readyDelivery(t, svc, 10*time.Minute)
+	lost := readyDelivery(t, svc, 40*time.Minute) // never located: last
+	locate(t, svc, far, 40.72, -74.11, 900)
+	locate(t, svc, near, 40.67, -74.11, 120, order.GeoTime{Other: far, ToS: ptr[int64](700), FromS: ptr[int64](700)})
+	locate(t, svc, mid, 40.69, -74.11, 400,
+		order.GeoTime{Other: near, ToS: ptr[int64](280), FromS: ptr[int64](280)},
+		order.GeoTime{Other: far, ToS: ptr[int64](400), FromS: ptr[int64](400)})
+	drain(events)
+
+	out, err := svc.Pool(ctx, []string{far, near, mid, lost}, ann.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, so := range out {
+		if so.Status.PoolSeq == nil {
+			t.Fatalf("pool answer must carry pool_seq: %+v", so.Status)
+		}
+	}
+	if got := seqs(t, repo, near, mid, far, lost); fmt.Sprint(got) != "[1 2 3 4]" {
+		t.Fatalf("seq near, mid, far, lost = %v", got)
+	}
+	trip, _ := svc.PoolTrip(ctx, ann.ID, nil)
+	if trip.OrderIDs[0] != near || trip.OrderIDs[1] != mid || trip.OrderIDs[2] != far {
+		t.Fatalf("trip order: %v", trip.OrderIDs)
+	}
+	// SSE carried the numbers.
+	seen := 0
+	for {
+		data, ok := eventOf(events, "order.updated")
+		if !ok {
+			break
+		}
+		if strings.Contains(string(data), `"pool_seq"`) {
+			seen++
+		}
+	}
+	if seen < 4 {
+		t.Fatalf("order.updated with pool_seq: %d", seen)
+	}
+	// Moving mid to Bob renumbers both pools.
+	if _, err := svc.Pool(ctx, []string{mid}, bob.ID); err != nil {
+		t.Fatal(err)
+	}
+	if got := seqs(t, repo, near, far, lost, mid); fmt.Sprint(got) != "[1 2 3 1]" {
+		t.Fatalf("after the move: %v", got)
+	}
+	// Unassigned: no number.
+	svc.Pool(ctx, []string{mid}, "")
+	if got := seqs(t, repo, mid); got[0] != 0 {
+		t.Fatalf("unassigned keeps a seq: %v", got)
+	}
+}
+
+func TestConfirmSeqAndPlainSendOutKeepsThePlan(t *testing.T) {
+	ctx := context.Background()
+	svc, repo, _ := newPoolService(t)
+	svc.SetGeo(GeoDeps{Floor: func() (*FloorStore, *FloorMap) { return &FloorStore{Lat: 40.66, Lng: -74.11}, nil }})
+	ann, _ := svc.CreateDriver(ctx, "Ann")
+	svc.ClockIn(ctx, ann.ID)
+	a := readyDelivery(t, svc, 25*time.Minute)
+	b := readyDelivery(t, svc, 20*time.Minute)
+	locate(t, svc, a, 40.70, -74.11, 600)
+	locate(t, svc, b, 40.68, -74.11, 300, order.GeoTime{Other: a, ToS: ptr[int64](200), FromS: ptr[int64](200)})
+	plan, err := svc.PlanDeliveries(ctx)
+	if err != nil || len(plan.Runs) != 1 || len(plan.Runs[0].OrderIDs) != 2 {
+		t.Fatalf("plan: %v %+v", err, plan)
+	}
+	run := plan.Runs[0]
+	if _, err := svc.ConfirmPlan(ctx, plan.PlanID, nil); err != nil {
+		t.Fatal(err)
+	}
+	if got := seqs(t, repo, run.OrderIDs...); fmt.Sprint(got) != "[1 2]" {
+		t.Fatalf("seq must follow the plan's driving order %v: %v", run.OrderIDs, got)
+	}
+	so, _ := repo.GetByID(ctx, uuid.MustParse(a))
+	if so.Status.PoolPlanID != plan.PlanID {
+		t.Fatalf("pool_plan_id: %q", so.Status.PoolPlanID)
+	}
+	// A hand-pooled extra joins the run: the plan still wins (most orders).
+	c := readyDelivery(t, svc, 5*time.Minute)
+	svc.Pool(ctx, []string{c}, ann.ID)
+	if got := seqs(t, repo, c); got[0] != 3 {
+		t.Fatalf("extra appended: %v", got)
+	}
+
+	// Plain Send Out (no plan_id): delivery.run still names the plan.
+	if _, err := svc.SendOut(ctx, ann.ID, SendOutRequest{}); err != nil {
+		t.Fatal(err)
+	}
+	evs, _ := repo.ListUnsyncedEvents(ctx, 500)
+	var got *order.DeliveryRunEvent
+	for _, e := range evs {
+		if e.Type == order.FloorEventDeliveryRun {
+			var r order.DeliveryRunEvent
+			json.Unmarshal(e.Payload, &r)
+			got = &r
+		}
+	}
+	if got == nil || got.PlanID != plan.PlanID || fmt.Sprint(got.SuggestedIDs) != fmt.Sprint(run.SuggestedIDs) || len(got.SentIDs) != 3 {
+		t.Fatalf("delivery.run: %+v (plan %s, suggested %v)", got, plan.PlanID, run.SuggestedIDs)
+	}
+	if got.Stops[0].OrderID != run.OrderIDs[0] || got.Stops[2].OrderID != c {
+		t.Fatalf("stops follow pool_seq: %+v", got.Stops)
+	}
+}
+
+func TestMovingClearsThePlanLink(t *testing.T) {
+	ctx := context.Background()
+	svc, repo, _ := newPoolService(t)
+	ann, _ := svc.CreateDriver(ctx, "Ann")
+	bob, _ := svc.CreateDriver(ctx, "Bob")
+	svc.ClockIn(ctx, ann.ID)
+	svc.ClockIn(ctx, bob.ID)
+	a := readyDelivery(t, svc, 20*time.Minute)
+	locate(t, svc, a, 40.70, -74.11, 600)
+	plan, _ := svc.PlanDeliveries(ctx)
+	svc.ConfirmPlan(ctx, plan.PlanID, nil)
+	so, _ := repo.GetByID(ctx, uuid.MustParse(a))
+	if so.Status.PoolPlanID == "" {
+		t.Fatal("confirm must record the plan")
+	}
+	other := ann.ID
+	if so.Status.PoolDriverID == ann.ID {
+		other = bob.ID
+	}
+	svc.Pool(ctx, []string{a}, other)
+	if so, _ := repo.GetByID(ctx, uuid.MustParse(a)); so.Status.PoolPlanID != "" {
+		t.Fatalf("a moved order is no longer the plan's: %q", so.Status.PoolPlanID)
+	}
+	// Plain Send Out of a hand-built pool: no plan.
+	svc.SendOut(ctx, other, SendOutRequest{})
+	evs, _ := repo.ListUnsyncedEvents(ctx, 500)
+	for _, e := range evs {
+		if e.Type == order.FloorEventDeliveryRun && !strings.Contains(string(e.Payload), `"plan_id":""`) {
+			t.Fatalf("hand-built run logged with a plan: %s", e.Payload)
+		}
+	}
+}
+
+// Every StoredOrder that leaves the agent carries main's geo row.
+func TestGeoOnAcceptReadyAndSendOut(t *testing.T) {
+	ctx := context.Background()
+	svc, _, events := newPoolService(t)
+	d, _ := svc.CreateDriver(ctx, "Ann")
+	svc.ClockIn(ctx, d.ID)
+	s := order.Snapshot{ID: uuid.NewString(), TenantID: uuid.NewString(), LocationID: uuid.NewString(), Source: "online",
+		SourceEventID: "1", PlacedAt: time.Now().UTC(), Fulfillment: order.Fulfillment{Type: "delivery"}}
+	if err := svc.OnArrival(ctx, s); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.OnGeo(ctx, order.GeoUpdate{OrderID: s.ID, State: order.GeoNotFound}); err != nil {
+		t.Fatal(err)
+	}
+	check := func(what string, so *order.StoredOrder) {
+		t.Helper()
+		if so == nil || so.Geo == nil || so.Geo.State != order.GeoNotFound {
+			t.Fatalf("%s: geo %+v", what, so)
+		}
+		data, ok := eventOf(events, "order.updated")
+		var pub order.StoredOrder
+		json.Unmarshal(data, &pub)
+		if !ok || pub.Geo == nil || pub.Geo.State != order.GeoNotFound {
+			t.Fatalf("%s: published geo %s", what, data)
+		}
+	}
+	drain(events)
+	so, err := svc.Accept(ctx, uuid.MustParse(s.ID), ptr(10))
+	if err != nil {
+		t.Fatal(err)
+	}
+	check("accept", so)
+	drain(events)
+	so, err = svc.Ready(ctx, s.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	check("ready", so)
+	svc.Pool(ctx, []string{s.ID}, d.ID)
+	drain(events)
+	sent, err := svc.SendOut(ctx, d.ID, SendOutRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	check("send-out", &sent[0])
 }

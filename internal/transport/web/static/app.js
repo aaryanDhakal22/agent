@@ -652,7 +652,8 @@ function agentApp() {
       return this.availableDrivers.map((d, i) => ({
         d, next: i === 0,
         orders: this.orders.filter(so => so.status.pool_driver_id === d.id && (so.status.state === 'accepted' || so.status.state === 'ready'))
-          .sort(byTime(so => ts(so.status.pooled_at))),
+          // Stop order (pool_seq: the plan's or the fastest driving order); unnumbered last.
+          .sort((a, b) => (a.status.pool_seq || 1e9) - (b.status.pool_seq || 1e9) || (ts(a.status.pooled_at) - ts(b.status.pooled_at))),
       }));
     },
     street(snap) { const a = snap && snap.fulfillment && snap.fulfillment.address; return (a && a.line1 ? a.line1 : '').trim(); },

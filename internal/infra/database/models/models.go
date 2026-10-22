@@ -77,6 +77,8 @@ type Order struct {
 	AcceptPending    int64          `json:"accept_pending"`
 	PoolDriverID     sql.NullString `json:"pool_driver_id"`
 	PooledAt         sql.NullString `json:"pooled_at"`
+	PoolSeq          sql.NullInt64  `json:"pool_seq"`
+	PoolPlanID       sql.NullString `json:"pool_plan_id"`
 }
 
 type OrderGeo struct {

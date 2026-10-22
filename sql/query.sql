@@ -66,7 +66,7 @@ WHERE id = ? AND state = 'accepted';
 -- Leaving with a driver empties the order's pool slot.
 UPDATE orders
 SET state = 'on_delivery', out_at = ?, driver_id = ?, driver_name = ?,
-    pool_driver_id = NULL, pooled_at = NULL
+    pool_driver_id = NULL, pooled_at = NULL, pool_seq = NULL, pool_plan_id = NULL
 WHERE id = ? AND state = 'ready'
   AND json_extract(snapshot, '$.fulfillment.type') = 'delivery';
 
@@ -91,13 +91,13 @@ ORDER BY arrival_date ASC;
 
 -- name: CancelOrder :exec
 -- Close-batch: an order nobody accepted is cancelled (never printed, no kitchen number).
-UPDATE orders SET state = 'cancelled', cancelled_at = ?, pool_driver_id = NULL, pooled_at = NULL
+UPDATE orders SET state = 'cancelled', cancelled_at = ?, pool_driver_id = NULL, pooled_at = NULL, pool_seq = NULL, pool_plan_id = NULL
 WHERE id = ? AND state = 'arrived';
 
 -- name: FinishOrder :exec
 -- Close-batch auto-finish: force an order to its terminal state.
 UPDATE orders
-SET state = ?, accepted_at = ?, ready_at = ?, delivered_at = ?, pool_driver_id = NULL, pooled_at = NULL
+SET state = ?, accepted_at = ?, ready_at = ?, delivered_at = ?, pool_driver_id = NULL, pooled_at = NULL, pool_seq = NULL, pool_plan_id = NULL
 WHERE id = ?;
 
 -- name: ListOverdueArrived :many
@@ -419,8 +419,8 @@ INSERT INTO batches (id, opened_at) VALUES (?, ?);
 INSERT INTO orders (id, tenant_id, location_id, source, source_event_id, snapshot, state, arrival_date,
                     printed_date, batch_id, kitchen_number, prep_minutes, estimated_ready_at, accepted_at,
                     ready_at, out_at, delivered_at, driver_id, driver_name, cancelled_at,
-                    pool_driver_id, pooled_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+                    pool_driver_id, pooled_at, pool_seq, pool_plan_id)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
 
 -- name: RestoreDriver :exec
 INSERT INTO drivers (id, name, active, position, status, last_returned_at) VALUES (?, ?, true, ?, ?, ?);
@@ -462,15 +462,24 @@ ON CONFLICT (printer_id) DO UPDATE SET mac = excluded.mac, ip = excluded.ip, see
 -- name: SetOrderPool :execrows
 -- Puts a delivery order (accepted or ready) into a driver's pool, or back to
 -- unassigned with a NULL driver. 0 rows = not a pool-able order.
-UPDATE orders SET pool_driver_id = sqlc.narg(pool_driver_id), pooled_at = sqlc.narg(pooled_at)
+-- The order's stop number is cleared; the service renumbers the pools.
+UPDATE orders SET pool_driver_id = sqlc.narg(pool_driver_id), pooled_at = sqlc.narg(pooled_at), pool_seq = NULL,
+    pool_plan_id = sqlc.narg(pool_plan_id)
 WHERE id = sqlc.arg(id) AND state IN ('accepted', 'ready')
   AND json_extract(snapshot, '$.fulfillment.type') = 'delivery';
 
 -- name: ListPoolByDriver :many
-SELECT * FROM orders WHERE pool_driver_id = ? ORDER BY pooled_at ASC, arrival_date ASC;
+SELECT * FROM orders WHERE pool_driver_id = ?
+ORDER BY pool_seq IS NULL, pool_seq ASC, pooled_at ASC, arrival_date ASC;
 
 -- name: ClearOrderPool :exec
-UPDATE orders SET pool_driver_id = NULL, pooled_at = NULL WHERE id = ?;
+UPDATE orders SET pool_driver_id = NULL, pooled_at = NULL, pool_seq = NULL, pool_plan_id = NULL WHERE id = ?;
+
+-- name: SetPoolSeq :execrows
+-- Renumbers one pooled order (0 rows = no longer in that pool, or unchanged).
+UPDATE orders SET pool_seq = sqlc.arg(pool_seq)
+WHERE id = sqlc.arg(id) AND pool_driver_id = sqlc.arg(pool_driver_id)
+  AND (pool_seq IS NULL OR pool_seq <> sqlc.arg(pool_seq));
 
 -- name: ListOpenDeliveries :many
 -- The open batch's deliveries still on the floor (cooking, ready or out).

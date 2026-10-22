@@ -160,9 +160,10 @@ func (r *OrderRepository) Restore(ctx context.Context, data order.RestoreData) (
 			}
 			// A pool slot comes back with the order (2.0.9) while it can still
 			// be sent out.
-			poolID, pooledAt := sql.NullString{}, sql.NullString{}
+			poolID, pooledAt, poolSeq, poolPlan := sql.NullString{}, sql.NullString{}, sql.NullInt64{}, sql.NullString{}
 			if st.PoolDriverID != "" && (st.State == order.StateAccepted || st.State == order.StateReady) {
-				poolID, pooledAt = sql.NullString{String: st.PoolDriverID, Valid: true}, nullTSPtr(st.PooledAt)
+				poolID, pooledAt, poolSeq = sql.NullString{String: st.PoolDriverID, Valid: true}, nullTSPtr(st.PooledAt), nullInt(st.PoolSeq)
+				poolPlan = sql.NullString{String: st.PoolPlanID, Valid: st.PoolPlanID != ""}
 			}
 			if err := q.RestoreOrder(ctx, models.RestoreOrderParams{
 				ID: snap.ID, TenantID: snap.TenantID, LocationID: snap.LocationID, Source: snap.Source,
@@ -172,7 +173,7 @@ func (r *OrderRepository) Restore(ctx context.Context, data order.RestoreData) (
 				EstimatedReadyAt: nullTSPtr(st.EstimatedReadyAt), AcceptedAt: nullTSPtr(st.AcceptedAt),
 				ReadyAt: nullTSPtr(st.ReadyAt), OutAt: nullTSPtr(st.OutAt), DeliveredAt: nullTSPtr(st.DeliveredAt),
 				DriverID: driverID, DriverName: st.DriverName, CancelledAt: nullTSPtr(st.CancelledAt),
-				PoolDriverID: poolID, PooledAt: pooledAt,
+				PoolDriverID: poolID, PooledAt: pooledAt, PoolSeq: poolSeq, PoolPlanID: poolPlan,
 			}); err != nil {
 				return fmt.Errorf("restore order %s: %w", snap.ID, err)
 			}

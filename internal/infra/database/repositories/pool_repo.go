@@ -46,15 +46,17 @@ func poolable(so order.StoredOrder) bool {
 }
 
 // setPool moves one order into driverID's pool ("" = unassigned) and records
-// the order.status event (unchanged state, new agent_status). No-op when the
-// order is already there.
-func setPool(ctx context.Context, q *models.Queries, so order.StoredOrder, driverID string, now time.Time) (order.StoredOrder, error) {
+// the order.status event (unchanged state, new agent_status). planID is the
+// AUTO plan that pooled it (confirm; "" by hand). Its pool_seq is cleared (the
+// service renumbers the pools). No-op when the order is already there.
+func setPool(ctx context.Context, q *models.Queries, so order.StoredOrder, driverID, planID string, now time.Time) (order.StoredOrder, error) {
 	if so.Status.PoolDriverID == driverID {
 		return so, nil
 	}
 	n, err := q.SetOrderPool(ctx, models.SetOrderPoolParams{
 		PoolDriverID: sql.NullString{String: driverID, Valid: driverID != ""},
 		PooledAt:     nullTSIf(now, driverID != ""),
+		PoolPlanID:   sql.NullString{String: planID, Valid: planID != "" && driverID != ""},
 		ID:           so.Order.ID,
 	})
 	if err != nil {
@@ -86,7 +88,7 @@ func poolInTx(ctx context.Context, q *models.Queries, ids []string, driverID str
 	}
 	out := make([]order.StoredOrder, 0, len(list))
 	for _, so := range list {
-		fresh, err := setPool(ctx, q, so, driverID, now)
+		fresh, err := setPool(ctx, q, so, driverID, "", now)
 		if err != nil {
 			return nil, err
 		}
@@ -163,7 +165,7 @@ func (r *OrderRepository) SendOut(ctx context.Context, driverID string, include 
 		if err != nil {
 			return err
 		}
-		pool, err := mapRows(rows)
+		pool, err := mapRowsBare(rows)
 		if err != nil {
 			return err
 		}
@@ -279,6 +281,38 @@ func recordDeliveryRun(ctx context.Context, q *models.Queries, d models.Driver, 
 		ev.SentIDs = append(ev.SentIDs, s.OrderID)
 	}
 	return insertEvent(ctx, q, ev.EventID, "", ev.Type, now, ev)
+}
+
+// SetPoolSeq — see order.PoolRepository.
+func (r *OrderRepository) SetPoolSeq(ctx context.Context, driverID string, ids []string) (changed []order.StoredOrder, err error) {
+	ctx, _, end := dbSpan(ctx, "floor.set_pool_seq")
+	defer end(&err)
+	now := time.Now()
+	err = r.withTx(ctx, func(q *models.Queries) error {
+		for i, id := range ids {
+			n, err := q.SetPoolSeq(ctx, models.SetPoolSeqParams{PoolSeq: sql.NullInt64{Int64: int64(i + 1), Valid: true},
+				ID: id, PoolDriverID: sql.NullString{String: driverID, Valid: true}})
+			if err != nil {
+				return fmt.Errorf("set pool seq: %w", err)
+			}
+			if n == 0 {
+				continue // unchanged, or left the pool meanwhile
+			}
+			so, err := loadOrder(ctx, q, id)
+			if err != nil {
+				return err
+			}
+			if err := recordOrderStatus(ctx, q, so, false, now); err != nil {
+				return err
+			}
+			changed = append(changed, so)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return changed, nil
 }
 
 // ListOpenDeliveries — see order.PoolRepository.
@@ -421,7 +455,7 @@ func (r *OrderRepository) ConfirmAutoPlan(ctx context.Context, id string, runs [
 					skipped = append(skipped, order.PoolSkip{OrderID: oid, Reason: order.SkipAlreadyPooled})
 					continue
 				}
-				fresh, err := setPool(ctx, q, so, run.DriverID, at)
+				fresh, err := setPool(ctx, q, so, run.DriverID, id, at)
 				if err != nil {
 					return err
 				}

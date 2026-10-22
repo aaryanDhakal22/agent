@@ -108,6 +108,9 @@ func (s *Service) AssignDriver(ctx context.Context, driverID string, orderIDs []
 	for _, so := range out {
 		s.publishUpdated(so)
 	}
+	for _, so := range s.resequencePools(ctx, nil) { // sent orders left their pools
+		s.publishUpdated(so)
+	}
 	s.publishDrivers(ctx)
 	s.publishDispatched(ctx, driverID, out)
 	return out, nil

@@ -157,7 +157,10 @@ type Querier interface {
 	// Driver pools (2.0.9) ----------------------------------------------------------
 	// Puts a delivery order (accepted or ready) into a driver's pool, or back to
 	// unassigned with a NULL driver. 0 rows = not a pool-able order.
+	// The order's stop number is cleared; the service renumbers the pools.
 	SetOrderPool(ctx context.Context, arg SetOrderPoolParams) (int64, error)
+	// Renumbers one pooled order (0 rows = no longer in that pool, or unchanged).
+	SetPoolSeq(ctx context.Context, arg SetPoolSeqParams) (int64, error)
 	SetReceiptPrefs(ctx context.Context, receiptPrefs string) error
 	SetSessionSecret(ctx context.Context, sessionSecret string) error
 	SetStoreAPIKey(ctx context.Context, storeApiKey string) error

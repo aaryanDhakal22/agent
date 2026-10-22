@@ -116,6 +116,10 @@ type PoolRepository interface {
 	// like AssignDriver, and writes the delivery.run event. Returns the sent
 	// orders and the ones it marked ready.
 	SendOut(ctx context.Context, driverID string, include []string, markReady bool, meta RunMeta) (sent, readied []StoredOrder, err error)
+	// SetPoolSeq numbers the driver's pooled orders 1..n in the given order
+	// (one order.status event per order whose number changed) and returns the
+	// changed orders.
+	SetPoolSeq(ctx context.Context, driverID string, ids []string) ([]StoredOrder, error)
 	// ListOpenDeliveries: the open batch's accepted/ready/on_delivery deliveries.
 	ListOpenDeliveries(ctx context.Context) ([]StoredOrder, error)
 

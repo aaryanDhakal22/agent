@@ -152,16 +152,12 @@ func (r *OrderRepository) ClaimAccept(ctx context.Context, id uuid.UUID, prepMin
 			return nil, fmt.Errorf("save prep default: %w", err)
 		}
 	}
-	fresh, err := q.GetOrderByID(ctx, id.String())
+	so, err := loadOrder(ctx, q, id.String()) // with its geo, like every order served
 	if err != nil {
 		return nil, fmt.Errorf("reload order: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
 		return nil, fmt.Errorf("commit: %w", err)
-	}
-	so, err := toStored(fresh)
-	if err != nil {
-		return nil, err
 	}
 	return &so, nil
 }
@@ -224,6 +220,13 @@ func toStored(row models.Order) (order.StoredOrder, error) {
 	if row.PoolDriverID.Valid {
 		st.PoolDriverID = row.PoolDriverID.String
 	}
+	if row.PoolPlanID.Valid {
+		st.PoolPlanID = row.PoolPlanID.String
+	}
+	if row.PoolSeq.Valid {
+		v := row.PoolSeq.Int64
+		st.PoolSeq = &v
+	}
 	return order.StoredOrder{Order: s, Status: st}, nil
 }
 
@@ -279,9 +282,11 @@ func attachGeo(ctx context.Context, q *models.Queries, list []order.StoredOrder)
 	return nil
 }
 
-// mapRowsGeo is mapRows plus each order's geo.
+// mapRowsGeo is mapRowsBare plus each order's geo. Every StoredOrder that
+// leaves the repository (HTTP answers, SSE events) is built by loadOrder or
+// mapRowsGeo; toStored / mapRowsBare are for internal reads only.
 func mapRowsGeo(ctx context.Context, q *models.Queries, rows []models.Order) ([]order.StoredOrder, error) {
-	out, err := mapRows(rows)
+	out, err := mapRowsBare(rows)
 	if err != nil {
 		return nil, err
 	}
@@ -291,7 +296,8 @@ func mapRowsGeo(ctx context.Context, q *models.Queries, rows []models.Order) ([]
 	return out, nil
 }
 
-func mapRows(rows []models.Order) ([]order.StoredOrder, error) {
+// mapRowsBare converts rows WITHOUT geo (internal reads; see mapRowsGeo).
+func mapRowsBare(rows []models.Order) ([]order.StoredOrder, error) {
 	out := make([]order.StoredOrder, 0, len(rows))
 	for _, row := range rows {
 		so, err := toStored(row)

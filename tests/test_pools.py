@@ -72,10 +72,15 @@ def test_pool_rules_and_send_out(floor) -> None:  # noqa: F811
     assert r.status_code == 200, r.text
     assert {o["status"]["pool_driver_id"] for o in r.json()} == {ann["id"]}
     assert all(o["status"]["pooled_at"] and o["status"]["state"] == "accepted" for o in r.json())
+    # Stop numbers: no drive times here, so placed order (d1 placed first).
+    assert {o["order"]["id"]: o["status"]["pool_seq"] for o in r.json()} == {d1: 1, d2: 2}, r.text
+    assert [status_of(a, i)["pool_seq"] for i in (d1, d2)] == [1, 2]
     r = pool([d2], bob["id"])
     assert r.status_code == 200 and r.json()[0]["status"]["pool_driver_id"] == bob["id"], "driver -> driver"
+    assert r.json()[0]["status"]["pool_seq"] == 1 and status_of(a, d1)["pool_seq"] == 1, "both pools renumbered"
     r = pool([d2], None)
     assert r.status_code == 200 and "pool_driver_id" not in r.json()[0]["status"], "unassign"
+    assert "pool_seq" not in r.json()[0]["status"]
 
     r = post(a, f"/api/drivers/{ann['id']}/send-out", {"mark_ready": False})
     assert r.status_code == 409 and r.json()["code"] == "not_ready" and r.json()["order_ids"] == [d1], r.text

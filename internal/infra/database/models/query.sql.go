@@ -12,7 +12,7 @@ import (
 )
 
 const cancelOrder = `-- name: CancelOrder :exec
-UPDATE orders SET state = 'cancelled', cancelled_at = ?, pool_driver_id = NULL, pooled_at = NULL
+UPDATE orders SET state = 'cancelled', cancelled_at = ?, pool_driver_id = NULL, pooled_at = NULL, pool_seq = NULL, pool_plan_id = NULL
 WHERE id = ? AND state = 'arrived'
 `
 
@@ -73,7 +73,7 @@ func (q *Queries) ClearAcceptPending(ctx context.Context, id string) error {
 }
 
 const clearOrderPool = `-- name: ClearOrderPool :exec
-UPDATE orders SET pool_driver_id = NULL, pooled_at = NULL WHERE id = ?
+UPDATE orders SET pool_driver_id = NULL, pooled_at = NULL, pool_seq = NULL, pool_plan_id = NULL WHERE id = ?
 `
 
 func (q *Queries) ClearOrderPool(ctx context.Context, id string) error {
@@ -371,7 +371,7 @@ func (q *Queries) DeleteOrphanOrderTimes(ctx context.Context) error {
 
 const finishOrder = `-- name: FinishOrder :exec
 UPDATE orders
-SET state = ?, accepted_at = ?, ready_at = ?, delivered_at = ?, pool_driver_id = NULL, pooled_at = NULL
+SET state = ?, accepted_at = ?, ready_at = ?, delivered_at = ?, pool_driver_id = NULL, pooled_at = NULL, pool_seq = NULL, pool_plan_id = NULL
 WHERE id = ?
 `
 
@@ -634,7 +634,7 @@ func (q *Queries) GetOpenShift(ctx context.Context, driverID string) (DriverShif
 }
 
 const getOrderByID = `-- name: GetOrderByID :one
-SELECT id, tenant_id, location_id, source, source_event_id, snapshot, state, arrival_date, printed_date, batch_id, kitchen_number, prep_minutes, estimated_ready_at, accepted_at, ready_at, out_at, delivered_at, driver_id, driver_name, last_alert_at, cancelled_at, accept_pending, pool_driver_id, pooled_at FROM orders WHERE id = ?
+SELECT id, tenant_id, location_id, source, source_event_id, snapshot, state, arrival_date, printed_date, batch_id, kitchen_number, prep_minutes, estimated_ready_at, accepted_at, ready_at, out_at, delivered_at, driver_id, driver_name, last_alert_at, cancelled_at, accept_pending, pool_driver_id, pooled_at, pool_seq, pool_plan_id FROM orders WHERE id = ?
 `
 
 func (q *Queries) GetOrderByID(ctx context.Context, id string) (Order, error) {
@@ -665,6 +665,8 @@ func (q *Queries) GetOrderByID(ctx context.Context, id string) (Order, error) {
 		&i.AcceptPending,
 		&i.PoolDriverID,
 		&i.PooledAt,
+		&i.PoolSeq,
+		&i.PoolPlanID,
 	)
 	return i, err
 }
@@ -889,7 +891,7 @@ func (q *Queries) ListActiveDrivers(ctx context.Context) ([]Driver, error) {
 }
 
 const listArrivedOrders = `-- name: ListArrivedOrders :many
-SELECT id, tenant_id, location_id, source, source_event_id, snapshot, state, arrival_date, printed_date, batch_id, kitchen_number, prep_minutes, estimated_ready_at, accepted_at, ready_at, out_at, delivered_at, driver_id, driver_name, last_alert_at, cancelled_at, accept_pending, pool_driver_id, pooled_at FROM orders
+SELECT id, tenant_id, location_id, source, source_event_id, snapshot, state, arrival_date, printed_date, batch_id, kitchen_number, prep_minutes, estimated_ready_at, accepted_at, ready_at, out_at, delivered_at, driver_id, driver_name, last_alert_at, cancelled_at, accept_pending, pool_driver_id, pooled_at, pool_seq, pool_plan_id FROM orders
 WHERE state = 'arrived'
 ORDER BY arrival_date ASC
 `
@@ -928,6 +930,8 @@ func (q *Queries) ListArrivedOrders(ctx context.Context) ([]Order, error) {
 			&i.AcceptPending,
 			&i.PoolDriverID,
 			&i.PooledAt,
+			&i.PoolSeq,
+			&i.PoolPlanID,
 		); err != nil {
 			return nil, err
 		}
@@ -978,7 +982,7 @@ func (q *Queries) ListAvailableDrivers(ctx context.Context) ([]Driver, error) {
 }
 
 const listBatchDeliveries = `-- name: ListBatchDeliveries :many
-SELECT id, tenant_id, location_id, source, source_event_id, snapshot, state, arrival_date, printed_date, batch_id, kitchen_number, prep_minutes, estimated_ready_at, accepted_at, ready_at, out_at, delivered_at, driver_id, driver_name, last_alert_at, cancelled_at, accept_pending, pool_driver_id, pooled_at FROM orders
+SELECT id, tenant_id, location_id, source, source_event_id, snapshot, state, arrival_date, printed_date, batch_id, kitchen_number, prep_minutes, estimated_ready_at, accepted_at, ready_at, out_at, delivered_at, driver_id, driver_name, last_alert_at, cancelled_at, accept_pending, pool_driver_id, pooled_at, pool_seq, pool_plan_id FROM orders
 WHERE batch_id = ? AND state = 'delivered' AND driver_id IS NOT NULL
 ORDER BY delivered_at ASC, kitchen_number ASC
 `
@@ -1018,6 +1022,8 @@ func (q *Queries) ListBatchDeliveries(ctx context.Context, batchID int64) ([]Ord
 			&i.AcceptPending,
 			&i.PoolDriverID,
 			&i.PooledAt,
+			&i.PoolSeq,
+			&i.PoolPlanID,
 		); err != nil {
 			return nil, err
 		}
@@ -1033,7 +1039,7 @@ func (q *Queries) ListBatchDeliveries(ctx context.Context, batchID int64) ([]Ord
 }
 
 const listBatchLeftovers = `-- name: ListBatchLeftovers :many
-SELECT id, tenant_id, location_id, source, source_event_id, snapshot, state, arrival_date, printed_date, batch_id, kitchen_number, prep_minutes, estimated_ready_at, accepted_at, ready_at, out_at, delivered_at, driver_id, driver_name, last_alert_at, cancelled_at, accept_pending, pool_driver_id, pooled_at FROM orders
+SELECT id, tenant_id, location_id, source, source_event_id, snapshot, state, arrival_date, printed_date, batch_id, kitchen_number, prep_minutes, estimated_ready_at, accepted_at, ready_at, out_at, delivered_at, driver_id, driver_name, last_alert_at, cancelled_at, accept_pending, pool_driver_id, pooled_at, pool_seq, pool_plan_id FROM orders
 WHERE batch_id = ?
   AND NOT (state IN ('delivered', 'cancelled')
            OR (state = 'ready'
@@ -1077,6 +1083,8 @@ func (q *Queries) ListBatchLeftovers(ctx context.Context, batchID int64) ([]Orde
 			&i.AcceptPending,
 			&i.PoolDriverID,
 			&i.PooledAt,
+			&i.PoolSeq,
+			&i.PoolPlanID,
 		); err != nil {
 			return nil, err
 		}
@@ -1163,7 +1171,7 @@ func (q *Queries) ListInterruptedAccepts(ctx context.Context) ([]string, error) 
 }
 
 const listOnDeliveryByDriver = `-- name: ListOnDeliveryByDriver :many
-SELECT id, tenant_id, location_id, source, source_event_id, snapshot, state, arrival_date, printed_date, batch_id, kitchen_number, prep_minutes, estimated_ready_at, accepted_at, ready_at, out_at, delivered_at, driver_id, driver_name, last_alert_at, cancelled_at, accept_pending, pool_driver_id, pooled_at FROM orders
+SELECT id, tenant_id, location_id, source, source_event_id, snapshot, state, arrival_date, printed_date, batch_id, kitchen_number, prep_minutes, estimated_ready_at, accepted_at, ready_at, out_at, delivered_at, driver_id, driver_name, last_alert_at, cancelled_at, accept_pending, pool_driver_id, pooled_at, pool_seq, pool_plan_id FROM orders
 WHERE state = 'on_delivery' AND driver_id = ?
 ORDER BY out_at ASC
 `
@@ -1202,6 +1210,8 @@ func (q *Queries) ListOnDeliveryByDriver(ctx context.Context, driverID sql.NullS
 			&i.AcceptPending,
 			&i.PoolDriverID,
 			&i.PooledAt,
+			&i.PoolSeq,
+			&i.PoolPlanID,
 		); err != nil {
 			return nil, err
 		}
@@ -1217,7 +1227,7 @@ func (q *Queries) ListOnDeliveryByDriver(ctx context.Context, driverID sql.NullS
 }
 
 const listOpenDeliveries = `-- name: ListOpenDeliveries :many
-SELECT id, tenant_id, location_id, source, source_event_id, snapshot, state, arrival_date, printed_date, batch_id, kitchen_number, prep_minutes, estimated_ready_at, accepted_at, ready_at, out_at, delivered_at, driver_id, driver_name, last_alert_at, cancelled_at, accept_pending, pool_driver_id, pooled_at FROM orders
+SELECT id, tenant_id, location_id, source, source_event_id, snapshot, state, arrival_date, printed_date, batch_id, kitchen_number, prep_minutes, estimated_ready_at, accepted_at, ready_at, out_at, delivered_at, driver_id, driver_name, last_alert_at, cancelled_at, accept_pending, pool_driver_id, pooled_at, pool_seq, pool_plan_id FROM orders
 WHERE batch_id = (SELECT id FROM batches WHERE closed_at IS NULL ORDER BY id DESC LIMIT 1)
   AND state IN ('accepted', 'ready', 'on_delivery')
   AND json_extract(snapshot, '$.fulfillment.type') = 'delivery'
@@ -1259,6 +1269,8 @@ func (q *Queries) ListOpenDeliveries(ctx context.Context) ([]Order, error) {
 			&i.AcceptPending,
 			&i.PoolDriverID,
 			&i.PooledAt,
+			&i.PoolSeq,
+			&i.PoolPlanID,
 		); err != nil {
 			return nil, err
 		}
@@ -1411,7 +1423,7 @@ func (q *Queries) ListOrderTimes(ctx context.Context, arg ListOrderTimesParams) 
 }
 
 const listOrdersByBatch = `-- name: ListOrdersByBatch :many
-SELECT id, tenant_id, location_id, source, source_event_id, snapshot, state, arrival_date, printed_date, batch_id, kitchen_number, prep_minutes, estimated_ready_at, accepted_at, ready_at, out_at, delivered_at, driver_id, driver_name, last_alert_at, cancelled_at, accept_pending, pool_driver_id, pooled_at FROM orders
+SELECT id, tenant_id, location_id, source, source_event_id, snapshot, state, arrival_date, printed_date, batch_id, kitchen_number, prep_minutes, estimated_ready_at, accepted_at, ready_at, out_at, delivered_at, driver_id, driver_name, last_alert_at, cancelled_at, accept_pending, pool_driver_id, pooled_at, pool_seq, pool_plan_id FROM orders
 WHERE batch_id = ?
 ORDER BY arrival_date DESC
 LIMIT ? OFFSET ?
@@ -1457,6 +1469,8 @@ func (q *Queries) ListOrdersByBatch(ctx context.Context, arg ListOrdersByBatchPa
 			&i.AcceptPending,
 			&i.PoolDriverID,
 			&i.PooledAt,
+			&i.PoolSeq,
+			&i.PoolPlanID,
 		); err != nil {
 			return nil, err
 		}
@@ -1472,7 +1486,7 @@ func (q *Queries) ListOrdersByBatch(ctx context.Context, arg ListOrdersByBatchPa
 }
 
 const listOrdersPage = `-- name: ListOrdersPage :many
-SELECT id, tenant_id, location_id, source, source_event_id, snapshot, state, arrival_date, printed_date, batch_id, kitchen_number, prep_minutes, estimated_ready_at, accepted_at, ready_at, out_at, delivered_at, driver_id, driver_name, last_alert_at, cancelled_at, accept_pending, pool_driver_id, pooled_at FROM orders
+SELECT id, tenant_id, location_id, source, source_event_id, snapshot, state, arrival_date, printed_date, batch_id, kitchen_number, prep_minutes, estimated_ready_at, accepted_at, ready_at, out_at, delivered_at, driver_id, driver_name, last_alert_at, cancelled_at, accept_pending, pool_driver_id, pooled_at, pool_seq, pool_plan_id FROM orders
 ORDER BY arrival_date DESC
 LIMIT ? OFFSET ?
 `
@@ -1516,6 +1530,8 @@ func (q *Queries) ListOrdersPage(ctx context.Context, arg ListOrdersPageParams) 
 			&i.AcceptPending,
 			&i.PoolDriverID,
 			&i.PooledAt,
+			&i.PoolSeq,
+			&i.PoolPlanID,
 		); err != nil {
 			return nil, err
 		}
@@ -1531,7 +1547,7 @@ func (q *Queries) ListOrdersPage(ctx context.Context, arg ListOrdersPageParams) 
 }
 
 const listOverdueArrived = `-- name: ListOverdueArrived :many
-SELECT id, tenant_id, location_id, source, source_event_id, snapshot, state, arrival_date, printed_date, batch_id, kitchen_number, prep_minutes, estimated_ready_at, accepted_at, ready_at, out_at, delivered_at, driver_id, driver_name, last_alert_at, cancelled_at, accept_pending, pool_driver_id, pooled_at FROM orders
+SELECT id, tenant_id, location_id, source, source_event_id, snapshot, state, arrival_date, printed_date, batch_id, kitchen_number, prep_minutes, estimated_ready_at, accepted_at, ready_at, out_at, delivered_at, driver_id, driver_name, last_alert_at, cancelled_at, accept_pending, pool_driver_id, pooled_at, pool_seq, pool_plan_id FROM orders
 WHERE state = 'arrived'
   AND arrival_date <= ?1
   AND (last_alert_at IS NULL OR last_alert_at <= ?1)
@@ -1573,6 +1589,8 @@ func (q *Queries) ListOverdueArrived(ctx context.Context, cutoff string) ([]Orde
 			&i.AcceptPending,
 			&i.PoolDriverID,
 			&i.PooledAt,
+			&i.PoolSeq,
+			&i.PoolPlanID,
 		); err != nil {
 			return nil, err
 		}
@@ -1623,7 +1641,8 @@ func (q *Queries) ListPairedDevices(ctx context.Context) ([]PairedDevice, error)
 }
 
 const listPoolByDriver = `-- name: ListPoolByDriver :many
-SELECT id, tenant_id, location_id, source, source_event_id, snapshot, state, arrival_date, printed_date, batch_id, kitchen_number, prep_minutes, estimated_ready_at, accepted_at, ready_at, out_at, delivered_at, driver_id, driver_name, last_alert_at, cancelled_at, accept_pending, pool_driver_id, pooled_at FROM orders WHERE pool_driver_id = ? ORDER BY pooled_at ASC, arrival_date ASC
+SELECT id, tenant_id, location_id, source, source_event_id, snapshot, state, arrival_date, printed_date, batch_id, kitchen_number, prep_minutes, estimated_ready_at, accepted_at, ready_at, out_at, delivered_at, driver_id, driver_name, last_alert_at, cancelled_at, accept_pending, pool_driver_id, pooled_at, pool_seq, pool_plan_id FROM orders WHERE pool_driver_id = ?
+ORDER BY pool_seq IS NULL, pool_seq ASC, pooled_at ASC, arrival_date ASC
 `
 
 func (q *Queries) ListPoolByDriver(ctx context.Context, poolDriverID sql.NullString) ([]Order, error) {
@@ -1660,6 +1679,8 @@ func (q *Queries) ListPoolByDriver(ctx context.Context, poolDriverID sql.NullStr
 			&i.AcceptPending,
 			&i.PoolDriverID,
 			&i.PooledAt,
+			&i.PoolSeq,
+			&i.PoolPlanID,
 		); err != nil {
 			return nil, err
 		}
@@ -1885,7 +1906,7 @@ func (q *Queries) MarkFloorEventSynced(ctx context.Context, arg MarkFloorEventSy
 const markOnDelivery = `-- name: MarkOnDelivery :execrows
 UPDATE orders
 SET state = 'on_delivery', out_at = ?, driver_id = ?, driver_name = ?,
-    pool_driver_id = NULL, pooled_at = NULL
+    pool_driver_id = NULL, pooled_at = NULL, pool_seq = NULL, pool_plan_id = NULL
 WHERE id = ? AND state = 'ready'
   AND json_extract(snapshot, '$.fulfillment.type') = 'delivery'
 `
@@ -2068,8 +2089,8 @@ const restoreOrder = `-- name: RestoreOrder :exec
 INSERT INTO orders (id, tenant_id, location_id, source, source_event_id, snapshot, state, arrival_date,
                     printed_date, batch_id, kitchen_number, prep_minutes, estimated_ready_at, accepted_at,
                     ready_at, out_at, delivered_at, driver_id, driver_name, cancelled_at,
-                    pool_driver_id, pooled_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    pool_driver_id, pooled_at, pool_seq, pool_plan_id)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `
 
 type RestoreOrderParams struct {
@@ -2095,6 +2116,8 @@ type RestoreOrderParams struct {
 	CancelledAt      sql.NullString `json:"cancelled_at"`
 	PoolDriverID     sql.NullString `json:"pool_driver_id"`
 	PooledAt         sql.NullString `json:"pooled_at"`
+	PoolSeq          sql.NullInt64  `json:"pool_seq"`
+	PoolPlanID       sql.NullString `json:"pool_plan_id"`
 }
 
 func (q *Queries) RestoreOrder(ctx context.Context, arg RestoreOrderParams) error {
@@ -2121,6 +2144,8 @@ func (q *Queries) RestoreOrder(ctx context.Context, arg RestoreOrderParams) erro
 		arg.CancelledAt,
 		arg.PoolDriverID,
 		arg.PooledAt,
+		arg.PoolSeq,
+		arg.PoolPlanID,
 	)
 	return err
 }
@@ -2446,22 +2471,51 @@ func (q *Queries) SetMapFile(ctx context.Context, mapFile string) error {
 
 const setOrderPool = `-- name: SetOrderPool :execrows
 
-UPDATE orders SET pool_driver_id = ?1, pooled_at = ?2
-WHERE id = ?3 AND state IN ('accepted', 'ready')
+UPDATE orders SET pool_driver_id = ?1, pooled_at = ?2, pool_seq = NULL,
+    pool_plan_id = ?3
+WHERE id = ?4 AND state IN ('accepted', 'ready')
   AND json_extract(snapshot, '$.fulfillment.type') = 'delivery'
 `
 
 type SetOrderPoolParams struct {
 	PoolDriverID sql.NullString `json:"pool_driver_id"`
 	PooledAt     sql.NullString `json:"pooled_at"`
+	PoolPlanID   sql.NullString `json:"pool_plan_id"`
 	ID           string         `json:"id"`
 }
 
 // Driver pools (2.0.9) ----------------------------------------------------------
 // Puts a delivery order (accepted or ready) into a driver's pool, or back to
 // unassigned with a NULL driver. 0 rows = not a pool-able order.
+// The order's stop number is cleared; the service renumbers the pools.
 func (q *Queries) SetOrderPool(ctx context.Context, arg SetOrderPoolParams) (int64, error) {
-	result, err := q.db.ExecContext(ctx, setOrderPool, arg.PoolDriverID, arg.PooledAt, arg.ID)
+	result, err := q.db.ExecContext(ctx, setOrderPool,
+		arg.PoolDriverID,
+		arg.PooledAt,
+		arg.PoolPlanID,
+		arg.ID,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const setPoolSeq = `-- name: SetPoolSeq :execrows
+UPDATE orders SET pool_seq = ?1
+WHERE id = ?2 AND pool_driver_id = ?3
+  AND (pool_seq IS NULL OR pool_seq <> ?1)
+`
+
+type SetPoolSeqParams struct {
+	PoolSeq      sql.NullInt64  `json:"pool_seq"`
+	ID           string         `json:"id"`
+	PoolDriverID sql.NullString `json:"pool_driver_id"`
+}
+
+// Renumbers one pooled order (0 rows = no longer in that pool, or unchanged).
+func (q *Queries) SetPoolSeq(ctx context.Context, arg SetPoolSeqParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, setPoolSeq, arg.PoolSeq, arg.ID, arg.PoolDriverID)
 	if err != nil {
 		return 0, err
 	}

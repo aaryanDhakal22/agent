@@ -113,7 +113,11 @@ func (b *Broker) PublishUpdated(so order.StoredOrder) {
 
 // PublishEscalated re-announces an order nobody has accepted yet.
 func (b *Broker) PublishEscalated(so order.StoredOrder, waitingSeconds int64) {
-	b.publishJSON("order.escalated", map[string]any{"order": so.Order, "status": so.Status, "waiting_seconds": waitingSeconds})
+	m := map[string]any{"order": so.Order, "status": so.Status, "waiting_seconds": waitingSeconds}
+	if so.Geo != nil {
+		m["geo"] = so.Geo
+	}
+	b.publishJSON("order.escalated", m)
 }
 
 // PublishDrivers sends the whole driver roster (queue order).

@@ -246,7 +246,7 @@ func (r *OrderRepository) CloseBatch(ctx context.Context, force bool) (closed *o
 		if err != nil {
 			return err
 		}
-		left, err := mapRows(rows)
+		left, err := mapRowsGeo(ctx, q, rows) // served in the 409 leftovers list
 		if err != nil {
 			return err
 		}
@@ -764,11 +764,12 @@ func (r *OrderRepository) ListShifts(ctx context.Context, since time.Time) (out 
 func (r *OrderRepository) ListOverdueArrived(ctx context.Context, cutoff time.Time) (out []order.StoredOrder, err error) {
 	ctx, _, end := dbSpan(ctx, "floor.list_overdue")
 	defer end(&err)
-	rows, err := models.New(r.db).ListOverdueArrived(ctx, fmtTS(cutoff))
+	q := models.New(r.db)
+	rows, err := q.ListOverdueArrived(ctx, fmtTS(cutoff))
 	if err != nil {
 		return nil, err
 	}
-	return mapRows(rows)
+	return mapRowsGeo(ctx, q, rows) // published as order.escalated
 }
 
 func (r *OrderRepository) MarkAlerted(ctx context.Context, id string, at time.Time) (err error) {
@@ -958,7 +959,7 @@ func (r *OrderRepository) DriverReports(ctx context.Context, batchID int64) (out
 	if err != nil {
 		return nil, err
 	}
-	orders, err := mapRows(rows)
+	orders, err := mapRowsBare(rows)
 	if err != nil {
 		return nil, err
 	}

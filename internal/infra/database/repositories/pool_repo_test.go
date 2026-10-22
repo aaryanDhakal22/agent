@@ -490,3 +490,27 @@ func TestEstimateStops(t *testing.T) {
 		t.Fatalf("etas: %v %v %v", stops[0].ETA, stops[1].ETA, stops[2].ETA)
 	}
 }
+
+func TestSetPoolSeqEventsAndClearing(t *testing.T) {
+	ctx := context.Background()
+	r, a, _, os := poolSetup(t, 2)
+	r.PoolOrders(ctx, ids(os...), a.ID)
+	changed, err := r.SetPoolSeq(ctx, a.ID, ids(os[1], os[0]))
+	if err != nil || len(changed) != 2 || *changed[0].Status.PoolSeq != 1 || changed[0].Order.ID != os[1].Order.ID {
+		t.Fatalf("seq: %v %+v", err, changed)
+	}
+	if ev := lastStatusEvent(t, r, os[0].Order.ID); ev["agent_status"].(map[string]any)["pool_seq"] != float64(2) {
+		t.Fatalf("agent_status must carry pool_seq: %v", ev)
+	}
+	if again, _ := r.SetPoolSeq(ctx, a.ID, ids(os[1], os[0])); len(again) != 0 {
+		t.Fatalf("unchanged numbers write nothing: %d", len(again))
+	}
+	// Another driver's id never numbers this pool; leaving the pool clears it.
+	if other, _ := r.SetPoolSeq(ctx, "someone", ids(os[0])); len(other) != 0 {
+		t.Fatal("wrong driver must not renumber")
+	}
+	r.PoolOrders(ctx, ids(os[0]), "")
+	if got := get(t, r, os[0].Order.ID); got.Status.PoolSeq != nil || got.Status.PoolPlanID != "" {
+		t.Fatalf("unassigned: %+v", got.Status)
+	}
+}

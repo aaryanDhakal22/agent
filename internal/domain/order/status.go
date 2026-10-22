@@ -56,6 +56,12 @@ type Status struct {
 	// (accepted or ready) until Send Out; empty = unassigned.
 	PoolDriverID string     `json:"pool_driver_id,omitempty"`
 	PooledAt     *time.Time `json:"pooled_at,omitempty"`
+	// PoolSeq is the stop number (1..n) inside the pool: the AUTO plan's
+	// driving order on confirm, else the fastest order from the drive times.
+	PoolSeq *int64 `json:"pool_seq,omitempty"`
+	// PoolPlanID: the AUTO plan whose confirm pooled this order (empty when
+	// pooled by hand); a plain Send Out logs the run against it.
+	PoolPlanID string `json:"pool_plan_id,omitempty"`
 }
 
 // StoredOrder is the repository's view of an order: the canonical Snapshot

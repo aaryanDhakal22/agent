@@ -36,6 +36,9 @@ CREATE TABLE orders (
     -- 00012_pools_geo: the available driver whose pool holds this delivery.
     pool_driver_id     text,
     pooled_at          text,
+    -- 00013_pool_seq: stop order inside the pool (1..n).
+    pool_seq           integer,
+    pool_plan_id       text,
     CHECK (state IN ('arrived', 'accepted', 'ready', 'on_delivery', 'delivered', 'cancelled'))
 );
 CREATE INDEX idx_orders_arrival_date ON orders (arrival_date DESC);

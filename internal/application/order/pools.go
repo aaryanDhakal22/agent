@@ -125,8 +125,118 @@ func (s *Service) Pool(ctx context.Context, ids []string, driverID string) ([]or
 	if err != nil {
 		return nil, spanErr(span, err)
 	}
+	out = latest(out, s.resequencePools(ctx, nil))
 	s.publishAll(out)
 	return out, nil
+}
+
+// latest returns base with each order replaced by its newer copy in newer,
+// followed by the newer orders base doesn't have.
+func latest(base, newer []order.StoredOrder) []order.StoredOrder {
+	idx := map[string]int{}
+	out := append([]order.StoredOrder(nil), base...)
+	for i, so := range out {
+		idx[so.Order.ID] = i
+	}
+	for _, so := range newer {
+		if i, ok := idx[so.Order.ID]; ok {
+			out[i] = so
+		} else {
+			idx[so.Order.ID] = len(out)
+			out = append(out, so)
+		}
+	}
+	return out
+}
+
+// resequencePools renumbers (pool_seq 1..n) every pool whose numbering is no
+// longer 1..n over its members (an order joined, left or moved). prefer gives
+// a driving order to put first for a driver (the AUTO plan's run on confirm)
+// and forces that driver's renumbering; everything else comes in the fastest
+// order from the drive times (orders without a location last, by placed
+// time). Returns the orders whose number changed.
+func (s *Service) resequencePools(ctx context.Context, prefer map[string][]string) []order.StoredOrder {
+	open, err := s.repo.ListOpenDeliveries(ctx)
+	if err != nil {
+		s.logger.Warn().Ctx(ctx).Err(err).Msg("pool renumbering: list deliveries failed")
+		return nil
+	}
+	pools := map[string][]order.StoredOrder{}
+	var drivers []string
+	for _, so := range open {
+		if so.Status.PoolDriverID == "" || (so.Status.State != order.StateAccepted && so.Status.State != order.StateReady) {
+			continue
+		}
+		if pools[so.Status.PoolDriverID] == nil {
+			drivers = append(drivers, so.Status.PoolDriverID)
+		}
+		pools[so.Status.PoolDriverID] = append(pools[so.Status.PoolDriverID], so)
+	}
+	sort.Strings(drivers)
+	var changed []order.StoredOrder
+	for _, d := range drivers {
+		run := pools[d]
+		if prefer[d] == nil && seqIntact(run) {
+			continue
+		}
+		out, err := s.repo.SetPoolSeq(ctx, d, s.poolOrder(ctx, run, prefer[d]))
+		if err != nil {
+			s.logger.Warn().Ctx(ctx).Err(err).Str("driver_id", d).Msg("pool renumbering failed")
+			continue
+		}
+		changed = append(changed, out...)
+	}
+	if len(changed) > 0 {
+		s.floorChanged()
+	}
+	return changed
+}
+
+// seqIntact: every order of the pool is numbered and the numbers are 1..n.
+func seqIntact(run []order.StoredOrder) bool {
+	seen := make([]bool, len(run)+1)
+	for _, so := range run {
+		q := so.Status.PoolSeq
+		if q == nil || *q < 1 || *q > int64(len(run)) || seen[*q] {
+			return false
+		}
+		seen[*q] = true
+	}
+	return true
+}
+
+// poolOrder: the preferred ids that are in the pool (in that order), then
+// the rest in the fastest driving order.
+func (s *Service) poolOrder(ctx context.Context, run []order.StoredOrder, prefer []string) []string {
+	in := map[string]bool{}
+	for _, so := range run {
+		in[so.Order.ID] = true
+	}
+	ids := make([]string, 0, len(run))
+	used := map[string]bool{}
+	for _, id := range prefer {
+		if in[id] && !used[id] {
+			ids, used[id] = append(ids, id), true
+		}
+	}
+	var rest []order.StoredOrder
+	for _, so := range run {
+		if !used[so.Order.ID] {
+			rest = append(rest, so)
+		}
+	}
+	if len(rest) == 0 {
+		return ids
+	}
+	sort.SliceStable(rest, func(i, j int) bool { return placedAt(rest[i]).Before(placedAt(rest[j])) })
+	return append(ids, s.localTrip(ctx, rest).OrderIDs...)
+}
+
+func placedAt(so order.StoredOrder) time.Time {
+	if !so.Order.PlacedAt.IsZero() {
+		return so.Order.PlacedAt
+	}
+	return so.Status.ArrivalDate
 }
 
 // SendOutRequest is POST /api/drivers/{id}/send-out.
@@ -145,7 +255,8 @@ func (s *Service) SendOut(ctx context.Context, driverID string, req SendOutReque
 	defer span.End()
 
 	meta := order.RunMeta{PlanID: req.PlanID}
-	if req.PlanID != "" {
+	pool := s.poolOf(ctx, driverID)
+	if req.PlanID != "" { // Send Out while AUTO's yellow stops show
 		if plan, err := s.loadPlan(ctx, req.PlanID); err == nil {
 			for _, run := range plan.Output.Runs {
 				if run.DriverID == driverID {
@@ -155,10 +266,26 @@ func (s *Service) SendOut(ctx context.Context, driverID string, req SendOutReque
 		} else {
 			s.logger.Warn().Ctx(ctx).Err(err).Str("plan_id", req.PlanID).Msg("send-out: AUTO plan not found (logged without it)")
 		}
+	} else if planID := poolPlan(pool); planID != "" { // the pool came from a confirmed plan
+		meta.PlanID = planID
+		if plan, err := s.loadPlan(ctx, planID); err == nil {
+			for _, run := range plan.Output.Runs {
+				if run.DriverID == driverID {
+					meta.SuggestedIDs = run.SuggestedIDs
+				}
+			}
+		}
+		if meta.SuggestedIDs == nil {
+			meta.SuggestedIDs = []string{}
+		}
+	}
+	if meta.StopOrder == nil && len(req.Include) == 0 && seqIntact(pool) {
+		meta.StopOrder = seqOrder(pool) // the order the tablet shows
 	}
 	if meta.StopOrder == nil {
 		meta.StopOrder = s.expectedStopOrder(ctx, driverID, req.Include)
 	}
+	span.SetAttributes(attribute.String("plan.used", meta.PlanID))
 
 	sent, readied, err := s.repo.SendOut(ctx, driverID, req.Include, req.MarkReady, meta)
 	if err != nil {
@@ -167,6 +294,10 @@ func (s *Service) SendOut(ctx context.Context, driverID string, req SendOutReque
 	span.SetAttributes(attribute.Int("orders", len(sent)), attribute.Int("marked_ready", len(readied)))
 	s.floorChanged()
 	for _, so := range sent {
+		s.publishUpdated(so)
+	}
+	// An include may have taken orders out of another driver's pool.
+	for _, so := range s.resequencePools(ctx, nil) {
 		s.publishUpdated(so)
 	}
 	s.publishDrivers(ctx)
@@ -187,6 +318,61 @@ func (s *Service) publishDispatched(ctx context.Context, driverID string, sent [
 			}
 		}
 	}
+}
+
+// poolOf: the driver's pooled orders (accepted|ready).
+func (s *Service) poolOf(ctx context.Context, driverID string) []order.StoredOrder {
+	open, err := s.repo.ListOpenDeliveries(ctx)
+	if err != nil {
+		return nil
+	}
+	var pool []order.StoredOrder
+	for _, so := range open {
+		if so.Status.PoolDriverID == driverID && (so.Status.State == order.StateAccepted || so.Status.State == order.StateReady) {
+			pool = append(pool, so)
+		}
+	}
+	return pool
+}
+
+// poolPlan: the AUTO plan most of the pool's orders were confirmed from (ties:
+// the plan of the earliest stop), "" when none were.
+func poolPlan(pool []order.StoredOrder) string {
+	sorted := append([]order.StoredOrder(nil), pool...)
+	sort.SliceStable(sorted, func(i, j int) bool { return seqLess(sorted[i], sorted[j]) })
+	counts := map[string]int{}
+	best := ""
+	for _, so := range sorted {
+		p := so.Status.PoolPlanID
+		if p == "" {
+			continue
+		}
+		counts[p]++
+		if best == "" || counts[p] > counts[best] {
+			best = p
+		}
+	}
+	return best
+}
+
+func seqLess(a, b order.StoredOrder) bool {
+	switch {
+	case a.Status.PoolSeq == nil:
+		return false
+	case b.Status.PoolSeq == nil:
+		return true
+	}
+	return *a.Status.PoolSeq < *b.Status.PoolSeq
+}
+
+func seqOrder(pool []order.StoredOrder) []string {
+	sorted := append([]order.StoredOrder(nil), pool...)
+	sort.SliceStable(sorted, func(i, j int) bool { return seqLess(sorted[i], sorted[j]) })
+	ids := make([]string, 0, len(sorted))
+	for _, so := range sorted {
+		ids = append(ids, so.Order.ID)
+	}
+	return ids
 }
 
 // expectedStopOrder is the fastest driving order of the run Send Out is about
@@ -667,7 +853,17 @@ func (s *Service) ConfirmPlan(ctx context.Context, planID string, only []string)
 	if err != nil {
 		return nil, spanErr(span, err)
 	}
-	s.publishAll(applied)
+	// Number each run in the plan's driving order (then any other pooled
+	// orders, fastest first).
+	prefer := map[string][]string{}
+	for _, so := range applied {
+		for _, r := range plan.Output.Runs {
+			if r.DriverID == so.Status.PoolDriverID {
+				prefer[r.DriverID] = r.OrderIDs
+			}
+		}
+	}
+	s.publishAll(latest(applied, s.resequencePools(ctx, prefer)))
 	res := &ConfirmResult{Applied: []string{}, Skipped: skipped}
 	for _, so := range applied {
 		res.Applied = append(res.Applied, so.Order.ID)
