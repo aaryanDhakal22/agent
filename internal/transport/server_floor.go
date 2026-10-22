@@ -23,9 +23,16 @@ import (
 // floorErr maps service errors to HTTP statuses + stable codes.
 func (s *Server) floorErr(w http.ResponseWriter, r *http.Request, err error) {
 	var lo *order.LeftoversError
+	var nr *order.ErrNotReady
 	switch {
 	case errors.As(err, &lo):
 		s.writeJSON(w, http.StatusConflict, map[string]any{"error": err.Error(), "code": "batch_has_leftovers", "leftovers": lo.Orders})
+	case errors.As(err, &nr):
+		s.writeJSON(w, http.StatusConflict, map[string]any{"error": err.Error(), "code": "not_ready", "order_ids": nr.IDs})
+	case errors.Is(err, orderApp.ErrNoDrivers):
+		s.writeJSON(w, http.StatusConflict, errCodeMap(err.Error(), "no_drivers"))
+	case errors.Is(err, orderApp.ErrMainOffline):
+		s.writeJSON(w, http.StatusServiceUnavailable, errCodeMap("Can't reach the server — try again.", "main_offline"))
 	case errors.Is(err, order.ErrNotFound):
 		s.writeJSON(w, http.StatusNotFound, errCodeMap(err.Error(), "not_found"))
 	case errors.Is(err, order.ErrDriverNotFound):

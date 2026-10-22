@@ -63,14 +63,7 @@ func (r *OrderRepository) GetByID(ctx context.Context, id uuid.UUID) (so *order.
 	ctx, _, end := dbSpan(ctx, "orders.get_by_id")
 	defer end(&err)
 
-	row, err := models.New(r.db).GetOrderByID(ctx, id.String())
-	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return nil, order.ErrNotFound
-		}
-		return nil, fmt.Errorf("get order: %w", err)
-	}
-	stored, err := toStored(row)
+	stored, err := loadOrder(ctx, models.New(r.db), id.String())
 	if err != nil {
 		return nil, err
 	}
@@ -81,25 +74,27 @@ func (r *OrderRepository) ListPage(ctx context.Context, offset, limit int) (out 
 	ctx, _, end := dbSpan(ctx, "orders.list_page")
 	defer end(&err)
 
-	rows, err := models.New(r.db).ListOrdersPage(ctx, models.ListOrdersPageParams{
+	q := models.New(r.db)
+	rows, err := q.ListOrdersPage(ctx, models.ListOrdersPageParams{
 		Limit:  int64(limit),
 		Offset: int64(offset),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("list orders: %w", err)
 	}
-	return mapRows(rows)
+	return mapRowsGeo(ctx, q, rows)
 }
 
 func (r *OrderRepository) ListArrived(ctx context.Context) (out []order.StoredOrder, err error) {
 	ctx, _, end := dbSpan(ctx, "orders.list_arrived")
 	defer end(&err)
 
-	rows, err := models.New(r.db).ListArrivedOrders(ctx)
+	q := models.New(r.db)
+	rows, err := q.ListArrivedOrders(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("list arrived: %w", err)
 	}
-	return mapRows(rows)
+	return mapRowsGeo(ctx, q, rows)
 }
 
 // ClaimAccept flips an arrived order to accepted in one transaction and
@@ -207,6 +202,7 @@ func toStored(row models.Order) (order.StoredOrder, error) {
 		{row.OutAt, &st.OutAt},
 		{row.DeliveredAt, &st.DeliveredAt},
 		{row.CancelledAt, &st.CancelledAt},
+		{row.PooledAt, &st.PooledAt},
 	} {
 		t, err := optTS(f.src)
 		if err != nil {
@@ -225,7 +221,74 @@ func toStored(row models.Order) (order.StoredOrder, error) {
 	if row.DriverID.Valid {
 		st.DriverID = row.DriverID.String
 	}
+	if row.PoolDriverID.Valid {
+		st.PoolDriverID = row.PoolDriverID.String
+	}
 	return order.StoredOrder{Order: s, Status: st}, nil
+}
+
+// geoFromRow converts an order_geo row to the wire shape.
+func geoFromRow(row models.OrderGeo) *order.OrderGeo {
+	g := &order.OrderGeo{State: row.State, Quality: row.Quality, DistanceM: row.DistanceM, DurationS: row.DurationS,
+		Polyline: row.Polyline, OutsideArea: row.OutsideArea}
+	if row.Lat.Valid && row.Lng.Valid {
+		lat, lng := row.Lat.Float64, row.Lng.Float64
+		g.Lat, g.Lng = &lat, &lng
+	}
+	if row.StoreToS.Valid {
+		v := row.StoreToS.Int64
+		g.StoreToS = &v
+	}
+	if row.ToStoreS.Valid {
+		v := row.ToStoreS.Int64
+		g.ToStoreS = &v
+	}
+	if t, err := parseTS(row.UpdatedAt); err == nil {
+		g.UpdatedAt = t
+	}
+	return g
+}
+
+// attachGeo fills StoredOrder.Geo for the orders main has located.
+func attachGeo(ctx context.Context, q *models.Queries, list []order.StoredOrder) error {
+	const chunk = 400
+	idx := make(map[string]int, len(list))
+	for i, so := range list {
+		idx[so.Order.ID] = i
+	}
+	for start := 0; start < len(list); start += chunk {
+		end := min(start+chunk, len(list))
+		ids := make([]string, 0, end-start)
+		for _, so := range list[start:end] {
+			ids = append(ids, so.Order.ID)
+		}
+		rows, err := q.ListOrderGeo(ctx, ids)
+		if err != nil {
+			return fmt.Errorf("list order geo: %w", err)
+		}
+		for _, row := range rows {
+			if i, ok := idx[row.OrderID]; ok {
+				list[i].Geo = geoFromRow(row)
+			}
+		}
+	}
+	now := time.Now()
+	for i := range list {
+		list[i].FillMissingGeo(now)
+	}
+	return nil
+}
+
+// mapRowsGeo is mapRows plus each order's geo.
+func mapRowsGeo(ctx context.Context, q *models.Queries, rows []models.Order) ([]order.StoredOrder, error) {
+	out, err := mapRows(rows)
+	if err != nil {
+		return nil, err
+	}
+	if err := attachGeo(ctx, q, out); err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 func mapRows(rows []models.Order) ([]order.StoredOrder, error) {

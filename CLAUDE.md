@@ -453,6 +453,49 @@ nginx :80) — the switch is in `../CUTOVER.md`; never run both agents at once.
   moved, rate limit, found), `tests/test_updates.py` (routes, `not_supported`,
   the request/status file handshake with a fake manifest, found, add).
 
+## Driver pools, delivery maps, AUTO (2.0.9)
+
+- **Pools** = `orders.pool_driver_id` (+ `pooled_at`, migration `00012_pools_geo`)
+  on delivery orders in `accepted|ready`, with an **available** driver only.
+  Repo `repositories/pool_repo.go` (`PoolOrders`, `SendOut`, `sendRun` shared
+  with `AssignDriver`, `recordDeliveryRun`, `clearDriverPool`), service
+  `application/order/pools.go`, routes `transport/server_pools.go`. A pool change
+  is an `order.status` floor event with the **same state** (pool in
+  `agent_status`) + SSE `order.updated`. Cleared on clock-out, daily reset,
+  remove driver, `clockOutIfResetPassed`, and in SQL by `MarkOnDelivery`,
+  `FinishOrder`, `CancelOrder` — ClockOut/AutoClockOut/RemoveDriver now also
+  return the unpooled orders (the service publishes them).
+- **Send Out** (`POST /api/drivers/{id}/send-out`): include → pool → read the
+  pool → `*order.ErrNotReady{IDs}` (409 `not_ready`) unless `mark_ready` → ready
+  events → `sendRun` → `delivery.run` floor event (plan id, the plan's
+  suggested ids for this driver, sent ids, stops + ETAs from `order.EstimateStops`).
+- **Geo**: RPC `order.geo` → `Service.HandleGeoCommand` (`{ok}` /
+  `{ok:false, code:not_found|bad_request}`; other errors = no reply so main
+  re-pushes) → `order_geo` + `order_times` (both directions). `loadOrder` and
+  `mapRowsGeo` attach `StoredOrder.Geo` (json `geo`, store times are `json:"-"`);
+a delivery with no row gets `FillMissingGeo` → `{state: pending}` (< 15 min)
+/ `{state: unavailable}` (custom `MarshalJSON`: only `state`).
+  No FKs on the geo tables: retention deletes orphans (+ `auto_plans` > 7 days).
+- **Proxies**: `POST /api/orders/{id}/pin` → `Registry.Send(geo.pin)`;
+  `GET /api/drivers/{id}/pool/trip` → `geo.trip`, else `localTrip` (`trip.go`:
+  brute force ≤ 7 stops over the open path, haversine × 1.3 at 25 km/h where a
+  time is missing, `approximate: true`).
+- **Map file** (`application/mapfile`): `Want(location.map)` on hydrate + every
+  store_config apply; downloads to `<db dir>/map.pmtiles` (tmp + rename, sha256,
+  ≤ 512 MB; bad sha retried hourly), state in `settings.map_file`; served LAN-open
+  at `GET /api/map.pmtiles` (Range). `GeoDeps.Floor` (wired in `cmd/main.go`)
+  feeds `/api/floor`'s `store` + `map`; store_config apply and map changes
+  publish `floor.updated`.
+- **AUTO** (`PlanDeliveries` → `dispatch.Plan`, `ConfirmPlan`): input built in
+  `planInput`; plans stored in `auto_plans` as `{input, output}`. The optimizer
+  (`internal/application/dispatch`, `cmd/autoplan`) is pure — don't add I/O there.
+- **Settings**: `soon_ready_minutes` / `delivery_target_minutes` (settings,
+  `PUT /api/settings/deliveries`, **device** auth).
+- Tests: `repositories/pool_repo_test.go`, `application/order/pools_test.go`
+  (real SQLite + dispatch: AUTO simple case, confirm skip, trip fallback, pin,
+  geo replies), `application/mapfile/mapfile_test.go` (sha mismatch),
+  `transport/server_pools_test.go` (Range), `tests/test_pools.py`.
+
 ## Printing (station tickets + receipt)
 
 main stamps `printer_id` + `routing` on each line item at ingest; the agent
@@ -570,7 +613,9 @@ connection. `internal/migrate` runs goose (`sqlite3` dialect) on boot
 `00004_floor` + `00005_cancelled` — each rebuilds `orders` to widen the state CHECK;
 `00006_driver_shifts` rebuilds `drivers` (adds `off`) + `driver_shifts`; …
 `00010_receipt_prefs` adds `settings.receipt_prefs`; `00011_updates_printer_macs`
-adds `printer_macs` + `settings.update_job` / `update_notified`; use
+adds `printer_macs` + `settings.update_job` / `update_notified`; `00012_pools_geo`
+adds the pool columns, `order_geo`, `order_times`, `auto_plans` and the delivery
+settings + `settings.map_file`; use
 `migrate.RunTo` in tests to seed an older schema). sqlc
 targets the `sqlite` engine (`sql/sqlc.yaml`, `sql_package: database/sql`);
 `sql/schema.sql` mirrors **all** migrations and every query — including the
@@ -634,8 +679,10 @@ JS/CSS `no-cache` + content ETag, fonts immutable for a year.
   pill; amber "STILL WAITING" after 2 min), the rest in a compact "Also waiting"
   list (ACCEPT at the default prep), kitchen tickets sorted by
   estimated ready time with the green→amber→red tone from `green_till_minutes`,
-  READY / Reprint (receipt only; tooltip "Print the receipt again"), ready deliveries + driver chips → assign, out with drivers →
-  Returned, done list; agent SSE `/api/events` (beep on arrival/escalation, flash
+  READY / Reprint (receipt only; tooltip "Print the receipt again"), Deliveries
+  **read-only** since 2.0.9 (unassigned list, one pool card per available driver
+  with NEXT, no assign controls — pools are built on the tablet), out with
+  drivers → Returned, done list; agent SSE `/api/events` (beep on arrival/escalation, flash
   on `drivers.dispatched`, reload on the rest incl. `floor.updated`, and reload on
   every (re)open — `es.onopen` — since events sent while it was down are lost).
 - **Alerting while orders wait**: the AudioContext is created/resumed on the first
@@ -659,7 +706,7 @@ JS/CSS `no-cache` + content ETag, fonts immutable for a year.
   pages fetch `num+1` rows to know if Next exists.
   **Drivers**, **History** (`/api/history` proxy; Reprint `/api/print` =
   receipt only, Bring back as new order `/api/resend`), **Printers** (`/api/printers` + diag roster ids/roles; test,
-  probe, sample), **Settings**: Orders (auto-accept), Kitchen tickets (floor
+  probe, sample), **Settings**: Orders (auto-accept + the two AUTO delivery settings → `PUT /api/settings/deliveries`), Kitchen tickets (floor
   prefs), Receipts (`/api/settings/receipt` + paper preview; Print a sample saves
   first — the sample uses saved prefs), Daily clock-out, Tablets (pairing code,
   revoke, cached Quibase), Store info (read-only `/api/store-config`), Account
@@ -681,7 +728,8 @@ JS/CSS `no-cache` + content ETag, fonts immutable for a year.
 `/api/drivers*`, `/api/batches`, `/api/batch/close`, `/api/printers*`,
 `/api/events`) and the Quibase setup/diagnostics routes (`/api/pairing/code`,
 `/api/device/self`, `/api/device/report-token`, `/api/diag`, `/api/diag/report`,
-`/api/printers/test`, `/api/printers/sample`, `/api/settings/receipt`) need a paired tablet key **or** the web-UI session — no
+`/api/printers/test`, `/api/printers/sample`, `/api/settings/receipt`,
+`/api/settings/deliveries`) need a paired tablet key **or** the web-UI session — no
 longer LAN-open; `POST /api/pair` is open (needs a live code); the web-UI surface
 (history, print/resend, store-config, settings, devices) is session-gated.
 `internal/infra/mainclient` is the agent's HTTP client to main.
@@ -702,6 +750,9 @@ longer LAN-open; `POST /api/pair` is open (needs a live code); the web-UI surfac
 | Pi health (heartbeat, `Snapshot`, throttled bits) | `internal/application/health/{health.go,system.go}` |
 | Ticket planning (station split) | `internal/application/printer/plan.go` + `internal/domain/printer/ticket.go` |
 | Floor transitions (tx + outbox) | `internal/infra/database/repositories/floor_repo.go` |
+| Pools / Send Out / geo / AUTO plans | `internal/infra/database/repositories/pool_repo.go`, `internal/application/order/{pools.go,trip.go}`, `internal/transport/server_pools.go` |
+| AUTO optimizer (pure) + CLI | `internal/application/dispatch/`, `cmd/autoplan` |
+| Store map download | `internal/application/mapfile/mapfile.go` |
 | Floor service / escalation / sync | `internal/application/order/floor.go`, `application/escalation/`, `application/floorsync/` |
 | Floor routes + tablet pairing | `internal/transport/server_floor.go`, `internal/transport/pairing.go` |
 | Duplex RPC (envelope + registry) | `internal/rpc/{envelope.go,registry.go}` |

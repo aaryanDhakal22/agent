@@ -13,6 +13,7 @@ const (
 	MsgPrinterReport        = "printer.report"         // agent → main, unsolicited push
 	MsgPrinterReportRequest = "printer.report.request" // main → agent, pull
 	MsgDiagReport           = "diag.report"            // agent → main, a tablet's diagnostics report (Send: main replies {id, stored, duplicate})
+	MsgOrderGeo             = "order.geo"              // main → agent, where a delivery address is + drive times (reply {ok} | {ok:false, code})
 )
 
 // Envelope is the wire shape for every duplex message, both directions.

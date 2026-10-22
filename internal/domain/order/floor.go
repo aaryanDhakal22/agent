@@ -262,17 +262,20 @@ type FloorRepository interface {
 	ListDrivers(ctx context.Context) ([]Driver, error)
 	CreateDriver(ctx context.Context, name string) (*Driver, error)
 	RenameDriver(ctx context.Context, id, name string) error
-	RemoveDriver(ctx context.Context, id string) error
+	// RemoveDriver also returns the orders its pool held (back to unassigned).
+	RemoveDriver(ctx context.Context, id string) ([]StoredOrder, error)
 	ReorderDrivers(ctx context.Context, ids []string) error
 	// ClockIn puts an off driver into the queue (back) and opens a shift;
 	// ClockOut takes an available driver out of the queue and closes it
 	// (ErrInvalidState while the driver is out on a run).
 	ClockIn(ctx context.Context, id string) (*Driver, error)
-	ClockOut(ctx context.Context, id string) (*Driver, error)
+	// ClockOut also returns the orders its pool held (back to unassigned).
+	ClockOut(ctx context.Context, id string) (*Driver, []StoredOrder, error)
 	// AutoClockOut is the daily reset: clocks out every available driver
 	// (drivers out on a run are clocked out when they return) and records the
-	// run time. Returns how many were clocked out.
-	AutoClockOut(ctx context.Context, at time.Time) (int, error)
+	// run time. Returns how many were clocked out and the orders their pools
+	// held (back to unassigned).
+	AutoClockOut(ctx context.Context, at time.Time) (int, []StoredOrder, error)
 	GetDriverReset(ctx context.Context) (DriverReset, error)
 	SetDriverResetTime(ctx context.Context, hhmm string) error
 	// MarkDriverReset records `at` as the last reset run without clocking

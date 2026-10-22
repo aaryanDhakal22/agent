@@ -52,6 +52,10 @@ type Status struct {
 	CancelledAt      *time.Time `json:"cancelled_at,omitempty"`
 	DriverID         string     `json:"driver_id,omitempty"`
 	DriverName       string     `json:"driver_name,omitempty"`
+	// PoolDriverID: the available driver whose pool holds this delivery
+	// (accepted or ready) until Send Out; empty = unassigned.
+	PoolDriverID string     `json:"pool_driver_id,omitempty"`
+	PooledAt     *time.Time `json:"pooled_at,omitempty"`
 }
 
 // StoredOrder is the repository's view of an order: the canonical Snapshot
@@ -59,6 +63,8 @@ type Status struct {
 type StoredOrder struct {
 	Order  Snapshot `json:"order"`
 	Status Status   `json:"status"`
+	// Geo is where main located a delivery address (nil until it did).
+	Geo *OrderGeo `json:"geo,omitempty"`
 }
 
 // OrderID is a convenience for log/metric labels — handlers prefer the

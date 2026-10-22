@@ -83,6 +83,7 @@ func recordRoster(ctx context.Context, q *models.Queries, at time.Time) error {
 	return insertEvent(ctx, q, ev.EventID, "", ev.Type, at, ev)
 }
 
+// loadOrder reads one order with its geo.
 func loadOrder(ctx context.Context, q *models.Queries, id string) (order.StoredOrder, error) {
 	row, err := q.GetOrderByID(ctx, id)
 	if err != nil {
@@ -91,7 +92,18 @@ func loadOrder(ctx context.Context, q *models.Queries, id string) (order.StoredO
 		}
 		return order.StoredOrder{}, fmt.Errorf("load order: %w", err)
 	}
-	return toStored(row)
+	so, err := toStored(row)
+	if err != nil {
+		return so, err
+	}
+	switch g, err := q.GetOrderGeo(ctx, id); {
+	case err == nil:
+		so.Geo = geoFromRow(g)
+	case !errors.Is(err, sql.ErrNoRows):
+		return so, fmt.Errorf("load order geo: %w", err)
+	}
+	so.FillMissingGeo(time.Now())
+	return so, nil
 }
 
 // RecordAccepted writes the accepted event once the tickets printed.
@@ -143,53 +155,24 @@ func (r *OrderRepository) MarkReady(ctx context.Context, id string) (result *ord
 }
 
 // AssignDriver sends ready delivery orders out with a driver (all or nothing).
+// The sent orders leave any pool they were in (the old Quibase path).
 func (r *OrderRepository) AssignDriver(ctx context.Context, driverID string, orderIDs []string) (out []order.StoredOrder, err error) {
 	ctx, _, end := dbSpan(ctx, "floor.assign_driver")
 	defer end(&err)
-	seen := map[string]bool{}
-	uniq := orderIDs[:0:0]
-	for _, id := range orderIDs {
-		if !seen[id] {
-			seen[id] = true
-			uniq = append(uniq, id)
-		}
-	}
-	orderIDs = uniq
+	orderIDs = dedupe(orderIDs)
 	if len(orderIDs) == 0 {
 		return nil, order.ErrNoOrders
 	}
 	now := time.Now()
 	err = r.withTx(ctx, func(q *models.Queries) error {
-		d, err := q.GetDriver(ctx, driverID)
-		if err != nil || !d.Active {
-			return order.ErrDriverNotFound
-		}
-		if d.Status != order.DriverAvailable {
-			return order.ErrDriverNotAvailable
-		}
-		for _, id := range orderIDs {
-			n, err := q.MarkOnDelivery(ctx, models.MarkOnDeliveryParams{
-				OutAt: nullTS(now), DriverID: sql.NullString{String: d.ID, Valid: true}, DriverName: d.Name, ID: id,
-			})
-			if err != nil {
-				return fmt.Errorf("mark on delivery: %w", err)
-			}
-			so, err := loadOrder(ctx, q, id)
-			if err != nil {
-				return err
-			}
-			if n == 0 {
-				return fmt.Errorf("order %s: %w", id, order.ErrInvalidState)
-			}
-			if err := recordOrderStatus(ctx, q, so, false, now); err != nil {
-				return err
-			}
-			out = append(out, so)
-		}
-		if err := q.SetDriverOut(ctx, d.ID); err != nil {
+		d, err := availableDriver(ctx, q, driverID)
+		if err != nil {
 			return err
 		}
-		return recordRoster(ctx, q, now)
+		if out, err = sendRun(ctx, q, d, orderIDs, now); err != nil {
+			return err
+		}
+		return recordDeliveryRun(ctx, q, d, out, order.RunMeta{}, now)
 	})
 	if err != nil {
 		return nil, err
@@ -388,13 +371,14 @@ func (r *OrderRepository) ListBatches(ctx context.Context, limit int) (out []ord
 func (r *OrderRepository) ListByBatch(ctx context.Context, batchID int64, offset, limit int) (out []order.StoredOrder, err error) {
 	ctx, _, end := dbSpan(ctx, "floor.list_by_batch")
 	defer end(&err)
-	rows, err := models.New(r.db).ListOrdersByBatch(ctx, models.ListOrdersByBatchParams{
+	q := models.New(r.db)
+	rows, err := q.ListOrdersByBatch(ctx, models.ListOrdersByBatchParams{
 		BatchID: batchID, Limit: int64(limit), Offset: int64(offset),
 	})
 	if err != nil {
 		return nil, err
 	}
-	return mapRows(rows)
+	return mapRowsGeo(ctx, q, rows)
 }
 
 func (r *OrderRepository) FloorSettings(ctx context.Context) (fs order.FloorSettings, err error) {
@@ -486,11 +470,11 @@ func (r *OrderRepository) RenameDriver(ctx context.Context, id, name string) (er
 	})
 }
 
-func (r *OrderRepository) RemoveDriver(ctx context.Context, id string) (err error) {
+func (r *OrderRepository) RemoveDriver(ctx context.Context, id string) (unpooled []order.StoredOrder, err error) {
 	ctx, _, end := dbSpan(ctx, "drivers.remove")
 	defer end(&err)
 	now := time.Now()
-	return r.withTx(ctx, func(q *models.Queries) error {
+	err = r.withTx(ctx, func(q *models.Queries) error {
 		d, err := q.GetDriver(ctx, id)
 		if err != nil || !d.Active {
 			return order.ErrDriverNotFound
@@ -499,6 +483,9 @@ func (r *OrderRepository) RemoveDriver(ctx context.Context, id string) (err erro
 			return order.ErrDriverNotAvailable // their run must come back first
 		}
 		if _, err := q.DeactivateDriver(ctx, id); err != nil {
+			return err
+		}
+		if unpooled, err = clearDriverPool(ctx, q, id, now); err != nil {
 			return err
 		}
 		if d.Status == order.DriverAvailable { // clocked in: close the shift
@@ -513,6 +500,10 @@ func (r *OrderRepository) RemoveDriver(ctx context.Context, id string) (err erro
 		}
 		return recordRoster(ctx, q, now)
 	})
+	if err != nil {
+		return nil, err
+	}
+	return unpooled, nil
 }
 
 // ReorderDrivers sets the queue order: ids first (in the given order), any
@@ -586,6 +577,9 @@ func clockOutIfResetPassed(ctx context.Context, q *models.Queries, driverID stri
 	if _, err := q.ClockOutDriver(ctx, driverID); err != nil {
 		return err
 	}
+	if _, err := clearDriverPool(ctx, q, driverID, now); err != nil {
+		return err
+	}
 	return closeShift(ctx, q, sh, true, now)
 }
 
@@ -651,7 +645,7 @@ func (r *OrderRepository) ClockIn(ctx context.Context, id string) (d *order.Driv
 }
 
 // ClockOut — see order.FloorRepository.
-func (r *OrderRepository) ClockOut(ctx context.Context, id string) (d *order.Driver, err error) {
+func (r *OrderRepository) ClockOut(ctx context.Context, id string) (d *order.Driver, unpooled []order.StoredOrder, err error) {
 	ctx, _, end := dbSpan(ctx, "drivers.clock_out")
 	defer end(&err)
 	now := time.Now()
@@ -666,6 +660,9 @@ func (r *OrderRepository) ClockOut(ctx context.Context, id string) (d *order.Dri
 		if _, err := q.ClockOutDriver(ctx, id); err != nil {
 			return err
 		}
+		if unpooled, err = clearDriverPool(ctx, q, id, now); err != nil {
+			return err
+		}
 		if sh, err := q.GetOpenShift(ctx, id); err == nil {
 			if err := closeShift(ctx, q, sh, false, now); err != nil {
 				return err
@@ -674,13 +671,14 @@ func (r *OrderRepository) ClockOut(ctx context.Context, id string) (d *order.Dri
 		return recordRoster(ctx, q, now)
 	})
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return r.driverByID(ctx, id)
+	d, err = r.driverByID(ctx, id)
+	return d, unpooled, err
 }
 
 // AutoClockOut — see order.FloorRepository.
-func (r *OrderRepository) AutoClockOut(ctx context.Context, at time.Time) (n int, err error) {
+func (r *OrderRepository) AutoClockOut(ctx context.Context, at time.Time) (n int, unpooled []order.StoredOrder, err error) {
 	ctx, _, end := dbSpan(ctx, "drivers.auto_clock_out")
 	defer end(&err)
 	err = r.withTx(ctx, func(q *models.Queries) error {
@@ -692,6 +690,11 @@ func (r *OrderRepository) AutoClockOut(ctx context.Context, at time.Time) (n int
 			if _, err := q.ClockOutDriver(ctx, d.ID); err != nil {
 				return err
 			}
+			cleared, err := clearDriverPool(ctx, q, d.ID, at)
+			if err != nil {
+				return err
+			}
+			unpooled = append(unpooled, cleared...)
 			if sh, err := q.GetOpenShift(ctx, d.ID); err == nil {
 				if err := closeShift(ctx, q, sh, true, at); err != nil {
 					return err
@@ -707,7 +710,10 @@ func (r *OrderRepository) AutoClockOut(ctx context.Context, at time.Time) (n int
 		}
 		return nil
 	})
-	return n, err
+	if err != nil {
+		return 0, nil, err
+	}
+	return n, unpooled, nil
 }
 
 func (r *OrderRepository) GetDriverReset(ctx context.Context) (order.DriverReset, error) {
@@ -821,8 +827,18 @@ func (r *OrderRepository) TrimBatches(ctx context.Context, keepClosed int, synce
 		if err := q.DeleteOldClosedBatches(ctx, int64(keepClosed)); err != nil {
 			return err
 		}
-		_, err := q.DeleteOldSyncedFloorEvents(ctx, sql.NullString{String: fmtTS(syncedBefore), Valid: true})
-		return err
+		if _, err := q.DeleteOldSyncedFloorEvents(ctx, sql.NullString{String: fmtTS(syncedBefore), Valid: true}); err != nil {
+			return err
+		}
+		// Geo + drive times of trimmed orders, and AUTO plans as old as the
+		// synced events (they only matter for the tuning log).
+		if err := q.DeleteOrphanOrderGeo(ctx); err != nil {
+			return err
+		}
+		if err := q.DeleteOrphanOrderTimes(ctx); err != nil {
+			return err
+		}
+		return q.DeleteOldAutoPlans(ctx, fmtTS(syncedBefore))
 	})
 	return n, err
 }

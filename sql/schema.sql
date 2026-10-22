@@ -33,12 +33,16 @@ CREATE TABLE orders (
     cancelled_at       text,
     -- 00009_accept_pending: claimed for accept, not yet recorded.
     accept_pending     integer NOT NULL DEFAULT 0,
+    -- 00012_pools_geo: the available driver whose pool holds this delivery.
+    pool_driver_id     text,
+    pooled_at          text,
     CHECK (state IN ('arrived', 'accepted', 'ready', 'on_delivery', 'delivered', 'cancelled'))
 );
 CREATE INDEX idx_orders_arrival_date ON orders (arrival_date DESC);
 CREATE INDEX idx_orders_state_pending ON orders (arrival_date DESC) WHERE state = 'arrived';
 CREATE INDEX idx_orders_source_event ON orders (source, source_event_id);
 CREATE INDEX idx_orders_batch ON orders (batch_id, arrival_date DESC);
+CREATE INDEX idx_orders_pool ON orders (pool_driver_id) WHERE pool_driver_id IS NOT NULL;
 
 CREATE TABLE drivers (
     id               text    PRIMARY KEY,
@@ -125,6 +129,10 @@ CREATE TABLE settings (
     -- "<id>:<state>" already announced by Pushover.
     update_job                text NOT NULL DEFAULT '',
     update_notified           text NOT NULL DEFAULT '',
+    -- 00012_pools_geo: AUTO delivery settings + the downloaded store map (JSON).
+    soon_ready_minutes        integer NOT NULL DEFAULT 5,
+    delivery_target_minutes   integer NOT NULL DEFAULT 45,
+    map_file                  text NOT NULL DEFAULT '',
     CHECK (id = 1)
 );
 
@@ -141,4 +149,34 @@ CREATE TABLE printer_macs (
     mac        text NOT NULL,
     ip         text NOT NULL,
     seen_at    text NOT NULL
+);
+
+-- 00012_pools_geo: where main located each delivery + drive times + AUTO plans.
+CREATE TABLE order_geo (
+    order_id     text    PRIMARY KEY,
+    state        text    NOT NULL,
+    lat          real,
+    lng          real,
+    quality      text    NOT NULL DEFAULT '',
+    distance_m   integer NOT NULL DEFAULT 0,
+    duration_s   integer NOT NULL DEFAULT 0,
+    polyline     text    NOT NULL DEFAULT '',
+    outside_area boolean NOT NULL DEFAULT false,
+    store_to_s   integer,
+    to_store_s   integer,
+    updated_at   text    NOT NULL
+);
+
+CREATE TABLE order_times (
+    a       text    NOT NULL,
+    b       text    NOT NULL,
+    seconds integer NOT NULL,
+    PRIMARY KEY (a, b)
+);
+
+CREATE TABLE auto_plans (
+    id           text PRIMARY KEY,
+    created_at   text NOT NULL,
+    plan_json    text NOT NULL,
+    confirmed_at text
 );

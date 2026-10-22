@@ -63,8 +63,10 @@ UPDATE orders SET state = 'ready', ready_at = ?
 WHERE id = ? AND state = 'accepted';
 
 -- name: MarkOnDelivery :execrows
+-- Leaving with a driver empties the order's pool slot.
 UPDATE orders
-SET state = 'on_delivery', out_at = ?, driver_id = ?, driver_name = ?
+SET state = 'on_delivery', out_at = ?, driver_id = ?, driver_name = ?,
+    pool_driver_id = NULL, pooled_at = NULL
 WHERE id = ? AND state = 'ready'
   AND json_extract(snapshot, '$.fulfillment.type') = 'delivery';
 
@@ -89,12 +91,13 @@ ORDER BY arrival_date ASC;
 
 -- name: CancelOrder :exec
 -- Close-batch: an order nobody accepted is cancelled (never printed, no kitchen number).
-UPDATE orders SET state = 'cancelled', cancelled_at = ? WHERE id = ? AND state = 'arrived';
+UPDATE orders SET state = 'cancelled', cancelled_at = ?, pool_driver_id = NULL, pooled_at = NULL
+WHERE id = ? AND state = 'arrived';
 
 -- name: FinishOrder :exec
 -- Close-batch auto-finish: force an order to its terminal state.
 UPDATE orders
-SET state = ?, accepted_at = ?, ready_at = ?, delivered_at = ?
+SET state = ?, accepted_at = ?, ready_at = ?, delivered_at = ?, pool_driver_id = NULL, pooled_at = NULL
 WHERE id = ?;
 
 -- name: ListOverdueArrived :many
@@ -415,8 +418,9 @@ INSERT INTO batches (id, opened_at) VALUES (?, ?);
 -- name: RestoreOrder :exec
 INSERT INTO orders (id, tenant_id, location_id, source, source_event_id, snapshot, state, arrival_date,
                     printed_date, batch_id, kitchen_number, prep_minutes, estimated_ready_at, accepted_at,
-                    ready_at, out_at, delivered_at, driver_id, driver_name, cancelled_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+                    ready_at, out_at, delivered_at, driver_id, driver_name, cancelled_at,
+                    pool_driver_id, pooled_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
 
 -- name: RestoreDriver :exec
 INSERT INTO drivers (id, name, active, position, status, last_returned_at) VALUES (?, ?, true, ?, ?, ?);
@@ -452,3 +456,88 @@ SELECT printer_id, mac, ip, seen_at FROM printer_macs ORDER BY printer_id;
 -- name: UpsertPrinterMAC :exec
 INSERT INTO printer_macs (printer_id, mac, ip, seen_at) VALUES (?, ?, ?, ?)
 ON CONFLICT (printer_id) DO UPDATE SET mac = excluded.mac, ip = excluded.ip, seen_at = excluded.seen_at;
+
+-- Driver pools (2.0.9) ----------------------------------------------------------
+
+-- name: SetOrderPool :execrows
+-- Puts a delivery order (accepted or ready) into a driver's pool, or back to
+-- unassigned with a NULL driver. 0 rows = not a pool-able order.
+UPDATE orders SET pool_driver_id = sqlc.narg(pool_driver_id), pooled_at = sqlc.narg(pooled_at)
+WHERE id = sqlc.arg(id) AND state IN ('accepted', 'ready')
+  AND json_extract(snapshot, '$.fulfillment.type') = 'delivery';
+
+-- name: ListPoolByDriver :many
+SELECT * FROM orders WHERE pool_driver_id = ? ORDER BY pooled_at ASC, arrival_date ASC;
+
+-- name: ClearOrderPool :exec
+UPDATE orders SET pool_driver_id = NULL, pooled_at = NULL WHERE id = ?;
+
+-- name: ListOpenDeliveries :many
+-- The open batch's deliveries still on the floor (cooking, ready or out).
+SELECT * FROM orders
+WHERE batch_id = (SELECT id FROM batches WHERE closed_at IS NULL ORDER BY id DESC LIMIT 1)
+  AND state IN ('accepted', 'ready', 'on_delivery')
+  AND json_extract(snapshot, '$.fulfillment.type') = 'delivery'
+ORDER BY arrival_date ASC;
+
+-- Order geo (main's order.geo) ----------------------------------------------------
+
+-- name: UpsertOrderGeo :exec
+INSERT INTO order_geo (order_id, state, lat, lng, quality, distance_m, duration_s, polyline,
+                       outside_area, store_to_s, to_store_s, updated_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT (order_id) DO UPDATE SET
+    state = excluded.state, lat = excluded.lat, lng = excluded.lng, quality = excluded.quality,
+    distance_m = excluded.distance_m, duration_s = excluded.duration_s, polyline = excluded.polyline,
+    outside_area = excluded.outside_area, store_to_s = excluded.store_to_s,
+    to_store_s = excluded.to_store_s, updated_at = excluded.updated_at;
+
+-- name: GetOrderGeo :one
+SELECT * FROM order_geo WHERE order_id = ?;
+
+-- name: ListOrderGeo :many
+SELECT * FROM order_geo WHERE order_id IN (sqlc.slice('ids'));
+
+-- name: UpsertOrderTime :exec
+INSERT INTO order_times (a, b, seconds) VALUES (?, ?, ?)
+ON CONFLICT (a, b) DO UPDATE SET seconds = excluded.seconds;
+
+-- name: ListOrderTimes :many
+-- Drive times between the given orders (both ends in the set).
+SELECT a, b, seconds FROM order_times
+WHERE a IN (sqlc.slice('from_ids')) AND b IN (sqlc.slice('to_ids'));
+
+-- name: DeleteOrphanOrderGeo :exec
+DELETE FROM order_geo WHERE order_id NOT IN (SELECT id FROM orders);
+
+-- name: DeleteOrphanOrderTimes :exec
+DELETE FROM order_times
+WHERE a NOT IN (SELECT id FROM orders) OR b NOT IN (SELECT id FROM orders);
+
+-- AUTO plans ------------------------------------------------------------------------
+
+-- name: InsertAutoPlan :exec
+INSERT INTO auto_plans (id, created_at, plan_json) VALUES (?, ?, ?);
+
+-- name: GetAutoPlan :one
+SELECT * FROM auto_plans WHERE id = ?;
+
+-- name: ConfirmAutoPlan :exec
+UPDATE auto_plans SET confirmed_at = COALESCE(confirmed_at, ?) WHERE id = ?;
+
+-- name: DeleteOldAutoPlans :exec
+DELETE FROM auto_plans WHERE created_at < ?;
+
+-- Delivery settings + store map (2.0.9) -------------------------------------------
+
+-- name: GetDeliveryPrefs :one
+SELECT soon_ready_minutes, delivery_target_minutes FROM settings WHERE id = 1;
+
+-- name: SetDeliveryPrefs :exec
+UPDATE settings SET soon_ready_minutes = ?, delivery_target_minutes = ? WHERE id = 1;
+
+-- name: GetMapFile :one
+SELECT map_file FROM settings WHERE id = 1;
+
+-- name: SetMapFile :exec
+UPDATE settings SET map_file = ? WHERE id = 1;

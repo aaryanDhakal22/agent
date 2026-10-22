@@ -281,10 +281,10 @@ func TestDriversRoster(t *testing.T) {
 	if err := r.RenameDriver(ctx, b.ID, "Bee"); err != nil {
 		t.Fatal(err)
 	}
-	if err := r.RemoveDriver(ctx, a.ID); err != nil {
+	if _, err := r.RemoveDriver(ctx, a.ID); err != nil {
 		t.Fatal(err)
 	}
-	if err := r.RemoveDriver(ctx, a.ID); !errors.Is(err, order.ErrDriverNotFound) {
+	if _, err := r.RemoveDriver(ctx, a.ID); !errors.Is(err, order.ErrDriverNotFound) {
 		t.Fatalf("double remove: %v", err)
 	}
 	ds, _ = r.ListDrivers(ctx)
@@ -475,11 +475,11 @@ func TestClockInOutAndShifts(t *testing.T) {
 	if _, err := r.AssignDriver(ctx, b.ID, []string{so.Order.ID}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := r.ClockOut(ctx, b.ID); !errors.Is(err, order.ErrDriverNotAvailable) {
+	if _, _, err := r.ClockOut(ctx, b.ID); !errors.Is(err, order.ErrDriverNotAvailable) {
 		t.Fatalf("clock out while out: %v", err)
 	}
 
-	got, err := r.ClockOut(ctx, a.ID)
+	got, _, err := r.ClockOut(ctx, a.ID)
 	if err != nil || got.Status != order.DriverOff || got.ClockedInAt != nil {
 		t.Fatalf("clock out: %v %+v", err, got)
 	}
@@ -519,7 +519,7 @@ func TestAutoClockOut(t *testing.T) {
 	}
 	time.Sleep(2 * time.Millisecond)
 
-	n, err := r.AutoClockOut(ctx, time.Now())
+	n, _, err := r.AutoClockOut(ctx, time.Now())
 	if err != nil || n != 1 {
 		t.Fatalf("auto clock-out: %d %v (only the available driver)", n, err)
 	}
@@ -603,10 +603,10 @@ func TestDriverGuards(t *testing.T) {
 	if _, err := r.AssignDriver(ctx, out.ID, []string{so.Order.ID, so.Order.ID}); err != nil {
 		t.Fatalf("assign with a duplicated id: %v", err)
 	}
-	if err := r.RemoveDriver(ctx, out.ID); !errors.Is(err, order.ErrDriverNotAvailable) {
+	if _, err := r.RemoveDriver(ctx, out.ID); !errors.Is(err, order.ErrDriverNotAvailable) {
 		t.Fatalf("removing a driver out on a run: %v", err)
 	}
-	if err := r.RemoveDriver(ctx, in.ID); err != nil {
+	if _, err := r.RemoveDriver(ctx, in.ID); err != nil {
 		t.Fatal(err)
 	}
 	shifts, _ := r.ListShifts(ctx, time.Now().Add(-time.Hour))
