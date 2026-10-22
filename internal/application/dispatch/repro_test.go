@@ -46,10 +46,14 @@ func TestReproCPSAT(t *testing.T) {
 		{"suboptimal_seed200014.input.json", 18721.540},
 		{"suboptimal_seed200042.input.json", 9341.177},
 	}
+	// The constants the cross-check ran with (the pre-tuning defaults).
+	at := DefaultParams()
+	at.W0, at.W1, at.W2, at.Beta, at.Lambda, at.M = 0.1, 2, 50, 1, 2, 30
 	for _, c := range cases {
 		in := loadInput(t, c.file)
+		in.Params = &at
 		out := plan(t, in)
-		p := DefaultParams()
+		p := at
 		p.SectorDeg = 360
 		in.Params = &p
 		off := plan(t, in)

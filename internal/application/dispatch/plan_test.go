@@ -3,6 +3,7 @@ package dispatch
 import (
 	"encoding/json"
 	"fmt"
+	"os"
 	"slices"
 	"testing"
 )
@@ -10,6 +11,10 @@ import (
 // plan runs the optimizer on a world and checks every rule of the result.
 func plan(t *testing.T, in Input) Output {
 	t.Helper()
+	if in.Params == nil && testParams != nil {
+		p := *testParams
+		in.Params = &p
+	}
 	out := Plan(in)
 	if err := checkPlan(in, out); err != nil {
 		js, _ := json.Marshal(in)
@@ -56,6 +61,20 @@ func wantReason(t *testing.T, out Output, id, reason string) {
 		t.Fatalf("%s: reason %q, want %q (plan %+v)", id, got, reason, out)
 	}
 }
+
+// testParams: DISPATCH_TEST_PARAMS (JSON over the defaults) runs the rule
+// tests under candidate constants, so the simulator's tuning can gate on them.
+var testParams = func() *Params {
+	s := os.Getenv("DISPATCH_TEST_PARAMS")
+	if s == "" {
+		return nil
+	}
+	var p Params
+	if err := json.Unmarshal([]byte(s), &p); err != nil {
+		panic(err)
+	}
+	return &p
+}()
 
 func TestOneDriver(t *testing.T) {
 	w := newWorld()

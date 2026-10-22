@@ -72,8 +72,11 @@ type Params struct {
 	SpeedMps   float64 `json:"speed_mps"`
 }
 
-// DefaultParams are the shipped constants (to be tuned once by the
-// simulator, then fixed).
+// DefaultParams are the shipped constants, tuned once by the simulator
+// (quicc-ops sim/dispatch, Towson world) with this package's rule tests as a
+// hard gate (DISPATCH_TEST_PARAMS). The steep urgency ramp (W1 over the last
+// UrgentMin before the target) is what makes a late order go alone: by the
+// target it already carries W1*UrgentMin, so W2 needn't dwarf it.
 func DefaultParams() Params {
 	return Params{
 		MaxStops:       MaxStops,
@@ -84,8 +87,8 @@ func DefaultParams() Params {
 		SectorDeg:      SectorDeg,
 		SectorMinDistM: SectorMinDistM,
 		W0:             0.1,
-		W1:             2,
-		W2:             50,
+		W1:             12,
+		W2:             10,
 		UrgentMin:      10,
 		Beta:           1,
 		Lambda:         2,
