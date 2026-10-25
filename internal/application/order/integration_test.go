@@ -31,8 +31,9 @@ type printCall struct {
 }
 
 type printLog struct {
-	mu    sync.Mutex
-	calls []printCall
+	mu     sync.Mutex
+	calls  []printCall
+	insert bool // the Outcome's InsertExpected on an accept print
 }
 
 func (p *printLog) all() []printCall {
@@ -103,7 +104,8 @@ func newIntegService(t *testing.T) (*Service, *repositories.OrderRepository, cha
 			n = *snap.KitchenNumber
 		}
 		log.calls = append(log.calls, printCall{OrderID: snap.ID, Mode: mode, Number: n})
-		return printer.Outcome{Printed: []printer.TicketResult{{Kind: printer.TicketStation}}}, nil
+		return printer.Outcome{Printed: []printer.TicketResult{{Kind: printer.TicketStation}},
+			InsertExpected: log.insert && mode == printer.ModeAccept}, nil
 	}
 	svc := NewService(repo, repositories.NewSettingsRepository(db, zerolog.Nop()), print, nil, broker, zerolog.Nop(), meters)
 	svc.LoadIntegrationSettings(ctx)
@@ -611,7 +613,7 @@ func TestGeoCheckChooseAndAddressConfirmed(t *testing.T) {
 	// main's answer: located, pinned, with the chosen address.
 	lat, lng := 39.41, -76.6
 	addr := &order.ConfirmedAddress{Line1: "931 W Taylor Ave", City: "Towson", State: "MD", PostalCode: "21286"}
-	upd := order.GeoUpdate{OrderID: res.OrderID, State: order.GeoLocated, Lat: &lat, Lng: &lng, Quality: "pinned", ConfirmedAddress: addr}
+	upd := order.GeoUpdate{OrderID: res.OrderID, State: order.GeoLocated, Lat: &lat, Lng: &lng, Quality: "pinned", ConfirmedAddress: addr, Confirmed: true}
 	if so, err = svc.OnGeo(ctx, upd); err != nil || so.Geo.ConfirmedAddress == nil || len(so.Geo.Candidates) != 0 {
 		t.Fatalf("located = %+v %v", so.Geo, err)
 	}
@@ -620,7 +622,16 @@ func TestGeoCheckChooseAndAddressConfirmed(t *testing.T) {
 	}
 	svc.OnGeo(ctx, upd) // main re-pushes (reconnect): no second event
 	lat2 := 39.42
-	svc.OnGeo(ctx, order.GeoUpdate{OrderID: res.OrderID, State: order.GeoLocated, Lat: &lat2, Lng: &lng, Quality: "pinned"}) // a pin
+	svc.OnGeo(ctx, order.GeoUpdate{OrderID: res.OrderID, State: order.GeoLocated, Lat: &lat2, Lng: &lng, Quality: "pinned", Confirmed: true}) // a pin
+	// A geo_cache hit comes back pinned too, but not flagged confirmed: no
+	// staff action, no event (here a new POS delivery at a pinned address).
+	cached := mustUpsert(t, svc, "302", extOrder("delivery", "c"))
+	lat3 := 39.43
+	if so, err := svc.OnGeo(ctx, order.GeoUpdate{OrderID: cached.OrderID, State: order.GeoLocated, Lat: &lat3, Lng: &lng, Quality: "pinned"}); err != nil || !so.Geo.Located() {
+		t.Fatalf("cache hit = %+v %v", so, err)
+	}
+	// Nor does a cached chosen candidate (confirmed_address, not confirmed).
+	svc.OnGeo(ctx, order.GeoUpdate{OrderID: cached.OrderID, State: order.GeoLocated, Lat: &lat3, Lng: &lng, Quality: "pinned", ConfirmedAddress: addr})
 	var got []order.AddressConfirmedData
 	for _, ev := range feedOf(t, svc) {
 		if ev.Type == order.FeedAddressConfirmed {
@@ -751,5 +762,147 @@ func TestCloseBatchForgetsPOSDeliveries(t *testing.T) {
 	}
 	if strings.Join(types, ",") != "order.cancelled,order.cancelled,batch.closed" {
 		t.Fatalf("feed = %v", types)
+	}
+}
+
+// order.accepted carries insert_expected from the accept's own print outcome.
+func TestOrderAcceptedInsertExpected(t *testing.T) {
+	ctx := context.Background()
+	svc, _, _, prints, _ := newIntegService(t)
+	accepted := func(insert bool) order.OrderAcceptedData {
+		t.Helper()
+		prints.mu.Lock()
+		prints.insert = insert
+		prints.mu.Unlock()
+		s := order.Snapshot{ID: uuid.NewString(), TenantID: uuid.NewString(), LocationID: uuid.NewString(), Source: "online",
+			SourceEventID: uuid.NewString()[:6], Fulfillment: order.Fulfillment{Type: "pickup"}, Money: order.Money{Total: 2000}}
+		if err := svc.OnArrival(ctx, s); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := svc.Accept(ctx, uuid.MustParse(s.ID), nil); err != nil {
+			t.Fatal(err)
+		}
+		for _, ev := range feedOf(t, svc) {
+			var d order.OrderAcceptedData
+			if ev.Type == order.FeedOrderAccepted && json.Unmarshal(ev.Data, &d) == nil && d.Order.Order.ID == s.ID {
+				if !strings.Contains(string(ev.Data), `"insert_expected":`) {
+					t.Fatalf("no insert_expected key: %s", ev.Data)
+				}
+				return d
+			}
+		}
+		t.Fatal("no order.accepted")
+		return order.OrderAcceptedData{}
+	}
+	if d := accepted(true); !d.InsertExpected {
+		t.Fatal("insert_expected = false for a live-insert print")
+	}
+	if d := accepted(false); d.InsertExpected {
+		t.Fatal("insert_expected = true for a receipt-only print")
+	}
+}
+
+// A POS check that becomes a delivery is located; one that stops being a
+// delivery is forgotten by main and leaves its pool.
+func TestPOSTypeChangeLocatesAndForgets(t *testing.T) {
+	ctx := context.Background()
+	svc, _, _, _, rpc := newIntegService(t)
+	res := mustUpsert(t, svc, "400", extOrder("pickup", "a"))
+	if len(rpc.of(MsgGeoLocate)) != 0 {
+		t.Fatal("a pickup was located")
+	}
+	mustUpsert(t, svc, "400", extOrder("delivery", "b"))
+	if c := rpc.of(MsgGeoLocate); len(c) != 1 || c[0].Payload["order_id"] != res.OrderID {
+		t.Fatalf("geo.locate = %+v", c)
+	}
+	lat, lng := 39.4, -76.6
+	if _, err := svc.OnGeo(ctx, order.GeoUpdate{OrderID: res.OrderID, State: order.GeoLocated, Lat: &lat, Lng: &lng, Quality: "exact"}); err != nil {
+		t.Fatal(err)
+	}
+	ann, _ := svc.CreateDriver(ctx, "Ann", "")
+	svc.ClockIn(ctx, ann.ID)
+	if _, err := svc.Pool(ctx, []string{res.OrderID}, ann.ID); err != nil {
+		t.Fatal(err)
+	}
+	mustUpsert(t, svc, "400", extOrder("pickup", "c"))
+	if c := rpc.of(MsgGeoForget); len(c) != 1 || c[0].Payload["order_id"] != res.OrderID {
+		t.Fatalf("geo.forget = %+v", c)
+	}
+	so := storedOf(t, svc, res.OrderID)
+	if so.Status.PoolDriverID != "" || so.Geo != nil || so.IsDelivery() {
+		t.Fatalf("after pickup = pool %q geo %+v", so.Status.PoolDriverID, so.Geo)
+	}
+	if len(rpc.of(MsgGeoLocate)) != 1 {
+		t.Fatal("located again")
+	}
+	// Address-only change of a delivery still re-locates (unchanged rule).
+	other := mustUpsert(t, svc, "401", extOrder("delivery", "a"))
+	moved := extOrder("delivery", "b")
+	moved.Address.Line1 = "1 Other St"
+	mustUpsert(t, svc, "401", moved)
+	if c := rpc.of(MsgGeoLocate); len(c) != 3 || c[2].Payload["order_id"] != other.OrderID {
+		t.Fatalf("geo.locate = %d", len(c))
+	}
+}
+
+// Auto-accept on: a future order is scheduled on arrival with the default
+// time for its type (nothing prints), and auto-accepted when it rings again.
+func TestAutoAcceptSchedulesFutureOrders(t *testing.T) {
+	ctx := context.Background()
+	svc, _, events, prints, _ := newIntegService(t)
+	if err := svc.settings.SetAutoAccept(ctx, true); err != nil {
+		t.Fatal(err)
+	}
+	promised := time.Now().Add(3 * time.Hour).UTC()
+	s := order.Snapshot{ID: uuid.NewString(), TenantID: uuid.NewString(), LocationID: uuid.NewString(), Source: "online",
+		SourceEventID: "f1", Fulfillment: order.Fulfillment{Type: "delivery", PromisedAt: &promised, Address: &order.Address{Line1: "1 Main"}}}
+	drain(events)
+	if err := svc.OnArrival(ctx, s); err != nil {
+		t.Fatal(err)
+	}
+	so := storedOf(t, svc, s.ID)
+	if so.Status.State != order.StateScheduled || so.Status.ScheduledLeadMinutes == nil || *so.Status.ScheduledLeadMinutes != 35 ||
+		!so.Status.RingAt.Equal(promised.Add(-35*time.Minute).Truncate(time.Millisecond)) {
+		t.Fatalf("auto-scheduled = %+v", so.Status)
+	}
+	if len(prints.all()) != 0 {
+		t.Fatal("a future order printed on arrival")
+	}
+	if _, ok := eventOf(events, "order.arrived"); ok {
+		t.Fatal("a future order rang under auto-accept")
+	}
+	for _, ev := range feedOf(t, svc) {
+		if ev.Type == order.FeedOrderAccepted {
+			t.Fatal("order.accepted before the ring")
+		}
+	}
+	// An ASAP order is still accepted on arrival.
+	asap := order.Snapshot{ID: uuid.NewString(), TenantID: uuid.NewString(), LocationID: uuid.NewString(), Source: "online",
+		SourceEventID: "f2", Fulfillment: order.Fulfillment{Type: "pickup"}, Money: order.Money{Total: 900}}
+	if err := svc.OnArrival(ctx, asap); err != nil {
+		t.Fatal(err)
+	}
+	if got := storedOf(t, svc, asap.ID); got.Status.State != order.StateAccepted {
+		t.Fatalf("asap = %s", got.Status.State)
+	}
+	// At ring_at it is accepted (prep = its lead) and printed.
+	if n, err := svc.RaiseDue(ctx, promised.Add(-35*time.Minute).Add(time.Second)); n != 1 || err != nil {
+		t.Fatalf("raise = %d %v", n, err)
+	}
+	got := storedOf(t, svc, s.ID)
+	if got.Status.State != order.StateAccepted || *got.Status.PrepMinutes != 35 || got.Status.KitchenNumber == nil {
+		t.Fatalf("at ring = %+v", got.Status)
+	}
+	if p := prints.all(); len(p) != 2 || p[1].OrderID != s.ID || p[1].Mode != printer.ModeAccept {
+		t.Fatalf("prints = %+v", p)
+	}
+	n := 0
+	for _, ev := range feedOf(t, svc) {
+		if ev.Type == order.FeedOrderAccepted {
+			n++
+		}
+	}
+	if n != 2 {
+		t.Fatalf("order.accepted events = %d", n)
 	}
 }

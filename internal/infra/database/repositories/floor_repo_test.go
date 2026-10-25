@@ -55,7 +55,7 @@ func accept(t *testing.T, r *OrderRepository, so order.StoredOrder) order.Stored
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := r.RecordAccepted(context.Background(), *got); err != nil {
+	if err := r.RecordAccepted(context.Background(), *got, false); err != nil {
 		t.Fatal(err)
 	}
 	return *got

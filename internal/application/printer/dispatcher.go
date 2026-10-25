@@ -212,6 +212,7 @@ func (d *Dispatcher) ExecuteMode(ctx context.Context, snap order.Snapshot, mode 
 
 	tickets, unrouted := PlanWith(snap, entries, mode, rules)
 	out := printer.Outcome{Unrouted: unrouted}
+	insertRule := mode == printer.ModeAccept && InsertsLive(snap, rules)
 	if len(tickets) == 0 {
 		return out, printer.ErrNoTickets
 	}
@@ -228,6 +229,9 @@ func (d *Dispatcher) ExecuteMode(ctx context.Context, snap order.Snapshot, mode 
 			continue
 		}
 		out.Printed = append(out.Printed, res)
+		if insertRule && (t.Kind == printer.TicketStation || t.Kind == printer.TicketFull) {
+			out.InsertExpected = true // the kitchen has it: the hub inserts it
+		}
 	}
 
 	if len(out.Failed) > 0 {

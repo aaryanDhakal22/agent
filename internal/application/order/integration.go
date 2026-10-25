@@ -341,8 +341,14 @@ func (s *Service) UpsertExternal(ctx context.Context, extRef string, in order.Ex
 		s.geoLocate(ctx, so)
 	case res.Changed:
 		s.publishUpdated(so)
-		if res.AddressChanged {
+		switch {
+		case res.AddressChanged: // a new address, or newly a delivery
 			s.geoLocate(ctx, so)
+		case res.DeliveryEnded: // no longer a delivery: out of its pool
+			s.geoForget(ctx, so.Order.ID)
+			for _, x := range s.resequencePools(ctx, nil) {
+				s.publishUpdated(x)
+			}
 		}
 	}
 	if p := in.DriverPosNumber; p != nil && strings.TrimSpace(*p) != "" && strings.TrimSpace(*p) != res.PrevDriverPos {
@@ -623,14 +629,37 @@ func (s *Service) Schedule(ctx context.Context, id string, leadMinutes int) (*or
 }
 
 // RaiseDue puts scheduled orders whose ring time came back to arrived
-// (rerung) and rings the tablets; the 2-minute escalation then applies. Run
-// on the escalation ticker.
+// (rerung) and rings the tablets; the 2-minute escalation then applies. With
+// auto-accept on, a raised order is accepted (and printed) right away, with
+// its lead as the prep, as a new order would be. Run on the escalation ticker.
 func (s *Service) RaiseDue(ctx context.Context, now time.Time) (int, error) {
 	list, err := s.repo.RaiseDue(ctx, now)
 	if err != nil {
 		return 0, err
 	}
+	auto := false
+	if len(list) > 0 {
+		if auto, err = s.settings.GetAutoAccept(ctx); err != nil {
+			s.logger.Warn().Ctx(ctx).Err(err).Msg("Failed to read auto-accept setting, defaulting to manual")
+			auto = false
+		}
+	}
 	for _, so := range list {
+		if auto {
+			id := uuid.MustParse(so.Order.ID)
+			if _, err := s.Accept(ctx, id, nil); err == nil {
+				s.logger.Info().Ctx(ctx).Str("order_id", so.Order.ID).Msg("Future order is due: auto-accepted")
+				continue
+			}
+			s.logger.Error().Ctx(ctx).Str("order_id", so.Order.ID).Msg("Auto-accept of a due future order failed — ringing")
+			if cur, gerr := s.repo.GetByID(ctx, id); gerr == nil {
+				if cur.Status.State != order.StateArrived {
+					s.publishUpdated(*cur)
+					continue
+				}
+				so = *cur
+			}
+		}
 		s.logger.Info().Ctx(ctx).Str("order_id", so.Order.ID).Msg("Future order is due: ringing again")
 		s.broadcastArrived(ctx, so)
 	}

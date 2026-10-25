@@ -185,6 +185,13 @@ func isPickupCash(snap order.Snapshot) bool {
 	return strings.EqualFold(strings.TrimSpace(snap.Fulfillment.Type), "pickup") && snap.CashDue() > 0
 }
 
+// InsertsLive: an online cash pickup that prints its kitchen tickets on
+// accept because the hub inserts it into the POS live (rules.InsertLive and
+// the online_cash_pickup switch) — the hub is then expected to insert it.
+func InsertsLive(snap order.Snapshot, rules Rules) bool {
+	return !isPOS(snap) && isPickupCash(snap) && rules.InsertLive && rules.Tickets.OnlineCashPickup
+}
+
 // receiptOnly applies the online kitchen-ticket switches: an online order
 // whose switch is off prints only the customer receipt. A cash pickup needs
 // its switch AND the hub inserting live.

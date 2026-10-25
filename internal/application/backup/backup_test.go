@@ -143,3 +143,80 @@ func TestNowScrubsPOSCustomers(t *testing.T) {
 		t.Fatal("the live order was scrubbed")
 	}
 }
+
+// The hub feed and the AUTO plans hold POS customer data too: the copy has
+// no POS address.confirmed event, no POS customer in an event payload and no
+// plan (online orders' events stay).
+func TestNowScrubsPOSFeedAndPlans(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "agent.db")
+	if err := migrate.Run(ctx, path); err != nil {
+		t.Fatal(err)
+	}
+	db, err := database.Open(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	for _, q := range []string{
+		`INSERT INTO orders (id, tenant_id, location_id, source, source_event_id, snapshot, state, batch_id, local_only)
+		 VALUES ('pos-1', 't', 'l', 'pos', 'softtouch:1', '{"id":"pos-1"}', 'accepted', 1, true)`,
+		`INSERT INTO integration_events (type, payload, created_at) VALUES ('address.confirmed',
+		 '{"order_id":"pos-1","ext_ref":"1","how":"candidate","address":{"line1":"88 Secret Rd","city":"Towson"},"lat":39.4111111,"lng":-76.6111111}', 'x')`,
+		`INSERT INTO integration_events (type, payload, created_at) VALUES ('address.confirmed',
+		 '{"order_id":"pos-1","ext_ref":null,"how":"pin","address":null,"lat":39.4222222,"lng":-76.6222222}', 'x')`,
+		`INSERT INTO integration_events (type, payload, created_at) VALUES ('address.confirmed',
+		 '{"order_id":"web-1","ext_ref":null,"how":"pin","address":null,"lat":39.4333333,"lng":-76.6333333}', 'x')`,
+		`INSERT INTO integration_events (type, payload, created_at) VALUES ('order.accepted',
+		 '{"order":{"order":{"id":"pos-2","source":"pos","customer":{"display_name":"Pat Secret","phone":"4105550199"},"fulfillment":{"type":"delivery","address":{"line1":"77 Hidden Ln"}}},"status":{"state":"accepted","ext_source":"softtouch","local_only":true},"geo":{"state":"located","lat":39.4444444}}}', 'x')`,
+		`INSERT INTO integration_events (type, payload, created_at) VALUES ('order.accepted',
+		 '{"order":{"order":{"id":"web-2","source":"online","customer":{"display_name":"Erik Davis"}},"status":{"state":"accepted"}}}', 'x')`,
+		`INSERT INTO auto_plans (id, created_at, plan_json) VALUES ('plan-1', 'x', '{"runs":[{"stops":[{"order_id":"pos-1","lat":39.4555555,"lng":-76.6555555,"address":"99 Plan St"}]}]}')`,
+	} {
+		if _, err := db.ExecContext(ctx, q); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var got []byte
+	s := New(db, path, func(_ context.Context, _ string, body []byte, _ string) (int, []byte, error) {
+		got = body
+		return 201, nil, nil
+	}, &memSettings{}, nil, nil, zerolog.Nop())
+	s.TempDir = t.TempDir()
+	if _, err := s.Now(ctx); err != nil {
+		t.Fatal(err)
+	}
+	for _, secret := range []string{"88 Secret Rd", "39.4111111", "39.4222222", "Pat Secret", "4105550199", "77 Hidden Ln",
+		"39.4444444", "39.4555555", "99 Plan St"} {
+		if strings.Contains(string(got), secret) {
+			t.Fatalf("backup still holds %q", secret)
+		}
+	}
+	for _, kept := range []string{"39.4333333", "Erik Davis"} {
+		if !strings.Contains(string(got), kept) {
+			t.Fatalf("scrub removed online data %q", kept)
+		}
+	}
+	// The copy is still a readable database with the online events in it.
+	copyPath := filepath.Join(t.TempDir(), "copy.db")
+	if err := os.WriteFile(copyPath, got, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cp, err := database.Open(ctx, copyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cp.Close()
+	var events, plans int
+	_ = cp.QueryRowContext(ctx, `SELECT COUNT(*) FROM integration_events`).Scan(&events)
+	_ = cp.QueryRowContext(ctx, `SELECT COUNT(*) FROM auto_plans`).Scan(&plans)
+	if events != 3 || plans != 0 {
+		t.Fatalf("copy has %d events, %d plans; want 3, 0", events, plans)
+	}
+	// The live database keeps everything.
+	var live int
+	_ = db.QueryRowContext(ctx, `SELECT COUNT(*) FROM integration_events`).Scan(&live)
+	if live != 5 {
+		t.Fatalf("live feed touched: %d events", live)
+	}
+}

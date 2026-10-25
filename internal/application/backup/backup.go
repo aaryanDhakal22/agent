@@ -90,7 +90,9 @@ func (s *Service) due(ctx context.Context, now time.Time) bool {
 
 // scrubLocalOnly clears the customer and address of every local-only (POS)
 // order in the copy at path and drops their located points, then vacuums so
-// no freed page still holds them.
+// no freed page still holds them. The hub feed loses its POS
+// address.confirmed events (an address and a point) and any POS customer an
+// event carries; the AUTO plans (points of every planned stop) are dropped.
 func scrubLocalOnly(ctx context.Context, path string) error {
 	db, err := sql.Open("sqlite", path)
 	if err != nil {
@@ -100,6 +102,17 @@ func scrubLocalOnly(ctx context.Context, path string) error {
 	for _, q := range []string{
 		`DELETE FROM order_geo WHERE order_id IN (SELECT id FROM orders WHERE local_only)`,
 		`UPDATE orders SET snapshot = json_remove(json_set(snapshot, '$.customer', json('{}')), '$.fulfillment.address') WHERE local_only`,
+		`DELETE FROM integration_events WHERE type = 'address.confirmed'
+		   AND (json_extract(payload, '$.ext_ref') IS NOT NULL
+		        OR json_extract(payload, '$.order_id') IN (SELECT id FROM orders WHERE local_only))`,
+		`UPDATE integration_events
+		 SET payload = json_remove(json_set(payload, '$.order.order.customer', json('{}')), '$.order.order.fulfillment.address', '$.order.geo')
+		 WHERE json_type(payload, '$.order.order') = 'object'
+		   AND (json_extract(payload, '$.order.status.local_only')
+		        OR COALESCE(json_extract(payload, '$.order.status.ext_source'), '') <> ''
+		        OR json_extract(payload, '$.order.order.source') = 'pos'
+		        OR json_extract(payload, '$.order.order.id') IN (SELECT id FROM orders WHERE local_only))`,
+		`DELETE FROM auto_plans`,
 		`VACUUM`,
 	} {
 		if _, err := db.ExecContext(ctx, q); err != nil {

@@ -114,8 +114,9 @@ func loadOrder(ctx context.Context, q *models.Queries, id string) (order.StoredO
 	return list[0], nil
 }
 
-// RecordAccepted writes the accepted event once the tickets printed.
-func (r *OrderRepository) RecordAccepted(ctx context.Context, so order.StoredOrder) (err error) {
+// RecordAccepted writes the accepted event once the tickets printed;
+// insertExpected rides on the hub's order.accepted (see OrderAcceptedData).
+func (r *OrderRepository) RecordAccepted(ctx context.Context, so order.StoredOrder, insertExpected bool) (err error) {
 	ctx, _, end := dbSpan(ctx, "floor.record_accepted")
 	defer end(&err)
 	at := time.Now()
@@ -127,7 +128,7 @@ func (r *OrderRepository) RecordAccepted(ctx context.Context, so order.StoredOrd
 			return err
 		}
 		if !so.IsPOS() { // the hub inserts online cash pickups from it
-			if err := insertFeed(ctx, q, order.FeedOrderAccepted, at, order.OrderAcceptedData{Order: so}); err != nil {
+			if err := insertFeed(ctx, q, order.FeedOrderAccepted, at, order.OrderAcceptedData{Order: so, InsertExpected: insertExpected}); err != nil {
 				return err
 			}
 		}
@@ -266,12 +267,31 @@ func (r *OrderRepository) CloseBatch(ctx context.Context, force bool) (closed *o
 		if err != nil {
 			return err
 		}
-		if len(left) > 0 && !force {
-			return &order.LeftoversError{Orders: left}
+		if err := markFuture(ctx, q, left, now); err != nil {
+			return err
+		}
+		// Only online orders that would be lost block a plain close: POS
+		// checks are the POS's (cancelled or finished below) and a future
+		// order still waiting for its time moves on with the scheduled ones.
+		var blocking []order.StoredOrder
+		var waiting []string
+		for _, so := range left {
+			switch {
+			case waitsForLater(so, now):
+				waiting = append(waiting, so.Order.ID)
+			case !so.IsPOS():
+				blocking = append(blocking, so)
+			}
+		}
+		if len(blocking) > 0 && !force {
+			return &order.LeftoversError{Orders: blocking}
 		}
 		ts := nullTS(now)
 		for i, so := range left {
 			row := rows[i] // mapRows keeps row order
+			if waitsForLater(so, now) {
+				continue // moved to the next batch below
+			}
 			if so.IsPOS() && so.Status.State != order.StateOnDelivery {
 				// The POS owns its checks: an unfinished one is cancelled
 				// (local only, nothing goes to main).
@@ -345,6 +365,13 @@ func (r *OrderRepository) CloseBatch(ctx context.Context, force bool) (closed *o
 		if err := q.MoveScheduledToBatch(ctx, models.MoveScheduledToBatchParams{NewBatch: next.ID, OldBatch: b.ID}); err != nil {
 			return err
 		}
+		// So do future orders still ringing for their first confirm, or rung
+		// again and not accepted yet, while promised_at is ahead.
+		for _, id := range waiting {
+			if err := q.MoveOrderToBatch(ctx, models.MoveOrderToBatchParams{NewBatch: next.ID, ID: id, OldBatch: b.ID}); err != nil {
+				return err
+			}
+		}
 		if err := insertFeed(ctx, q, order.FeedBatchClosed, now, order.BatchClosedData{BatchID: b.ID, ClosedAt: now.UTC().Truncate(time.Millisecond)}); err != nil {
 			return err
 		}
@@ -376,6 +403,18 @@ func (r *OrderRepository) CloseBatch(ctx context.Context, force bool) (closed *o
 		return nil, nil, err
 	}
 	return closed, finished, nil
+}
+
+// waitsForLater: a future online order not accepted yet (still arrived:
+// never scheduled, or rung again) whose promised time is still ahead. At
+// Close batch it moves into the next batch like a scheduled one; a past-due
+// one is a leftover as before.
+func waitsForLater(so order.StoredOrder, now time.Time) bool {
+	if so.IsPOS() || so.Status.State != order.StateArrived || !(so.Status.Future || so.Status.Rerung) {
+		return false
+	}
+	p := so.Order.Fulfillment.PromisedAt
+	return p != nil && p.After(now)
 }
 
 // wipePOS clears the customer name, phone and address of every POS order in

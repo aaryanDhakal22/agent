@@ -451,8 +451,13 @@ type BatchClosedData struct {
 }
 
 // OrderAcceptedData is an order.accepted event (online orders only).
+// InsertExpected: this accept printed the kitchen tickets of an online cash
+// pickup under the insert_live rule — the hub inserts it into the POS only
+// then (a flip of insert_live between print and insert can't leave a cash
+// pickup with no kitchen ticket, or keyed twice).
 type OrderAcceptedData struct {
-	Order StoredOrder `json:"order"`
+	Order          StoredOrder `json:"order"`
+	InsertExpected bool        `json:"insert_expected"`
 }
 
 // PosOpaqueID is a POS stop's anonymous id in delivery.run (no order id,

@@ -638,6 +638,11 @@ WHERE id = ? AND state = 'scheduled';
 -- Close batch: future orders wait in the next batch.
 UPDATE orders SET batch_id = sqlc.arg(new_batch) WHERE batch_id = sqlc.arg(old_batch) AND state = 'scheduled';
 
+-- name: MoveOrderToBatch :exec
+-- Close batch: a future order still ringing (not accepted, promised_at ahead)
+-- waits in the next batch too.
+UPDATE orders SET batch_id = sqlc.arg(new_batch) WHERE id = sqlc.arg(id) AND batch_id = sqlc.arg(old_batch) AND state = 'arrived';
+
 -- Integration feed (2.1.0) -----------------------------------------------------
 
 -- name: InsertIntegrationEvent :exec

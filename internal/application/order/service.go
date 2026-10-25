@@ -153,13 +153,28 @@ func (s *Service) OnArrival(ctx context.Context, snap order.Snapshot) error {
 	span.SetAttributes(attribute.Bool("order.auto_accept", autoAccept))
 
 	if autoAccept {
-		s.logger.Info().Ctx(ctx).Str("order_id", id.String()).Msg("Auto-accept ON — accepting immediately")
-		if _, err := s.Accept(ctx, id, nil); err != nil {
-			s.logger.Error().Ctx(ctx).Err(err).Str("order_id", id.String()).Msg("Auto-accept failed — order remains arrived")
+		// A future order isn't cooked now: it is scheduled with the default
+		// time for its type as the lead, and auto-accepted when it rings
+		// again at ring_at (RaiseDue) — that accept prints.
+		if cur, gerr := s.repo.GetByID(ctx, id); gerr == nil && cur.Status.Future && cur.Status.State == order.StateArrived {
+			lead := int(s.IntegrationSettings().Times.For(cur.Order.Fulfillment.Type))
+			span.SetAttributes(attribute.Bool("order.future", true))
+			_, err := s.Schedule(ctx, id.String(), lead)
+			if err == nil {
+				s.logger.Info().Ctx(ctx).Str("order_id", id.String()).Int("lead_minutes", lead).Msg("Auto-accept ON — future order scheduled")
+				return nil
+			}
+			s.logger.Error().Ctx(ctx).Err(err).Str("order_id", id.String()).Msg("Auto-schedule failed — order rings")
 			span.RecordError(err)
-			// Fall through to broadcast so mobile sees the pending order.
 		} else {
-			return nil
+			s.logger.Info().Ctx(ctx).Str("order_id", id.String()).Msg("Auto-accept ON — accepting immediately")
+			if _, err := s.Accept(ctx, id, nil); err != nil {
+				s.logger.Error().Ctx(ctx).Err(err).Str("order_id", id.String()).Msg("Auto-accept failed — order remains arrived")
+				span.RecordError(err)
+				// Fall through to broadcast so mobile sees the pending order.
+			} else {
+				return nil
+			}
 		}
 	}
 
@@ -231,7 +246,7 @@ func (s *Service) Accept(ctx context.Context, id uuid.UUID, prepMinutes *int) (*
 	}
 	// The tickets printed: the accept must reach main even if the tablet's
 	// request was cancelled meanwhile.
-	if err := s.repo.RecordAccepted(context.WithoutCancel(ctx), *so); err != nil {
+	if err := s.repo.RecordAccepted(context.WithoutCancel(ctx), *so, out.InsertExpected); err != nil {
 		s.logger.Error().Ctx(ctx).Err(err).Str("order_id", id.String()).Msg("Failed to record accepted floor event (main won't see it)")
 	}
 	s.floorChanged()

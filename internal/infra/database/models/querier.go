@@ -136,6 +136,9 @@ type Querier interface {
 	MarkOnDelivery(ctx context.Context, arg MarkOnDeliveryParams) (int64, error)
 	MarkReady(ctx context.Context, arg MarkReadyParams) (int64, error)
 	MaxIntegrationSeq(ctx context.Context) (int64, error)
+	// Close batch: a future order still ringing (not accepted, promised_at ahead)
+	// waits in the next batch too.
+	MoveOrderToBatch(ctx context.Context, arg MoveOrderToBatchParams) error
 	// Close batch: future orders wait in the next batch.
 	MoveScheduledToBatch(ctx context.Context, arg MoveScheduledToBatchParams) error
 	NextDriverPosition(ctx context.Context) (int64, error)

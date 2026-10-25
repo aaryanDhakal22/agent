@@ -286,7 +286,9 @@ func (s *Server) handleUnpairSelf(w http.ResponseWriter, r *http.Request) {
 }
 
 // POST /api/batch/close {force} — 409 batch_has_leftovers lists unfinished
-// orders unless force is true (they are then auto-finished).
+// online orders unless force is true (they are then auto-finished). POS
+// checks never block (always cancelled or finished); future orders still
+// waiting for their time move into the new batch.
 func (s *Server) handleCloseBatch(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Force bool `json:"force"`

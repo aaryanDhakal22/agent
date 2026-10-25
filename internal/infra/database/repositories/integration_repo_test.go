@@ -225,13 +225,9 @@ func TestCloseBatchPOSAndScheduled(t *testing.T) {
 	}
 	old, _ := r.OpenBatch(ctx)
 
-	// The scheduled order doesn't block the close; the cooking POS check does.
-	_, _, err := r.CloseBatch(ctx, false)
-	var lo *order.LeftoversError
-	if !errors.As(err, &lo) || len(lo.Orders) != 1 || lo.Orders[0].Order.ID != cooking.Order.ID {
-		t.Fatalf("leftovers = %v", err)
-	}
-	if _, _, err := r.CloseBatch(ctx, true); err != nil {
+	// Neither the scheduled order nor the cooking POS check blocks a plain
+	// close: the POS check is cancelled like at a forced one.
+	if _, _, err := r.CloseBatch(ctx, false); err != nil {
 		t.Fatal(err)
 	}
 	c := get(t, r, cooking.Order.ID)
@@ -374,5 +370,136 @@ func TestMigrationTo00014KeepsOrders(t *testing.T) {
 	}
 	if set, err := r.IntegrationSettings(ctx); err != nil || set != order.DefaultIntegrationSettings() {
 		t.Fatalf("settings = %+v %v", set, err)
+	}
+}
+
+// Leftovers: an unfinished online order blocks a plain close, a POS check
+// never does (it is still cancelled or finished at the forced close).
+func TestCloseBatchLeftoversSkipPOS(t *testing.T) {
+	r := newFloorRepo(t)
+	ctx := context.Background()
+	cooking := upsertPOS(t, r, "1", posOrder("pickup", "a")).Order
+	online := accept(t, r, arrive(t, r, "pickup"))
+	_, _, err := r.CloseBatch(ctx, false)
+	var lo *order.LeftoversError
+	if !errors.As(err, &lo) || len(lo.Orders) != 1 || lo.Orders[0].Order.ID != online.Order.ID {
+		t.Fatalf("leftovers = %v", err)
+	}
+	if got := get(t, r, cooking.Order.ID); got.Status.State != order.StateAccepted {
+		t.Fatalf("a refused close changed the POS check: %s", got.Status.State)
+	}
+	if _, _, err := r.CloseBatch(ctx, true); err != nil {
+		t.Fatal(err)
+	}
+	if got := get(t, r, cooking.Order.ID); got.Status.State != order.StateCancelled {
+		t.Fatalf("POS check after the close = %s", got.Status.State)
+	}
+	if got := get(t, r, online.Order.ID); got.Status.State != order.StateReady {
+		t.Fatalf("online order after the close = %s", got.Status.State)
+	}
+}
+
+func arriveAt(t *testing.T, r *OrderRepository, fulfillment string, promised time.Time) order.StoredOrder {
+	t.Helper()
+	p := promised.UTC()
+	s := order.Snapshot{ID: uuid.NewString(), TenantID: uuid.NewString(), LocationID: uuid.NewString(),
+		Source: "test", SourceEventID: uuid.NewString()[:6], PlacedAt: time.Now().UTC(),
+		Fulfillment: order.Fulfillment{Type: fulfillment, PromisedAt: &p}}
+	if _, err := r.UpsertArrived(context.Background(), s); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(2 * time.Millisecond)
+	return get(t, r, s.ID)
+}
+
+// A future order not accepted yet (never scheduled, or rung again) whose
+// promised time is ahead moves into the next batch at Close batch, even a
+// forced one; a past-due one is cancelled as before.
+func TestCloseBatchMovesWaitingFutureOrders(t *testing.T) {
+	r := newFloorRepo(t)
+	ctx := context.Background()
+	now := time.Now()
+	fresh := arriveAt(t, r, "pickup", now.Add(3*time.Hour))
+	if !fresh.Status.Future {
+		t.Fatal("not a future order")
+	}
+	rerung := arriveAt(t, r, "delivery", now.Add(30*time.Minute))
+	if _, err := r.Schedule(ctx, rerung.Order.ID, 40, now.Add(-10*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	pastDue := arriveAt(t, r, "pickup", now.Add(-5*time.Minute))
+	if _, err := r.Schedule(ctx, pastDue.Order.ID, 20, now.Add(-25*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if raised, err := r.RaiseDue(ctx, now); err != nil || len(raised) != 2 {
+		t.Fatalf("raise = %d %v", len(raised), err)
+	}
+	soon := arrive(t, r, "pickup") // an ordinary order nobody accepted
+	old, _ := r.OpenBatch(ctx)
+
+	// Only the past-due and the ordinary order are leftovers.
+	_, _, err := r.CloseBatch(ctx, false)
+	var lo *order.LeftoversError
+	if !errors.As(err, &lo) || len(lo.Orders) != 2 {
+		t.Fatalf("leftovers = %v", err)
+	}
+	for _, so := range lo.Orders {
+		if so.Order.ID != pastDue.Order.ID && so.Order.ID != soon.Order.ID {
+			t.Fatalf("leftover %s", so.Order.ID)
+		}
+	}
+	if _, _, err := r.CloseBatch(ctx, true); err != nil {
+		t.Fatal(err)
+	}
+	nb, _ := r.OpenBatch(ctx)
+	if nb.ID == old.ID {
+		t.Fatal("no new batch")
+	}
+	for _, id := range []string{fresh.Order.ID, rerung.Order.ID} {
+		got := get(t, r, id)
+		if got.Status.State != order.StateArrived || got.Status.BatchID != nb.ID {
+			t.Fatalf("waiting future order %s = %s in batch %d (new %d)", id, got.Status.State, got.Status.BatchID, nb.ID)
+		}
+	}
+	if got := get(t, r, rerung.Order.ID); !got.Status.Rerung {
+		t.Fatal("lost rerung")
+	}
+	for _, id := range []string{pastDue.Order.ID, soon.Order.ID} {
+		if got := get(t, r, id); got.Status.State != order.StateCancelled || got.Status.BatchID != old.ID {
+			t.Fatalf("order %s = %s in batch %d", id, got.Status.State, got.Status.BatchID)
+		}
+	}
+}
+
+// AUTO's suggested_ids reach main with POS orders by their opaque id — sent
+// on this run or not — never their local id.
+func TestDeliveryRunSuggestedPOSOpaque(t *testing.T) {
+	r := newFloorRepo(t)
+	ctx := context.Background()
+	d, _ := r.CreateDriver(ctx, "Ann", "")
+	clockIn(t, r, d.ID)
+	sent := upsertPOS(t, r, "801", posOrder("delivery", "a")).Order
+	left := upsertPOS(t, r, "802", posOrder("delivery", "b")).Order // suggested, not sent
+	online := accept(t, r, arriveDelivery(t, r, "Erik Davis", 0, 2000, true))
+	if _, err := r.MarkReady(ctx, online.Order.ID); err != nil {
+		t.Fatal(err)
+	}
+	suggested := []string{sent.Order.ID, left.Order.ID, online.Order.ID, uuid.NewString()}
+	if _, _, err := r.SendOut(ctx, d.ID, []string{sent.Order.ID, online.Order.ID}, true, order.RunMeta{SuggestedIDs: suggested}); err != nil {
+		t.Fatal(err)
+	}
+	if suggested[0] != sent.Order.ID || suggested[1] != left.Order.ID {
+		t.Fatal("the caller's suggestions were rewritten in place")
+	}
+	var run order.DeliveryRunEvent
+	for _, ev := range eventsOf(t, r) {
+		if ev["type"] == "delivery.run" {
+			raw, _ := json.Marshal(ev)
+			_ = json.Unmarshal(raw, &run)
+		}
+	}
+	want := []string{order.PosOpaqueID(sent.Status.BatchID, "801"), order.PosOpaqueID(left.Status.BatchID, "802"), online.Order.ID}
+	if strings.Join(run.SuggestedIDs, ",") != strings.Join(want, ",") {
+		t.Fatalf("suggested_ids = %v, want %v", run.SuggestedIDs, want)
 	}
 }

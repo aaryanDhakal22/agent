@@ -217,32 +217,43 @@ def test_online_cash_pickup_follows_the_hub_insert(kitchen, fakes) -> None:  # n
     a, ids = kitchen["agent"], kitchen["ids"]
     hub = _hub(kitchen)
 
-    def cash_pickup() -> None:
+    def cash_pickup() -> str:
         snap = _snap(kitchen["main_store"], [_item("Pepperoni", ids["Pizza"])])
         snap.pop("payments")  # no payments = a cash order
         assert _accept(a, snap).status_code == 200
+        return snap["id"]
+
+    def insert_expected(oid: str) -> bool:
+        # order.accepted tells the hub whether to insert (decided with the print).
+        acc = [e["data"] for e in _feed(a, hub)["events"]
+               if e["type"] == "order.accepted" and e["data"]["order"]["order"]["id"] == oid]
+        assert len(acc) == 1, acc
+        return acc[0]["insert_expected"]
 
     def live(mode: str) -> None:
         r = requests.put(f"{a.base}/api/integration/status", json={"ok": True, "insert_mode": mode, "operation_day": "2026-10-25",
                                                                    "problems": [], "version": "0.1.0"}, headers=hub, timeout=5)
         assert r.status_code == 204, r.text
 
-    cash_pickup()  # default: receipt only (staff key it into the POS)
+    first = cash_pickup()  # default: receipt only (staff key it into the POS)
     wait_until(lambda: len(fakes["Front"].jobs) == 1, timeout=10, what="receipt")
     assert not fakes["Pizza"].jobs
+    assert insert_expected(first) is False
     a.http.put(f"{a.base}/api/settings/features", json={"order_insert": True}, timeout=5)
     live("live")
     integ = a.http.get(f"{a.base}/api/floor", timeout=5).json()["integration"]
     assert integ["connected"] is True and integ["insert_live"] is True and integ["insert_mode"] == "live"
     _reset(fakes)
-    cash_pickup()  # the hub inserts it live: kitchen tickets + receipt
+    inserted = cash_pickup()  # the hub inserts it live: kitchen tickets + receipt
     wait_until(lambda: len(fakes["Pizza"].jobs) == 1 and len(fakes["Front"].jobs) == 1, timeout=10, what="ticket + receipt")
+    assert insert_expected(inserted) is True
     live("shadow")
     _reset(fakes)
-    cash_pickup()
+    shadow = cash_pickup()
     wait_until(lambda: len(fakes["Front"].jobs) == 1, timeout=10, what="receipt")
     time.sleep(0.5)
     assert not fakes["Pizza"].jobs, "shadow insert: receipt only again"
+    assert insert_expected(shadow) is False
     r = requests.put(f"{a.base}/api/integration/status", json={"insert_mode": "turbo"}, headers=hub, timeout=5)
     assert r.status_code == 400
 
@@ -258,14 +269,22 @@ def test_close_batch_wipes_pos_customers(kitchen) -> None:  # noqa: F811
     assert _order(a, later["id"])["status"]["future"] is True
     r = a.http.post(f"{a.base}/api/orders/{later['id']}/schedule", json={"lead_minutes": 20}, timeout=5)
     assert r.status_code == 200 and r.json()["status"]["state"] == "scheduled", r.text
+    # A future order still ringing for its first confirm waits too.
+    ringing = _snap(kitchen["main_store"], [_item("Pepperoni", ids["Pizza"])])
+    ringing["fulfillment"] = {"type": "pickup", "promised_at": promised}
+    assert a.http.post(f"{a.base}/api/resend", json=ringing, timeout=15).status_code == 200
+    assert _order(a, ringing["id"])["status"]["state"] == "arrived"
 
-    r = a.http.post(f"{a.base}/api/batch/close", json={"force": True}, timeout=30)
+    # Neither the open POS check nor the future orders block a plain close.
+    r = a.http.post(f"{a.base}/api/batch/close", json={"force": False}, timeout=30)
     assert r.status_code == 200, r.text
     so = _order(a, oid)
     assert so["status"]["state"] == "cancelled" and so["status"]["display_number"] == 99
     assert so["order"]["customer"] == {} and "address" not in so["order"]["fulfillment"]
     sched = _order(a, later["id"])["status"]
     assert sched["state"] == "scheduled" and sched["batch_id"] == r.json()["opened"]["id"]
+    st = _order(a, ringing["id"])["status"]
+    assert st["state"] == "arrived" and st["batch_id"] == r.json()["opened"]["id"] and st["future"] is True
     assert [e["type"] for e in _feed(a, hub)["events"]][-1] == "batch.closed"
 
 

@@ -152,7 +152,22 @@ func (r *OrderRepository) UpsertExternal(ctx context.Context, extRef string, in 
 			return fmt.Errorf("update pos order: %w", err)
 		}
 		res.Changed = true
-		res.AddressChanged = cur.IsDelivery() && !cur.IsFinished() && !sameAddress(cur.Order.Fulfillment.Address, snap.Fulfillment.Address)
+		if !cur.IsFinished() {
+			wasDelivery, isDelivery := cur.IsDelivery(), snap.Fulfillment.Type == "delivery"
+			// Became a delivery, or a delivery whose address changed: locate
+			// it. Stopped being one: main forgets its point, and it leaves
+			// its pool and its geo here.
+			res.AddressChanged = isDelivery && (!wasDelivery || !sameAddress(cur.Order.Fulfillment.Address, snap.Fulfillment.Address))
+			res.DeliveryEnded = wasDelivery && !isDelivery
+			if res.DeliveryEnded {
+				if err := q.ClearOrderPool(ctx, row.ID); err != nil {
+					return err
+				}
+				if err := q.DeleteOrderGeo(ctx, row.ID); err != nil {
+					return err
+				}
+			}
+		}
 		res.Order, err = loadOrder(ctx, q, row.ID)
 		return err
 	})

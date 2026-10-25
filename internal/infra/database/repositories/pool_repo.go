@@ -271,10 +271,7 @@ func recordDeliveryRun(ctx context.Context, q *models.Queries, d models.Driver, 
 			}
 		}
 	}
-	suggested := meta.SuggestedIDs
-	if suggested == nil {
-		suggested = []string{}
-	}
+	suggested := make([]string, 0, len(meta.SuggestedIDs)) // a copy: rewritten below
 	ev := order.DeliveryRunEvent{
 		EventID: uuid.NewString(), Type: order.FloorEventDeliveryRun, At: now.UTC().Truncate(time.Millisecond),
 		BatchID: sent[0].Status.BatchID, DriverID: d.ID, DriverName: d.Name, PlanID: meta.PlanID,
@@ -306,9 +303,27 @@ func recordDeliveryRun(ctx context.Context, q *models.Queries, d models.Driver, 
 		opaque[st.OrderID] = stop.OpaqueID
 		ev.Stops[i] = stop
 	}
-	for i, id := range ev.SuggestedIDs {
+	// AUTO's suggestions too: a POS order (sent on this run or not) by its
+	// opaque id, never its local id; an id that is no order here is dropped.
+	for _, id := range meta.SuggestedIDs {
 		if o, ok := opaque[id]; ok {
-			ev.SuggestedIDs[i] = o
+			ev.SuggestedIDs = append(ev.SuggestedIDs, o)
+			continue
+		}
+		if _, ok := byID[id]; ok {
+			ev.SuggestedIDs = append(ev.SuggestedIDs, id) // an online stop
+			continue
+		}
+		row, err := q.GetOrderByID(ctx, id)
+		switch {
+		case errors.Is(err, sql.ErrNoRows):
+			continue
+		case err != nil:
+			return fmt.Errorf("suggested order %s: %w", id, err)
+		case row.LocalOnly:
+			ev.SuggestedIDs = append(ev.SuggestedIDs, order.PosOpaqueID(row.BatchID, row.ExtRef))
+		default:
+			ev.SuggestedIDs = append(ev.SuggestedIDs, id)
 		}
 	}
 	for _, s := range ev.Stops {
@@ -432,10 +447,11 @@ func (r *OrderRepository) UpsertGeo(ctx context.Context, g order.GeoUpdate) (so 
 		if fresh, err = loadOrder(ctx, q, g.OrderID); err != nil {
 			return err
 		}
-		// Staff confirmed the place (a chosen candidate or a pin): the hub
-		// heals the POS address from it. Main re-pushing the same result
-		// (a reconnect) writes no second event.
-		if fresh.Geo.Confirmed() && !sameConfirmed(before.Geo, fresh.Geo) {
+		// Staff confirmed the place (main's direct answer to geo.choose or
+		// geo.pin, flagged confirmed — a cache hit that comes back pinned is
+		// not): the hub heals the POS address from it. The same place again
+		// writes no second event.
+		if g.Confirmed && fresh.Geo.Confirmed() && !sameConfirmed(before.Geo, fresh.Geo) {
 			ev := order.AddressConfirmedData{OrderID: fresh.Order.ID, ExtRef: order.RefOf(fresh).ExtRef, How: "pin",
 				Lat: *fresh.Geo.Lat, Lng: *fresh.Geo.Lng}
 			if fresh.Geo.ConfirmedAddress != nil {

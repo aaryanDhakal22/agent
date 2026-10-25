@@ -330,8 +330,9 @@ type FloorRepository interface {
 	MarkAlerted(ctx context.Context, id string, at time.Time) error
 
 	// RecordAccepted writes the order.status=accepted floor event (after the
-	// tickets printed — a reverted claim never reaches main).
-	RecordAccepted(ctx context.Context, so StoredOrder) error
+	// tickets printed — a reverted claim never reaches main) and, for an
+	// online order, the hub's order.accepted with insertExpected.
+	RecordAccepted(ctx context.Context, so StoredOrder, insertExpected bool) error
 	// ListInterruptedAccepts: orders claimed for accept whose accept was never
 	// recorded (the agent stopped mid-accept).
 	ListInterruptedAccepts(ctx context.Context) ([]string, error)

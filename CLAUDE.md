@@ -533,8 +533,9 @@ Contract §2.9 is the wire truth; spec §4.14 the design. Code:
 - **Feed** (`integration_events`, AUTOINCREMENT): written with `insertFeed` in
   the change's own tx — `order.accepted` (RecordAccepted, online only),
   `order.ready` (MarkReady, Send Out/mirror mark-ready), `run.sent`
-  (recordDeliveryRun), `address.confirmed` (UpsertGeo, deduped by
-  `sameConfirmed`), `order.cancelled`, `settings.changed`, `batch.closed`.
+  (recordDeliveryRun), `address.confirmed` (UpsertGeo, only when main's
+  `order.geo` has `confirmed:true` — cache hits come back pinned too — deduped
+  by `sameConfirmed`), `order.cancelled`, `settings.changed`, `batch.closed`.
   `Service.Feed` long-polls on a broadcast channel (`feedNotify`, called by
   `floorChanged`) + a 1 s tick. Pruned after 3 days in `TrimBatches`.
 - **Settings**: `features` / `ticket_toggles` JSON over the defaults +
@@ -554,7 +555,11 @@ Contract §2.9 is the wire truth; spec §4.14 the design. Code:
 - **Future orders**: `Status.Future` is **computed on read** (`markFuture` in
   `loadOrder` / `attachGeo`) — never stored. `POST /api/orders/{id}/schedule`;
   a re-rung accept defaults prep to the lead. Scheduled orders aren't
-  leftovers; Close batch moves them to the new batch.
+  leftovers; Close batch moves them to the new batch, and `arrived` future
+  orders with `promised_at` ahead too (`waitsForLater`). POS checks never
+  block a close. Auto-accept schedules a future order (lead = default time)
+  and `RaiseDue` auto-accepts it at the re-ring. `order.accepted` carries
+  `insert_expected` (`printer.Outcome.InsertExpected`).
 - **Geo**: `OnGeo` accepts `check` (≤ 3 candidates; `Located()` false → AUTO
   ignores it); `POST /api/orders/{id}/geo/choose` → RPC `geo.choose`; POS
   deliveries → `geo.locate` (address only) on create / address change and

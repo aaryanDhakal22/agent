@@ -2568,6 +2568,23 @@ func (q *Queries) MaxIntegrationSeq(ctx context.Context) (int64, error) {
 	return max_seq, err
 }
 
+const moveOrderToBatch = `-- name: MoveOrderToBatch :exec
+UPDATE orders SET batch_id = ?1 WHERE id = ?2 AND batch_id = ?3 AND state = 'arrived'
+`
+
+type MoveOrderToBatchParams struct {
+	NewBatch int64  `json:"new_batch"`
+	ID       string `json:"id"`
+	OldBatch int64  `json:"old_batch"`
+}
+
+// Close batch: a future order still ringing (not accepted, promised_at ahead)
+// waits in the next batch too.
+func (q *Queries) MoveOrderToBatch(ctx context.Context, arg MoveOrderToBatchParams) error {
+	_, err := q.db.ExecContext(ctx, moveOrderToBatch, arg.NewBatch, arg.ID, arg.OldBatch)
+	return err
+}
+
 const moveScheduledToBatch = `-- name: MoveScheduledToBatch :exec
 UPDATE orders SET batch_id = ?1 WHERE batch_id = ?2 AND state = 'scheduled'
 `

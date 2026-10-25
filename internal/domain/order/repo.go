@@ -52,13 +52,17 @@ type ExternalMeta struct {
 	Now         time.Time
 }
 
-// ExternalResult is a POS upsert's outcome. PrevDriverPos is the driver
-// number the POS had set before (to see a change).
+// ExternalResult is a POS upsert's outcome. AddressChanged: an open check is
+// a delivery now with a new address (or newly a delivery) — main must locate
+// it; DeliveryEnded: an open check stopped being a delivery — main must
+// forget its point. PrevDriverPos is the driver number the POS had set
+// before (to see a change).
 type ExternalResult struct {
 	Order          StoredOrder
 	Created        bool
 	Changed        bool
 	AddressChanged bool
+	DeliveryEnded  bool
 	PrevDriverPos  string
 }
 

@@ -96,8 +96,10 @@ type ConfirmedAddress struct {
 	PostalCode string `json:"postal_code"`
 }
 
-// Confirmed reports whether staff confirmed this location (a chosen
-// candidate or a dropped pin) — what the hub heals the POS address from.
+// Confirmed reports whether this geo is a confirmed place (located, with a
+// chosen candidate's address or pinned). It does NOT say staff just confirmed
+// it — a geo_cache hit comes back pinned too; only GeoUpdate.Confirmed (main
+// answering geo.choose / geo.pin directly) does.
 func (g *OrderGeo) Confirmed() bool {
 	return g.Located() && (g.ConfirmedAddress != nil || g.Quality == "pinned")
 }
@@ -119,6 +121,9 @@ type GeoUpdate struct {
 	// 2.1.0: ambiguous-address candidates and a chosen candidate's address.
 	Candidates       []GeoCandidate    `json:"candidates"`
 	ConfirmedAddress *ConfirmedAddress `json:"confirmed_address"`
+	// Confirmed: this push is main's direct answer to a staff action
+	// (geo.choose or geo.pin). Only then does the hub get address.confirmed.
+	Confirmed bool `json:"confirmed"`
 }
 
 // GeoTime is the drive time between this order and another open delivery:
