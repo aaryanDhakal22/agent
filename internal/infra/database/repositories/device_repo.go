@@ -17,11 +17,14 @@ type DeviceRepository struct{ db *sql.DB }
 
 func NewDeviceRepository(db *sql.DB) *DeviceRepository { return &DeviceRepository{db: db} }
 
-func (r *DeviceRepository) Create(ctx context.Context, id, name, keyHash, keyPrefix string) (err error) {
+func (r *DeviceRepository) Create(ctx context.Context, id, name, kind, keyHash, keyPrefix string) (err error) {
 	ctx, _, end := dbSpan(ctx, "devices.create")
 	defer end(&err)
+	if kind == "" {
+		kind = device.KindTablet
+	}
 	return models.New(r.db).CreatePairedDevice(ctx, models.CreatePairedDeviceParams{
-		ID: id, Name: name, KeyHash: keyHash, KeyPrefix: keyPrefix,
+		ID: id, Name: name, KeyHash: keyHash, KeyPrefix: keyPrefix, Kind: kind,
 	})
 }
 
@@ -106,6 +109,6 @@ func toDevice(row models.PairedDevice) (device.Device, error) {
 	if err != nil {
 		return device.Device{}, err
 	}
-	return device.Device{ID: row.ID, Name: row.Name, KeyPrefix: row.KeyPrefix, CreatedAt: created,
+	return device.Device{ID: row.ID, Name: row.Name, Kind: row.Kind, KeyPrefix: row.KeyPrefix, CreatedAt: created,
 		LastSeenAt: seen, RevokedAt: revoked}, nil
 }

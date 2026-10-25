@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -67,6 +68,12 @@ type Service struct {
 	receiptPrefs atomic.Pointer[order.ReceiptPrefs]
 	// geo: store pin / map / main geo RPC hooks (SetGeo).
 	geo atomic.Pointer[GeoDeps]
+	// 2.1.0 store hub: settings copy for the print path, the hub's status
+	// and the feed wake-up (integration.go); the store ids for POS orders.
+	integSet atomic.Pointer[order.IntegrationSettings]
+	integ    integrationState
+	storeIDs atomic.Pointer[func() (string, string)]
+	bg       sync.WaitGroup
 }
 
 func NewService(
@@ -98,6 +105,7 @@ func (s *Service) floorChanged() {
 	if fn := s.onFloorEvent.Load(); fn != nil && *fn != nil {
 		(*fn)()
 	}
+	s.feedNotify() // the same transaction may have written a hub feed event
 }
 
 // OnArrival is called by the SSE listener when a new order lands from main/.
@@ -190,6 +198,10 @@ func (s *Service) Accept(ctx context.Context, id uuid.UUID, prepMinutes *int) (*
 	prep := 0
 	if prepMinutes != nil {
 		prep = *prepMinutes
+	} else if cur, err := s.repo.GetByID(ctx, id); err == nil && cur.Status.Rerung && cur.Status.ScheduledLeadMinutes != nil {
+		// A future order ringing again: its lead time is the prep (ready at
+		// promised_at), no time dialog.
+		prep = int(*cur.Status.ScheduledLeadMinutes)
 	} else if fs, err := s.repo.FloorSettings(ctx); err == nil {
 		prep = int(fs.LastPrepMinutes)
 	}
@@ -264,11 +276,12 @@ var ErrBadRequest = errors.New("bad request")
 // anywhere (mapped to 502 by the transport; the order is still arrived).
 var ErrNothingPrinted = errors.New("nothing printed, order not accepted")
 
-// printable is the snapshot to print: the order with its kitchen number.
+// printable is the snapshot to print: the order with the number staff call
+// (the kitchen number, or a POS order's check number).
 func printable(so order.StoredOrder) order.Snapshot {
 	snap := so.Order
-	if so.Status.KitchenNumber != nil {
-		snap.KitchenNumber = so.Status.KitchenNumber
+	if n := so.Number(); n != nil {
+		snap.KitchenNumber = n
 	}
 	return snap
 }
@@ -408,7 +421,7 @@ func (s *Service) ResendKitchen(ctx context.Context, id uuid.UUID) (*order.Store
 	if err != nil {
 		return fail(printer.Outcome{}, err)
 	}
-	if so.Status.KitchenNumber == nil || so.Status.State == order.StateArrived || so.Status.State == order.StateCancelled {
+	if so.Number() == nil || so.Status.State == order.StateArrived || so.Status.State == order.StateScheduled || so.Status.State == order.StateCancelled {
 		return fail(printer.Outcome{}, fmt.Errorf("%w (state %s)", ErrNotAccepted, so.Status.State))
 	}
 

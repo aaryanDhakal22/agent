@@ -11,6 +11,9 @@ const (
 	GeoLocated  = "located"
 	GeoNotFound = "not_found"
 	GeoPending  = "pending"
+	// GeoCheck: the address is ambiguous; staff pick one of Candidates (or
+	// drop a pin). Not located: AUTO treats it like an unknown address.
+	GeoCheck = "check"
 	// GeoUnavailable: the agent has no geo from main for a delivery that
 	// arrived GeoPendingWindow ago or more (geo off on main, an older order,
 	// or main unreachable). Terminal on the agent; never sent by main.
@@ -48,6 +51,10 @@ type OrderGeo struct {
 	Polyline    string    `json:"polyline"`
 	OutsideArea bool      `json:"outside_area"`
 	UpdatedAt   time.Time `json:"updated_at,omitzero"` // absent on an agent-made state
+	// Candidates (state check, up to 3) and the address staff confirmed by
+	// choosing one (2.1.0).
+	Candidates       []GeoCandidate    `json:"candidates,omitempty"`
+	ConfirmedAddress *ConfirmedAddress `json:"confirmed_address,omitempty"`
 	// Drive seconds store -> address and back (AUTO; not on the wire).
 	StoreToS *int64 `json:"-"`
 	ToStoreS *int64 `json:"-"`
@@ -70,6 +77,31 @@ func (g *OrderGeo) Located() bool {
 	return g != nil && g.State == GeoLocated && g.Lat != nil && g.Lng != nil
 }
 
+// GeoCandidate is one possible match for an ambiguous address.
+type GeoCandidate struct {
+	Label      string  `json:"label"`
+	Line1      string  `json:"line1"`
+	City       string  `json:"city"`
+	State      string  `json:"state"`
+	PostalCode string  `json:"postal_code"`
+	Lat        float64 `json:"lat"`
+	Lng        float64 `json:"lng"`
+}
+
+// ConfirmedAddress is the address staff confirmed (a chosen candidate).
+type ConfirmedAddress struct {
+	Line1      string `json:"line1"`
+	City       string `json:"city"`
+	State      string `json:"state"`
+	PostalCode string `json:"postal_code"`
+}
+
+// Confirmed reports whether staff confirmed this location (a chosen
+// candidate or a dropped pin) — what the hub heals the POS address from.
+func (g *OrderGeo) Confirmed() bool {
+	return g.Located() && (g.ConfirmedAddress != nil || g.Quality == "pinned")
+}
+
 // GeoUpdate is main's order.geo RPC payload.
 type GeoUpdate struct {
 	OrderID     string    `json:"order_id"`
@@ -84,6 +116,9 @@ type GeoUpdate struct {
 	StoreToS    *int64    `json:"store_to_s"`
 	ToStoreS    *int64    `json:"to_store_s"`
 	Times       []GeoTime `json:"times"`
+	// 2.1.0: ambiguous-address candidates and a chosen candidate's address.
+	Candidates       []GeoCandidate    `json:"candidates"`
+	ConfirmedAddress *ConfirmedAddress `json:"confirmed_address"`
 }
 
 // GeoTime is the drive time between this order and another open delivery:

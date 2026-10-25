@@ -3,6 +3,7 @@ package repositories
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -201,6 +202,9 @@ func (r *OrderRepository) SendOut(ctx context.Context, driverID string, include 
 			if err := recordOrderStatus(ctx, q, so, false, now); err != nil {
 				return err
 			}
+			if err := feedReady(ctx, q, so, now); err != nil {
+				return err
+			}
 			readied = append(readied, so)
 		}
 		sent, err = sendRun(ctx, q, d, ids, now)
@@ -277,10 +281,56 @@ func recordDeliveryRun(ctx context.Context, q *models.Queries, d models.Driver, 
 		SuggestedIDs: suggested,
 		Stops:        order.EstimateStops(ids, meta.StopOrder, now, storeTo, times),
 	}
-	for _, s := range ev.Stops {
-		ev.SentIDs = append(ev.SentIDs, s.OrderID)
+	// POS stops reach main anonymous: an opaque id and times, never the
+	// order id, a name or an address.
+	byID := map[string]order.StoredOrder{}
+	for _, so := range sent {
+		byID[so.Order.ID] = so
 	}
-	return insertEvent(ctx, q, ev.EventID, "", ev.Type, now, ev)
+	opaque := map[string]string{}
+	for i, st := range ev.Stops {
+		so := byID[st.OrderID]
+		if !so.Status.LocalOnly {
+			continue
+		}
+		stop := order.RunStop{OpaqueID: order.PosOpaqueID(so.Status.BatchID, so.Status.ExtRef), Source: order.SourcePOS,
+			ETA: st.ETA, SentAt: so.Status.SentAt, OutAt: so.Status.OutAt, DeliveredAt: so.Status.DeliveredAt}
+		if !so.Order.PlacedAt.IsZero() {
+			placed := so.Order.PlacedAt.UTC()
+			stop.PlacedAt = &placed
+		}
+		if so.Geo.Located() {
+			dist := so.Geo.DistanceM
+			stop.DistanceM = &dist
+		}
+		opaque[st.OrderID] = stop.OpaqueID
+		ev.Stops[i] = stop
+	}
+	for i, id := range ev.SuggestedIDs {
+		if o, ok := opaque[id]; ok {
+			ev.SuggestedIDs[i] = o
+		}
+	}
+	for _, s := range ev.Stops {
+		if s.OpaqueID != "" {
+			ev.SentIDs = append(ev.SentIDs, s.OpaqueID)
+		} else {
+			ev.SentIDs = append(ev.SentIDs, s.OrderID)
+		}
+	}
+	if err := insertEvent(ctx, q, ev.EventID, "", ev.Type, now, ev); err != nil {
+		return err
+	}
+	// The hub writes the driver back onto the POS checks of this run.
+	rs := order.RunSentData{Driver: order.FeedDriver{ID: d.ID, Name: d.Name}, RunID: ev.EventID, Orders: make([]order.FeedOrderRef, 0, len(sent))}
+	if d.PosNumber != "" {
+		p := d.PosNumber
+		rs.Driver.PosNumber = &p
+	}
+	for _, so := range sent {
+		rs.Orders = append(rs.Orders, order.RefOf(so))
+	}
+	return insertFeed(ctx, q, order.FeedRunSent, now, rs)
 }
 
 // SetPoolSeq — see order.PoolRepository.
@@ -336,10 +386,8 @@ func (r *OrderRepository) UpsertGeo(ctx context.Context, g order.GeoUpdate) (so 
 	now := time.Now()
 	var fresh order.StoredOrder
 	err = r.withTx(ctx, func(q *models.Queries) error {
-		if _, err := q.GetOrderByID(ctx, g.OrderID); err != nil {
-			if errors.Is(err, sql.ErrNoRows) {
-				return order.ErrNotFound
-			}
+		before, err := loadOrder(ctx, q, g.OrderID)
+		if err != nil {
 			return err
 		}
 		p := models.UpsertOrderGeoParams{OrderID: g.OrderID, State: g.State, Quality: g.Quality,
@@ -348,6 +396,20 @@ func (r *OrderRepository) UpsertGeo(ctx context.Context, g order.GeoUpdate) (so 
 		if g.Lat != nil && g.Lng != nil {
 			p.Lat = sql.NullFloat64{Float64: *g.Lat, Valid: true}
 			p.Lng = sql.NullFloat64{Float64: *g.Lng, Valid: true}
+		}
+		if len(g.Candidates) > 0 {
+			b, err := json.Marshal(g.Candidates)
+			if err != nil {
+				return err
+			}
+			p.Candidates = string(b)
+		}
+		if g.ConfirmedAddress != nil {
+			b, err := json.Marshal(g.ConfirmedAddress)
+			if err != nil {
+				return err
+			}
+			p.ConfirmedAddress = string(b)
 		}
 		if err := q.UpsertOrderGeo(ctx, p); err != nil {
 			return fmt.Errorf("upsert order geo: %w", err)
@@ -367,13 +429,43 @@ func (r *OrderRepository) UpsertGeo(ctx context.Context, g order.GeoUpdate) (so 
 				}
 			}
 		}
-		fresh, err = loadOrder(ctx, q, g.OrderID)
-		return err
+		if fresh, err = loadOrder(ctx, q, g.OrderID); err != nil {
+			return err
+		}
+		// Staff confirmed the place (a chosen candidate or a pin): the hub
+		// heals the POS address from it. Main re-pushing the same result
+		// (a reconnect) writes no second event.
+		if fresh.Geo.Confirmed() && !sameConfirmed(before.Geo, fresh.Geo) {
+			ev := order.AddressConfirmedData{OrderID: fresh.Order.ID, ExtRef: order.RefOf(fresh).ExtRef, How: "pin",
+				Lat: *fresh.Geo.Lat, Lng: *fresh.Geo.Lng}
+			if fresh.Geo.ConfirmedAddress != nil {
+				ev.How, ev.Address = "candidate", fresh.Geo.ConfirmedAddress
+			}
+			return insertFeed(ctx, q, order.FeedAddressConfirmed, now, ev)
+		}
+		return nil
 	})
 	if err != nil {
 		return nil, err
 	}
 	return &fresh, nil
+}
+
+// sameConfirmed reports whether two geos are the same confirmed place.
+func sameConfirmed(a, b *order.OrderGeo) bool {
+	if !a.Confirmed() || !b.Confirmed() {
+		return false
+	}
+	if *a.Lat != *b.Lat || *a.Lng != *b.Lng || a.Quality != b.Quality {
+		return false
+	}
+	switch {
+	case a.ConfirmedAddress == nil && b.ConfirmedAddress == nil:
+		return true
+	case a.ConfirmedAddress == nil || b.ConfirmedAddress == nil:
+		return false
+	}
+	return *a.ConfirmedAddress == *b.ConfirmedAddress
 }
 
 // DriveTimes — see order.PoolRepository.

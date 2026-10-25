@@ -54,6 +54,16 @@ type Dispatcher struct {
 	build           TicketBuilder
 	// probeHook (SetProbeHook) sees every health probe: printer id + address.
 	probeHook func(ctx context.Context, printerID, ip string, up bool)
+	// rules (SetRules) are the store's print switches, read per job.
+	rules func() Rules
+}
+
+// SetRules wires the store's print switches (kitchen-ticket toggles + the
+// hub's live insert), read on every print; unset = DefaultRules.
+func (d *Dispatcher) SetRules(f func() Rules) {
+	d.mu.Lock()
+	d.rules = f
+	d.mu.Unlock()
 }
 
 // RosterPrinter is one configured printer with the address it is dialled on.
@@ -182,7 +192,12 @@ func (d *Dispatcher) ExecuteMode(ctx context.Context, snap order.Snapshot, mode 
 	defer cancel()
 	d.mu.RLock()
 	roster := append([]rosterSlot(nil), d.roster...)
+	rulesFn := d.rules
 	d.mu.RUnlock()
+	rules := DefaultRules()
+	if rulesFn != nil {
+		rules = rulesFn()
+	}
 
 	if len(roster) == 0 {
 		d.meters.OrdersPrintFailed.Add(ctx, 1, metric.WithAttributes(attribute.String("reason", "no_printer")))
@@ -195,7 +210,7 @@ func (d *Dispatcher) ExecuteMode(ctx context.Context, snap order.Snapshot, mode 
 		byID[sl.entry.ID] = sl
 	}
 
-	tickets, unrouted := PlanFor(snap, entries, mode)
+	tickets, unrouted := PlanWith(snap, entries, mode, rules)
 	out := printer.Outcome{Unrouted: unrouted}
 	if len(tickets) == 0 {
 		return out, printer.ErrNoTickets

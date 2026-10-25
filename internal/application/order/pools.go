@@ -406,15 +406,21 @@ func (s *Service) OnGeo(ctx context.Context, g order.GeoUpdate) (*order.StoredOr
 	ctx, span := s.span(ctx, "order.geo", attribute.String("order.id", g.OrderID), attribute.String("geo.state", g.State))
 	defer span.End()
 	switch g.State {
-	case order.GeoLocated, order.GeoNotFound, order.GeoPending:
+	case order.GeoLocated, order.GeoNotFound, order.GeoPending, order.GeoCheck:
 	default:
 		return nil, spanErr(span, fmt.Errorf("%w: geo state %q", ErrBadRequest, g.State))
+	}
+	if g.State != order.GeoCheck {
+		g.Candidates = nil
+	} else if len(g.Candidates) > 3 {
+		g.Candidates = g.Candidates[:3]
 	}
 	so, err := s.repo.UpsertGeo(ctx, g)
 	if err != nil {
 		return nil, spanErr(span, err)
 	}
 	s.publishUpdated(*so)
+	s.feedNotify() // a confirmed address goes to the hub
 	return so, nil
 }
 

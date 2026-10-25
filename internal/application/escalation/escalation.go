@@ -3,6 +3,10 @@
 // tablet keeps ringing), repeating every 2 minutes until it's accepted. The
 // last alert time is stored on the order, so a restart doesn't re-alert early
 // or forget an overdue order.
+//
+// The same tick (2.1.0) rings scheduled future orders again once their ring
+// time comes (they then escalate like any waiting order) and notices the
+// store hub going quiet (POS link down).
 package escalation
 
 import (
@@ -18,9 +22,12 @@ const (
 	tick  = 15 * time.Second
 )
 
-// Escalator is the order service's EscalateOverdue.
+// Escalator is the order service's EscalateOverdue, RaiseDue and
+// CheckIntegrationLink.
 type Escalator interface {
 	EscalateOverdue(ctx context.Context, now time.Time, after time.Duration) (int, error)
+	RaiseDue(ctx context.Context, now time.Time) (int, error)
+	CheckIntegrationLink(now time.Time)
 }
 
 // Run blocks until ctx is done, checking every 15s.
@@ -33,9 +40,13 @@ func Run(ctx context.Context, svc Escalator, logger zerolog.Logger) {
 		case <-ctx.Done():
 			return
 		case now := <-t.C:
+			if _, err := svc.RaiseDue(ctx, now); err != nil {
+				log.Warn().Err(err).Msg("Scheduled-order check failed")
+			}
 			if _, err := svc.EscalateOverdue(ctx, now, After); err != nil {
 				log.Warn().Err(err).Msg("Escalation check failed")
 			}
+			svc.CheckIntegrationLink(now)
 		}
 	}
 }

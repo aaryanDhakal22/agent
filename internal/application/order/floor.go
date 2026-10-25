@@ -43,6 +43,10 @@ type Floor struct {
 	// offline map file on this Pi (null until downloaded).
 	Store *FloorStore `json:"store"`
 	Map   *FloorMap   `json:"map"`
+	// 2.1.0: the feature toggles, kitchen-ticket switches and default times,
+	// and the store hub's status.
+	Settings    order.IntegrationSettings `json:"settings"`
+	Integration order.IntegrationView     `json:"integration"`
 }
 
 func (s *Service) span(ctx context.Context, name string, attrs ...attribute.KeyValue) (context.Context, trace.Span) {
@@ -80,7 +84,7 @@ func (s *Service) Floor(ctx context.Context) (*Floor, error) {
 		PrepChoices: PrepChoices, UnsyncedEvents: n, DriverResetTime: rs.Time,
 		GreenTillMinutes: prefs.GreenTillMinutes, TipTaxPercent: float64(prefs.TipTaxBps) / 100,
 		SoonReadyMinutes: dp.SoonReadyMinutes, DeliveryTargetMinutes: dp.DeliveryTargetMinutes,
-		Store: store, Map: mp}, nil
+		Store: store, Map: mp, Settings: s.IntegrationSettings(), Integration: s.IntegrationView(time.Now())}, nil
 }
 
 // Ready marks an accepted order ready (terminal for pickup / dine-in).
@@ -157,7 +161,29 @@ func (s *Service) CloseBatch(ctx context.Context, force bool) (*order.Batch, []o
 	}
 	s.publishDrivers(ctx)
 	s.printReportsAfterClose(ctx, closed.ID)
+	s.forgetPOSDeliveries(ctx, closed.ID)
 	return closed, finished, nil
+}
+
+// forgetPOSDeliveries tells main to drop the points of a closed batch's POS
+// deliveries (it would expire them in 24 h anyway).
+func (s *Service) forgetPOSDeliveries(ctx context.Context, batchID int64) {
+	const page = 500
+	for off := 0; ; off += page {
+		list, err := s.repo.ListByBatch(ctx, batchID, off, page)
+		if err != nil {
+			s.logger.Warn().Ctx(ctx).Err(err).Msg("close batch: list POS deliveries failed")
+			return
+		}
+		for _, so := range list {
+			if so.IsPOS() && so.IsDelivery() {
+				s.geoForget(ctx, so.Order.ID)
+			}
+		}
+		if len(list) < page {
+			return
+		}
+	}
 }
 
 // ListBatches returns the open + kept closed batches, newest first.
@@ -191,17 +217,66 @@ func cleanName(name string) (string, error) {
 	return name, nil
 }
 
-func (s *Service) CreateDriver(ctx context.Context, name string) (*order.Driver, error) {
+// cleanPosNumber checks a driver number ("" = none): 1-12 letters or digits.
+func cleanPosNumber(v string) (string, error) {
+	v = strings.TrimSpace(v)
+	if len(v) > 12 {
+		return "", fmt.Errorf("%w: driver number must be at most 12 characters", ErrBadRequest)
+	}
+	for _, r := range v {
+		if !(r >= '0' && r <= '9' || r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z') {
+			return "", fmt.Errorf("%w: driver number must be letters and digits only", ErrBadRequest)
+		}
+	}
+	return v, nil
+}
+
+// CreateDriver adds a driver (posNumber "" = no POS number).
+func (s *Service) CreateDriver(ctx context.Context, name, posNumber string) (*order.Driver, error) {
 	name, err := cleanName(name)
 	if err != nil {
 		return nil, err
 	}
-	d, err := s.repo.CreateDriver(ctx, name)
+	if posNumber, err = cleanPosNumber(posNumber); err != nil {
+		return nil, err
+	}
+	d, err := s.repo.CreateDriver(ctx, name, posNumber)
 	if err != nil {
 		return nil, err
 	}
 	s.driversChanged(ctx)
 	return d, nil
+}
+
+// UpdateDriver renames a driver and/or sets their POS number ("" clears);
+// nil leaves a field as is.
+func (s *Service) UpdateDriver(ctx context.Context, id string, name, posNumber *string) error {
+	if name == nil && posNumber == nil {
+		return fmt.Errorf("%w: give a name or a pos_number", ErrBadRequest)
+	}
+	var clean string
+	var err error
+	if posNumber != nil {
+		if clean, err = cleanPosNumber(*posNumber); err != nil {
+			return err
+		}
+	}
+	if name != nil {
+		n, err := cleanName(*name)
+		if err != nil {
+			return err
+		}
+		if err := s.repo.RenameDriver(ctx, id, n); err != nil {
+			return err
+		}
+	}
+	if posNumber != nil {
+		if err := s.repo.SetDriverPosNumber(ctx, id, clean); err != nil {
+			return err
+		}
+	}
+	s.driversChanged(ctx)
+	return nil
 }
 
 func (s *Service) RenameDriver(ctx context.Context, id, name string) error {

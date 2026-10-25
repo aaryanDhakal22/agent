@@ -49,8 +49,11 @@ func insertEvent(ctx context.Context, q *models.Queries, id, orderID, typ string
 }
 
 // recordOrderStatus appends an order.status event built from the order's
-// current row.
+// current row. A local-only order (pulled from the POS) never reaches main.
 func recordOrderStatus(ctx context.Context, q *models.Queries, so order.StoredOrder, auto bool, at time.Time) error {
+	if so.Status.LocalOnly {
+		return nil
+	}
 	ev := order.OrderStatusEvent{
 		EventID:          uuid.NewString(),
 		Type:             order.FloorEventOrderStatus,
@@ -102,8 +105,13 @@ func loadOrder(ctx context.Context, q *models.Queries, id string) (order.StoredO
 	case !errors.Is(err, sql.ErrNoRows):
 		return so, fmt.Errorf("load order geo: %w", err)
 	}
-	so.FillMissingGeo(time.Now())
-	return so, nil
+	now := time.Now()
+	so.FillMissingGeo(now)
+	list := []order.StoredOrder{so}
+	if err := markFuture(ctx, q, list, now); err != nil {
+		return so, err
+	}
+	return list[0], nil
 }
 
 // RecordAccepted writes the accepted event once the tickets printed.
@@ -117,6 +125,11 @@ func (r *OrderRepository) RecordAccepted(ctx context.Context, so order.StoredOrd
 	return r.withTx(ctx, func(q *models.Queries) error {
 		if err := recordOrderStatus(ctx, q, so, false, at); err != nil {
 			return err
+		}
+		if !so.IsPOS() { // the hub inserts online cash pickups from it
+			if err := insertFeed(ctx, q, order.FeedOrderAccepted, at, order.OrderAcceptedData{Order: so}); err != nil {
+				return err
+			}
 		}
 		return q.ClearAcceptPending(ctx, so.Order.ID)
 	})
@@ -146,7 +159,10 @@ func (r *OrderRepository) MarkReady(ctx context.Context, id string) (result *ord
 		if n == 0 {
 			return order.ErrInvalidState
 		}
-		return recordOrderStatus(ctx, q, so, false, now)
+		if err := recordOrderStatus(ctx, q, so, false, now); err != nil {
+			return err
+		}
+		return feedReady(ctx, q, so, now)
 	})
 	if err != nil {
 		return nil, err
@@ -256,6 +272,22 @@ func (r *OrderRepository) CloseBatch(ctx context.Context, force bool) (closed *o
 		ts := nullTS(now)
 		for i, so := range left {
 			row := rows[i] // mapRows keeps row order
+			if so.IsPOS() && so.Status.State != order.StateOnDelivery {
+				// The POS owns its checks: an unfinished one is cancelled
+				// (local only, nothing goes to main).
+				if _, err := q.CancelExternalOrder(ctx, models.CancelExternalOrderParams{CancelledAt: ts, ID: row.ID}); err != nil {
+					return err
+				}
+				fresh, err := loadOrder(ctx, q, row.ID)
+				if err != nil {
+					return err
+				}
+				if err := feedCancelled(ctx, q, fresh, now); err != nil {
+					return err
+				}
+				finished = append(finished, fresh)
+				continue
+			}
 			if so.Status.State == order.StateArrived {
 				// Nobody accepted it: never printed, no kitchen number — cancel.
 				if err := q.CancelOrder(ctx, models.CancelOrderParams{CancelledAt: ts, ID: row.ID}); err != nil {
@@ -297,10 +329,23 @@ func (r *OrderRepository) CloseBatch(ctx context.Context, force bool) (closed *o
 			}
 			finished = append(finished, fresh)
 		}
+		// POS customer data never outlives the day: name, phone and address
+		// are wiped (items, money, number, driver and times stay).
+		if err := wipePOS(ctx, q, b.ID); err != nil {
+			return err
+		}
 		if err := q.CloseBatch(ctx, models.CloseBatchParams{ClosedAt: ts, ID: b.ID}); err != nil {
 			return err
 		}
-		if _, err := q.OpenBatch(ctx, fmtTS(now)); err != nil {
+		next, err := q.OpenBatch(ctx, fmtTS(now))
+		if err != nil {
+			return err
+		}
+		// Future orders wait in the next batch (still scheduled).
+		if err := q.MoveScheduledToBatch(ctx, models.MoveScheduledToBatchParams{NewBatch: next.ID, OldBatch: b.ID}); err != nil {
+			return err
+		}
+		if err := insertFeed(ctx, q, order.FeedBatchClosed, now, order.BatchClosedData{BatchID: b.ID, ClosedAt: now.UTC().Truncate(time.Millisecond)}); err != nil {
 			return err
 		}
 		if err := q.ResetKitchenNumber(ctx); err != nil {
@@ -331,6 +376,33 @@ func (r *OrderRepository) CloseBatch(ctx context.Context, force bool) (closed *o
 		return nil, nil, err
 	}
 	return closed, finished, nil
+}
+
+// wipePOS clears the customer name, phone and address of every POS order in
+// the batch, and drops their located points.
+func wipePOS(ctx context.Context, q *models.Queries, batchID int64) error {
+	rows, err := q.ListLocalOnlyByBatch(ctx, batchID)
+	if err != nil {
+		return err
+	}
+	for _, row := range rows {
+		var snap order.Snapshot
+		if err := json.Unmarshal([]byte(row.Snapshot), &snap); err != nil {
+			return fmt.Errorf("unmarshal snapshot for order %s: %w", row.ID, err)
+		}
+		snap.WipePII()
+		raw, err := json.Marshal(snap)
+		if err != nil {
+			return err
+		}
+		if err := q.SetOrderSnapshot(ctx, models.SetOrderSnapshotParams{Snapshot: string(raw), ID: row.ID}); err != nil {
+			return err
+		}
+		if err := q.DeleteOrderGeo(ctx, row.ID); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (r *OrderRepository) OpenBatch(ctx context.Context) (b *order.Batch, err error) {
@@ -430,12 +502,12 @@ func (r *OrderRepository) ListDrivers(ctx context.Context) (out []order.Driver, 
 			return nil, err
 		}
 		out = append(out, order.Driver{ID: d.ID, Name: d.Name, Position: d.Position, Status: d.Status,
-			LastReturnedAt: ret, Deliveries: counts[d.ID], ClockedInAt: in})
+			LastReturnedAt: ret, Deliveries: counts[d.ID], ClockedInAt: in, PosNumber: d.PosNumber})
 	}
 	return out, nil
 }
 
-func (r *OrderRepository) CreateDriver(ctx context.Context, name string) (d *order.Driver, err error) {
+func (r *OrderRepository) CreateDriver(ctx context.Context, name, posNumber string) (d *order.Driver, err error) {
 	ctx, _, end := dbSpan(ctx, "drivers.create")
 	defer end(&err)
 	id := uuid.NewString()
@@ -444,15 +516,38 @@ func (r *OrderRepository) CreateDriver(ctx context.Context, name string) (d *ord
 		if pos, err = q.NextDriverPosition(ctx); err != nil {
 			return err
 		}
-		if err := q.CreateDriver(ctx, models.CreateDriverParams{ID: id, Name: name, Position: pos}); err != nil {
-			return err
+		if err := q.CreateDriver(ctx, models.CreateDriverParams{ID: id, Name: name, Position: pos, PosNumber: posNumber}); err != nil {
+			return posNumberErr(err)
 		}
 		return recordRoster(ctx, q, time.Now())
 	})
 	if err != nil {
 		return nil, err
 	}
-	return &order.Driver{ID: id, Name: name, Position: pos, Status: order.DriverOff}, nil
+	return &order.Driver{ID: id, Name: name, Position: pos, Status: order.DriverOff, PosNumber: posNumber}, nil
+}
+
+// SetDriverPosNumber — see order.FloorRepository.
+func (r *OrderRepository) SetDriverPosNumber(ctx context.Context, id, posNumber string) (err error) {
+	ctx, _, end := dbSpan(ctx, "drivers.set_pos_number")
+	defer end(&err)
+	n, err := models.New(r.db).SetDriverPosNumber(ctx, models.SetDriverPosNumberParams{PosNumber: posNumber, ID: id})
+	if err != nil {
+		return posNumberErr(err)
+	}
+	if n == 0 {
+		return order.ErrDriverNotFound
+	}
+	return nil
+}
+
+// posNumberErr maps the unique index on drivers.pos_number to
+// ErrPosNumberTaken.
+func posNumberErr(err error) error {
+	if err != nil && strings.Contains(err.Error(), "UNIQUE constraint failed") && strings.Contains(err.Error(), "pos_number") {
+		return order.ErrPosNumberTaken
+	}
+	return err
 }
 
 func (r *OrderRepository) RenameDriver(ctx context.Context, id, name string) (err error) {
@@ -829,6 +924,10 @@ func (r *OrderRepository) TrimBatches(ctx context.Context, keepClosed int, synce
 			return err
 		}
 		if _, err := q.DeleteOldSyncedFloorEvents(ctx, sql.NullString{String: fmtTS(syncedBefore), Valid: true}); err != nil {
+			return err
+		}
+		// The hub's feed is kept 3 days.
+		if err := q.DeleteOldIntegrationEvents(ctx, fmtTS(time.Now().Add(-order.FeedRetention))); err != nil {
 			return err
 		}
 		// Geo + drive times of trimmed orders, and AUTO plans as old as the

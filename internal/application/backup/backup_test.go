@@ -94,3 +94,52 @@ func TestNowUploadsASQLiteFile(t *testing.T) {
 		}
 	}
 }
+
+// POS orders' customers never leave the Pi: the uploaded copy has no name,
+// phone or address for a local-only order (online orders are untouched).
+func TestNowScrubsPOSCustomers(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "agent.db")
+	if err := migrate.Run(ctx, path); err != nil {
+		t.Fatal(err)
+	}
+	db, err := database.Open(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	for _, q := range []string{
+		`INSERT INTO orders (id, tenant_id, location_id, source, source_event_id, snapshot, state, batch_id, local_only)
+		 VALUES ('pos-1', 't', 'l', 'pos', 'softtouch:1', '{"id":"pos-1","customer":{"display_name":"Pat Secret","phone":"4105550199"},"fulfillment":{"type":"delivery","address":{"line1":"77 Hidden Ln"}},"money":{"total_cents":1430}}', 'accepted', 1, true)`,
+		`INSERT INTO orders (id, tenant_id, location_id, source, source_event_id, snapshot, state, batch_id)
+		 VALUES ('web-1', 't', 'l', 'online', '1', '{"id":"web-1","customer":{"display_name":"Erik Davis"},"fulfillment":{"type":"delivery","address":{"line1":"12 Main St"}}}', 'accepted', 1)`,
+		`INSERT INTO order_geo (order_id, state, lat, lng, updated_at) VALUES ('pos-1', 'located', 39.4, -76.6, 'x')`,
+	} {
+		if _, err := db.ExecContext(ctx, q); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var got []byte
+	s := New(db, path, func(_ context.Context, _ string, body []byte, _ string) (int, []byte, error) {
+		got = body
+		return 201, nil, nil
+	}, &memSettings{}, nil, nil, zerolog.Nop())
+	s.TempDir = t.TempDir()
+	if _, err := s.Now(ctx); err != nil {
+		t.Fatal(err)
+	}
+	for _, secret := range []string{"Pat Secret", "4105550199", "77 Hidden Ln"} {
+		if strings.Contains(string(got), secret) {
+			t.Fatalf("backup still holds %q", secret)
+		}
+	}
+	if !strings.Contains(string(got), "Erik Davis") || !strings.Contains(string(got), "1430") {
+		t.Fatal("scrub touched more than the POS customer")
+	}
+	// The live database keeps it (wiped at Close batch, not by the backup).
+	var snap string
+	_ = db.QueryRowContext(ctx, `SELECT snapshot FROM orders WHERE id = 'pos-1'`).Scan(&snap)
+	if !strings.Contains(snap, "Pat Secret") {
+		t.Fatal("the live order was scrubbed")
+	}
+}

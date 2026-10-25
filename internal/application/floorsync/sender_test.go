@@ -42,7 +42,7 @@ func setup(t *testing.T) (*repositories.OrderRepository, observability.Meters) {
 // seed produces n floor events (driver roster changes).
 func seed(t *testing.T, r *repositories.OrderRepository, n int) {
 	for i := 0; i < n; i++ {
-		if _, err := r.CreateDriver(context.Background(), "D"+uuid.NewString()[:4]); err != nil {
+		if _, err := r.CreateDriver(context.Background(), "D"+uuid.NewString()[:4], ""); err != nil {
 			t.Fatal(err)
 		}
 	}

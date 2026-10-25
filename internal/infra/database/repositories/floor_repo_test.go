@@ -200,11 +200,11 @@ func TestPickupLifecycleAndEvents(t *testing.T) {
 func TestDeliveryFlow(t *testing.T) {
 	r := newFloorRepo(t)
 	ctx := context.Background()
-	d1, err := r.CreateDriver(ctx, "Sam")
+	d1, err := r.CreateDriver(ctx, "Sam", "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	d2, _ := r.CreateDriver(ctx, "Ana")
+	d2, _ := r.CreateDriver(ctx, "Ana", "")
 	if _, err := r.AssignDriver(ctx, d1.ID, []string{uuid.NewString()}); !errors.Is(err, order.ErrDriverNotAvailable) {
 		t.Fatalf("a clocked-out driver can't be sent out: %v", err)
 	}
@@ -268,9 +268,9 @@ func TestDeliveryFlow(t *testing.T) {
 func TestDriversRoster(t *testing.T) {
 	r := newFloorRepo(t)
 	ctx := context.Background()
-	a, _ := r.CreateDriver(ctx, "A")
-	b, _ := r.CreateDriver(ctx, "B")
-	c, _ := r.CreateDriver(ctx, "C")
+	a, _ := r.CreateDriver(ctx, "A", "")
+	b, _ := r.CreateDriver(ctx, "B", "")
+	c, _ := r.CreateDriver(ctx, "C", "")
 	if err := r.ReorderDrivers(ctx, []string{c.ID, a.ID}); err != nil {
 		t.Fatal(err)
 	}
@@ -299,7 +299,7 @@ func TestDriversRoster(t *testing.T) {
 func TestCloseBatch(t *testing.T) {
 	r := newFloorRepo(t)
 	ctx := context.Background()
-	d, _ := r.CreateDriver(ctx, "Sam")
+	d, _ := r.CreateDriver(ctx, "Sam", "")
 	clockIn(t, r, d.ID)
 	done := accept(t, r, arrive(t, r, "pickup"))
 	r.MarkReady(ctx, done.Order.ID)
@@ -445,8 +445,8 @@ func TestOverdueArrived(t *testing.T) {
 func TestClockInOutAndShifts(t *testing.T) {
 	r := newFloorRepo(t)
 	ctx := context.Background()
-	a, _ := r.CreateDriver(ctx, "Abdul")
-	b, _ := r.CreateDriver(ctx, "Juma")
+	a, _ := r.CreateDriver(ctx, "Abdul", "")
+	b, _ := r.CreateDriver(ctx, "Juma", "")
 	if a.Status != order.DriverOff {
 		t.Fatalf("new drivers start clocked out, got %s", a.Status)
 	}
@@ -509,8 +509,8 @@ func TestClockInOutAndShifts(t *testing.T) {
 func TestAutoClockOut(t *testing.T) {
 	r := newFloorRepo(t)
 	ctx := context.Background()
-	a, _ := r.CreateDriver(ctx, "Abdul")
-	b, _ := r.CreateDriver(ctx, "Juma")
+	a, _ := r.CreateDriver(ctx, "Abdul", "")
+	b, _ := r.CreateDriver(ctx, "Juma", "")
 	clockIn(t, r, a.ID, b.ID)
 	so := accept(t, r, arrive(t, r, "delivery"))
 	r.MarkReady(ctx, so.Order.ID)
@@ -582,7 +582,7 @@ func TestMigrationTo00006KeepsDrivers(t *testing.T) {
 	if rs.Time != "10:00" || rs.LastRun != nil {
 		t.Fatalf("reset defaults: %+v", rs)
 	}
-	nd, _ := r.CreateDriver(ctx, "Deep")
+	nd, _ := r.CreateDriver(ctx, "Deep", "")
 	if nd.Status != order.DriverOff {
 		t.Fatalf("new driver status %s", nd.Status)
 	}
@@ -594,8 +594,8 @@ func TestMigrationTo00006KeepsDrivers(t *testing.T) {
 func TestDriverGuards(t *testing.T) {
 	r := newFloorRepo(t)
 	ctx := context.Background()
-	out, _ := r.CreateDriver(ctx, "Out")
-	in, _ := r.CreateDriver(ctx, "In")
+	out, _ := r.CreateDriver(ctx, "Out", "")
+	in, _ := r.CreateDriver(ctx, "In", "")
 	clockIn(t, r, out.ID, in.ID)
 	so := accept(t, r, arrive(t, r, "delivery"))
 	r.MarkReady(ctx, so.Order.ID)
@@ -626,7 +626,7 @@ func TestDriverGuards(t *testing.T) {
 func TestCloseBatchClocksOutDriversWhoWereOutDuringTheReset(t *testing.T) {
 	r := newFloorRepo(t)
 	ctx := context.Background()
-	d, _ := r.CreateDriver(ctx, "Sam")
+	d, _ := r.CreateDriver(ctx, "Sam", "")
 	clockIn(t, r, d.ID)
 	so := accept(t, r, arrive(t, r, "delivery"))
 	r.MarkReady(ctx, so.Order.ID)

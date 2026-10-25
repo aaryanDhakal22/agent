@@ -36,6 +36,9 @@ type Driver struct {
 	Deliveries     int64      `json:"deliveries"`
 	// ClockedInAt is the start of the driver's open shift (nil when off).
 	ClockedInAt *time.Time `json:"clocked_in_at,omitempty"`
+	// PosNumber is the driver's login number on the store's POS (2.1.0) —
+	// how the hub matches drivers, never by name.
+	PosNumber string `json:"pos_number,omitempty"`
 }
 
 // Shift is one clock-in → clock-out period of a driver — a record for reports
@@ -137,6 +140,8 @@ var (
 	// (off, or already out on a run).
 	ErrDriverNotAvailable = fmt.Errorf("driver is not clocked in and available")
 	ErrNoOrders           = fmt.Errorf("no orders given")
+	// ErrPosNumberTaken: another active driver has that POS number.
+	ErrPosNumberTaken = fmt.Errorf("another driver has that driver number")
 )
 
 // FloorSettings are the floor counters shown to staff.
@@ -161,10 +166,12 @@ var DefaultFloorPrefs = FloorPrefs{GreenTillMinutes: 20, TipTaxBps: 600}
 const UndoReturnWindow = 10 * time.Minute
 
 // DriverReport is one driver's slip for a batch: every delivery they took and
-// what they owe. Cash = what the driver collected on cash orders (card orders
-// are paid to the store and never count). The driver keeps all tips (cash and
-// card) minus the tip tax, so Owed = Cash - TipAfterTax; negative means the
-// store owes the driver. Delivery fees are paid weekly — only the count shows.
+// what they owe. Cash = what the driver collected on cash orders, less the
+// tip on them (the driver keeps a cash tip; it is not listed). Tips count only
+// on card-paid deliveries (paid to the store, owed to the driver) minus the
+// tip tax, so Owed = Cash - TipAfterTax; negative means the store owes the
+// driver. POS deliveries count like online ones. Delivery fees are paid
+// weekly — only the count shows. (2.1.0 rule.)
 type DriverReport struct {
 	BatchID          int64              `json:"batch_id"`
 	BatchOpenedAt    time.Time          `json:"batch_opened_at"`
@@ -184,23 +191,29 @@ type DriverReport struct {
 type DriverReportLine struct {
 	OrderID       string     `json:"order_id"`
 	KitchenNumber *int64     `json:"kitchen_number,omitempty"`
+	DisplayNumber *int64     `json:"display_number,omitempty"` // a POS order's check number
+	Source        string     `json:"source,omitempty"`
 	Customer      string     `json:"customer"` // "Erik D."
 	Address       string     `json:"address"`
-	TipCents      int64      `json:"tip_cents"`
+	TipCents      int64      `json:"tip_cents"` // card-paid only (0 on a cash order)
 	Cash          bool       `json:"cash"`
-	CashCents     int64      `json:"cash_cents"` // collected in cash (0 for card)
+	CashCents     int64      `json:"cash_cents"` // collected in cash less its tip (0 for card)
 	TotalCents    int64      `json:"total_cents"`
 	DeliveredAt   *time.Time `json:"delivered_at,omitempty"`
 }
 
-// NewDriverReportLine builds a report line from a delivered order.
+// NewDriverReportLine builds a report line from a delivered order. Card-paid
+// (online: no cash due; POS: paid with no cash due) → the tip counts, no
+// cash. Cash → cash due less the tip (online: CashDue - tip, floored at 0;
+// POS: the hub's cash_due_cents, already net of a cash tip) and no tip.
 func NewDriverReportLine(so StoredOrder) DriverReportLine {
 	snap := so.Order
 	l := DriverReportLine{
 		OrderID:       snap.ID,
 		KitchenNumber: so.Status.KitchenNumber,
+		DisplayNumber: so.Status.DisplayNumber,
+		Source:        snap.Source,
 		Customer:      ShortCustomerName(snap.Customer.DisplayName),
-		TipCents:      snap.Money.Tip,
 		TotalCents:    snap.Money.Total,
 		DeliveredAt:   so.Status.DeliveredAt,
 	}
@@ -210,8 +223,19 @@ func NewDriverReportLine(so StoredOrder) DriverReportLine {
 			l.Address += ", " + l2
 		}
 	}
-	l.CashCents = snap.CashDue()
-	l.Cash = l.CashCents > 0
+	if so.IsPOS() {
+		if so.Status.CashDueCents > 0 || !so.Status.Paid {
+			l.Cash, l.CashCents = true, so.Status.CashDueCents
+		} else {
+			l.TipCents = so.Status.TipCents
+		}
+		return l
+	}
+	if due := snap.CashDue(); due > 0 {
+		l.Cash, l.CashCents = true, max(due-snap.Money.Tip, 0)
+	} else {
+		l.TipCents = snap.Money.Tip
+	}
 	return l
 }
 
@@ -260,8 +284,11 @@ type FloorRepository interface {
 	FloorSettings(ctx context.Context) (FloorSettings, error)
 
 	ListDrivers(ctx context.Context) ([]Driver, error)
-	CreateDriver(ctx context.Context, name string) (*Driver, error)
+	// CreateDriver adds a driver (posNumber "" = none; ErrPosNumberTaken).
+	CreateDriver(ctx context.Context, name, posNumber string) (*Driver, error)
 	RenameDriver(ctx context.Context, id, name string) error
+	// SetDriverPosNumber sets ("" clears) a driver's POS number.
+	SetDriverPosNumber(ctx context.Context, id, posNumber string) error
 	// RemoveDriver also returns the orders its pool held (back to unassigned).
 	RemoveDriver(ctx context.Context, id string) ([]StoredOrder, error)
 	ReorderDrivers(ctx context.Context, ids []string) error

@@ -2,6 +2,8 @@
 // every night (04:00 store time; main keeps the newest 2 per location). It is
 // the last-resort copy for an SD card that dies with unsynced state: the live
 // restore path is agent.state + the order mirror, this is the forensic one.
+// POS orders (2.1.0) never reach main with their customer: the copy is
+// scrubbed of their names, phones, addresses and points before it leaves.
 package backup
 
 import (
@@ -14,6 +16,7 @@ import (
 	"time"
 
 	"github.com/rs/zerolog"
+	_ "modernc.org/sqlite"
 )
 
 // Uploader posts the file (mainclient.Client.Upload bound to the current key).
@@ -85,6 +88,27 @@ func (s *Service) due(ctx context.Context, now time.Time) bool {
 	return !n.Before(slot) && last.Before(slot)
 }
 
+// scrubLocalOnly clears the customer and address of every local-only (POS)
+// order in the copy at path and drops their located points, then vacuums so
+// no freed page still holds them.
+func scrubLocalOnly(ctx context.Context, path string) error {
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+	for _, q := range []string{
+		`DELETE FROM order_geo WHERE order_id IN (SELECT id FROM orders WHERE local_only)`,
+		`UPDATE orders SET snapshot = json_remove(json_set(snapshot, '$.customer', json('{}')), '$.fulfillment.address') WHERE local_only`,
+		`VACUUM`,
+	} {
+		if _, err := db.ExecContext(ctx, q); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // Now takes a backup and uploads it; returns the uploaded size.
 func (s *Service) Now(ctx context.Context) (int, error) {
 	// The copy goes to the temp dir, not next to the database: on the Pi the
@@ -95,6 +119,9 @@ func (s *Service) Now(ctx context.Context) (int, error) {
 	// VACUUM INTO writes a consistent, compacted copy without stopping writers.
 	if _, err := s.db.ExecContext(ctx, "VACUUM INTO ?", tmp); err != nil {
 		return 0, fmt.Errorf("vacuum into: %w", err)
+	}
+	if err := scrubLocalOnly(ctx, tmp); err != nil {
+		return 0, fmt.Errorf("scrub POS orders: %w", err)
 	}
 	data, err := os.ReadFile(tmp)
 	if err != nil {

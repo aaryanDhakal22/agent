@@ -234,6 +234,18 @@ func main() {
 
 	orderService.LoadReceiptPrefs(ctx)
 	receiptPrefs = orderService.PrintPrefs
+	// 2.1.0: feature toggles, kitchen-ticket switches, default times and the
+	// store hub's last status; the print path reads the switches + whether
+	// the hub inserts online cash pickups live, per job.
+	orderService.LoadIntegrationSettings(ctx)
+	dispatcher.SetRules(func() printerApp.Rules {
+		return printerApp.Rules{Tickets: orderService.IntegrationSettings().Tickets, InsertLive: orderService.InsertLive()}
+	})
+	// POS orders are made on this Pi: they carry the linked tenant + location.
+	orderService.SetStoreIDs(func() (string, string) {
+		sc, _ := storeCtx.Load().(storeconfig.StoreContext)
+		return sc.Tenant.ID, sc.Location.ID
+	})
 
 	if n := orderService.RecoverInterruptedAccepts(ctx); n > 0 {
 		logger.Warn().Ctx(ctx).Int("orders", n).Msg("Orders whose accept was interrupted will ring again")
@@ -433,6 +445,7 @@ func main() {
 			logger.Debug().Err(err).Msg("manager login refresh failed")
 		}
 		catchupHook()
+		orderService.RelocatePOS(ctx) // POS deliveries pulled while main was away
 	})
 	// Reconciliation: a quiet catch-up pass every minute while connected.
 	go catchup.Reconcile(ctx, time.Minute, func(rc context.Context, path, rawQuery string) (int, []byte, error) {

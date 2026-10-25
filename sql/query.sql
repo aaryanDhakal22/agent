@@ -81,9 +81,11 @@ WHERE id = ? AND state = 'on_delivery';
 
 -- name: ListBatchLeftovers :many
 -- Orders of a batch that aren't finished: finished = delivered or cancelled,
--- or ready for a non-delivery order.
+-- or ready for a non-delivery order. Scheduled (future) orders move on to
+-- the next batch instead.
 SELECT * FROM orders
 WHERE batch_id = ?
+  AND state <> 'scheduled'
   AND NOT (state IN ('delivered', 'cancelled')
            OR (state = 'ready'
                AND COALESCE(json_extract(snapshot, '$.fulfillment.type'), '') <> 'delivery'))
@@ -156,7 +158,13 @@ SELECT * FROM drivers WHERE id = ?;
 SELECT CAST(COALESCE(MAX(position), 0) + 1 AS INTEGER) AS next_position FROM drivers;
 
 -- name: CreateDriver :exec
-INSERT INTO drivers (id, name, position) VALUES (?, ?, ?);
+INSERT INTO drivers (id, name, position, pos_number) VALUES (?, ?, ?, ?);
+
+-- name: SetDriverPosNumber :execrows
+UPDATE drivers SET pos_number = ? WHERE id = ? AND active;
+
+-- name: GetActiveDriverByPosNumber :one
+SELECT * FROM drivers WHERE pos_number = ? AND pos_number <> '' AND active;
 
 -- name: RenameDriver :execrows
 UPDATE drivers SET name = ? WHERE id = ? AND active;
@@ -287,7 +295,7 @@ DELETE FROM floor_events WHERE synced_at IS NOT NULL AND synced_at < ?;
 -- Paired devices (counter tablets) -------------------------------------------
 
 -- name: CreatePairedDevice :exec
-INSERT INTO paired_devices (id, name, key_hash, key_prefix) VALUES (?, ?, ?, ?);
+INSERT INTO paired_devices (id, name, key_hash, key_prefix, kind) VALUES (?, ?, ?, ?, ?);
 
 -- name: GetPairedDeviceByHash :one
 SELECT * FROM paired_devices WHERE key_hash = ? AND revoked_at IS NULL;
@@ -419,11 +427,12 @@ INSERT INTO batches (id, opened_at) VALUES (?, ?);
 INSERT INTO orders (id, tenant_id, location_id, source, source_event_id, snapshot, state, arrival_date,
                     printed_date, batch_id, kitchen_number, prep_minutes, estimated_ready_at, accepted_at,
                     ready_at, out_at, delivered_at, driver_id, driver_name, cancelled_at,
-                    pool_driver_id, pooled_at, pool_seq, pool_plan_id)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+                    pool_driver_id, pooled_at, pool_seq, pool_plan_id,
+                    scheduled_lead_minutes, ring_at, rerung)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
 
 -- name: RestoreDriver :exec
-INSERT INTO drivers (id, name, active, position, status, last_returned_at) VALUES (?, ?, true, ?, ?, ?);
+INSERT INTO drivers (id, name, active, position, status, last_returned_at, pos_number) VALUES (?, ?, true, ?, ?, ?, ?);
 
 -- name: RestoreShift :exec
 INSERT INTO driver_shifts (id, driver_id, driver_name, batch_id, clock_in) VALUES (?, ?, ?, ?, ?);
@@ -493,13 +502,17 @@ ORDER BY arrival_date ASC;
 
 -- name: UpsertOrderGeo :exec
 INSERT INTO order_geo (order_id, state, lat, lng, quality, distance_m, duration_s, polyline,
-                       outside_area, store_to_s, to_store_s, updated_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                       outside_area, store_to_s, to_store_s, updated_at, candidates, confirmed_address)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT (order_id) DO UPDATE SET
     state = excluded.state, lat = excluded.lat, lng = excluded.lng, quality = excluded.quality,
     distance_m = excluded.distance_m, duration_s = excluded.duration_s, polyline = excluded.polyline,
     outside_area = excluded.outside_area, store_to_s = excluded.store_to_s,
-    to_store_s = excluded.to_store_s, updated_at = excluded.updated_at;
+    to_store_s = excluded.to_store_s, updated_at = excluded.updated_at,
+    candidates = excluded.candidates, confirmed_address = excluded.confirmed_address;
+
+-- name: DeleteOrderGeo :exec
+DELETE FROM order_geo WHERE order_id = ?;
 
 -- name: GetOrderGeo :one
 SELECT * FROM order_geo WHERE order_id = ?;
@@ -550,3 +563,105 @@ SELECT map_file FROM settings WHERE id = 1;
 
 -- name: SetMapFile :exec
 UPDATE settings SET map_file = ? WHERE id = 1;
+
+-- POS orders from the store hub (2.1.0) ------------------------------------------
+
+-- name: InsertExternalOrder :exec
+-- A POS check the hub pulled: stored accepted (no kitchen number), local only.
+INSERT INTO orders (id, tenant_id, location_id, source, source_event_id, snapshot, state, arrival_date,
+                    batch_id, prep_minutes, estimated_ready_at, accepted_at,
+                    ext_source, ext_ref, ext_hash, ext_driver_pos, display_number, paid, cash_due_cents,
+                    tip_cents, board_hidden, sent_at, local_only)
+VALUES (sqlc.arg(id), sqlc.arg(tenant_id), sqlc.arg(location_id), sqlc.arg(source), sqlc.arg(source_event_id),
+        sqlc.arg(snapshot), 'accepted', sqlc.arg(arrival_date),
+        (SELECT id FROM batches WHERE closed_at IS NULL ORDER BY id DESC LIMIT 1),
+        sqlc.arg(prep_minutes), sqlc.arg(estimated_ready_at), sqlc.arg(accepted_at),
+        sqlc.arg(ext_source), sqlc.arg(ext_ref), sqlc.arg(ext_hash), '', sqlc.arg(display_number),
+        sqlc.arg(paid), sqlc.arg(cash_due_cents), sqlc.arg(tip_cents), sqlc.arg(board_hidden),
+        sqlc.arg(sent_at), true);
+
+-- name: GetOrderByExtRef :one
+-- The newest order for a POS check (a check number is never reused by the POS).
+SELECT * FROM orders WHERE ext_source = ? AND ext_ref = ? AND ext_ref <> ''
+ORDER BY arrival_date DESC LIMIT 1;
+
+-- name: UpdateExternalOrder :exec
+-- A changed POS check: the new snapshot (items, money, notes, address) and
+-- the paid / cash / tip / hidden figures. No state change.
+UPDATE orders
+SET snapshot = ?, ext_hash = ?, display_number = ?, paid = ?, cash_due_cents = ?, tip_cents = ?, board_hidden = ?
+WHERE id = ?;
+
+-- name: SetExtDriverPos :exec
+UPDATE orders SET ext_driver_pos = ?, pos_driver_note = ? WHERE id = ?;
+
+-- name: CancelExternalOrder :execrows
+-- A void at the POS (or Close batch): cancelled, out of any pool. A delivered
+-- order stays delivered (its driver collected it).
+UPDATE orders
+SET state = 'cancelled', cancelled_at = ?, pool_driver_id = NULL, pooled_at = NULL, pool_seq = NULL,
+    pool_plan_id = NULL, accept_pending = 0
+WHERE id = ? AND state NOT IN ('cancelled', 'delivered');
+
+-- name: SetOrderSnapshot :exec
+UPDATE orders SET snapshot = ? WHERE id = ?;
+
+-- name: ListLocalOnlyByBatch :many
+SELECT * FROM orders WHERE batch_id = ? AND local_only ORDER BY arrival_date ASC;
+
+-- name: SetOrderPaid :exec
+UPDATE orders SET paid = ? WHERE id = ?;
+
+-- name: SetPosCheckNumber :exec
+UPDATE orders SET pos_check_number = ? WHERE id = ?;
+
+-- name: SetOrderFlag :exec
+UPDATE orders SET flag = ? WHERE id = ?;
+
+-- Future orders (2.1.0) --------------------------------------------------------
+
+-- name: ScheduleOrder :execrows
+-- First confirm of a future order (or a lead edit): it waits until ring_at.
+UPDATE orders SET state = 'scheduled', scheduled_lead_minutes = ?, ring_at = ?
+WHERE id = ? AND state IN ('arrived', 'scheduled');
+
+-- name: ListDueScheduled :many
+SELECT * FROM orders WHERE state = 'scheduled' AND ring_at <= ? ORDER BY ring_at ASC;
+
+-- name: RaiseScheduled :execrows
+-- ring_at passed: it rings again like a new order. last_alert_at starts the
+-- 2-minute escalation from now, not from the first arrival.
+UPDATE orders SET state = 'arrived', rerung = true, last_alert_at = ?
+WHERE id = ? AND state = 'scheduled';
+
+-- name: MoveScheduledToBatch :exec
+-- Close batch: future orders wait in the next batch.
+UPDATE orders SET batch_id = sqlc.arg(new_batch) WHERE batch_id = sqlc.arg(old_batch) AND state = 'scheduled';
+
+-- Integration feed (2.1.0) -----------------------------------------------------
+
+-- name: InsertIntegrationEvent :exec
+INSERT INTO integration_events (type, payload, created_at) VALUES (?, ?, ?);
+
+-- name: ListIntegrationEvents :many
+SELECT * FROM integration_events WHERE seq > ? ORDER BY seq ASC LIMIT ?;
+
+-- name: MaxIntegrationSeq :one
+SELECT CAST(COALESCE(MAX(seq), 0) AS INTEGER) AS max_seq FROM integration_events;
+
+-- name: DeleteOldIntegrationEvents :exec
+DELETE FROM integration_events WHERE created_at < ?;
+
+-- Integration settings (2.1.0) ---------------------------------------------------
+
+-- name: GetIntegrationSettings :one
+SELECT features, ticket_toggles, default_pickup_minutes, default_delivery_minutes FROM settings WHERE id = 1;
+
+-- name: SetIntegrationSettings :exec
+UPDATE settings SET features = ?, ticket_toggles = ?, default_pickup_minutes = ?, default_delivery_minutes = ? WHERE id = 1;
+
+-- name: GetIntegrationStatus :one
+SELECT integration_status FROM settings WHERE id = 1;
+
+-- name: SetIntegrationStatus :exec
+UPDATE settings SET integration_status = ? WHERE id = 1;

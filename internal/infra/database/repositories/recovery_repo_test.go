@@ -29,11 +29,11 @@ func TestSwapRestoresIdenticalFloor(t *testing.T) {
 	waiting := arrive(t, a, "pickup")
 	cooking := accept(t, a, arrive(t, a, "delivery"))
 
-	d1, err := a.CreateDriver(ctx, "Abdul")
+	d1, err := a.CreateDriver(ctx, "Abdul", "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	d2, err := a.CreateDriver(ctx, "Juma")
+	d2, err := a.CreateDriver(ctx, "Juma", "")
 	if err != nil {
 		t.Fatal(err)
 	}
