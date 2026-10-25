@@ -249,8 +249,9 @@ nginx :80) — the switch is in `../CUTOVER.md`; never run both agents at once.
 
 ## Floor flow (agent decides, main mirrors)
 
-- **State lives here**, one writer: `orders.state` (`arrived|accepted|ready|
-  on_delivery|delivered|cancelled` — Close batch cancels never-accepted orders) + floor columns, `batches` (exactly one open),
+- **State lives here**, one writer: `orders.state` (`arrived|scheduled|accepted|ready|
+  on_delivery|delivered|cancelled` — Close batch cancels never-accepted orders;
+  `scheduled` = a future order confirmed once, 2.1.0) + floor columns, `batches` (exactly one open),
   `drivers` (queue = `position`), `settings.kitchen_next` (1100, reset on Close
   batch) / `last_prep_minutes`. Transitions are in
   `infra/database/repositories/floor_repo.go`; **each one is a single tx that
@@ -503,6 +504,76 @@ a delivery with no row gets `FillMissingGeo` → `{state: pending}` (< 15 min)
   geo replies), `application/mapfile/mapfile_test.go` (sha mismatch),
   `transport/server_pools_test.go` (Range), `tests/test_pools.py`.
 
+## Store hub integration, POS orders, future orders (2.1.0)
+
+Contract §2.9 is the wire truth; spec §4.14 the design. Code:
+`application/order/integration.go` (service), `repositories/integration_repo.go`,
+`domain/order/integration.go`, `transport/server_integration.go`, migration
+`00014_integration` (rebuilds `orders` for the `scheduled` CHECK).
+
+- **Device kinds**: `paired_devices.kind` tablet|integration; `POST /api/pair
+  {kind}` answers `device_key` too. `floor()` lets an integration key through
+  only for `GET /api/floor|events|drivers|settings/*` (`integrationMayRead`);
+  routes with Auth `"integration"` (`/api/integration/*`) take only that key.
+- **POS orders** = `ext_source` set, Snapshot `source: "pos"`, stored
+  `accepted` with no kitchen number (`display_number` = the check #,
+  `StoredOrder.Number()`), **`local_only`** → `recordOrderStatus` returns early,
+  so **nothing about them is synced to main**; `delivery.run` stops become
+  `{opaque_id, source:"pos", …}`; the nightly backup copy is scrubbed
+  (`backup.scrubLocalOnly`); Close batch wipes their customer (`wipePOS`).
+  Never call `RecordAccepted` for one. Prints (background, `s.bg`) only when the
+  type's POS ticket switch is on; `printable()` puts `display_number` in the
+  number slot. `ExternalOrder.Snapshot` builds `payments` from the hub's cash
+  due so `CashDue()` stays the one cash rule.
+- **Driver mirror**: a newly set `driver_pos_number` → `MirrorSendOut` (alone;
+  the driver's other pooled orders go back to unassigned) / `MirrorJoinRun` /
+  a `pos_driver_note` + `integration.toast`. `ext_driver_pos` remembers the
+  number either way. `drivers.pos_number` is unique among **active** drivers
+  (partial unique index → `ErrPosNumberTaken`, 409 `pos_number_taken`).
+- **Feed** (`integration_events`, AUTOINCREMENT): written with `insertFeed` in
+  the change's own tx — `order.accepted` (RecordAccepted, online only),
+  `order.ready` (MarkReady, Send Out/mirror mark-ready), `run.sent`
+  (recordDeliveryRun), `address.confirmed` (UpsertGeo, only when main's
+  `order.geo` has `confirmed:true` — cache hits come back pinned too — deduped
+  by `sameConfirmed`), `order.cancelled`, `settings.changed`, `batch.closed`.
+  `Service.Feed` long-polls on a broadcast channel (`feedNotify`, called by
+  `floorChanged`) + a 1 s tick. Pruned after 3 days in `TrimBatches`.
+- **Settings**: `features` / `ticket_toggles` JSON over the defaults +
+  `default_pickup_minutes` / `default_delivery_minutes`; in-memory copy
+  `integSet` (print path); `UpdateIntegrationSettings(change)`; HTTP PUTs
+  unmarshal onto the current section (missing keys keep their value).
+- **Print rules**: `PlanWith(snap, roster, mode, Rules)` (pure);
+  `PlanFor` = defaults. The dispatcher gets `Rules` per job via `SetRules`
+  (`cmd/main.go`: ticket switches + `Service.InsertLive()`). Cash pickups
+  print tickets only with `online_cash_pickup` **and** insert live
+  (`features.order_insert` + hub mode live + seen ≤ 60 s).
+- **Hub status** is in memory (`integrationState`), persisted on a change or
+  every 10 min; `IntegrationStatus.View` derives connected / insert_live / the
+  serious "POS link down". The escalation tick (15 s) now also runs `RaiseDue`
+  (future orders back to `arrived` + `rerung` at `ring_at`, `last_alert_at` =
+  now so escalation counts from the ring) and `CheckIntegrationLink`.
+- **Future orders**: `Status.Future` is **computed on read** (`markFuture` in
+  `loadOrder` / `attachGeo`) — never stored. `POST /api/orders/{id}/schedule`;
+  a re-rung accept defaults prep to the lead. Scheduled orders aren't
+  leftovers; Close batch moves them to the new batch, and `arrived` future
+  orders with `promised_at` ahead too (`waitsForLater`). POS checks never
+  block a close. Auto-accept schedules a future order (lead = default time)
+  and `RaiseDue` auto-accepts it at the re-ring. `order.accepted` carries
+  `insert_expected` (`printer.Outcome.InsertExpected`).
+- **Geo**: `OnGeo` accepts `check` (≤ 3 candidates; `Located()` false → AUTO
+  ignores it); `POST /api/orders/{id}/geo/choose` → RPC `geo.choose`; POS
+  deliveries → `geo.locate` (address only) on create / address change and
+  `RelocatePOS` on every SSE connect; `geo.forget` on void and Close batch.
+- **Driver report money**: tips only on card-paid deliveries; cash = cash due
+  − tip (no tip line printed). See `NewDriverReportLine`.
+- Tests: `application/order/integration_test.go` (lifecycle, mirror, feed
+  long-poll, future → re-ring → accept, geo check, hub status),
+  `repositories/integration_repo_test.go` (upsert/void/finished, unique
+  pos_number, feed cursor + prune, close batch, anonymous run, migration 13 →
+  14), `printer/plan_rules_test.go` (the switch matrix × insert_live),
+  `transport/integration_test.go` (key guarding, pair kind, settings routes),
+  `backup` (scrub), `tests/test_integration.py`.
+
 ## Printing (station tickets + receipt)
 
 main stamps `printer_id` + `routing` on each line item at ingest; the agent
@@ -623,7 +694,10 @@ connection. `internal/migrate` runs goose (`sqlite3` dialect) on boot
 adds `printer_macs` + `settings.update_job` / `update_notified`; `00012_pools_geo`
 adds the pool columns, `order_geo`, `order_times`, `auto_plans` and the delivery
 settings + `settings.map_file`; use
-`migrate.RunTo` in tests to seed an older schema). sqlc
+`migrate.RunTo` in tests to seed an older schema; `00013_pool_seq`;
+`00014_integration` rebuilds `orders` again for `scheduled` + the POS / future
+columns and adds `integration_events`, `drivers.pos_number`,
+`paired_devices.kind`, geo candidates and the integration settings). sqlc
 targets the `sqlite` engine (`sql/sqlc.yaml`, `sql_package: database/sql`);
 `sql/schema.sql` mirrors **all** migrations and every query — including the
 settings/provisioning ones — goes through sqlc (`task sqlc`).
@@ -670,6 +744,15 @@ JS/CSS `no-cache` + content ETag, fonts immutable for a year.
   `locked` → `POST /api/login` (username row only when `manager_login`; hint via
   `GET /api/hint`). The 5 s session poll bounces out when `ready` is lost; any 401
   from `api()` re-reads the session.
+- **2.1.0 in the web UI**: Overview gets a "POS link" health card (when
+  `location.config.pos_integration`, an integration device or a hub report
+  exists) and POS problems in Needs attention; Live shows POS orders by their
+  check # with a POS / PAID tag and any hub flag / driver note, hides
+  `board_hidden` ones, and lists scheduled orders in a read-only "Later" strip;
+  Drivers has a "Driver #" field (row + add form); Settings › Orders has the six
+  feature switches + default times; Settings › Kitchen tickets has the ticket
+  switches (POS ones only with a POS link). SSE `order.added` / `settings.updated`
+  / `integration.status` reload, `integration.toast` toasts.
 - **Pages** (hash routes `#/overview`, `#/live`, … `#/settings/<tab>`):
   **Overview** (home) — health strip (session SSE state, `/api/diag` printers +
   Pi health + "update available" from `/api/update/status`, `/api/devices` +
@@ -762,6 +845,7 @@ longer LAN-open; `POST /api/pair` is open (needs a live code); the web-UI surfac
 | Store map download | `internal/application/mapfile/mapfile.go` |
 | Floor service / escalation / sync | `internal/application/order/floor.go`, `application/escalation/`, `application/floorsync/` |
 | Floor routes + tablet pairing | `internal/transport/server_floor.go`, `internal/transport/pairing.go` |
+| Store hub: POS orders, feed, settings, hub status, future orders | `internal/application/order/integration.go`, `internal/infra/database/repositories/integration_repo.go`, `internal/transport/server_integration.go` |
 | Duplex RPC (envelope + registry) | `internal/rpc/{envelope.go,registry.go}` |
 | Printer-roster report to main | `internal/application/printer/report.go` (wired in `cmd/main.go`) |
 | Pi updates (gate, files, status reports, Pushover, latest version) | `internal/application/update/`, `internal/transport/server_update.go` |

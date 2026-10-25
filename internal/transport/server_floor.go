@@ -31,6 +31,12 @@ func (s *Server) floorErr(w http.ResponseWriter, r *http.Request, err error) {
 		s.writeJSON(w, http.StatusConflict, map[string]any{"error": err.Error(), "code": "not_ready", "order_ids": nr.IDs})
 	case errors.Is(err, orderApp.ErrNoDrivers):
 		s.writeJSON(w, http.StatusConflict, errCodeMap(err.Error(), "no_drivers"))
+	case errors.Is(err, orderApp.ErrPosPullOff):
+		s.writeJSON(w, http.StatusConflict, errCodeMap(err.Error(), "pos_pull_off"))
+	case errors.Is(err, orderApp.ErrNotFuture):
+		s.writeJSON(w, http.StatusConflict, errCodeMap(err.Error(), "not_future"))
+	case errors.Is(err, order.ErrPosNumberTaken):
+		s.writeJSON(w, http.StatusConflict, errCodeMap(err.Error(), "pos_number_taken"))
 	case errors.Is(err, orderApp.ErrMainOffline):
 		s.writeJSON(w, http.StatusServiceUnavailable, errCodeMap("Can't reach the server — try again.", "main_offline"))
 	case errors.Is(err, order.ErrNotFound):
@@ -130,16 +136,17 @@ func (s *Server) handleListDrivers(w http.ResponseWriter, r *http.Request) {
 	s.writeJSON(w, http.StatusOK, ds)
 }
 
-// POST /api/drivers {name}
+// POST /api/drivers {name, pos_number?}
 func (s *Server) handleCreateDriver(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Name string `json:"name"`
+		Name      string `json:"name"`
+		PosNumber string `json:"pos_number"`
 	}
 	if err := decodeBody(r, &req); err != nil {
 		s.floorErr(w, r, err)
 		return
 	}
-	d, err := s.service.CreateDriver(r.Context(), req.Name)
+	d, err := s.service.CreateDriver(r.Context(), req.Name, req.PosNumber)
 	if err != nil {
 		s.floorErr(w, r, err)
 		return
@@ -147,16 +154,17 @@ func (s *Server) handleCreateDriver(w http.ResponseWriter, r *http.Request) {
 	s.writeJSON(w, http.StatusCreated, d)
 }
 
-// PATCH /api/drivers/{id} {name}
+// PATCH /api/drivers/{id} {name?, pos_number?} ("" clears the number)
 func (s *Server) handleRenameDriver(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Name string `json:"name"`
+		Name      *string `json:"name"`
+		PosNumber *string `json:"pos_number"`
 	}
 	if err := decodeBody(r, &req); err != nil {
 		s.floorErr(w, r, err)
 		return
 	}
-	if err := s.service.RenameDriver(r.Context(), r.PathValue("id"), req.Name); err != nil {
+	if err := s.service.UpdateDriver(r.Context(), r.PathValue("id"), req.Name, req.PosNumber); err != nil {
 		s.floorErr(w, r, err)
 		return
 	}
@@ -278,7 +286,9 @@ func (s *Server) handleUnpairSelf(w http.ResponseWriter, r *http.Request) {
 }
 
 // POST /api/batch/close {force} — 409 batch_has_leftovers lists unfinished
-// orders unless force is true (they are then auto-finished).
+// online orders unless force is true (they are then auto-finished). POS
+// checks never block (always cancelled or finished); future orders still
+// waiting for their time move into the new batch.
 func (s *Server) handleCloseBatch(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Force bool `json:"force"`

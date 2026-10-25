@@ -12,14 +12,15 @@ import (
 )
 
 func reportFixture() (order.DriverReport, storeconfig.StoreContext) {
-	k1, k2 := int64(1104), int64(1107)
+	k1, k2, pos := int64(1104), int64(1107), int64(57)
 	opened := time.Date(2026, 10, 16, 14, 2, 0, 0, time.UTC)
 	closed := time.Date(2026, 10, 17, 3, 48, 0, 0, time.UTC)
 	rep := order.DriverReport{BatchID: 3, BatchOpenedAt: opened, BatchClosedAt: &closed, DriverName: "Abdul",
 		Lines: []order.DriverReportLine{
-			{KitchenNumber: &k1, Customer: "Erik D.", Address: "12 Main St, Apt 3", TipCents: 200, Cash: true, CashCents: 2249},
-			{KitchenNumber: &k2, Customer: "Ana P.", Address: "4 Elm St", TipCents: 300, Cash: true, CashCents: 1850},
+			{KitchenNumber: &k1, Customer: "Erik D.", Address: "12 Main St, Apt 3", Cash: true, CashCents: 2249},
+			{KitchenNumber: &k2, Customer: "Ana P.", Address: "4 Elm St", Cash: true, CashCents: 1850},
 			{Customer: "Lee H.", Address: "9 Oak Ave", TipCents: 400},
+			{DisplayNumber: &pos, Source: order.SourcePOS, Customer: "Customer", TipCents: 500}, // POS card, PII wiped
 		}}
 	rep.Finish(600)
 	sc := storeconfig.StoreContext{Location: storeconfig.LocationContext{Name: "Lombardi's Pizza", Timezone: "America/New_York"}}
@@ -57,10 +58,11 @@ func TestBuildDriverReport_Content(t *testing.T) {
 		"#1104 Erik D.",
 		"CASH $22.49",
 		"  12 Main St, Apt 3",
-		"  Tip $2.00",
+		"  Tip $4.00",
 		"Lee H.",
 		"CARD",
-		leftRight("Deliveries", "3", lineWidth),
+		"#57 Customer",
+		leftRight("Deliveries", "4", lineWidth),
 		leftRight("Total cash owed", "$40.99", lineWidth),
 		leftRight("Total tip (A/T)", "$8.46", lineWidth),
 		"($9.00 - 6%)",
@@ -70,6 +72,9 @@ func TestBuildDriverReport_Content(t *testing.T) {
 		if !strings.Contains(s, want) {
 			t.Errorf("missing %q", want)
 		}
+	}
+	if strings.Contains(s, "  Tip $0.00") {
+		t.Error("a cash order's tip is not listed (2.1.0)")
 	}
 	if strings.Contains(s, "$30.00") {
 		t.Error("a card order's amount must not be printed")

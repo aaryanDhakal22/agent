@@ -315,7 +315,8 @@
         <div class="tickets">
           <template x-for="so in kitchen" :key="so.order.id">
             <article class="tk" :style="toneStyle(so)" :aria-label="'Ticket ' + displayNumber(so) + ', ' + custName(so.order)">
-              <div class="hrow" style="justify-content:space-between"><span class="num" x-text="displayNumber(so)"></span><span class="tag" :class="{ delivery: ftype(so.order) === 'delivery' }" x-text="ftype(so.order).toUpperCase()"></span></div>
+              <div class="hrow" style="justify-content:space-between"><span class="num" x-text="displayNumber(so)"></span><span class="hrow" style="gap:6px"><span class="tag pos" x-show="isPOS(so)">POS</span><span class="tag paid" x-show="so.status.paid">PAID</span><span class="tag" :class="{ delivery: ftype(so.order) === 'delivery' }" x-text="ftype(so.order).toUpperCase()"></span></span></div>
+              <div class="flagline" :class="so.status.flag ? so.status.flag.severity : ''" x-show="so.status.flag || so.status.pos_driver_note" x-text="(so.status.flag ? so.status.flag.text : '') + (so.status.flag && so.status.pos_driver_note ? ' · ' : '') + (so.status.pos_driver_note || '')"></div>
               <div class="hrow" style="align-items:baseline"><span class="age" x-text="sinceText(so)"></span><span class="due" :class="{ late: isLate(so) }" x-text="dueText(so)"></span></div>
               <div class="who" x-text="custName(so.order)"></div>
               <div class="lines">
@@ -330,6 +331,12 @@
           </template>
         </div>
         <div class="card empty" x-show="floorLoaded && !kitchen.length">Nothing cooking</div>
+        <div class="later" x-show="laterOrders.length" aria-label="Later (future orders)">
+          <span class="eyebrow">Later</span>
+          <template x-for="so in laterOrders" :key="so.order.id">
+            <span class="chip" :title="'Rings again at ' + clock(so.status.ring_at)"><b class="mono" x-text="custName(so.order)"></b> <span x-text="'due ' + clock(so.order.fulfillment && so.order.fulfillment.promised_at) + ' · rings ' + clock(so.status.ring_at)"></span></span>
+          </template>
+        </div>
       </section>
 
       <div class="split">
@@ -340,6 +347,7 @@
             <template x-for="so in unassignedDeliveries" :key="so.order.id">
               <div class="dlv" role="listitem" :class="{ cooking: so.status.state === 'accepted' }">
                 <span class="num mono" x-text="displayNumber(so)"></span>
+                <span class="tag pos" x-show="isPOS(so)">POS</span>
                 <span class="grow" style="min-width:0"><span style="font-weight:600;display:block" x-text="custName(so.order)"></span><span class="small muted" style="display:block;overflow-wrap:anywhere" x-show="addrLine(so.order)" x-text="addrLine(so.order)"></span></span>
                 <span class="small muted" x-show="so.status.state === 'accepted'">cooking</span>
                 <span class="mono" style="font-weight:700" x-text="moneyLabel(so.order)"></span>
@@ -401,7 +409,7 @@
     <section class="stack" x-show="page === 'drivers'" aria-labelledby="h-drivers">
       <div class="page-head"><div>
         <h1 id="h-drivers">Drivers</h1>
-        <p>Clock a driver in to put them in the queue — the first available driver is next up; a driver who returns goes to the back. Everyone is clocked out daily at <b x-text="wallTime(reset.time || '10:00')"></b> (<button type="button" class="link-btn" @click="goSettings('clockout')">change</button>).</p>
+        <p>Clock a driver in to put them in the queue — the first available driver is next up; a driver who returns goes to the back. <b>Driver #</b> is the driver's login number on the store's POS (how POS checks find the driver). Everyone is clocked out daily at <b x-text="wallTime(reset.time || '10:00')"></b> (<button type="button" class="link-btn" @click="goSettings('clockout')">change</button>).</p>
       </div></div>
       <section class="card card-pad">
         <div class="list">
@@ -412,6 +420,9 @@
                 <label class="sr-only" :for="'dn-' + d.id" x-text="'Name of driver ' + (i + 1)"></label>
                 <input class="field field-sm name-input" :id="'dn-' + d.id" x-model="names[d.id]" maxlength="40" @keydown.enter.prevent="renameDriver(d)" />
                 <button type="button" class="btn btn-sm" x-show="(names[d.id] || '').trim() && (names[d.id] || '').trim() !== d.name" @click="renameDriver(d)">Save</button>
+                <label class="small muted" :for="'dnum-' + d.id">Driver #</label>
+                <input class="field field-sm mono" style="width:5.5em" :id="'dnum-' + d.id" x-model="nums[d.id]" maxlength="12" inputmode="numeric" placeholder="—" :title="'POS login number of ' + d.name" @keydown.enter.prevent="saveDriverNum(d)" />
+                <button type="button" class="btn btn-sm" x-show="(nums[d.id] || '').trim() !== (d.pos_number || '')" @click="saveDriverNum(d)">Save #</button>
                 <span class="badge" :class="driverStatus(d).cls" x-text="driverStatus(d).text"></span>
                 <span class="small muted" x-text="(d.clocked_in_at ? 'in since ' + clock(d.clocked_in_at) + ' · ' : '') + d.deliveries + ' run' + (d.deliveries === 1 ? '' : 's') + ' this batch'"></span>
               </div>
@@ -429,6 +440,8 @@
         <form class="hrow" style="margin-top:14px" @submit.prevent="addDriver()">
           <label class="sr-only" for="new-driver">New driver name</label>
           <input id="new-driver" class="field" style="flex:1 1 200px;width:auto" placeholder="Driver name" maxlength="40" x-model="newDriver" />
+          <label class="sr-only" for="new-driver-num">Driver number (their POS login #)</label>
+          <input id="new-driver-num" class="field mono" style="flex:0 0 8em;width:auto" placeholder="Driver #" maxlength="12" inputmode="numeric" x-model="newDriverNum" />
           <button type="submit" class="btn btn-p btn-lg">Add driver</button>
         </form>
       </section>
@@ -560,6 +573,30 @@
             <div class="lblcol"><div class="lbl" id="aa-l">Auto-accept orders</div><p class="help">Print and accept incoming orders automatically, with the last prep time used. Leave it off when staff accept on the tablet.</p></div>
             <button type="button" class="sw" :class="{ on: autoAccept }" role="switch" :aria-checked="autoAccept" aria-labelledby="aa-l" :disabled="!autoAcceptLoaded" @click="toggleAutoAccept()"><span></span></button>
           </div>
+          <form @submit.prevent="saveTimes()" aria-labelledby="h-s-times">
+            <h3 id="h-s-times" style="margin-top:18px">Default times</h3>
+            <p class="help">What the tablet offers first when an order is accepted (X, X+5, X+10), and the prep given to POS orders from when the cashier sent them.</p>
+            <div class="srow" style="margin-top:10px">
+              <div class="lblcol"><label class="lbl" for="set-pickup">Pickup</label><p class="help">Pickup and counter orders (1-240).</p></div>
+              <div class="hrow"><input id="set-pickup" class="field field-sm mono" style="width:6em" type="number" min="1" max="240" x-model="timesForm.pickup" /><span class="muted">min</span></div>
+            </div>
+            <div class="srow">
+              <div class="lblcol"><label class="lbl" for="set-delivery">Delivery</label><p class="help">Delivery orders (1-240).</p></div>
+              <div class="hrow"><input id="set-delivery" class="field field-sm mono" style="width:6em" type="number" min="1" max="240" x-model="timesForm.delivery" /><span class="muted">min</span></div>
+            </div>
+            <div class="sfoot"><button type="submit" class="btn btn-p" :disabled="!timesDirty">Save</button></div>
+            <p class="help" style="margin-top:8px" x-show="timesDirty">Unsaved changes.</p>
+          </form>
+          <section aria-labelledby="h-s-feat">
+            <h3 id="h-s-feat" style="margin-top:18px">Features</h3>
+            <p class="help">Each switch takes effect at once, here and on the tablet (Settings › Features).</p>
+            <template x-for="f in featureList" :key="f[0]">
+              <div class="srow">
+                <div class="lblcol"><div class="lbl" :id="'ft-' + f[0]" x-text="f[1]"></div><p class="help" x-text="f[2]"></p></div>
+                <button type="button" class="sw" :class="{ on: settingOn('features', f[0]) }" role="switch" :aria-checked="settingOn('features', f[0])" :aria-labelledby="'ft-' + f[0]" :disabled="!settingsAll || !!busy['set' + f[0]]" @click="toggleSetting('features', f[0])"><span></span></button>
+              </div>
+            </template>
+          </section>
           <form @submit.prevent="saveDeliveryPrefs()" aria-labelledby="h-s-dlv">
             <h3 id="h-s-dlv" style="margin-top:18px">Deliveries (AUTO)</h3>
             <p class="help">Used by the tablet's AUTO button when it suggests driver runs.</p>
@@ -591,6 +628,17 @@
           <div class="sfoot"><button type="submit" class="btn btn-p" :disabled="!floorDirty">Save</button></div>
           <p class="help" style="margin-top:8px" x-show="floorDirty">Unsaved changes.</p>
         </form>
+        <section class="card sbody" x-show="settingsTab === 'kitchen'" aria-labelledby="h-s-tswitch">
+          <h2 id="h-s-tswitch">Which orders print kitchen tickets</h2>
+          <p class="help">Off: only the customer receipt prints for that kind of order (POS orders never print a receipt by themselves). Saved on tap; Reprint and Resend always work.</p>
+          <template x-for="f in (hasPOS ? ticketsPOS : []).concat(ticketsOnline)" :key="f[0]">
+            <div class="srow">
+              <div class="lblcol"><div class="lbl" :id="'tk-' + f[0]" x-text="f[1]"></div><p class="help" x-text="f[2]"></p></div>
+              <button type="button" class="sw" :class="{ on: settingOn('tickets', f[0]) }" role="switch" :aria-checked="settingOn('tickets', f[0])" :aria-labelledby="'tk-' + f[0]" :disabled="!settingsAll || !!busy['set' + f[0]]" @click="toggleSetting('tickets', f[0])"><span></span></button>
+            </div>
+          </template>
+          <p class="help" style="margin-top:8px" x-show="ticketsOnline[0] && settingOn('tickets', 'online_cash_pickup') && !(integ && integ.insert_live)">Online cash pickups print only the receipt right now: the store hub isn't keying them into the POS live.</p>
+        </section>
 
         <!-- Receipts -->
         <section class="card sbody" x-show="settingsTab === 'receipts'" aria-labelledby="h-s-rcpt">

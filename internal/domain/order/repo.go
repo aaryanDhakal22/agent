@@ -2,6 +2,7 @@ package order
 
 import (
 	"context"
+	"time"
 
 	"github.com/google/uuid"
 )
@@ -37,6 +38,78 @@ type Repository interface {
 
 	FloorRepository
 	PoolRepository
+	IntegrationRepository
+}
+
+// ExternalMeta is what the service adds to a POS upsert: the id for a new
+// order (UUIDv7, made on the Pi), the store it belongs to, its prep time
+// (the store default for its type) and the clock.
+type ExternalMeta struct {
+	OrderID     string
+	TenantID    string
+	LocationID  string
+	PrepMinutes int64
+	Now         time.Time
+}
+
+// ExternalResult is a POS upsert's outcome. AddressChanged: an open check is
+// a delivery now with a new address (or newly a delivery) — main must locate
+// it; DeliveryEnded: an open check stopped being a delivery — main must
+// forget its point. PrevDriverPos is the driver number the POS had set
+// before (to see a change).
+type ExternalResult struct {
+	Order          StoredOrder
+	Created        bool
+	Changed        bool
+	AddressChanged bool
+	DeliveryEnded  bool
+	PrevDriverPos  string
+}
+
+// OnlinePatch is PATCH /api/integration/online-orders/{id}. SetFlag with a
+// nil Flag clears it.
+type OnlinePatch struct {
+	Paid           *bool
+	PosCheckNumber *int64
+	SetFlag        bool
+	Flag           *Flag
+}
+
+// IntegrationRepository persists the 2.1.0 store-hub surface: settings, POS
+// orders, the hub feed and future orders. Every change the hub must see
+// writes its feed event in the same transaction.
+type IntegrationRepository interface {
+	IntegrationSettings(ctx context.Context) (IntegrationSettings, error)
+	// SetIntegrationSettings stores all three and writes settings.changed.
+	SetIntegrationSettings(ctx context.Context, set IntegrationSettings) error
+	IntegrationStatus(ctx context.Context) (IntegrationStatus, error)
+	SetIntegrationStatus(ctx context.Context, st IntegrationStatus) error
+
+	// UpsertExternal inserts a new POS check (accepted, no kitchen number,
+	// local only) or updates a changed one (same hash = no-op; a finished
+	// order only takes the money and paid).
+	UpsertExternal(ctx context.Context, extRef string, in ExternalOrder, meta ExternalMeta) (ExternalResult, error)
+	SetExtDriver(ctx context.Context, id, posNumber, note string) (*StoredOrder, error)
+	// VoidExternal cancels a POS order (pool cleared, order.cancelled on the
+	// feed); changed=false when it was already cancelled or delivered.
+	VoidExternal(ctx context.Context, source, extRef string) (so *StoredOrder, changed bool, err error)
+	PatchOnline(ctx context.Context, id string, p OnlinePatch) (*StoredOrder, error)
+	DriverByPosNumber(ctx context.Context, pos string) (*Driver, error)
+	// MirrorSendOut sends one delivery out alone with an available driver
+	// (marked ready first if cooking; run.sent on the feed); the driver's
+	// other pooled orders go back to unassigned.
+	MirrorSendOut(ctx context.Context, driverID, orderID string) (sent, readied, unpooled []StoredOrder, err error)
+	// MirrorJoinRun puts a delivery on the run of a driver already out.
+	MirrorJoinRun(ctx context.Context, driverID, orderID string) (so *StoredOrder, readied []StoredOrder, err error)
+	// ListFeed returns up to limit feed events after seq, and the newest seq.
+	ListFeed(ctx context.Context, after int64, limit int) ([]FeedEvent, int64, error)
+
+	// Schedule puts a future order (arrived or scheduled) into scheduled
+	// with its lead time and ring time (ErrInvalidState otherwise).
+	Schedule(ctx context.Context, id string, leadMinutes int64, ringAt time.Time) (*StoredOrder, error)
+	// RaiseDue puts every scheduled order whose ring time passed back to
+	// arrived (rerung) and returns them.
+	RaiseDue(ctx context.Context, now time.Time) ([]StoredOrder, error)
 }
 
 // SettingsRepository owns the singleton settings row.

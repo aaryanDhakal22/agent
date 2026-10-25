@@ -60,7 +60,7 @@ func (r *OrderRepository) AgentState(ctx context.Context) (st order.AgentState, 
 		if err != nil {
 			return st, err
 		}
-		st.Drivers = append(st.Drivers, order.StateDriver{ID: d.ID, Name: d.Name, Position: d.Position, Status: d.Status, LastReturnedAt: ret})
+		st.Drivers = append(st.Drivers, order.StateDriver{ID: d.ID, Name: d.Name, Position: d.Position, Status: d.Status, LastReturnedAt: ret, PosNumber: d.PosNumber})
 	}
 	shifts, err := q.ListOpenShifts(ctx)
 	if err != nil {
@@ -174,6 +174,7 @@ func (r *OrderRepository) Restore(ctx context.Context, data order.RestoreData) (
 				ReadyAt: nullTSPtr(st.ReadyAt), OutAt: nullTSPtr(st.OutAt), DeliveredAt: nullTSPtr(st.DeliveredAt),
 				DriverID: driverID, DriverName: st.DriverName, CancelledAt: nullTSPtr(st.CancelledAt),
 				PoolDriverID: poolID, PooledAt: pooledAt, PoolSeq: poolSeq, PoolPlanID: poolPlan,
+				ScheduledLeadMinutes: nullInt(st.ScheduledLeadMinutes), RingAt: nullTSPtr(st.RingAt), Rerung: st.Rerung,
 			}); err != nil {
 				return fmt.Errorf("restore order %s: %w", snap.ID, err)
 			}
@@ -238,7 +239,7 @@ func (r *OrderRepository) Restore(ctx context.Context, data order.RestoreData) (
 		if data.State != nil && len(data.State.Drivers) > 0 {
 			for _, d := range data.State.Drivers {
 				if err := q.RestoreDriver(ctx, models.RestoreDriverParams{ID: d.ID, Name: d.Name, Position: d.Position,
-					Status: driverStatus(d.Status), LastReturnedAt: nullTSPtr(d.LastReturnedAt)}); err != nil {
+					Status: driverStatus(d.Status), LastReturnedAt: nullTSPtr(d.LastReturnedAt), PosNumber: d.PosNumber}); err != nil {
 					return fmt.Errorf("restore driver %s: %w", d.Name, err)
 				}
 				res.Drivers++

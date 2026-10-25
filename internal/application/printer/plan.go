@@ -14,14 +14,32 @@ type RosterEntry struct {
 	IsReceipt bool
 }
 
+// Rules are the store's print switches (2.1.0): the six kitchen-ticket
+// toggles, and whether the store hub inserts online cash pickups into the POS
+// right now (features.order_insert && hub insert_mode live && hub seen within
+// 60 s) — only then may an online cash pickup print kitchen tickets here.
+type Rules struct {
+	Tickets    order.TicketToggles
+	InsertLive bool
+}
+
+// DefaultRules are the migration defaults (POS orders print nothing, online
+// orders print as in 2.0.9, cash pickups receipt-only).
+func DefaultRules() Rules { return Rules{Tickets: order.DefaultTicketToggles()} }
+
 // Plan is the accept print: PlanFor(snap, roster, printer.ModeAccept).
 func Plan(snap order.Snapshot, roster []RosterEntry) (tickets []printer.Ticket, unrouted []string) {
 	return PlanFor(snap, roster, printer.ModeAccept)
 }
 
-// PlanFor turns an order into the tickets to print for one mode, given the
-// printer roster (in roster order). Pure — no I/O — so it's exhaustively
-// unit-testable.
+// PlanFor is PlanWith under the default rules.
+func PlanFor(snap order.Snapshot, roster []RosterEntry, mode printer.Mode) (tickets []printer.Ticket, unrouted []string) {
+	return PlanWith(snap, roster, mode, DefaultRules())
+}
+
+// PlanWith turns an order into the tickets to print for one mode, given the
+// printer roster (in roster order) and the store's print rules. Pure — no
+// I/O — so it's exhaustively unit-testable.
 //
 // ModeAccept (what accept prints):
 //
@@ -34,9 +52,17 @@ func Plan(snap order.Snapshot, roster []RosterEntry) (tickets []printer.Ticket, 
 //     reported in unrouted). Each station with items gets a station ticket
 //     (its items + the rest of the order listed small), and the receipt
 //     printer gets the full customer receipt.
-//   - A pickup order with cash to collect prints ONLY the customer receipt:
-//     staff type it into the store's old POS, which prints the kitchen
-//     tickets (Lombardi's, 2026-10). Delivery and card-paid pickups are normal.
+//   - The kitchen-ticket switches (rules.Tickets) pick, per kind of online
+//     order, between that and the customer receipt ONLY: online card (no cash
+//     due), online cash delivery, online cash pickup. A cash pickup prints
+//     tickets only while the hub inserts it into the POS live
+//     (rules.InsertLive) — otherwise staff type it into the store's old POS,
+//     which prints the kitchen tickets (the 2.0.7 rule, Lombardi's).
+//   - A POS order (source pos, pulled by the store hub) never prints a
+//     receipt on accept; it prints its station tickets only when the switch
+//     for its type is on (pos_delivery / pos_takeout / pos_counter). Its
+//     lines without a Pi printer are receipt-only (the POS decides what the
+//     kitchen gets).
 //   - An item routed to the receipt printer is receipt-only: it gets no
 //     station ticket of its own (drinks/desserts the counter or driver picks
 //     up from the receipt) — unless the receipt printer is the only printer,
@@ -53,7 +79,7 @@ func Plan(snap order.Snapshot, roster []RosterEntry) (tickets []printer.Ticket, 
 //
 // With no receipt printer flagged, the first printer is used as the receipt
 // printer. An empty roster yields no tickets.
-func PlanFor(snap order.Snapshot, roster []RosterEntry, mode printer.Mode) (tickets []printer.Ticket, unrouted []string) {
+func PlanWith(snap order.Snapshot, roster []RosterEntry, mode printer.Mode, rules Rules) (tickets []printer.Ticket, unrouted []string) {
 	if len(roster) == 0 {
 		return nil, nil
 	}
@@ -77,7 +103,13 @@ func PlanFor(snap order.Snapshot, roster []RosterEntry, mode printer.Mode) (tick
 		return stationTickets(snap, roster, receipt)
 	}
 
-	if isPickupCash(snap) {
+	if isPOS(snap) {
+		if !rules.Tickets.POSFor(snap.Fulfillment.Type) {
+			return nil, nil
+		}
+		return stationTickets(snap, roster, receipt)
+	}
+	if receiptOnly(snap, rules) {
 		return []printer.Ticket{receiptTicket}, nil
 	}
 	if !isRouted(snap) {
@@ -105,7 +137,11 @@ func stationTickets(snap order.Snapshot, roster []RosterEntry, receipt RosterEnt
 
 	// Which station(s) each top-level item goes to (by index into snap.Items).
 	assigned := make(map[string][]int, len(stations))
+	pos := isPOS(snap)
 	for i, it := range snap.Items {
+		if pos && it.PrinterID == "" {
+			continue // a POS line with no Pi printer: not for this kitchen
+		}
 		if it.Routing == order.RoutingMatched && known[it.PrinterID] {
 			assigned[it.PrinterID] = append(assigned[it.PrinterID], i)
 			continue
@@ -148,6 +184,31 @@ func stationTickets(snap order.Snapshot, roster []RosterEntry, receipt RosterEnt
 func isPickupCash(snap order.Snapshot) bool {
 	return strings.EqualFold(strings.TrimSpace(snap.Fulfillment.Type), "pickup") && snap.CashDue() > 0
 }
+
+// InsertsLive: an online cash pickup that prints its kitchen tickets on
+// accept because the hub inserts it into the POS live (rules.InsertLive and
+// the online_cash_pickup switch) — the hub is then expected to insert it.
+func InsertsLive(snap order.Snapshot, rules Rules) bool {
+	return !isPOS(snap) && isPickupCash(snap) && rules.InsertLive && rules.Tickets.OnlineCashPickup
+}
+
+// receiptOnly applies the online kitchen-ticket switches: an online order
+// whose switch is off prints only the customer receipt. A cash pickup needs
+// its switch AND the hub inserting live.
+func receiptOnly(snap order.Snapshot, rules Rules) bool {
+	switch {
+	case snap.CashDue() == 0:
+		return !rules.Tickets.OnlineCard
+	case isPickupCash(snap):
+		return !(rules.InsertLive && rules.Tickets.OnlineCashPickup)
+	case strings.EqualFold(strings.TrimSpace(snap.Fulfillment.Type), "delivery"):
+		return !rules.Tickets.OnlineCashDelivery
+	}
+	return false
+}
+
+// isPOS: an order the store hub pulled from the POS.
+func isPOS(snap order.Snapshot) bool { return snap.Source == order.SourcePOS }
 
 // isRouted reports whether main stamped kitchen routing on this order.
 func isRouted(snap order.Snapshot) bool {

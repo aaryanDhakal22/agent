@@ -53,7 +53,7 @@ func (f *fakeRepo) ClaimAccept(_ context.Context, id uuid.UUID, _ int) (*order.S
 	cp := *so
 	return &cp, nil
 }
-func (f *fakeRepo) RecordAccepted(context.Context, order.StoredOrder) error { return nil }
+func (f *fakeRepo) RecordAccepted(context.Context, order.StoredOrder, bool) error { return nil }
 func (f *fakeRepo) FloorSettings(context.Context) (order.FloorSettings, error) {
 	return order.FloorSettings{KitchenNext: 1100, LastPrepMinutes: 20}, nil
 }

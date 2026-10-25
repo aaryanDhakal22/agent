@@ -30,6 +30,11 @@ import (
 // sends it with a name to POST /api/pair and gets a device key back once. The
 // key (qagt_…) goes in X-Agent-Device-Key on every floor request; only its
 // sha256 is stored. Devices are listed + revoked in the web UI's Settings.
+//
+// A device paired with kind "integration" (the store hub, 2.1.0) is not a
+// tablet: its key opens /api/integration/* (which tablet keys and web
+// sessions can't) plus GET /api/floor, /api/events, /api/drivers and
+// /api/settings/*, nothing else (403 integration_only).
 
 const (
 	deviceKeyHeader  = "X-Agent-Device-Key"
@@ -130,7 +135,8 @@ func (s *Server) touchDevice(id string) {
 }
 
 // floor gates the floor routes: a paired tablet (device key) OR a logged-in
-// web-UI session (the backup accept screen).
+// web-UI session (the backup accept screen). An integration key gets only
+// the read-only routes integrationMayRead allows.
 func (s *Server) floor(h http.HandlerFunc) http.HandlerFunc {
 	return s.withCORS(func(w http.ResponseWriter, r *http.Request) {
 		if s.session != nil && s.session.valid(r) {
@@ -143,10 +149,49 @@ func (s *Server) floor(h http.HandlerFunc) http.HandlerFunc {
 			return
 		}
 		if ok {
+			if d.Kind == device.KindIntegration && !integrationMayRead(r) {
+				s.writeJSON(w, http.StatusForbidden, errCodeMap("an integration key can't use this route", "integration_only"))
+				return
+			}
 			h(w, r.WithContext(context.WithValue(r.Context(), deviceCtxKey{}, d)))
 			return
 		}
 		s.writeJSON(w, http.StatusUnauthorized, errCodeMap("pair this device first (or log in)", "device_required"))
+	})
+}
+
+// integrationMayRead: the floor routes an integration key may call — GET
+// /api/floor, /api/events, /api/drivers and /api/settings/*.
+func integrationMayRead(r *http.Request) bool {
+	if r.Method != http.MethodGet {
+		return false
+	}
+	switch p := r.URL.Path; {
+	case p == "/api/floor", p == "/api/events", p == "/api/drivers":
+		return true
+	case strings.HasPrefix(p, "/api/settings/"):
+		return true
+	}
+	return false
+}
+
+// integration gates /api/integration/*: an integration device's key only
+// (a tablet key or a web session gets 403).
+func (s *Server) integration(h http.HandlerFunc) http.HandlerFunc {
+	return s.withCORS(func(w http.ResponseWriter, r *http.Request) {
+		d, ok, err := s.deviceFromRequest(r)
+		if err != nil {
+			s.writeError(w, r, http.StatusInternalServerError, err)
+			return
+		}
+		switch {
+		case ok && d.Kind == device.KindIntegration:
+			h(w, r.WithContext(context.WithValue(r.Context(), deviceCtxKey{}, d)))
+		case ok || (s.session != nil && s.session.valid(r)):
+			s.writeJSON(w, http.StatusForbidden, errCodeMap("only the store hub's integration key can use this route", "integration_required"))
+		default:
+			s.writeJSON(w, http.StatusUnauthorized, errCodeMap("pair the integration first", "device_required"))
+		}
 	})
 }
 
@@ -161,11 +206,13 @@ func (s *Server) handlePairingCode(w http.ResponseWriter, _ *http.Request) {
 	s.writeJSON(w, http.StatusOK, map[string]any{"code": code, "expires_at": exp.UTC()})
 }
 
-// POST /api/pair {code, name} (open) — exchange a code for a device key.
+// POST /api/pair {code, name, kind?} (open) — exchange a code for a device
+// key. kind: tablet (default) | integration (the store hub).
 func (s *Server) handlePair(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Code string `json:"code"`
 		Name string `json:"name"`
+		Kind string `json:"kind"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		s.writeJSON(w, http.StatusBadRequest, errCodeMap("invalid body", "bad_request"))
@@ -174,6 +221,15 @@ func (s *Server) handlePair(w http.ResponseWriter, r *http.Request) {
 	name := strings.TrimSpace(req.Name)
 	if name == "" || utf8.RuneCountInString(name) > 40 {
 		s.writeJSON(w, http.StatusBadRequest, errCodeMap("name must be 1-40 characters", "name_required"))
+		return
+	}
+	kind := strings.TrimSpace(req.Kind)
+	switch kind {
+	case "":
+		kind = device.KindTablet
+	case device.KindTablet, device.KindIntegration:
+	default:
+		s.writeJSON(w, http.StatusBadRequest, errCodeMap("kind must be tablet or integration", "bad_request"))
 		return
 	}
 	if !s.pairing.consume(strings.TrimSpace(req.Code), time.Now()) {
@@ -186,12 +242,16 @@ func (s *Server) handlePair(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := uuid.NewString()
-	if err := s.devices.Create(r.Context(), id, name, hashDeviceKey(key), key[:len(deviceKeyPrefix)+6]); err != nil {
+	if err := s.devices.Create(r.Context(), id, name, kind, hashDeviceKey(key), key[:len(deviceKeyPrefix)+6]); err != nil {
 		s.writeError(w, r, http.StatusInternalServerError, err)
 		return
 	}
-	s.logger.Info().Ctx(r.Context()).Str("device_id", id).Str("name", name).Msg("Tablet paired")
-	s.writeJSON(w, http.StatusCreated, map[string]any{"device_id": id, "name": name, "key": key})
+	s.logger.Info().Ctx(r.Context()).Str("device_id", id).Str("name", name).Str("kind", kind).Msg("Device paired")
+	if kind == device.KindIntegration && s.broker != nil {
+		s.broker.PublishFloorChanged() // the web UI shows the POS switches now
+	}
+	// device_key is the same key under the name the integration contract uses.
+	s.writeJSON(w, http.StatusCreated, map[string]any{"device_id": id, "name": name, "kind": kind, "key": key, "device_key": key})
 }
 
 // GET /api/devices (session).

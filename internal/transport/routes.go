@@ -12,7 +12,7 @@ import (
 type routeDef struct {
 	Method      string
 	Path        string
-	Auth        string // "none" (LAN-open) | "device" (paired tablet key OR session) | "session" (web-UI cookie)
+	Auth        string // "none" (LAN-open) | "device" (paired tablet key OR session) | "session" (web-UI cookie) | "integration" (the store hub's key only)
 	Description string
 	Handler     http.HandlerFunc
 }
@@ -53,10 +53,10 @@ func (s *Server) routes() []routeDef {
 		{"GET", "/api/session", "none", "Provisioning state (unconfigured|needs_password|locked|ready) + SSE health", s.handleSession},
 
 		// Tablet pairing — open (needs a live 6-digit code from the web UI).
-		{"POST", "/api/pair", "none", "Pair a tablet: {code, name} -> device key (shown once)", s.handlePair},
+		{"POST", "/api/pair", "none", "Pair a tablet or the store hub: {code, name, kind?: tablet|integration} -> {device_id, name, kind, key, device_key} (shown once)", s.handlePair},
 
 		// Floor — paired tablet (X-Agent-Device-Key) or web-UI session.
-		{"GET", "/api/floor", "device", "Open batch, kitchen counter, prep quick-picks, sync backlog, delivery settings, store pin + map", s.handleFloor},
+		{"GET", "/api/floor", "device", "Open batch, kitchen counter, prep quick-picks, sync backlog, delivery settings, store pin + map, settings {features, tickets, times}, integration (hub status)", s.handleFloor},
 		{"GET", "/api/orders", "device", "Orders newest-first (?batch=current|all|<id>, default current)", s.handleListOrders},
 		{"GET", "/api/orders/arrived", "device", "Orders awaiting acceptance (oldest-first)", s.handleListArrived},
 		{"GET", "/api/orders/{id}", "device", "One local order by canonical UUID", s.handleGetOrder},
@@ -71,11 +71,19 @@ func (s *Server) routes() []routeDef {
 		{"POST", "/api/drivers/{id}/send-out", "device", "Send the driver out with their pool {mark_ready, include_order_ids?, plan_id?} -> []StoredOrder | 400 pool empty | 409 not_ready {order_ids}/driver_not_available", s.handleSendOut},
 		{"GET", "/api/drivers/{id}/pool/trip", "device", "The pool (or ?order_ids=a,b) in fastest driving order + route via main geo.trip (approximate local order when main is unreachable)", s.handlePoolTrip},
 		{"POST", "/api/orders/{id}/pin", "device", "Drop a pin for a delivery address {lat, lng} -> RPC geo.pin -> 202 {} | 503 main_offline", s.handlePinOrder},
+		{"POST", "/api/orders/{id}/geo/choose", "device", "Pick a candidate for an ambiguous address (geo state check) {index} -> RPC geo.choose -> 202 {} | 409 invalid_state | 503 main_offline", s.handleGeoChoose},
+		{"POST", "/api/orders/{id}/schedule", "device", "Future order: first confirm / edit the lead {lead_minutes 1-240} -> scheduled (rings again at promised_at - lead) | 409 not_future", s.handleSchedule},
 		{"PUT", "/api/settings/deliveries", "device", "AUTO settings {soon_ready_minutes 0-30, delivery_target_minutes 15-120} -> 200 same | 400", s.handleSetDeliveryPrefs},
+		{"GET", "/api/settings/features", "device", "Feature toggles {pos_pull, order_insert, driver_writeback, address_heal, future_orders, paid_wave}", s.handleGetFeatures},
+		{"PUT", "/api/settings/features", "device", "Set feature toggles (missing keys keep their value) -> the toggles; SSE settings.updated", s.handleSetFeatures},
+		{"GET", "/api/settings/tickets", "device", "Kitchen-ticket switches {pos_delivery, pos_takeout, pos_counter, online_cash_pickup, online_cash_delivery, online_card}", s.handleGetTickets},
+		{"PUT", "/api/settings/tickets", "device", "Set kitchen-ticket switches (missing keys keep their value) -> the switches; SSE settings.updated", s.handleSetTickets},
+		{"GET", "/api/settings/times", "device", "Default times {default_pickup_minutes, default_delivery_minutes}", s.handleGetTimes},
+		{"PUT", "/api/settings/times", "device", "Set default times (each 1-240; missing keys keep their value) -> the times | 400", s.handleSetTimes},
 		{"GET", "/api/drivers", "device", "Driver roster in queue order (+ deliveries this batch)", s.handleListDrivers},
-		{"POST", "/api/drivers", "device", "Add a driver {name}", s.handleCreateDriver},
+		{"POST", "/api/drivers", "device", "Add a driver {name, pos_number?} (409 pos_number_taken)", s.handleCreateDriver},
 		{"POST", "/api/drivers/reorder", "device", "Set the queue order {ids}", s.handleReorderDrivers},
-		{"PATCH", "/api/drivers/{id}", "device", "Rename a driver {name}", s.handleRenameDriver},
+		{"PATCH", "/api/drivers/{id}", "device", "Rename a driver / set their POS number {name?, pos_number? (\"\" clears)} (409 pos_number_taken)", s.handleRenameDriver},
 		{"DELETE", "/api/drivers/{id}", "device", "Remove a driver", s.handleRemoveDriver},
 		{"POST", "/api/drivers/{id}/clock-in", "device", "Clock a driver in: joins the back of the queue, shift opened", s.handleClockIn},
 		{"POST", "/api/drivers/{id}/clock-out", "device", "Clock a driver out: leaves the queue, shift closed (409 while out on a run)", s.handleClockOut},
@@ -95,7 +103,7 @@ func (s *Server) routes() []routeDef {
 		{"GET", "/api/app/latest", "device", "Newest Quibase release cached for tablets (204 none)", s.handleAppLatest},
 		{"GET", "/api/app/apk", "device", "Download the cached Quibase APK", s.handleAppAPK},
 		{"GET", "/api/update/status", "device", "Pi update state: versions, latest, pending request, last result, can_update_now/blocked_reason", s.handleUpdateStatus},
-		{"GET", "/api/events", "device", "SSE: order.arrived|updated|escalated, drivers.updated|dispatched, batch.closed", s.handleEvents},
+		{"GET", "/api/events", "device", "SSE: order.arrived|added|updated|escalated, drivers.updated|dispatched, batch.closed, floor.updated, settings.updated, integration.status|toast", s.handleEvents},
 
 		// Quibase setup + diagnostics — paired tablet (or web-UI session).
 		{"POST", "/api/pairing/code", "device", "Show a 6-digit tablet pairing code (5 min) — web UI or a paired tablet (Pair another tablet)", s.handlePairingCode},
@@ -109,6 +117,14 @@ func (s *Server) routes() []routeDef {
 		{"GET", "/api/settings/receipt", "device", "Receipt settings {prefs, defaults, footer_effective, footer_store_default, location_footer}", s.handleGetReceiptPrefs},
 		{"PUT", "/api/settings/receipt", "device", "Save the receipt settings (full prefs; missing keys = defaults) -> {prefs, footer_effective, footer_store_default, location_footer}", s.handleSetReceiptPrefs},
 		{"POST", "/api/printers/sample", "device", "Print a sample receipt + kitchen ticket with the current settings {printer_id?} (default the receipt printer), never fails over (409 while a test runs)", s.handlePrinterSample},
+
+		// The store hub — its integration key only (tablet keys / sessions get 403).
+		{"GET", "/api/integration/config", "integration", "Location, features, tickets, times, drivers (pos_number), printers, agent_version", s.handleIntegrationConfig},
+		{"PUT", "/api/integration/status", "integration", "Hub status {ok, insert_mode off|shadow|live, operation_day, problems, version} -> 204; silent 60 s = POS link down", s.handleIntegrationStatus},
+		{"PUT", "/api/integration/orders/{ext_ref}", "integration", "Upsert a POS check (stored accepted, local only) -> {order_id, created, changed} | 409 pos_pull_off", s.handleIntegrationUpsert},
+		{"POST", "/api/integration/orders/{ext_ref}/void", "integration", "A POS check voided at the terminal -> the cancelled order", s.handleIntegrationVoid},
+		{"PATCH", "/api/integration/online-orders/{order_id}", "integration", "An online order the hub inserted / refused {paid?, pos_check_number?, flag?|null} -> StoredOrder", s.handleIntegrationPatchOnline},
+		{"GET", "/api/integration/events", "integration", "The hub feed (?after=<seq>&wait=<sec <=25>, long-poll) -> {events:[{seq,type,at,data}], next}; kept 3 days", s.handleIntegrationEvents},
 
 		// Web-UI-only — session-gated.
 		{"GET", "/api/devices", "session", "Paired tablets", s.handleListDevices},
@@ -139,6 +155,8 @@ func (s *Server) register(mux *http.ServeMux) {
 			wrap = s.protected
 		case "device":
 			wrap = s.floor
+		case "integration":
+			wrap = s.integration
 		}
 		mux.HandleFunc(r.Method+" "+r.Path, wrap(r.Handler))
 	}

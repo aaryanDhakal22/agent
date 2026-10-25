@@ -39,13 +39,33 @@ CREATE TABLE orders (
     -- 00013_pool_seq: stop order inside the pool (1..n).
     pool_seq           integer,
     pool_plan_id       text,
-    CHECK (state IN ('arrived', 'accepted', 'ready', 'on_delivery', 'delivered', 'cancelled'))
+    -- 00014_integration: POS orders from the store hub + future orders.
+    ext_source             text    NOT NULL DEFAULT '',
+    ext_ref                text    NOT NULL DEFAULT '',
+    ext_hash               text    NOT NULL DEFAULT '',
+    ext_driver_pos         text    NOT NULL DEFAULT '',
+    display_number         integer,
+    paid                   boolean NOT NULL DEFAULT false,
+    cash_due_cents         integer,
+    tip_cents              integer,
+    board_hidden           boolean NOT NULL DEFAULT false,
+    sent_at                text,
+    local_only             boolean NOT NULL DEFAULT false,
+    flag                   text    NOT NULL DEFAULT '',
+    pos_check_number       integer,
+    pos_driver_note        text    NOT NULL DEFAULT '',
+    scheduled_lead_minutes integer,
+    ring_at                text,
+    rerung                 boolean NOT NULL DEFAULT false,
+    CHECK (state IN ('arrived', 'scheduled', 'accepted', 'ready', 'on_delivery', 'delivered', 'cancelled'))
 );
 CREATE INDEX idx_orders_arrival_date ON orders (arrival_date DESC);
 CREATE INDEX idx_orders_state_pending ON orders (arrival_date DESC) WHERE state = 'arrived';
 CREATE INDEX idx_orders_source_event ON orders (source, source_event_id);
 CREATE INDEX idx_orders_batch ON orders (batch_id, arrival_date DESC);
 CREATE INDEX idx_orders_pool ON orders (pool_driver_id) WHERE pool_driver_id IS NOT NULL;
+CREATE INDEX idx_orders_ext ON orders (ext_source, ext_ref) WHERE ext_ref <> '';
+CREATE INDEX idx_orders_scheduled ON orders (ring_at) WHERE state = 'scheduled';
 
 CREATE TABLE drivers (
     id               text    PRIMARY KEY,
@@ -56,8 +76,11 @@ CREATE TABLE drivers (
     status           text    NOT NULL DEFAULT 'off',
     last_returned_at text,
     created_at       text    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    -- 00014_integration: the driver's POS login number (unique when set).
+    pos_number       text    NOT NULL DEFAULT '',
     CHECK (status IN ('off', 'available', 'out'))
 );
+CREATE UNIQUE INDEX idx_drivers_pos_number ON drivers (pos_number) WHERE pos_number <> '' AND active;
 
 CREATE TABLE driver_shifts (
     id          text    PRIMARY KEY,
@@ -89,8 +112,19 @@ CREATE TABLE paired_devices (
     key_prefix   text NOT NULL,
     created_at   text NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     last_seen_at text,
-    revoked_at   text
+    revoked_at   text,
+    -- 00014_integration: tablet | integration (the store hub).
+    kind         text NOT NULL DEFAULT 'tablet' CHECK (kind IN ('tablet', 'integration'))
 );
+
+-- 00014_integration: the hub's cursor feed (kept 3 days).
+CREATE TABLE integration_events (
+    seq        integer PRIMARY KEY AUTOINCREMENT,
+    type       text    NOT NULL,
+    payload    text    NOT NULL,
+    created_at text    NOT NULL
+);
+CREATE INDEX idx_integration_events_created ON integration_events (created_at);
 
 CREATE TABLE settings (
     id            integer PRIMARY KEY DEFAULT 1,
@@ -136,6 +170,13 @@ CREATE TABLE settings (
     soon_ready_minutes        integer NOT NULL DEFAULT 5,
     delivery_target_minutes   integer NOT NULL DEFAULT 45,
     map_file                  text NOT NULL DEFAULT '',
+    -- 00014_integration: feature toggles + kitchen-ticket switches (JSON),
+    -- default pickup / delivery minutes, the hub's last status (JSON).
+    features                  text NOT NULL DEFAULT '{}',
+    ticket_toggles            text NOT NULL DEFAULT '{}',
+    default_pickup_minutes    integer NOT NULL DEFAULT 15,
+    default_delivery_minutes  integer NOT NULL DEFAULT 35,
+    integration_status        text NOT NULL DEFAULT '',
     CHECK (id = 1)
 );
 
@@ -167,7 +208,10 @@ CREATE TABLE order_geo (
     outside_area boolean NOT NULL DEFAULT false,
     store_to_s   integer,
     to_store_s   integer,
-    updated_at   text    NOT NULL
+    updated_at   text    NOT NULL,
+    -- 00014_integration: candidates (state check) + the confirmed address (JSON).
+    candidates        text NOT NULL DEFAULT '',
+    confirmed_address text NOT NULL DEFAULT ''
 );
 
 CREATE TABLE order_times (

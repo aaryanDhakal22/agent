@@ -267,3 +267,55 @@ func TestExecuteMode_ReceiptAndKitchen(t *testing.T) {
 		t.Fatalf("front printed %q", jobs(fk["Front"]))
 	}
 }
+
+// insert_expected: true only when this accept printed the kitchen tickets of
+// an online cash pickup under the insert_live rule, decided from the same
+// rules snapshot the plan used.
+func TestExecute_InsertExpected(t *testing.T) {
+	d, fk := newTestDispatcher(t)
+	cash := routedSnap()
+	cash.Fulfillment.Type = "pickup"
+	cash.Money.Total = 2000 // no payments: all cash
+	card := cash
+	card.Payments = []order.PaymentSummary{{Method: "card", AmountCents: 2000}}
+	delivery := cash
+	delivery.Fulfillment.Type = "delivery"
+	pos := cash
+	pos.Source = order.SourcePOS
+	live := Rules{Tickets: order.DefaultTicketToggles(), InsertLive: true}
+	off := Rules{Tickets: order.DefaultTicketToggles()}
+	switchOff := live
+	switchOff.Tickets.OnlineCashPickup = false
+	posOn := live
+	posOn.Tickets.PosTakeout = true
+	for _, tc := range []struct {
+		name  string
+		snap  order.Snapshot
+		rules Rules
+		mode  printer.Mode
+		want  bool
+	}{
+		{"cash pickup, insert live", cash, live, printer.ModeAccept, true},
+		{"cash pickup, not live (receipt only)", cash, off, printer.ModeAccept, false},
+		{"cash pickup, switch off", cash, switchOff, printer.ModeAccept, false},
+		{"cash pickup, kitchen resend", cash, live, printer.ModeKitchen, false},
+		{"card pickup", card, live, printer.ModeAccept, false},
+		{"cash delivery", delivery, live, printer.ModeAccept, false},
+		{"POS pickup", pos, posOn, printer.ModeAccept, false},
+	} {
+		rules := tc.rules
+		d.SetRules(func() Rules { return rules })
+		out, err := d.ExecuteMode(context.Background(), tc.snap, tc.mode)
+		if err != nil || out.InsertExpected != tc.want {
+			t.Fatalf("%s: insert_expected = %v (err %v), want %v", tc.name, out.InsertExpected, err, tc.want)
+		}
+	}
+	// Nothing printed anywhere: no insert either.
+	for _, f := range fk {
+		f.setDown(true)
+	}
+	d.SetRules(func() Rules { return live })
+	if out, err := d.Execute(context.Background(), cash); err == nil || out.InsertExpected {
+		t.Fatalf("all down: insert_expected = %v (err %v)", out.InsertExpected, err)
+	}
+}

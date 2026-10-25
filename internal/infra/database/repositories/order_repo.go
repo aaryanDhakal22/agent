@@ -199,6 +199,8 @@ func toStored(row models.Order) (order.StoredOrder, error) {
 		{row.DeliveredAt, &st.DeliveredAt},
 		{row.CancelledAt, &st.CancelledAt},
 		{row.PooledAt, &st.PooledAt},
+		{row.SentAt, &st.SentAt},
+		{row.RingAt, &st.RingAt},
 	} {
 		t, err := optTS(f.src)
 		if err != nil {
@@ -227,7 +229,33 @@ func toStored(row models.Order) (order.StoredOrder, error) {
 		v := row.PoolSeq.Int64
 		st.PoolSeq = &v
 	}
+	// 2.1.0: POS orders, hub flags, future orders.
+	st.ExtSource, st.ExtRef = row.ExtSource, row.ExtRef
+	st.DisplayNumber = optInt(row.DisplayNumber)
+	st.Paid, st.BoardHidden, st.LocalOnly, st.Rerung = row.Paid, row.BoardHidden, row.LocalOnly, row.Rerung
+	st.PosCheckNumber = optInt(row.PosCheckNumber)
+	st.PosDriverNote = row.PosDriverNote
+	st.ScheduledLeadMinutes = optInt(row.ScheduledLeadMinutes)
+	if row.ExtSource != "" {
+		st.CashDueCents, st.TipCents = row.CashDueCents.Int64, row.TipCents.Int64
+	} else {
+		st.CashDueCents = s.CashDue() // the one cash rule
+	}
+	if row.Flag != "" {
+		var f order.Flag
+		if json.Unmarshal([]byte(row.Flag), &f) == nil && f.Text != "" {
+			st.Flag = &f
+		}
+	}
 	return order.StoredOrder{Order: s, Status: st}, nil
+}
+
+func optInt(v sql.NullInt64) *int64 {
+	if !v.Valid {
+		return nil
+	}
+	n := v.Int64
+	return &n
 }
 
 // geoFromRow converts an order_geo row to the wire shape.
@@ -248,6 +276,15 @@ func geoFromRow(row models.OrderGeo) *order.OrderGeo {
 	}
 	if t, err := parseTS(row.UpdatedAt); err == nil {
 		g.UpdatedAt = t
+	}
+	if row.Candidates != "" {
+		_ = json.Unmarshal([]byte(row.Candidates), &g.Candidates)
+	}
+	if row.ConfirmedAddress != "" {
+		var a order.ConfirmedAddress
+		if json.Unmarshal([]byte(row.ConfirmedAddress), &a) == nil {
+			g.ConfirmedAddress = &a
+		}
 	}
 	return g
 }
@@ -278,6 +315,26 @@ func attachGeo(ctx context.Context, q *models.Queries, list []order.StoredOrder)
 	now := time.Now()
 	for i := range list {
 		list[i].FillMissingGeo(now)
+	}
+	return markFuture(ctx, q, list, now)
+}
+
+// markFuture computes Status.Future (it depends on the settings and the
+// clock, so it is never stored).
+func markFuture(ctx context.Context, q *models.Queries, list []order.StoredOrder, now time.Time) error {
+	need := false
+	for _, so := range list {
+		need = need || (!so.IsPOS() && (so.Status.State == order.StateArrived || so.Status.State == order.StateScheduled))
+	}
+	if !need {
+		return nil
+	}
+	set, err := integrationSettings(ctx, q)
+	if err != nil {
+		return err
+	}
+	for i := range list {
+		list[i].Status.Future = order.IsFuture(list[i], set, now)
 	}
 	return nil
 }

@@ -58,9 +58,9 @@ func deliver(t *testing.T, r *OrderRepository, driverID string, orders ...order.
 func TestDriverReports(t *testing.T) {
 	r := newFloorRepo(t)
 	ctx := context.Background()
-	abdul, _ := r.CreateDriver(ctx, "Abdul")
-	carlos, _ := r.CreateDriver(ctx, "Carlos")
-	deep, _ := r.CreateDriver(ctx, "Deep")
+	abdul, _ := r.CreateDriver(ctx, "Abdul", "")
+	carlos, _ := r.CreateDriver(ctx, "Carlos", "")
+	deep, _ := r.CreateDriver(ctx, "Deep", "")
 	clockIn(t, r, abdul.ID, carlos.ID, deep.ID)
 
 	deliver(t, r, abdul.ID,
@@ -82,7 +82,9 @@ func TestDriverReports(t *testing.T) {
 	}
 	a := reps[0]
 	a.Finish(600)
-	if a.Deliveries != 3 || a.CashCents != 4099 || a.TipCents != 900 || a.TipAfterTaxCents != 846 || a.OwedCents != 3253 {
+	// 2.1.0: cash orders count cash less their tip (the driver kept it) and
+	// list no tip; only the card order's tip counts.
+	if a.Deliveries != 3 || a.CashCents != 3599 || a.TipCents != 400 || a.TipAfterTaxCents != 376 || a.OwedCents != 3223 {
 		t.Errorf("abdul = %+v", a)
 	}
 	if l := a.Lines[0]; l.Customer != "Erik D." || l.Address != "12 Main St, Apt 3" || !l.Cash || l.KitchenNumber == nil {
@@ -118,8 +120,8 @@ func TestDriverReports(t *testing.T) {
 func TestUndoReturn(t *testing.T) {
 	r := newFloorRepo(t)
 	ctx := context.Background()
-	abdul, _ := r.CreateDriver(ctx, "Abdul")
-	carlos, _ := r.CreateDriver(ctx, "Carlos")
+	abdul, _ := r.CreateDriver(ctx, "Abdul", "")
+	carlos, _ := r.CreateDriver(ctx, "Carlos", "")
 	clockIn(t, r, abdul.ID, carlos.ID)
 	deliver(t, r, abdul.ID, arriveDelivery(t, r, "Erik Davis", 200, 2249, true))
 

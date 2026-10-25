@@ -18,8 +18,8 @@ func poolSetup(t *testing.T, deliveries int) (*OrderRepository, *order.Driver, *
 	t.Helper()
 	ctx := context.Background()
 	r := newFloorRepo(t)
-	a, _ := r.CreateDriver(ctx, "Ann")
-	b, _ := r.CreateDriver(ctx, "Bob")
+	a, _ := r.CreateDriver(ctx, "Ann", "")
+	b, _ := r.CreateDriver(ctx, "Bob", "")
 	clockIn(t, r, a.ID, b.ID)
 	var out []order.StoredOrder
 	for range deliveries {
@@ -119,7 +119,7 @@ func TestPoolRules(t *testing.T) {
 		t.Fatalf("unknown order: %v", err)
 	}
 	// Off driver.
-	off, _ := r.CreateDriver(ctx, "Off")
+	off, _ := r.CreateDriver(ctx, "Off", "")
 	if _, err := r.PoolOrders(ctx, ids(os[0]), off.ID); !errors.Is(err, order.ErrDriverNotAvailable) {
 		t.Fatalf("off driver: %v", err)
 	}

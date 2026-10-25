@@ -37,6 +37,7 @@ type StateDriver struct {
 	Position       int64      `json:"position"`
 	Status         string     `json:"status"`
 	LastReturnedAt *time.Time `json:"last_returned_at,omitempty"`
+	PosNumber      string     `json:"pos_number,omitempty"` // 2.1.0
 }
 
 type StateShift struct {

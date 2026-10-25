@@ -29,6 +29,7 @@ type Driver struct {
 	Status         string         `json:"status"`
 	LastReturnedAt sql.NullString `json:"last_returned_at"`
 	CreatedAt      string         `json:"created_at"`
+	PosNumber      string         `json:"pos_number"`
 }
 
 type DriverShift struct {
@@ -52,48 +53,74 @@ type FloorEvent struct {
 	LastError string         `json:"last_error"`
 }
 
+type IntegrationEvent struct {
+	Seq       int64  `json:"seq"`
+	Type      string `json:"type"`
+	Payload   string `json:"payload"`
+	CreatedAt string `json:"created_at"`
+}
+
 type Order struct {
-	ID               string         `json:"id"`
-	TenantID         string         `json:"tenant_id"`
-	LocationID       string         `json:"location_id"`
-	Source           string         `json:"source"`
-	SourceEventID    string         `json:"source_event_id"`
-	Snapshot         string         `json:"snapshot"`
-	State            string         `json:"state"`
-	ArrivalDate      string         `json:"arrival_date"`
-	PrintedDate      sql.NullString `json:"printed_date"`
-	BatchID          int64          `json:"batch_id"`
-	KitchenNumber    sql.NullInt64  `json:"kitchen_number"`
-	PrepMinutes      sql.NullInt64  `json:"prep_minutes"`
-	EstimatedReadyAt sql.NullString `json:"estimated_ready_at"`
-	AcceptedAt       sql.NullString `json:"accepted_at"`
-	ReadyAt          sql.NullString `json:"ready_at"`
-	OutAt            sql.NullString `json:"out_at"`
-	DeliveredAt      sql.NullString `json:"delivered_at"`
-	DriverID         sql.NullString `json:"driver_id"`
-	DriverName       string         `json:"driver_name"`
-	LastAlertAt      sql.NullString `json:"last_alert_at"`
-	CancelledAt      sql.NullString `json:"cancelled_at"`
-	AcceptPending    int64          `json:"accept_pending"`
-	PoolDriverID     sql.NullString `json:"pool_driver_id"`
-	PooledAt         sql.NullString `json:"pooled_at"`
-	PoolSeq          sql.NullInt64  `json:"pool_seq"`
-	PoolPlanID       sql.NullString `json:"pool_plan_id"`
+	ID                   string         `json:"id"`
+	TenantID             string         `json:"tenant_id"`
+	LocationID           string         `json:"location_id"`
+	Source               string         `json:"source"`
+	SourceEventID        string         `json:"source_event_id"`
+	Snapshot             string         `json:"snapshot"`
+	State                string         `json:"state"`
+	ArrivalDate          string         `json:"arrival_date"`
+	PrintedDate          sql.NullString `json:"printed_date"`
+	BatchID              int64          `json:"batch_id"`
+	KitchenNumber        sql.NullInt64  `json:"kitchen_number"`
+	PrepMinutes          sql.NullInt64  `json:"prep_minutes"`
+	EstimatedReadyAt     sql.NullString `json:"estimated_ready_at"`
+	AcceptedAt           sql.NullString `json:"accepted_at"`
+	ReadyAt              sql.NullString `json:"ready_at"`
+	OutAt                sql.NullString `json:"out_at"`
+	DeliveredAt          sql.NullString `json:"delivered_at"`
+	DriverID             sql.NullString `json:"driver_id"`
+	DriverName           string         `json:"driver_name"`
+	LastAlertAt          sql.NullString `json:"last_alert_at"`
+	CancelledAt          sql.NullString `json:"cancelled_at"`
+	AcceptPending        int64          `json:"accept_pending"`
+	PoolDriverID         sql.NullString `json:"pool_driver_id"`
+	PooledAt             sql.NullString `json:"pooled_at"`
+	PoolSeq              sql.NullInt64  `json:"pool_seq"`
+	PoolPlanID           sql.NullString `json:"pool_plan_id"`
+	ExtSource            string         `json:"ext_source"`
+	ExtRef               string         `json:"ext_ref"`
+	ExtHash              string         `json:"ext_hash"`
+	ExtDriverPos         string         `json:"ext_driver_pos"`
+	DisplayNumber        sql.NullInt64  `json:"display_number"`
+	Paid                 bool           `json:"paid"`
+	CashDueCents         sql.NullInt64  `json:"cash_due_cents"`
+	TipCents             sql.NullInt64  `json:"tip_cents"`
+	BoardHidden          bool           `json:"board_hidden"`
+	SentAt               sql.NullString `json:"sent_at"`
+	LocalOnly            bool           `json:"local_only"`
+	Flag                 string         `json:"flag"`
+	PosCheckNumber       sql.NullInt64  `json:"pos_check_number"`
+	PosDriverNote        string         `json:"pos_driver_note"`
+	ScheduledLeadMinutes sql.NullInt64  `json:"scheduled_lead_minutes"`
+	RingAt               sql.NullString `json:"ring_at"`
+	Rerung               bool           `json:"rerung"`
 }
 
 type OrderGeo struct {
-	OrderID     string          `json:"order_id"`
-	State       string          `json:"state"`
-	Lat         sql.NullFloat64 `json:"lat"`
-	Lng         sql.NullFloat64 `json:"lng"`
-	Quality     string          `json:"quality"`
-	DistanceM   int64           `json:"distance_m"`
-	DurationS   int64           `json:"duration_s"`
-	Polyline    string          `json:"polyline"`
-	OutsideArea bool            `json:"outside_area"`
-	StoreToS    sql.NullInt64   `json:"store_to_s"`
-	ToStoreS    sql.NullInt64   `json:"to_store_s"`
-	UpdatedAt   string          `json:"updated_at"`
+	OrderID          string          `json:"order_id"`
+	State            string          `json:"state"`
+	Lat              sql.NullFloat64 `json:"lat"`
+	Lng              sql.NullFloat64 `json:"lng"`
+	Quality          string          `json:"quality"`
+	DistanceM        int64           `json:"distance_m"`
+	DurationS        int64           `json:"duration_s"`
+	Polyline         string          `json:"polyline"`
+	OutsideArea      bool            `json:"outside_area"`
+	StoreToS         sql.NullInt64   `json:"store_to_s"`
+	ToStoreS         sql.NullInt64   `json:"to_store_s"`
+	UpdatedAt        string          `json:"updated_at"`
+	Candidates       string          `json:"candidates"`
+	ConfirmedAddress string          `json:"confirmed_address"`
 }
 
 type OrderTime struct {
@@ -110,6 +137,7 @@ type PairedDevice struct {
 	CreatedAt  string         `json:"created_at"`
 	LastSeenAt sql.NullString `json:"last_seen_at"`
 	RevokedAt  sql.NullString `json:"revoked_at"`
+	Kind       string         `json:"kind"`
 }
 
 type PrinterMac struct {
@@ -151,6 +179,11 @@ type Setting struct {
 	SoonReadyMinutes       int64  `json:"soon_ready_minutes"`
 	DeliveryTargetMinutes  int64  `json:"delivery_target_minutes"`
 	MapFile                string `json:"map_file"`
+	Features               string `json:"features"`
+	TicketToggles          string `json:"ticket_toggles"`
+	DefaultPickupMinutes   int64  `json:"default_pickup_minutes"`
+	DefaultDeliveryMinutes int64  `json:"default_delivery_minutes"`
+	IntegrationStatus      string `json:"integration_status"`
 }
 
 type StoreConfig struct {

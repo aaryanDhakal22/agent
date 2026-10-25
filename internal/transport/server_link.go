@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"quiccpos/agent/internal/application/recovery"
+	"quiccpos/agent/internal/domain/device"
 
 	"github.com/google/uuid"
 )
@@ -99,7 +100,7 @@ func (s *Server) handleSetupLink(w http.ResponseWriter, r *http.Request) {
 		key, err := newDeviceKey()
 		if err == nil {
 			id := uuid.NewString()
-			if err = s.devices.Create(ctx, id, tablet, hashDeviceKey(key), key[:len(deviceKeyPrefix)+6]); err == nil {
+			if err = s.devices.Create(ctx, id, tablet, device.KindTablet, hashDeviceKey(key), key[:len(deviceKeyPrefix)+6]); err == nil {
 				resp["device_id"], resp["device_key"], resp["device_name"] = id, key, tablet
 				s.logger.Info().Ctx(ctx).Str("device_id", id).Str("name", tablet).Msg("Tablet paired by the manager-login link")
 			}

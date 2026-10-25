@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -67,6 +68,12 @@ type Service struct {
 	receiptPrefs atomic.Pointer[order.ReceiptPrefs]
 	// geo: store pin / map / main geo RPC hooks (SetGeo).
 	geo atomic.Pointer[GeoDeps]
+	// 2.1.0 store hub: settings copy for the print path, the hub's status
+	// and the feed wake-up (integration.go); the store ids for POS orders.
+	integSet atomic.Pointer[order.IntegrationSettings]
+	integ    integrationState
+	storeIDs atomic.Pointer[func() (string, string)]
+	bg       sync.WaitGroup
 }
 
 func NewService(
@@ -98,6 +105,7 @@ func (s *Service) floorChanged() {
 	if fn := s.onFloorEvent.Load(); fn != nil && *fn != nil {
 		(*fn)()
 	}
+	s.feedNotify() // the same transaction may have written a hub feed event
 }
 
 // OnArrival is called by the SSE listener when a new order lands from main/.
@@ -145,13 +153,28 @@ func (s *Service) OnArrival(ctx context.Context, snap order.Snapshot) error {
 	span.SetAttributes(attribute.Bool("order.auto_accept", autoAccept))
 
 	if autoAccept {
-		s.logger.Info().Ctx(ctx).Str("order_id", id.String()).Msg("Auto-accept ON — accepting immediately")
-		if _, err := s.Accept(ctx, id, nil); err != nil {
-			s.logger.Error().Ctx(ctx).Err(err).Str("order_id", id.String()).Msg("Auto-accept failed — order remains arrived")
+		// A future order isn't cooked now: it is scheduled with the default
+		// time for its type as the lead, and auto-accepted when it rings
+		// again at ring_at (RaiseDue) — that accept prints.
+		if cur, gerr := s.repo.GetByID(ctx, id); gerr == nil && cur.Status.Future && cur.Status.State == order.StateArrived {
+			lead := int(s.IntegrationSettings().Times.For(cur.Order.Fulfillment.Type))
+			span.SetAttributes(attribute.Bool("order.future", true))
+			_, err := s.Schedule(ctx, id.String(), lead)
+			if err == nil {
+				s.logger.Info().Ctx(ctx).Str("order_id", id.String()).Int("lead_minutes", lead).Msg("Auto-accept ON — future order scheduled")
+				return nil
+			}
+			s.logger.Error().Ctx(ctx).Err(err).Str("order_id", id.String()).Msg("Auto-schedule failed — order rings")
 			span.RecordError(err)
-			// Fall through to broadcast so mobile sees the pending order.
 		} else {
-			return nil
+			s.logger.Info().Ctx(ctx).Str("order_id", id.String()).Msg("Auto-accept ON — accepting immediately")
+			if _, err := s.Accept(ctx, id, nil); err != nil {
+				s.logger.Error().Ctx(ctx).Err(err).Str("order_id", id.String()).Msg("Auto-accept failed — order remains arrived")
+				span.RecordError(err)
+				// Fall through to broadcast so mobile sees the pending order.
+			} else {
+				return nil
+			}
 		}
 	}
 
@@ -190,6 +213,10 @@ func (s *Service) Accept(ctx context.Context, id uuid.UUID, prepMinutes *int) (*
 	prep := 0
 	if prepMinutes != nil {
 		prep = *prepMinutes
+	} else if cur, err := s.repo.GetByID(ctx, id); err == nil && cur.Status.Rerung && cur.Status.ScheduledLeadMinutes != nil {
+		// A future order ringing again: its lead time is the prep (ready at
+		// promised_at), no time dialog.
+		prep = int(*cur.Status.ScheduledLeadMinutes)
 	} else if fs, err := s.repo.FloorSettings(ctx); err == nil {
 		prep = int(fs.LastPrepMinutes)
 	}
@@ -219,7 +246,7 @@ func (s *Service) Accept(ctx context.Context, id uuid.UUID, prepMinutes *int) (*
 	}
 	// The tickets printed: the accept must reach main even if the tablet's
 	// request was cancelled meanwhile.
-	if err := s.repo.RecordAccepted(context.WithoutCancel(ctx), *so); err != nil {
+	if err := s.repo.RecordAccepted(context.WithoutCancel(ctx), *so, out.InsertExpected); err != nil {
 		s.logger.Error().Ctx(ctx).Err(err).Str("order_id", id.String()).Msg("Failed to record accepted floor event (main won't see it)")
 	}
 	s.floorChanged()
@@ -264,11 +291,12 @@ var ErrBadRequest = errors.New("bad request")
 // anywhere (mapped to 502 by the transport; the order is still arrived).
 var ErrNothingPrinted = errors.New("nothing printed, order not accepted")
 
-// printable is the snapshot to print: the order with its kitchen number.
+// printable is the snapshot to print: the order with the number staff call
+// (the kitchen number, or a POS order's check number).
 func printable(so order.StoredOrder) order.Snapshot {
 	snap := so.Order
-	if so.Status.KitchenNumber != nil {
-		snap.KitchenNumber = so.Status.KitchenNumber
+	if n := so.Number(); n != nil {
+		snap.KitchenNumber = n
 	}
 	return snap
 }
@@ -408,7 +436,7 @@ func (s *Service) ResendKitchen(ctx context.Context, id uuid.UUID) (*order.Store
 	if err != nil {
 		return fail(printer.Outcome{}, err)
 	}
-	if so.Status.KitchenNumber == nil || so.Status.State == order.StateArrived || so.Status.State == order.StateCancelled {
+	if so.Number() == nil || so.Status.State == order.StateArrived || so.Status.State == order.StateScheduled || so.Status.State == order.StateCancelled {
 		return fail(printer.Outcome{}, fmt.Errorf("%w (state %s)", ErrNotAccepted, so.Status.State))
 	}
 

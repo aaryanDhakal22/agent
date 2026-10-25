@@ -64,6 +64,8 @@ func BuildDriverReport(rep order.DriverReport, sc storeconfig.StoreContext, rero
 		num := "#----"
 		if l.KitchenNumber != nil {
 			num = fmt.Sprintf("#%d", *l.KitchenNumber)
+		} else if l.DisplayNumber != nil {
+			num = fmt.Sprintf("#%d", *l.DisplayNumber) // a POS check
 		}
 		pay := "CARD"
 		if l.Cash {
@@ -78,8 +80,10 @@ func BuildDriverReport(rep order.DriverReport, sc storeconfig.StoreContext, rero
 			w("  " + truncRunes(l.Address, lineWidth-2))
 			nl()
 		}
-		w("  Tip " + dollars(l.TipCents))
-		nl()
+		if !l.Cash { // a cash order's tip is the driver's already (2.1.0)
+			w("  Tip " + dollars(l.TipCents))
+			nl()
+		}
 	}
 
 	// --- Totals -----------------------------------------------------------

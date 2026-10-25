@@ -72,7 +72,7 @@ type recordingRepo struct {
 	recorded       bool
 }
 
-func (r *recordingRepo) RecordAccepted(ctx context.Context, _ order.StoredOrder) error {
+func (r *recordingRepo) RecordAccepted(ctx context.Context, _ order.StoredOrder, _ bool) error {
 	r.recorded, r.recordedCtxErr = true, ctx.Err()
 	return nil
 }

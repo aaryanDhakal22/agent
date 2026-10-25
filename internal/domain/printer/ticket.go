@@ -68,4 +68,10 @@ type Outcome struct {
 	// no printer assigned, or a printer this agent doesn't know) — they were
 	// sent to every station; worth an alert so the menu can be fixed.
 	Unrouted []string
+	// InsertExpected (accept only): an online cash pickup whose kitchen
+	// tickets this accept printed because the hub inserts it into the POS
+	// live (the insert_live rule, from the same rules snapshot as the
+	// print). The feed's order.accepted carries it: the hub inserts only
+	// when it is true.
+	InsertExpected bool
 }

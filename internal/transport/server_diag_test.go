@@ -45,7 +45,7 @@ func diagServer(t *testing.T) (*Server, http.Handler, string) {
 	svc := orderApp.NewService(repositories.NewOrderRepository(db, zerolog.Nop()), settings, nil, nil, nil, zerolog.Nop(), meters)
 	s := NewServer(svc, nil, printerApp.NewRegistry(), settings, nil, nil, session, devices, "0", "2.0.1", "test", zerolog.Nop())
 	key, _ := newDeviceKey()
-	if err := devices.Create(ctx, "dev-1", "Counter", hashDeviceKey(key), key[:11]); err != nil {
+	if err := devices.Create(ctx, "dev-1", "Counter", "tablet", hashDeviceKey(key), key[:11]); err != nil {
 		t.Fatal(err)
 	}
 	mux := http.NewServeMux()
