@@ -39,6 +39,9 @@ type Driver struct {
 	// PosNumber is the driver's login number on the store's POS (2.1.0) —
 	// how the hub matches drivers, never by name.
 	PosNumber string `json:"pos_number,omitempty"`
+	// RunOrderIDs (2.2.1): a driver who is out — the orders of the run, in
+	// stop order (first stop first). Empty otherwise.
+	RunOrderIDs []string `json:"run_order_ids,omitempty"`
 }
 
 // Shift is one clock-in → clock-out period of a driver — a record for reports

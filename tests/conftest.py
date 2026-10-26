@@ -341,6 +341,10 @@ def provision(agent: AgentProc, store: MainStore, password: str = "pw") -> None:
     assert requests.post(f"{agent.base}/api/setup/token", json={"token": token}, timeout=10).status_code == 200
     r = agent.http.post(f"{agent.base}/api/setup/password", json={"password": password, "confirm": password}, timeout=10)
     assert r.status_code == 200, r.text
+    # 2.2.1 auto-assign (default on) would pool ready deliveries by itself;
+    # the floor/pool tests build their pools by hand.
+    r = agent.http.put(f"{agent.base}/api/settings/deliveries", json={"auto_assign": False}, timeout=10)
+    assert r.status_code == 200, r.text
 
 
 @pytest.fixture(scope="session")

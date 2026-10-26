@@ -42,6 +42,8 @@ def kitchen(admin, main_store, spawn_agent, fakes):
     assert requests.post(f"{agent.base}/api/setup/token", json={"token": token}, timeout=10).status_code == 200
     assert requests.post(f"{agent.base}/api/setup/password", json={"password": "pw", "confirm": "pw"}, timeout=10).status_code == 200
     assert agent.http.post(f"{agent.base}/api/login", json={"password": "pw"}, timeout=10).status_code == 200
+    # 2.2.1 auto-assign off: these tests build their pools by hand.
+    assert agent.http.put(f"{agent.base}/api/settings/deliveries", json={"auto_assign": False}, timeout=10).status_code == 200
     wait_until(lambda: len(agent.http.get(f"{agent.base}/api/printers", timeout=5).json()) == 3,
                timeout=20, what="agent to apply the 3-printer roster")
     return {"agent": agent, "ids": ids, "main_store": main_store}

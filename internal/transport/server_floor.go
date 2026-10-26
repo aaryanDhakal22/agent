@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 
 	"quiccpos/agent/internal/application/appupdate"
@@ -158,9 +159,13 @@ func (s *Server) handleAssign(w http.ResponseWriter, r *http.Request) {
 	s.writeJSON(w, http.StatusOK, out)
 }
 
-// POST /api/drivers/{id}/returned
+// POST /api/drivers/{id}/returned — the delivered orders (a JSON array, as
+// every Quibase reads it). The simple auto-assign this return triggered
+// (2.2.1) rides in the X-Auto-Assigned-Order-Ids header (comma-separated,
+// only when it pooled something) and, with ?v=2, in an object body
+// {orders, auto_assigned_order_ids}.
 func (s *Server) handleDriverReturned(w http.ResponseWriter, r *http.Request) {
-	out, err := s.service.DriverReturned(r.Context(), r.PathValue("id"))
+	out, assigned, err := s.service.ReturnDriver(r.Context(), r.PathValue("id"))
 	if err != nil {
 		s.floorErr(w, r, err)
 		return
@@ -168,8 +173,21 @@ func (s *Server) handleDriverReturned(w http.ResponseWriter, r *http.Request) {
 	if out == nil {
 		out = []order.StoredOrder{}
 	}
+	if assigned == nil {
+		assigned = []string{}
+	}
+	if len(assigned) > 0 {
+		w.Header().Set(autoAssignedHeader, strings.Join(assigned, ","))
+	}
+	if r.URL.Query().Get("v") == "2" {
+		s.writeJSON(w, http.StatusOK, map[string]any{"orders": out, "auto_assigned_order_ids": assigned})
+		return
+	}
 	s.writeJSON(w, http.StatusOK, out)
 }
+
+// autoAssignedHeader carries the order ids a driver's return auto-assigned.
+const autoAssignedHeader = "X-Auto-Assigned-Order-Ids"
 
 // GET /api/drivers
 func (s *Server) handleListDrivers(w http.ResponseWriter, r *http.Request) {

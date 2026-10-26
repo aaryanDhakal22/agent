@@ -74,6 +74,8 @@ type Querier interface {
 	GetIntegrationStatus(ctx context.Context) (string, error)
 	GetLastBackup(ctx context.Context) (string, error)
 	GetLastReturn(ctx context.Context) (GetLastReturnRow, error)
+	// Auto-assign waits while an AUTO preview may be on a tablet.
+	GetLatestAutoPlan(ctx context.Context) (GetLatestAutoPlanRow, error)
 	GetLinkInfo(ctx context.Context) (GetLinkInfoRow, error)
 	GetMapFile(ctx context.Context) (string, error)
 	// Batches -------------------------------------------------------------------
@@ -133,6 +135,8 @@ type Querier interface {
 	ListPoolByDriver(ctx context.Context, poolDriverID sql.NullString) ([]Order, error)
 	// Printer MACs (2.0.6) --------------------------------------------------------
 	ListPrinterMACs(ctx context.Context) ([]PrinterMac, error)
+	// Every driver's run that is out, stops in run order.
+	ListRunStops(ctx context.Context) ([]ListRunStopsRow, error)
 	// Driver report: shifts that overlap a batch window (opened_at .. closed_at).
 	ListShiftsOverlapping(ctx context.Context, arg ListShiftsOverlappingParams) ([]DriverShift, error)
 	ListShiftsSince(ctx context.Context, clockIn string) ([]DriverShift, error)
@@ -159,6 +163,8 @@ type Querier interface {
 	NextDriverPosition(ctx context.Context) (int64, error)
 	// Allocates a kitchen number: returns the post-increment value (caller subtracts 1).
 	NextKitchenNumber(ctx context.Context) (int64, error)
+	// A stop joining a run that is out goes last.
+	NextRunSeq(ctx context.Context, driverID sql.NullString) (int64, error)
 	OpenBatch(ctx context.Context, openedAt string) (Batch, error)
 	// Driver shifts ----------------------------------------------------------------
 	OpenShift(ctx context.Context, arg OpenShiftParams) error
@@ -221,6 +227,7 @@ type Querier interface {
 	SetPoolSeq(ctx context.Context, arg SetPoolSeqParams) (int64, error)
 	SetPosCheckNumber(ctx context.Context, arg SetPosCheckNumberParams) error
 	SetReceiptPrefs(ctx context.Context, receiptPrefs string) error
+	SetRunSeq(ctx context.Context, arg SetRunSeqParams) error
 	SetSessionSecret(ctx context.Context, sessionSecret string) error
 	SetStoreAPIKey(ctx context.Context, storeApiKey string) error
 	SetUIPassword(ctx context.Context, arg SetUIPasswordParams) error

@@ -38,6 +38,10 @@ type RunMeta struct {
 	PlanID       string
 	SuggestedIDs []string
 	StopOrder    []string
+	// Exclude (2.2.1, send-out exclude_order_ids): orders of the driver's
+	// pool that go back to unassigned instead of out (ids not in the pool
+	// are ignored).
+	Exclude []string
 }
 
 // DeliveryRunEvent is the payload of a delivery.run floor event.
@@ -109,6 +113,9 @@ type DeliveryPrefs struct {
 	// NearbyDistanceMi: rule distance - nearby when it is at most this far
 	// (straight line) from a stop already in the driver's pool.
 	NearbyDistanceMi float64 `json:"nearby_distance_mi"`
+	// AutoAssign (2.2.1): the next available driver with an empty pool gets
+	// the ready deliveries the planner gives him (pooled, not sent).
+	AutoAssign bool `json:"auto_assign"`
 }
 
 // Nearby rules.
@@ -121,7 +128,7 @@ const (
 
 // DefaultDeliveryPrefs are the migration defaults.
 var DefaultDeliveryPrefs = DeliveryPrefs{SoonReadyMinutes: 5, DeliveryTargetMinutes: 45,
-	NearbyRule: NearbyDetour, NearbyDetourMinutes: 5, NearbyDistanceMi: 1.0}
+	NearbyRule: NearbyDetour, NearbyDetourMinutes: 5, NearbyDistanceMi: 1.0, AutoAssign: true}
 
 // Validate checks the ranges the contract allows.
 func (p DeliveryPrefs) Validate() error {
@@ -179,6 +186,9 @@ type PoolRepository interface {
 
 	SaveAutoPlan(ctx context.Context, id string, at time.Time, planJSON []byte) error
 	GetAutoPlan(ctx context.Context, id string) ([]byte, error)
+	// LatestAutoPlan: when the newest AUTO plan was made and whether it was
+	// confirmed (zero time when there is none).
+	LatestAutoPlan(ctx context.Context) (createdAt time.Time, confirmed bool, err error)
 	// ConfirmAutoPlan pools each still-valid suggestion (unassigned,
 	// accepted|ready, driver available) and records confirmed_at.
 	ConfirmAutoPlan(ctx context.Context, id string, runs []PlanRun, at time.Time) (applied []StoredOrder, skipped []PoolSkip, err error)

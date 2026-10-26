@@ -23,6 +23,15 @@ type model struct {
 	bearing []float64
 	nc      int // candidates are nodes 1..nc (bit i = node i+1), oldest first
 
+	// The hold rule (hold.go): pts per node, holdOn = any rule but off,
+	// holdRule = detour | distance when it also limits runs, holdFor = the
+	// out driver a node may be held for (-1 none).
+	pts      []LatLng
+	hold     HoldRule
+	holdOn   bool
+	holdRule string
+	holdFor  []int
+
 	locked []*lockedDriver
 	free   []int // indexes into Input.Drivers of the drivers without a pool, queue order
 
@@ -74,7 +83,7 @@ func Plan(in Input) Output {
 	switch {
 	case len(m.locked)+len(m.free) == 0:
 		for c := 0; c < m.nc; c++ {
-			out.Unassigned = append(out.Unassigned, Unassigned{m.ids[c+1], ReasonNoDriver})
+			out.Unassigned = append(out.Unassigned, m.leftOver(&in, c+1, ReasonNoDriver))
 		}
 	case m.nc > 0 || len(m.locked) > 0:
 		s := newSolver(m, start.Add(budget))
@@ -171,9 +180,9 @@ func build(in *Input, p Params) (*model, Output) {
 		o := &in.Orders[oi]
 		switch {
 		case !routable(o):
-			out.Unassigned = append(out.Unassigned, Unassigned{id, ReasonNoLocation})
+			out.Unassigned = append(out.Unassigned, Unassigned{OrderID: id, Reason: ReasonNoLocation})
 		case !o.Ready && (o.ReadyAt.IsZero() || rel(o.ReadyAt) > soon):
-			out.Unassigned = append(out.Unassigned, Unassigned{id, ReasonNotReadySoon})
+			out.Unassigned = append(out.Unassigned, Unassigned{OrderID: id, Reason: ReasonNotReadySoon})
 		default:
 			cands = append(cands, oi)
 		}
@@ -188,7 +197,7 @@ func build(in *Input, p Params) (*model, Output) {
 	sort.Slice(cands, func(i, j int) bool { return older(cands[i], cands[j]) })
 	if len(cands) > p.MaxCandidates {
 		for _, oi := range cands[p.MaxCandidates:] {
-			out.Unassigned = append(out.Unassigned, Unassigned{in.Orders[oi].ID, ReasonOverLimit})
+			out.Unassigned = append(out.Unassigned, Unassigned{OrderID: in.Orders[oi].ID, Reason: ReasonOverLimit})
 		}
 		cands = cands[:p.MaxCandidates]
 	}
@@ -271,6 +280,7 @@ func build(in *Input, p Params) (*model, Output) {
 		solo := m.direct[k] + p.ServiceS + m.mx.t(k, 0)
 		m.leftover[c] = p.late((door-m.placed[k])/60, target) + p.Beta*solo/60 + p.M
 	}
+	m.setHold(in, pts)
 	if len(m.free)+len(m.locked) > 0 {
 		m.enumerate()
 	}

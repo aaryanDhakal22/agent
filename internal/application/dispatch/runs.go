@@ -133,7 +133,7 @@ func (m *model) enumerate() {
 		ld.base.drv = int16(li)
 		if room := m.p.MaxStops - len(ld.pool); room > 0 {
 			rec(0, room, func() {
-				if m.inSectorNodes(nodes) && ps.run(nodes, m.departOf(nodes), true) {
+				if m.inSectorNodes(nodes) && m.apartOK(nodes) && ps.run(nodes, m.departOf(nodes), true) {
 					m.runs = append(m.runs, runOpt{
 						mask: mask, off: m.push(ps.best[:len(nodes)]), ns: uint8(len(nodes)), drv: int16(li),
 						cost: ps.bestCost, minutes: ps.bestMin,
@@ -263,12 +263,17 @@ func (m *model) enumerateFree() {
 			if math.IsInf(cost[slot], 1) {
 				continue
 			}
-			m.slotRun[slot] = int32(len(m.runs))
 			sq := seqs[slot*MaxStops : slot*MaxStops+k]
 			var mask uint32
-			for _, nd := range sq {
+			var nodes [MaxStops]int
+			for i, nd := range sq {
 				mask |= 1 << (nd - 1)
+				nodes[i] = int(nd)
 			}
+			if !m.apartOK(nodes[:k]) {
+				continue // far apart while a returning driver can take one (hold rule)
+			}
+			m.slotRun[slot] = int32(len(m.runs))
 			m.runs = append(m.runs, runOpt{
 				mask: mask, off: m.push(sq), ns: uint8(k), drv: -1,
 				cost: cost[slot], minutes: mins[slot],

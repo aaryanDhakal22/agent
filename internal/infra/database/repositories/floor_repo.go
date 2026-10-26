@@ -552,6 +552,14 @@ func (r *OrderRepository) ListDrivers(ctx context.Context) (out []order.Driver, 
 	if err != nil {
 		return nil, err
 	}
+	runs := map[string][]string{} // driver -> its run that is out, in stop order
+	stops, err := q.ListRunStops(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for _, st := range stops {
+		runs[st.DriverID.String] = append(runs[st.DriverID.String], st.ID)
+	}
 	clockedIn := map[string]string{}
 	for _, sh := range open {
 		clockedIn[sh.DriverID] = sh.ClockIn
@@ -566,8 +574,12 @@ func (r *OrderRepository) ListDrivers(ctx context.Context) (out []order.Driver, 
 		if err != nil {
 			return nil, err
 		}
-		out = append(out, order.Driver{ID: d.ID, Name: d.Name, Position: d.Position, Status: d.Status,
-			LastReturnedAt: ret, Deliveries: counts[d.ID], ClockedInAt: in, PosNumber: d.PosNumber})
+		dr := order.Driver{ID: d.ID, Name: d.Name, Position: d.Position, Status: d.Status,
+			LastReturnedAt: ret, Deliveries: counts[d.ID], ClockedInAt: in, PosNumber: d.PosNumber}
+		if d.Status == order.DriverOut {
+			dr.RunOrderIDs = runs[d.ID]
+		}
+		out = append(out, dr)
 	}
 	return out, nil
 }

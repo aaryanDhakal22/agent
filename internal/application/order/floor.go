@@ -44,6 +44,8 @@ type Floor struct {
 	NearbyRule          string  `json:"nearby_rule"`
 	NearbyDetourMinutes int64   `json:"nearby_detour_minutes"`
 	NearbyDistanceMi    float64 `json:"nearby_distance_mi"`
+	// AutoAssign (2.2.1): the next idle driver gets ready deliveries pooled.
+	AutoAssign bool `json:"auto_assign"`
 	// Store is the store pin (null until main geocoded it); Map the store's
 	// offline map file on this Pi (null until downloaded).
 	Store *FloorStore `json:"store"`
@@ -90,7 +92,7 @@ func (s *Service) Floor(ctx context.Context) (*Floor, error) {
 		GreenTillMinutes: prefs.GreenTillMinutes, TipTaxPercent: float64(prefs.TipTaxBps) / 100,
 		SoonReadyMinutes: dp.SoonReadyMinutes, DeliveryTargetMinutes: dp.DeliveryTargetMinutes,
 		NearbyRule: dp.NearbyRule, NearbyDetourMinutes: dp.NearbyDetourMinutes, NearbyDistanceMi: dp.NearbyDistanceMi,
-		Store: store, Map: mp, Settings: s.IntegrationSettings(), Integration: s.IntegrationView(time.Now())}, nil
+		AutoAssign: dp.AutoAssign, Store: store, Map: mp, Settings: s.IntegrationSettings(), Integration: s.IntegrationView(time.Now())}, nil
 }
 
 // Ready marks an accepted order ready (terminal for pickup / dine-in).
@@ -104,6 +106,9 @@ func (s *Service) Ready(ctx context.Context, id string) (*order.StoredOrder, err
 	s.floorChanged()
 	s.publishUpdated(*so)
 	s.devEvent(devlog.Info, devlog.KindOrder, "%s ready", label(*so))
+	if so.IsDelivery() {
+		s.autoAssignBG(ctx, "ready")
+	}
 	return so, nil
 }
 
@@ -130,11 +135,19 @@ func (s *Service) AssignDriver(ctx context.Context, driverID string, orderIDs []
 
 // DriverReturned marks a driver's out orders delivered and requeues them.
 func (s *Service) DriverReturned(ctx context.Context, driverID string) ([]order.StoredOrder, error) {
+	out, _, err := s.ReturnDriver(ctx, driverID)
+	return out, err
+}
+
+// ReturnDriver is DriverReturned plus the simple auto-assign it triggers
+// (2.2.1): the order ids pooled to the next driver on this call (nil when
+// none).
+func (s *Service) ReturnDriver(ctx context.Context, driverID string) ([]order.StoredOrder, []string, error) {
 	ctx, span := s.span(ctx, "delivery.returned", attribute.String("driver.id", driverID))
 	defer span.End()
 	out, err := s.repo.DriverReturned(ctx, driverID)
 	if err != nil {
-		return nil, spanErr(span, err)
+		return nil, nil, spanErr(span, err)
 	}
 	if len(out) > 0 {
 		s.devEvent(devlog.Info, devlog.KindOrder, "Delivered: %s", labels(out))
@@ -143,8 +156,9 @@ func (s *Service) DriverReturned(ctx context.Context, driverID string) ([]order.
 	for _, so := range out {
 		s.publishUpdated(so)
 	}
+	assigned := s.autoAssign(ctx, "returned")
 	s.publishDrivers(ctx)
-	return out, nil
+	return out, assigned, nil
 }
 
 // CloseBatch closes the open batch (see order.FloorRepository.CloseBatch).
@@ -338,6 +352,7 @@ func (s *Service) ClockIn(ctx context.Context, id string) (*order.Driver, error)
 		return nil, err
 	}
 	s.driversChanged(ctx)
+	s.autoAssignBG(ctx, "clock_in")
 	return d, nil
 }
 

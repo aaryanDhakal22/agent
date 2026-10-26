@@ -52,7 +52,7 @@ func (m *model) emit(in *Input, s *solver, out *Output) {
 		if s.F == 0 && !m.lockedCanTake(c) {
 			reason = ReasonNoFeasibleRun
 		}
-		out.Unassigned = append(out.Unassigned, Unassigned{m.ids[c+1], reason})
+		out.Unassigned = append(out.Unassigned, m.leftOver(in, c+1, reason))
 	}
 	out.Cost = s.best
 	out.Fallback = s.aborted

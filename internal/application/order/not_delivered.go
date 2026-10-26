@@ -56,5 +56,6 @@ func (s *Service) ReleaseCameBack(ctx context.Context, id string) (*order.Stored
 	s.publishUpdated(*so)
 	s.publishDrivers(ctx)
 	s.devEvent(devlog.Info, devlog.KindOrder, "%s released: back with the deliveries", label(*so))
+	s.autoAssignBG(ctx, "released")
 	return so, nil
 }

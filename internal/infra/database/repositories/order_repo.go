@@ -236,6 +236,7 @@ func toStored(row models.Order) (order.StoredOrder, error) {
 	st.Paid, st.BoardHidden, st.LocalOnly, st.Rerung = row.Paid, row.BoardHidden, row.LocalOnly, row.Rerung
 	st.AutoAccepted = row.AutoAccepted
 	st.CameBack = row.CameBack
+	st.RunSeq = optInt(row.RunSeq)
 	if row.NotDeliveredAction != "" {
 		at, err := optTS(row.NotDeliveredAt)
 		if err != nil {

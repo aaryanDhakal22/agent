@@ -45,6 +45,7 @@ func newPoolService(t *testing.T) (*Service, *repositories.OrderRepository, chan
 		return printer.Outcome{Printed: []printer.TicketResult{{Kind: printer.TicketFull}}}, nil
 	}
 	svc := NewService(repo, repositories.NewSettingsRepository(db, zerolog.Nop()), print, nil, broker, zerolog.Nop(), meters)
+	noAutoAssign(t, repo)
 	return svc, repo, events
 }
 
@@ -392,7 +393,9 @@ func TestDeliveryPrefsValidation(t *testing.T) {
 			t.Fatalf("%+v: %v", p, err)
 		}
 	}
-	if got := svc.DeliveryPrefs(ctx); got != order.DefaultDeliveryPrefs {
+	want := order.DefaultDeliveryPrefs
+	want.AutoAssign = false // the harness's
+	if got := svc.DeliveryPrefs(ctx); got != want {
 		t.Fatalf("a refused patch changed the settings: %+v", got)
 	}
 	out, err := svc.UpdateDeliverySettings(ctx, DeliveryPatch{SoonReadyMinutes: ptr[int64](0), DeliveryTargetMinutes: ptr[int64](120)})

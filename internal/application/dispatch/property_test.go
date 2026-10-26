@@ -237,6 +237,13 @@ func checkPlan(in Input, out Output) error {
 				return fmt.Errorf("%s: no_location but routable", o.ID)
 			}
 		case ReasonNotReadySoon, ReasonOverLimit, ReasonNoDriver, ReasonNoFeasibleRun:
+			if u.HeldFor != nil {
+				return fmt.Errorf("%s: held_for with reason %s", o.ID, u.Reason)
+			}
+		case ReasonHeld:
+			if in.Hold == nil || in.Hold.Rule == HoldOff || u.HeldFor == nil || len(in.OutDrivers) == 0 {
+				return fmt.Errorf("%s: held without the hold rule / an out driver", o.ID)
+			}
 		default:
 			return fmt.Errorf("%s: reason %q", o.ID, u.Reason)
 		}
@@ -266,7 +273,7 @@ func checkPlan(in Input, out Output) error {
 	}
 	anyLeft := false
 	for _, u := range out.Unassigned {
-		if u.Reason == ReasonNoDriver || u.Reason == ReasonNoFeasibleRun {
+		if u.Reason == ReasonNoDriver || u.Reason == ReasonNoFeasibleRun || u.Reason == ReasonHeld {
 			anyLeft = true
 		}
 	}

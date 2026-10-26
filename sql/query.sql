@@ -89,7 +89,7 @@ WHERE id = ? AND state = 'on_delivery';
 -- counts on no driver report.
 UPDATE orders
 SET state = sqlc.arg(state), came_back = sqlc.arg(came_back), cancelled_at = sqlc.narg(cancelled_at),
-    driver_id = NULL, driver_name = '', out_at = NULL, delivered_at = NULL,
+    driver_id = NULL, driver_name = '', out_at = NULL, delivered_at = NULL, run_seq = NULL,
     pool_driver_id = NULL, pooled_at = NULL, pool_seq = NULL, pool_plan_id = NULL,
     not_delivered_action = sqlc.arg(action), not_delivered_at = sqlc.arg(at),
     not_delivered_driver_id = sqlc.arg(from_driver_id)
@@ -108,6 +108,19 @@ SET state = 'cancelled', cancelled_at = sqlc.arg(cancelled_at), came_back = fals
     not_delivered_action = 'cancel', not_delivered_at = sqlc.arg(cancelled_at),
     pool_driver_id = NULL, pooled_at = NULL, pool_seq = NULL, pool_plan_id = NULL
 WHERE id = sqlc.arg(id) AND came_back AND state = 'ready';
+
+-- name: SetRunSeq :exec
+UPDATE orders SET run_seq = ? WHERE id = ?;
+
+-- name: NextRunSeq :one
+-- A stop joining a run that is out goes last.
+SELECT CAST(COALESCE(MAX(run_seq), 0) + 1 AS INTEGER) FROM orders WHERE state = 'on_delivery' AND driver_id = ?;
+
+-- name: ListRunStops :many
+-- Every driver's run that is out, stops in run order.
+SELECT id, driver_id FROM orders
+WHERE state = 'on_delivery' AND driver_id IS NOT NULL
+ORDER BY driver_id, run_seq IS NULL, run_seq ASC, out_at ASC, arrival_date ASC;
 
 -- name: CountOnDeliveryByDriver :one
 SELECT CAST(count(*) AS INTEGER) FROM orders WHERE state = 'on_delivery' AND driver_id = ?;
@@ -466,8 +479,8 @@ INSERT INTO orders (id, tenant_id, location_id, source, source_event_id, snapsho
                     ready_at, out_at, delivered_at, driver_id, driver_name, cancelled_at,
                     pool_driver_id, pooled_at, pool_seq, pool_plan_id,
                     scheduled_lead_minutes, ring_at, rerung,
-                    came_back, not_delivered_action, not_delivered_at, not_delivered_driver_id)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+                    came_back, not_delivered_action, not_delivered_at, not_delivered_driver_id, run_seq)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
 
 -- name: RestoreDriver :exec
 INSERT INTO drivers (id, name, active, position, status, last_returned_at, pos_number) VALUES (?, ?, true, ?, ?, ?, ?);
@@ -603,18 +616,22 @@ SELECT * FROM auto_plans WHERE id = ?;
 -- name: ConfirmAutoPlan :exec
 UPDATE auto_plans SET confirmed_at = COALESCE(confirmed_at, ?) WHERE id = ?;
 
+-- name: GetLatestAutoPlan :one
+-- Auto-assign waits while an AUTO preview may be on a tablet.
+SELECT id, created_at, confirmed_at FROM auto_plans ORDER BY created_at DESC LIMIT 1;
+
 -- name: DeleteOldAutoPlans :exec
 DELETE FROM auto_plans WHERE created_at < ?;
 
 -- Delivery settings + store map (2.0.9) -------------------------------------------
 
 -- name: GetDeliveryPrefs :one
-SELECT soon_ready_minutes, delivery_target_minutes, nearby_rule, nearby_detour_minutes, nearby_distance_mi
+SELECT soon_ready_minutes, delivery_target_minutes, nearby_rule, nearby_detour_minutes, nearby_distance_mi, auto_assign
 FROM settings WHERE id = 1;
 
 -- name: SetDeliveryPrefs :exec
 UPDATE settings SET soon_ready_minutes = ?, delivery_target_minutes = ?, nearby_rule = ?,
-    nearby_detour_minutes = ?, nearby_distance_mi = ?
+    nearby_detour_minutes = ?, nearby_distance_mi = ?, auto_assign = ?
 WHERE id = 1;
 
 -- name: GetAutoUpdate :one

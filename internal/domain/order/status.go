@@ -109,6 +109,10 @@ type Status struct {
 	// and on a cancelled order).
 	CameBack     bool          `json:"came_back,omitempty"`
 	NotDelivered *NotDelivered `json:"not_delivered,omitempty"`
+	// RunSeq is a sent order's stop number on its driver's run (1..n, the
+	// run's stop order; a stop joining the run goes last). Set while
+	// on_delivery and kept once delivered.
+	RunSeq *int64 `json:"run_seq,omitempty"`
 }
 
 // Not-delivered actions (POST /api/orders/{id}/not-delivered).

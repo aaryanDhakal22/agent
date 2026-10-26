@@ -175,7 +175,7 @@ func (r *OrderRepository) Restore(ctx context.Context, data order.RestoreData) (
 				DriverID: driverID, DriverName: st.DriverName, CancelledAt: nullTSPtr(st.CancelledAt),
 				PoolDriverID: poolID, PooledAt: pooledAt, PoolSeq: poolSeq, PoolPlanID: poolPlan,
 				ScheduledLeadMinutes: nullInt(st.ScheduledLeadMinutes), RingAt: nullTSPtr(st.RingAt), Rerung: st.Rerung,
-				CameBack: st.CameBack && st.State == order.StateReady,
+				CameBack: st.CameBack && st.State == order.StateReady, RunSeq: nullInt(st.RunSeq),
 			}
 			if nd := st.NotDelivered; nd != nil {
 				p.NotDeliveredAction, p.NotDeliveredAt, p.NotDeliveredDriverID = nd.Action, nullTSPtr(&nd.At), nd.DriverID
