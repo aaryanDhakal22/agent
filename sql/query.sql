@@ -469,6 +469,12 @@ UPDATE settings SET update_job = ? WHERE id = 1;
 -- name: SetUpdateNotified :exec
 UPDATE settings SET update_notified = ? WHERE id = 1;
 
+-- name: GetUpdateLastSuccess :one
+SELECT update_last_success FROM settings WHERE id = 1;
+
+-- name: SetUpdateLastSuccess :exec
+UPDATE settings SET update_last_success = ? WHERE id = 1;
+
 -- Printer MACs (2.0.6) --------------------------------------------------------
 
 -- name: ListPrinterMACs :many

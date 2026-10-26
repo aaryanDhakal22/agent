@@ -169,12 +169,8 @@ func (h *Heartbeat) collect(ctx context.Context) Report {
 			r.TempC = v / 1000
 		}
 	}
-	if b, err := os.ReadFile("/proc/uptime"); err == nil {
-		if f := strings.Fields(string(b)); len(f) > 0 {
-			if v, err := strconv.ParseFloat(f[0], 64); err == nil {
-				r.SystemUptimeS = int64(v)
-			}
-		}
+	if v, ok := HostUptime(); ok {
+		r.SystemUptimeS = int64(v)
 	}
 	if b, err := os.ReadFile("/proc/loadavg"); err == nil {
 		if f := strings.Fields(string(b)); len(f) > 0 {
@@ -235,6 +231,22 @@ func (h *Heartbeat) collect(ctx context.Context) Report {
 	h.last = r
 	h.mu.Unlock()
 	return r
+}
+
+// HostUptime is seconds since the machine booted (/proc/uptime); ok=false
+// where that can't be read (not Linux). The Pi's health file doesn't carry
+// it: the kernel's own counter is read directly.
+func HostUptime() (float64, bool) {
+	b, err := os.ReadFile("/proc/uptime")
+	if err != nil {
+		return 0, false
+	}
+	f := strings.Fields(string(b))
+	if len(f) == 0 {
+		return 0, false
+	}
+	v, err := strconv.ParseFloat(f[0], 64)
+	return v, err == nil
 }
 
 // registerGauges exports the newest readings (agent.disk.free, agent.temp,

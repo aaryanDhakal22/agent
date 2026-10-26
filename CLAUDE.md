@@ -684,8 +684,18 @@ errors only if nothing printed. Roster is keyed by printer **id** (rename-safe).
 - Store-floor metrics: `floor.accept.seconds` (service, `recordAcceptTime`) and
   the observable gauges in `observability.RegisterLive` (wired in `cmd/main.go`):
   `floor.orders.open`, `floor.tablets.connected`, `hub.link.up`,
-  `hub.status.age.seconds`, `agent.info`. The gauge query
+  `hub.status.age.seconds`, `agent.info`, `sse.connected`,
+  `agent.uptime.seconds`, `host.uptime.seconds` (`/proc/uptime`; the Pi health
+  file has none), `agent.update.last_success` (`settings.update_last_success`,
+  migration 00015). The gauge query
   (`CountOpenFloor`) has no `db.*` span on purpose (it runs every 15 s).
+- `orders.print.seconds{result=ok|partial|failed,source}`: `recordPrintTime`
+  around the accept's print (and `printPOS`). `agent.update.runs{result,action}`:
+  the requester's `OnFinished`, at the once-only Pushover point; `cmd/main.go`
+  zero-inits the series on a Pi and delays an add to 20 s after start
+  (`updateRunsGrace`) so Prometheus `increase()` sees the step.
+- `floor.tablets.version` is NOT exported: Quibase never tells the agent its
+  version (only diagnostics reports carry it, forwarded unread).
   Never put order ids, names or the store on a metric attribute.
 
 ## Pushover

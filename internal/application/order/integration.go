@@ -362,7 +362,9 @@ func (s *Service) UpsertExternal(ctx context.Context, extRef string, in order.Ex
 // hub mustn't wait on a dead printer); nothing printed only raises an alert.
 func (s *Service) printPOS(ctx context.Context, so order.StoredOrder) {
 	s.background(ctx, func(ctx context.Context) {
+		start := time.Now()
 		out, err := s.print(ctx, printable(so), printer.ModeAccept)
+		s.recordPrintTime(ctx, so, start, out, err)
 		if errors.Is(err, printer.ErrNoTickets) {
 			return
 		}

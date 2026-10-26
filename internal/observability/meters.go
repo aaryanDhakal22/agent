@@ -37,6 +37,13 @@ type Meters struct {
 	// FloorAcceptSeconds: arrival (or a future order's re-ring) → accept,
 	// by source=online|pos.
 	FloorAcceptSeconds metric.Float64Histogram
+	// OrdersPrintSeconds: an accept's print job, start → every ticket
+	// written or given up (result=ok|partial|failed, source=online|pos).
+	OrdersPrintSeconds metric.Float64Histogram
+
+	// Pi updates: one per finished update / rollback run
+	// (result=ok|up_to_date|rolled_back|failed, action=update|rollback).
+	UpdateRuns metric.Int64Counter
 
 	// Duplex RPC channel (main→agent commands, agent→main replies/reports).
 	RPCCommandsReceived metric.Int64Counter
@@ -151,6 +158,23 @@ func NewMeters() (Meters, error) {
 		return Meters{}, fmt.Errorf("floor.accept.seconds: %w", err)
 	}
 
+	// Sub-second hop: the dispatcher caps a job at 25 s.
+	if ms.OrdersPrintSeconds, err = m.Float64Histogram(
+		"orders.print.seconds",
+		metric.WithUnit("s"),
+		metric.WithDescription("An accept's print job: start to every ticket written or given up (result=ok|partial|failed, source=online|pos)"),
+		metric.WithExplicitBucketBoundaries(0.05, 0.1, 0.25, 0.5, 1, 2, 3, 5, 10, 15, 20, 30),
+	); err != nil {
+		return Meters{}, fmt.Errorf("orders.print.seconds: %w", err)
+	}
+
+	if ms.UpdateRuns, err = m.Int64Counter(
+		"agent.update.runs",
+		metric.WithDescription("Finished Pi update / rollback runs (result=ok|up_to_date|rolled_back|failed, action=update|rollback)"),
+	); err != nil {
+		return Meters{}, fmt.Errorf("agent.update.runs: %w", err)
+	}
+
 	if ms.OrdersRetentionTrimmed, err = m.Int64Counter(
 		"orders.retention.trimmed",
 		metric.WithDescription("Orders deleted by the batch-retention sweeper"),
@@ -226,12 +250,24 @@ type Live struct {
 	Hub func() (HubLink, bool)
 	// Version is agent.info's version attribute.
 	Version string
+	// SSEConnected: the agent's SSE stream to main is open (sse.connected).
+	SSEConnected func() bool
+	// Started is when the process started (agent.uptime.seconds; zero
+	// leaves the gauge out).
+	Started time.Time
+	// HostUptime: seconds since the machine booted; ok=false leaves
+	// host.uptime.seconds out.
+	HostUptime func() (float64, bool)
+	// UpdateLastSuccess: when the last Pi update succeeded; ok=false (never,
+	// or not a Pi) leaves agent.update.last_success out.
+	UpdateLastSuccess func() (time.Time, bool)
 }
 
 // RegisterLive creates the observable gauges floor.orders.open,
-// floor.tablets.connected, hub.link.up, hub.status.age.seconds and
-// agent.info, and one callback that reports them all. The registration
-// lives as long as the meter provider.
+// floor.tablets.connected, hub.link.up, hub.status.age.seconds, agent.info,
+// sse.connected, agent.uptime.seconds, host.uptime.seconds and
+// agent.update.last_success, and one callback that reports them all. The
+// registration lives as long as the meter provider.
 func RegisterLive(src Live) (metric.Registration, error) {
 	m := otel.Meter(MeterName)
 
@@ -261,10 +297,55 @@ func RegisterLive(src Live) (metric.Registration, error) {
 	if err != nil {
 		return nil, fmt.Errorf("agent.info: %w", err)
 	}
+	sseUp, err := m.Int64ObservableGauge("sse.connected",
+		metric.WithDescription("The agent's SSE stream to main is open: 1=connected, 0=not (also 0 while unlinked)"))
+	if err != nil {
+		return nil, fmt.Errorf("sse.connected: %w", err)
+	}
+	// Unit "s" + a name ending in "seconds": Prometheus keeps the name.
+	uptime, err := m.Float64ObservableGauge("agent.uptime.seconds",
+		metric.WithUnit("s"),
+		metric.WithDescription("Seconds since the agent process started"))
+	if err != nil {
+		return nil, fmt.Errorf("agent.uptime.seconds: %w", err)
+	}
+	hostUptime, err := m.Float64ObservableGauge("host.uptime.seconds",
+		metric.WithUnit("s"),
+		metric.WithDescription("Seconds since the machine booted (/proc/uptime; absent where unreadable)"))
+	if err != nil {
+		return nil, fmt.Errorf("host.uptime.seconds: %w", err)
+	}
+	// No unit: a unix timestamp, and the Prometheus name stays
+	// agent_update_last_success.
+	lastUpdate, err := m.Int64ObservableGauge("agent.update.last_success",
+		metric.WithDescription("Unix seconds when the last Pi update finished ok (absent when none is known)"))
+	if err != nil {
+		return nil, fmt.Errorf("agent.update.last_success: %w", err)
+	}
 	infoAttrs := metric.WithAttributes(attribute.String("version", src.Version))
 
 	return m.RegisterCallback(func(ctx context.Context, o metric.Observer) error {
 		o.ObserveInt64(info, 1, infoAttrs)
+		if src.SSEConnected != nil {
+			up := int64(0)
+			if src.SSEConnected() {
+				up = 1
+			}
+			o.ObserveInt64(sseUp, up)
+		}
+		if !src.Started.IsZero() {
+			o.ObserveFloat64(uptime, time.Since(src.Started).Seconds())
+		}
+		if src.HostUptime != nil {
+			if v, ok := src.HostUptime(); ok {
+				o.ObserveFloat64(hostUptime, v)
+			}
+		}
+		if src.UpdateLastSuccess != nil {
+			if at, ok := src.UpdateLastSuccess(); ok {
+				o.ObserveInt64(lastUpdate, at.Unix())
+			}
+		}
 		if src.TabletsConnected != nil {
 			o.ObserveInt64(tablets, int64(src.TabletsConnected()))
 		}
@@ -295,5 +376,5 @@ func RegisterLive(src Live) (metric.Registration, error) {
 			}
 		}
 		return nil
-	}, floorOpen, tablets, hubUp, hubAge, info)
+	}, floorOpen, tablets, hubUp, hubAge, info, sseUp, uptime, hostUptime, lastUpdate)
 }

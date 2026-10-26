@@ -184,6 +184,7 @@ type Setting struct {
 	DefaultPickupMinutes   int64  `json:"default_pickup_minutes"`
 	DefaultDeliveryMinutes int64  `json:"default_delivery_minutes"`
 	IntegrationStatus      string `json:"integration_status"`
+	UpdateLastSuccess      string `json:"update_last_success"`
 }
 
 type StoreConfig struct {

@@ -1010,6 +1010,17 @@ func (q *Queries) GetUIPassword(ctx context.Context) (GetUIPasswordRow, error) {
 	return i, err
 }
 
+const getUpdateLastSuccess = `-- name: GetUpdateLastSuccess :one
+SELECT update_last_success FROM settings WHERE id = 1
+`
+
+func (q *Queries) GetUpdateLastSuccess(ctx context.Context) (string, error) {
+	row := q.db.QueryRowContext(ctx, getUpdateLastSuccess)
+	var update_last_success string
+	err := row.Scan(&update_last_success)
+	return update_last_success, err
+}
+
 const getUpdateState = `-- name: GetUpdateState :one
 SELECT update_job, update_notified FROM settings WHERE id = 1
 `
@@ -3438,6 +3449,15 @@ UPDATE settings SET update_job = ? WHERE id = 1
 
 func (q *Queries) SetUpdateJob(ctx context.Context, updateJob string) error {
 	_, err := q.db.ExecContext(ctx, setUpdateJob, updateJob)
+	return err
+}
+
+const setUpdateLastSuccess = `-- name: SetUpdateLastSuccess :exec
+UPDATE settings SET update_last_success = ? WHERE id = 1
+`
+
+func (q *Queries) SetUpdateLastSuccess(ctx context.Context, updateLastSuccess string) error {
+	_, err := q.db.ExecContext(ctx, setUpdateLastSuccess, updateLastSuccess)
 	return err
 }
 

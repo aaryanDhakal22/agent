@@ -232,7 +232,9 @@ func (s *Service) Accept(ctx context.Context, id uuid.UUID, prepMinutes *int) (*
 	// Once claimed, the print runs to the end even if the tablet's request is
 	// cancelled (Wi-Fi blip, app killed) — otherwise the remaining stations
 	// and failovers are skipped mid-job. The dispatcher caps a job at 25 s.
+	printStart := time.Now()
 	out, err := s.print(context.WithoutCancel(ctx), printable(*so), printer.ModeAccept)
+	s.recordPrintTime(ctx, *so, printStart, out, err)
 	if err != nil {
 		// Revert even if the request was cancelled mid-print.
 		rctx := context.WithoutCancel(ctx)
@@ -283,6 +285,30 @@ func (s *Service) recordAcceptTime(ctx context.Context, so order.StoredOrder) {
 		src = "pos"
 	}
 	s.meters.FloorAcceptSeconds.Record(ctx, at.Sub(from).Seconds(), metric.WithAttributes(attribute.String("source", src)))
+}
+
+// recordPrintTime feeds orders.print.seconds: one accept's print job (an
+// online accept, or a new POS order's station tickets), from its start until
+// every ticket was written or given up. result: ok = every ticket printed
+// (rerouted ones included), partial = some printed and some didn't, failed =
+// nothing printed. A plan with nothing to print records nothing.
+func (s *Service) recordPrintTime(ctx context.Context, so order.StoredOrder, start time.Time, out printer.Outcome, err error) {
+	if s.meters.OrdersPrintSeconds == nil || errors.Is(err, printer.ErrNoTickets) {
+		return
+	}
+	result := "ok"
+	switch {
+	case err != nil:
+		result = "failed"
+	case len(out.Failed) > 0:
+		result = "partial"
+	}
+	src := "online"
+	if so.IsPOS() {
+		src = "pos"
+	}
+	s.meters.OrdersPrintSeconds.Record(ctx, time.Since(start).Seconds(), metric.WithAttributes(
+		attribute.String("result", result), attribute.String("source", src)))
 }
 
 // RecoverInterruptedAccepts runs once at startup: an order claimed for accept

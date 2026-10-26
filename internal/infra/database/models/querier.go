@@ -85,6 +85,7 @@ type Querier interface {
 	// Store config (starter pack from main/'s SSE handshake) --------------------
 	GetStoreConfig(ctx context.Context) (GetStoreConfigRow, error)
 	GetUIPassword(ctx context.Context) (GetUIPasswordRow, error)
+	GetUpdateLastSuccess(ctx context.Context) (string, error)
 	GetUpdateState(ctx context.Context) (GetUpdateStateRow, error)
 	// AUTO plans ------------------------------------------------------------------------
 	InsertAutoPlan(ctx context.Context, arg InsertAutoPlanParams) error
@@ -209,6 +210,7 @@ type Querier interface {
 	SetStoreAPIKey(ctx context.Context, storeApiKey string) error
 	SetUIPassword(ctx context.Context, arg SetUIPasswordParams) error
 	SetUpdateJob(ctx context.Context, updateJob string) error
+	SetUpdateLastSuccess(ctx context.Context, updateLastSuccess string) error
 	SetUpdateNotified(ctx context.Context, updateNotified string) error
 	TouchPairedDevice(ctx context.Context, arg TouchPairedDeviceParams) error
 	// A changed POS check: the new snapshot (items, money, notes, address) and

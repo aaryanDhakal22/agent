@@ -159,3 +159,53 @@ func TestRecordAcceptTime(t *testing.T) {
 		t.Fatalf("floor.accept.seconds = %v", got)
 	}
 }
+
+// orders.print.seconds: one sample per print job, result ok / partial /
+// failed by outcome; a plan with nothing to print records nothing.
+func TestRecordPrintTime(t *testing.T) {
+	reader := sdkmetric.NewManualReader()
+	h, err := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader)).Meter("t").Float64Histogram("orders.print.seconds")
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc, _, _, _ := newTestService(t, false)
+	svc.meters.OrdersPrintSeconds = h
+
+	ctx := context.Background()
+	start := time.Now().Add(-2 * time.Second)
+	online := order.StoredOrder{}
+	pos := order.StoredOrder{Status: order.Status{ExtSource: order.ExtSourceSoftTouch}}
+	one := []printer.TicketResult{{}}
+	svc.recordPrintTime(ctx, online, start, printer.Outcome{Printed: one}, nil)
+	svc.recordPrintTime(ctx, online, start, printer.Outcome{Printed: one, Failed: one}, nil)
+	svc.recordPrintTime(ctx, online, start, printer.Outcome{Failed: one}, errors.New("all down"))
+	svc.recordPrintTime(ctx, pos, start, printer.Outcome{Printed: one}, nil)
+	svc.recordPrintTime(ctx, online, start, printer.Outcome{}, printer.ErrNoTickets)
+
+	var rm metricdata.ResourceMetrics
+	if err := reader.Collect(ctx, &rm); err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]uint64{} // result/source → count
+	for _, sm := range rm.ScopeMetrics {
+		for _, m := range sm.Metrics {
+			for _, p := range m.Data.(metricdata.Histogram[float64]).DataPoints {
+				r, _ := p.Attributes.Value("result")
+				s, _ := p.Attributes.Value("source")
+				got[r.AsString()+"/"+s.AsString()] = p.Count
+				if p.Sum < 2*float64(p.Count) {
+					t.Fatalf("sum %v for %d samples", p.Sum, p.Count)
+				}
+			}
+		}
+	}
+	want := map[string]uint64{"ok/online": 1, "partial/online": 1, "failed/online": 1, "ok/pos": 1}
+	if len(got) != len(want) {
+		t.Fatalf("orders.print.seconds = %v", got)
+	}
+	for k, n := range want {
+		if got[k] != n {
+			t.Fatalf("orders.print.seconds = %v", got)
+		}
+	}
+}

@@ -56,6 +56,8 @@ import (
 	"quiccpos/agent/internal/transport"
 
 	"github.com/rs/zerolog"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/metric"
 	"gopkg.in/lumberjack.v2"
 )
 
@@ -68,6 +70,7 @@ var (
 )
 
 func main() {
+	procStart := time.Now()
 	bootstrap := zerolog.New(zerolog.ConsoleWriter{Out: os.Stdout}).With().Timestamp().Logger()
 
 	cfg, err := config.Load()
@@ -325,17 +328,24 @@ func main() {
 	// Pi updates: gate + drop update.request for the root updater, follow
 	// update.status, report agent.update.status, Pushover the developer.
 	exe, _ := os.Executable()
+	updateSupported := update.Supported(cfg.AppEnv, cfg.UpdateDir, cfg.UpdateEnabled)
+	if updateSupported {
+		initUpdateRuns(ctx, meters)
+	}
 	manifestEnv := update.ManifestEnv(cfg.AppEnv)
 	if manifestEnv == "" && cfg.UtilityURL != "" {
 		manifestEnv = "staging" // tests point UTILITY_URL at a fake
 	}
 	updater := update.New(update.Config{
 		Dir:       cfg.UpdateDir,
-		Supported: update.Supported(cfg.AppEnv, cfg.UpdateDir, cfg.UpdateEnabled),
+		Supported: updateSupported,
 		Version:   version,
 		Commit:    commit,
 		Env:       cfg.AppEnv,
 		StoreName: func() string { sc, _ := storeCtx.Load().(storeconfig.StoreContext); return sc.StoreName() },
+		OnFinished: func(_ context.Context, s update.Status) {
+			countUpdateRun(meters, procStart, s)
+		},
 	}, orderRepo.CountOpenBatchOrders, settingsRepo, registry.Report, notifier.Send,
 		update.NewLatest(update.ManifestURL(cfg.UtilityURL, manifestEnv), exe), logger)
 	updater.Load(ctx)
@@ -619,7 +629,11 @@ func main() {
 			}
 			return observability.HubLink{Up: v.Connected, Age: now.Sub(*v.LastSeenAt)}, true
 		},
-		Version: version,
+		Version:           version,
+		SSEConnected:      func() bool { return sseCtrl.Status().Connected },
+		Started:           procStart,
+		HostUptime:        health.HostUptime,
+		UpdateLastSuccess: updater.LastSuccess,
 	}); err != nil {
 		logger.Warn().Err(err).Msg("Live metric gauges not registered")
 	}
@@ -667,6 +681,54 @@ func persistedStoreSlugs(ctx context.Context, db *sql.DB, lg zerolog.Logger) (te
 		return "", ""
 	}
 	return sc.Tenant.Slug, sc.Location.Slug
+}
+
+// updateRunSeries are agent.update.runs' (action, result) pairs, created at 0
+// on a Pi so a run's first increment is a visible change in Prometheus.
+var updateRunSeries = [][2]string{
+	{update.ActionUpdate, update.StateOK}, {update.ActionUpdate, update.StateUpToDate},
+	{update.ActionUpdate, update.StateRolledBack}, {update.ActionUpdate, update.StateFailed},
+	{update.ActionRollback, update.StateOK}, {update.ActionRollback, update.StateFailed},
+}
+
+// updateRunsGrace: a run that finished right after start (the update's own
+// restart) is counted only once the zero series has been exported (15 s
+// interval), or Prometheus' increase() would miss the 0 -> 1 step.
+const updateRunsGrace = 20 * time.Second
+
+func initUpdateRuns(ctx context.Context, m observability.Meters) {
+	if m.UpdateRuns == nil {
+		return
+	}
+	for _, p := range updateRunSeries {
+		m.UpdateRuns.Add(ctx, 0, metric.WithAttributes(attribute.String("action", p[0]), attribute.String("result", p[1])))
+	}
+}
+
+// countUpdateRun adds one finished update / rollback to agent.update.runs.
+func countUpdateRun(m observability.Meters, procStart time.Time, s update.Status) {
+	if m.UpdateRuns == nil {
+		return
+	}
+	action := s.Action
+	if action != update.ActionRollback {
+		action = update.ActionUpdate
+	}
+	result := s.State
+	switch result {
+	case update.StateOK, update.StateUpToDate, update.StateRolledBack:
+	default:
+		result = update.StateFailed
+	}
+	add := func() {
+		m.UpdateRuns.Add(context.Background(), 1, metric.WithAttributes(
+			attribute.String("action", action), attribute.String("result", result)))
+	}
+	if wait := time.Until(procStart.Add(updateRunsGrace)); wait > 0 {
+		time.AfterFunc(wait, add)
+		return
+	}
+	add()
 }
 
 // floorStateLabel maps an order state to floor.orders.open's state label.

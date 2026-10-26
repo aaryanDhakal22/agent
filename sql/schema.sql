@@ -177,6 +177,8 @@ CREATE TABLE settings (
     default_pickup_minutes    integer NOT NULL DEFAULT 15,
     default_delivery_minutes  integer NOT NULL DEFAULT 35,
     integration_status        text NOT NULL DEFAULT '',
+    -- 00015_update_last_success: when the last Pi update finished ok (RFC 3339).
+    update_last_success       text NOT NULL DEFAULT '',
     CHECK (id = 1)
 );
 

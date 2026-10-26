@@ -106,6 +106,17 @@ func TestUpdateStateAndPrinterMACs(t *testing.T) {
 		t.Fatalf("round trip %q %q", j, n)
 	}
 
+	if at, err := s.GetUpdateLastSuccess(ctx); err != nil || !at.IsZero() {
+		t.Fatalf("fresh last success %v %v", at, err)
+	}
+	ok := time.Date(2026, 10, 26, 3, 4, 5, 0, time.UTC)
+	if err := s.SetUpdateLastSuccess(ctx, ok); err != nil {
+		t.Fatal(err)
+	}
+	if at, err := s.GetUpdateLastSuccess(ctx); err != nil || !at.Equal(ok) {
+		t.Fatalf("last success round trip %v %v", at, err)
+	}
+
 	p := NewPrinterNetRepository(db)
 	at := time.Date(2026, 10, 21, 18, 0, 0, 0, time.UTC)
 	if err := p.SaveMAC(ctx, printer.NetAddress{PrinterID: "p1", MAC: "00:11:62:aa:bb:cc", IP: "192.168.1.40", SeenAt: at}); err != nil {

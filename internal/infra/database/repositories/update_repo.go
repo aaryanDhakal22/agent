@@ -44,6 +44,23 @@ func (r *SettingsRepository) SetUpdateNotified(ctx context.Context, key string) 
 	return models.New(r.db).SetUpdateNotified(ctx, key)
 }
 
+// GetUpdateLastSuccess is when the last Pi update finished ok (zero = none
+// known).
+func (r *SettingsRepository) GetUpdateLastSuccess(ctx context.Context) (time.Time, error) {
+	v, err := models.New(r.db).GetUpdateLastSuccess(ctx)
+	if errors.Is(err, sql.ErrNoRows) || (err == nil && v == "") {
+		return time.Time{}, nil
+	}
+	if err != nil {
+		return time.Time{}, err
+	}
+	return time.Parse(time.RFC3339, v)
+}
+
+func (r *SettingsRepository) SetUpdateLastSuccess(ctx context.Context, at time.Time) error {
+	return models.New(r.db).SetUpdateLastSuccess(ctx, at.UTC().Format(time.RFC3339))
+}
+
 // PrinterNetRepository persists learned printer MACs.
 type PrinterNetRepository struct{ db *sql.DB }
 

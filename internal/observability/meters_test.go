@@ -117,3 +117,63 @@ func TestRegisterLiveAndAcceptHistogram(t *testing.T) {
 func metricWithSource(src string) metric.RecordOption {
 	return metric.WithAttributes(attribute.String("source", src))
 }
+
+func TestLiveUptimeSSEAndUpdateGauges(t *testing.T) {
+	reader := sdkmetric.NewManualReader()
+	prev := otel.GetMeterProvider()
+	otel.SetMeterProvider(sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader)))
+	t.Cleanup(func() { otel.SetMeterProvider(prev) })
+
+	connected := false
+	var lastOK time.Time
+	if _, err := RegisterLive(Live{
+		Version:           "2.1.1",
+		SSEConnected:      func() bool { return connected },
+		Started:           time.Now().Add(-90 * time.Second),
+		HostUptime:        func() (float64, bool) { return 3600, true },
+		UpdateLastSuccess: func() (time.Time, bool) { return lastOK, !lastOK.IsZero() },
+	}); err != nil {
+		t.Fatal(err)
+	}
+	ms, err := NewMeters()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	ms.OrdersPrintSeconds.Record(ctx, 0.8, metric.WithAttributes(attribute.String("result", "ok"), attribute.String("source", "online")))
+	ms.UpdateRuns.Add(ctx, 0, metric.WithAttributes(attribute.String("action", "update"), attribute.String("result", "ok")))
+
+	got := collect(t, reader)
+	if pts := intGauge(t, got["sse.connected"]); len(pts) != 1 || pts[0].Value != 0 {
+		t.Fatalf("sse.connected = %+v", pts)
+	}
+	up, ok := got["agent.uptime.seconds"].Data.(metricdata.Gauge[float64])
+	if !ok || len(up.DataPoints) != 1 || up.DataPoints[0].Value < 89 || up.DataPoints[0].Value > 120 {
+		t.Fatalf("agent.uptime.seconds = %+v", got["agent.uptime.seconds"].Data)
+	}
+	host, ok := got["host.uptime.seconds"].Data.(metricdata.Gauge[float64])
+	if !ok || len(host.DataPoints) != 1 || host.DataPoints[0].Value != 3600 {
+		t.Fatalf("host.uptime.seconds = %+v", got["host.uptime.seconds"].Data)
+	}
+	if _, ok := got["agent.update.last_success"]; ok {
+		t.Fatal("agent.update.last_success reported with no success known")
+	}
+	h, ok := got["orders.print.seconds"].Data.(metricdata.Histogram[float64])
+	if !ok || len(h.DataPoints) != 1 || h.DataPoints[0].Sum != 0.8 || attr(h.DataPoints[0].Attributes, "result") != "ok" {
+		t.Fatalf("orders.print.seconds = %+v", got["orders.print.seconds"].Data)
+	}
+	runs, ok := got["agent.update.runs"].Data.(metricdata.Sum[int64])
+	if !ok || len(runs.DataPoints) != 1 || runs.DataPoints[0].Value != 0 || !runs.IsMonotonic {
+		t.Fatalf("agent.update.runs (zero series) = %+v", got["agent.update.runs"].Data)
+	}
+
+	connected = true
+	lastOK = time.Unix(1793000000, 0)
+	got = collect(t, reader)
+	if pts := intGauge(t, got["sse.connected"]); len(pts) != 1 || pts[0].Value != 1 {
+		t.Fatalf("sse.connected = %+v", pts)
+	}
+	if pts := intGauge(t, got["agent.update.last_success"]); len(pts) != 1 || pts[0].Value != 1793000000 {
+		t.Fatalf("agent.update.last_success = %+v", pts)
+	}
+}
