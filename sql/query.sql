@@ -448,6 +448,18 @@ SELECT CAST(count(*) AS INTEGER) AS total,
 FROM orders
 WHERE batch_id = (SELECT id FROM batches WHERE closed_at IS NULL ORDER BY id DESC LIMIT 1);
 
+-- Metrics: floor.orders.open (open batch, by state and online/POS; POS
+-- counter checks with no kitchen item are left out, as on Kitchen).
+-- name: CountOpenFloorOrders :many
+SELECT state,
+       CAST(ext_source <> '' AS INTEGER) AS pos,
+       CAST(count(*) AS INTEGER) AS n
+FROM orders
+WHERE batch_id = (SELECT id FROM batches WHERE closed_at IS NULL ORDER BY id DESC LIMIT 1)
+  AND state IN ('arrived', 'scheduled', 'accepted', 'ready', 'on_delivery')
+  AND board_hidden = 0
+GROUP BY state, pos;
+
 -- name: GetUpdateState :one
 SELECT update_job, update_notified FROM settings WHERE id = 1;
 

@@ -674,6 +674,20 @@ errors only if nothing printed. Roster is keyed by printer **id** (rename-safe).
 - Outbound HTTP (Pushover, SSE dial): `otelhttp.NewTransport` wraps the
   clients.
 
+## Tenant-scoped telemetry (`../observability/TENANT-SCOPING.md`)
+
+- Resource: `tenant` / `location` slugs + `service.instance.id` =
+  `<tenant>-<hostname>`, read from the saved `store_config` before
+  `observability.Setup` (`persistedStoreSlugs`; `unlinked` without a store key).
+  Fixed per process: a new store's slugs only warn (`noticeRelabel`) until the
+  next restart; the post-link self-restart waits for + saves the first handshake.
+- Store-floor metrics: `floor.accept.seconds` (service, `recordAcceptTime`) and
+  the observable gauges in `observability.RegisterLive` (wired in `cmd/main.go`):
+  `floor.orders.open`, `floor.tablets.connected`, `hub.link.up`,
+  `hub.status.age.seconds`, `agent.info`. The gauge query
+  (`CountOpenFloor`) has no `db.*` span on purpose (it runs every 15 s).
+  Never put order ids, names or the store on a metric attribute.
+
 ## Pushover
 
 Problems only, two audiences (`infra/notify`): `Send` → the owner

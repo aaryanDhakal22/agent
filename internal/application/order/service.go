@@ -250,12 +250,39 @@ func (s *Service) Accept(ctx context.Context, id uuid.UUID, prepMinutes *int) (*
 		s.logger.Error().Ctx(ctx).Err(err).Str("order_id", id.String()).Msg("Failed to record accepted floor event (main won't see it)")
 	}
 	s.floorChanged()
+	s.recordAcceptTime(ctx, *so)
 
 	s.logger.Info().Ctx(ctx).Str("order_id", id.String()).Int64("kitchen_number", deref(so.Status.KitchenNumber)).
 		Int("tickets", len(out.Printed)).Msg("Order accepted and printed")
 	s.alertPrintIssues(ctx, so.Order, out, true)
 	s.publishUpdated(*so)
 	return so, nil
+}
+
+// recordAcceptTime feeds floor.accept.seconds: arrival → accept, or for a
+// future order ringing again, its re-ring → accept (the hours it waited
+// scheduled aren't staff time). POS checks arrive accepted and never get
+// here today; the source label is set anyway.
+func (s *Service) recordAcceptTime(ctx context.Context, so order.StoredOrder) {
+	if s.meters.FloorAcceptSeconds == nil {
+		return
+	}
+	from := so.Status.ArrivalDate
+	if so.Status.Rerung && so.Status.RingAt != nil && so.Status.RingAt.After(from) {
+		from = *so.Status.RingAt
+	}
+	at := time.Now()
+	if so.Status.AcceptedAt != nil {
+		at = *so.Status.AcceptedAt
+	}
+	if from.IsZero() || at.Before(from) {
+		return
+	}
+	src := "online"
+	if so.IsPOS() {
+		src = "pos"
+	}
+	s.meters.FloorAcceptSeconds.Record(ctx, at.Sub(from).Seconds(), metric.WithAttributes(attribute.String("source", src)))
 }
 
 // RecoverInterruptedAccepts runs once at startup: an order claimed for accept

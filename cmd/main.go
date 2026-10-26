@@ -8,6 +8,7 @@ import (
 
 	"context"
 	"crypto/rand"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -15,6 +16,7 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -96,11 +98,17 @@ func main() {
 	}
 
 	// --- Observability ----------------------------------------------------
+	// The resource carries the linked store's tenant/location slugs (from the
+	// persisted store_config; "unlinked" with no store key). It is fixed for
+	// the process: a store linked later is labelled from the next start.
+	resTenant, resLocation := persistedStoreSlugs(ctx, db, bootstrap)
 	shutdownOtel, err := observability.Setup(ctx, observability.Config{
 		Endpoint:    cfg.OTELEndpoint,
 		ServiceName: cfg.OTELServiceName,
 		AppEnv:      cfg.AppEnv,
 		Version:     version,
+		Tenant:      resTenant,
+		Location:    resLocation,
 	})
 	if err != nil {
 		bootstrap.Error().Err(err).Msg("OTEL setup failed — continuing with no telemetry")
@@ -259,6 +267,9 @@ func main() {
 		onApplied:  broker.PublishFloorChanged,
 		storeCtx:   &storeCtx,
 		logger:     logger.With().Str("module", "storeconfig-sink").Logger(),
+		telemetry:  cfg.OTELEndpoint != "",
+		resTenant:  resTenant,
+		resLoc:     resLocation,
 	}
 
 	// --- SSE controller ---------------------------------------------------
@@ -563,10 +574,55 @@ func main() {
 		if os.Getenv("AGENT_SELF_RESTART") == "1" && cfg.OTELEndpoint == "" && out.Secrets.OTLPEndpoint != "" {
 			logger.Info().Msg("linked: restarting in 3 s to start telemetry")
 			time.Sleep(3 * time.Second)
+			// The restarted agent labels its telemetry with the store's slugs
+			// from the saved store_config: give the new store's first
+			// handshake up to 10 s more and make sure it is on disk (a re-used
+			// Pi may still hold the previous store's).
+			for i := 0; i < 20; i++ {
+				if sc, _ := storeCtx.Load().(storeconfig.StoreContext); sc.Tenant.Slug != "" && (out.TenantSlug == "" || sc.Tenant.Slug == out.TenantSlug) {
+					if err := storeConfigRepo.Save(ctx, sc); err != nil {
+						logger.Warn().Err(err).Msg("linked: saving store_config before the restart failed")
+					}
+					break
+				}
+				time.Sleep(500 * time.Millisecond)
+			}
 			restart.Store(true)
 			cancel()
 		}
 	})
+
+	// Live gauges (read at each metric export): open orders by state/source,
+	// tablets on the SSE stream, the store hub's link, the agent version.
+	if _, err := observability.RegisterLive(observability.Live{
+		FloorOpen: func(rc context.Context) ([]observability.FloorCount, error) {
+			rows, err := orderRepo.CountOpenFloor(rc)
+			if err != nil {
+				return nil, err
+			}
+			out := make([]observability.FloorCount, 0, len(rows))
+			for _, r := range rows {
+				src := "online"
+				if r.POS {
+					src = "pos"
+				}
+				out = append(out, observability.FloorCount{State: floorStateLabel(r.State), Source: src, N: r.N})
+			}
+			return out, nil
+		},
+		TabletsConnected: httpServer.TabletsConnected,
+		Hub: func() (observability.HubLink, bool) {
+			now := time.Now()
+			v := orderService.IntegrationView(now)
+			if v.LastSeenAt == nil {
+				return observability.HubLink{}, false // no store hub ever reported
+			}
+			return observability.HubLink{Up: v.Connected, Age: now.Sub(*v.LastSeenAt)}, true
+		},
+		Version: version,
+	}); err != nil {
+		logger.Warn().Err(err).Msg("Live metric gauges not registered")
+	}
 
 	resetAccess := httpServer.ResetAccess
 	onWipe.Store(&resetAccess)
@@ -595,6 +651,39 @@ func main() {
 		db.Close()
 		os.Exit(75) // systemd Restart=always brings it back with the new settings
 	}
+}
+
+// persistedStoreSlugs reads the linked store's tenant + location slugs from
+// the saved store_config for the telemetry resource. Both are "" (=
+// "unlinked") while the agent has no store key, or before the first
+// handshake was saved.
+func persistedStoreSlugs(ctx context.Context, db *sql.DB, lg zerolog.Logger) (tenant, location string) {
+	key, err := repositories.NewSettingsRepository(db, lg).GetStoreAPIKey(ctx)
+	if err != nil || key == "" {
+		return "", ""
+	}
+	sc, err := repositories.NewStoreConfigRepository(db, lg).Get(ctx)
+	if err != nil || sc == nil {
+		return "", ""
+	}
+	return sc.Tenant.Slug, sc.Location.Slug
+}
+
+// floorStateLabel maps an order state to floor.orders.open's state label.
+func floorStateLabel(s order.State) string {
+	switch s {
+	case order.StateArrived:
+		return "new"
+	case order.StateAccepted:
+		return "cooking"
+	case order.StateReady:
+		return "ready"
+	case order.StateOnDelivery:
+		return "out"
+	case order.StateScheduled:
+		return "scheduled"
+	}
+	return string(s)
 }
 
 // applyLinkedSecrets fills empty config from the secrets a manager-login link
@@ -670,6 +759,14 @@ type storeConfigApplier struct {
 	// postApply, if set, runs after the roster is rebuilt (used to push a fresh
 	// printer.report up to main).
 	postApply func(context.Context)
+	// The tenant/location slugs the telemetry resource was built with
+	// (telemetry on). A store_config with other slugs (first link without a
+	// restart) is logged once: the labels follow on the next restart.
+	telemetry       bool
+	resTenant       string
+	resLoc          string
+	relabelNoticeMu sync.Mutex
+	relabelNotice   string
 }
 
 func (a *storeConfigApplier) Apply(ctx context.Context, sc storeconfig.StoreContext) error {
@@ -693,7 +790,31 @@ func (a *storeConfigApplier) Apply(ctx context.Context, sc storeconfig.StoreCont
 		Str("location", sc.Location.Name).
 		Int("printers", len(sc.Printers)).
 		Msg("store_config applied")
+	a.noticeRelabel(ctx, sc)
 	return nil
+}
+
+// noticeRelabel warns (once per new pair) when the store's slugs differ from
+// the ones the running telemetry resource carries.
+func (a *storeConfigApplier) noticeRelabel(ctx context.Context, sc storeconfig.StoreContext) {
+	if !a.telemetry || sc.Tenant.Slug == "" {
+		return
+	}
+	if sc.Tenant.Slug == a.resTenant && sc.Location.Slug == a.resLoc {
+		return
+	}
+	pair := sc.Tenant.Slug + "/" + sc.Location.Slug
+	a.relabelNoticeMu.Lock()
+	seen := a.relabelNotice == pair
+	a.relabelNotice = pair
+	a.relabelNoticeMu.Unlock()
+	if seen {
+		return
+	}
+	a.logger.Warn().Ctx(ctx).
+		Str("tenant_slug", sc.Tenant.Slug).Str("location_slug", sc.Location.Slug).
+		Str("telemetry_tenant", observability.StoreLabel(a.resTenant)).
+		Msg("store linked or changed: telemetry keeps its tenant/location labels until the agent restarts")
 }
 
 // resolveSessionSecret loads the persisted web-UI session-signing secret,

@@ -251,6 +251,48 @@ func (q *Queries) CountOpenBatchOrders(ctx context.Context) (CountOpenBatchOrder
 	return i, err
 }
 
+const countOpenFloorOrders = `-- name: CountOpenFloorOrders :many
+SELECT state,
+       CAST(ext_source <> '' AS INTEGER) AS pos,
+       CAST(count(*) AS INTEGER) AS n
+FROM orders
+WHERE batch_id = (SELECT id FROM batches WHERE closed_at IS NULL ORDER BY id DESC LIMIT 1)
+  AND state IN ('arrived', 'scheduled', 'accepted', 'ready', 'on_delivery')
+  AND board_hidden = 0
+GROUP BY state, pos
+`
+
+type CountOpenFloorOrdersRow struct {
+	State string `json:"state"`
+	Pos   int64  `json:"pos"`
+	N     int64  `json:"n"`
+}
+
+// Metrics: floor.orders.open (open batch, by state and online/POS; POS
+// counter checks with no kitchen item are left out, as on Kitchen).
+func (q *Queries) CountOpenFloorOrders(ctx context.Context) ([]CountOpenFloorOrdersRow, error) {
+	rows, err := q.db.QueryContext(ctx, countOpenFloorOrders)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []CountOpenFloorOrdersRow
+	for rows.Next() {
+		var i CountOpenFloorOrdersRow
+		if err := rows.Scan(&i.State, &i.Pos, &i.N); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const countUnsyncedFloorEvents = `-- name: CountUnsyncedFloorEvents :one
 SELECT count(*) FROM floor_events WHERE synced_at IS NULL
 `

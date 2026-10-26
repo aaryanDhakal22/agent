@@ -32,6 +32,9 @@ type Querier interface {
 	CountDeliveriesInBatch(ctx context.Context, batchID int64) ([]CountDeliveriesInBatchRow, error)
 	// Pi updates (2.0.6) ----------------------------------------------------------
 	CountOpenBatchOrders(ctx context.Context) (CountOpenBatchOrdersRow, error)
+	// Metrics: floor.orders.open (open batch, by state and online/POS; POS
+	// counter checks with no kitchen item are left out, as on Kitchen).
+	CountOpenFloorOrders(ctx context.Context) ([]CountOpenFloorOrdersRow, error)
 	CountUnsyncedFloorEvents(ctx context.Context) (int64, error)
 	CreateDriver(ctx context.Context, arg CreateDriverParams) error
 	// Paired devices (counter tablets) -------------------------------------------

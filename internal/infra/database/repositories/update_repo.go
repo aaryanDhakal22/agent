@@ -6,6 +6,7 @@ import (
 	"errors"
 	"time"
 
+	"quiccpos/agent/internal/domain/order"
 	"quiccpos/agent/internal/domain/printer"
 	"quiccpos/agent/internal/infra/database/models"
 )
@@ -71,4 +72,28 @@ func (r *PrinterNetRepository) SaveMAC(ctx context.Context, m printer.NetAddress
 	return models.New(r.db).UpsertPrinterMAC(ctx, models.UpsertPrinterMACParams{
 		PrinterID: m.PrinterID, Mac: m.MAC, Ip: m.IP, SeenAt: m.SeenAt.UTC().Format(time.RFC3339Nano),
 	})
+}
+
+// OpenFloorCount is one (state, online|POS) bucket of the open batch's
+// in-play orders (the floor.orders.open gauge).
+type OpenFloorCount struct {
+	State order.State
+	POS   bool
+	N     int64
+}
+
+// CountOpenFloor counts the open batch's orders still in play (arrived,
+// scheduled, accepted, ready, on_delivery) by state and online/POS. POS
+// counter checks hidden from Kitchen are left out. No span: the metric
+// reader calls it every export (15 s), which would be a root trace each time.
+func (r *OrderRepository) CountOpenFloor(ctx context.Context) ([]OpenFloorCount, error) {
+	rows, err := models.New(r.db).CountOpenFloorOrders(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]OpenFloorCount, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, OpenFloorCount{State: order.State(row.State), POS: row.Pos != 0, N: row.N})
+	}
+	return out, nil
 }

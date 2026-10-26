@@ -1,0 +1,119 @@
+package observability
+
+import (
+	"context"
+	"testing"
+	"time"
+
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/metric"
+	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
+	"go.opentelemetry.io/otel/sdk/metric/metricdata"
+)
+
+func collect(t *testing.T, reader *sdkmetric.ManualReader) map[string]metricdata.Metrics {
+	t.Helper()
+	var rm metricdata.ResourceMetrics
+	if err := reader.Collect(context.Background(), &rm); err != nil {
+		t.Fatalf("collect: %v", err)
+	}
+	out := map[string]metricdata.Metrics{}
+	for _, sm := range rm.ScopeMetrics {
+		for _, m := range sm.Metrics {
+			out[m.Name] = m
+		}
+	}
+	return out
+}
+
+func intGauge(t *testing.T, m metricdata.Metrics) []metricdata.DataPoint[int64] {
+	t.Helper()
+	g, ok := m.Data.(metricdata.Gauge[int64])
+	if !ok {
+		t.Fatalf("%s: not an int64 gauge (%T)", m.Name, m.Data)
+	}
+	return g.DataPoints
+}
+
+func attr(set attribute.Set, k string) string {
+	v, _ := set.Value(attribute.Key(k))
+	return v.Emit()
+}
+
+func TestRegisterLiveAndAcceptHistogram(t *testing.T) {
+	reader := sdkmetric.NewManualReader()
+	prev := otel.GetMeterProvider()
+	otel.SetMeterProvider(sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader)))
+	t.Cleanup(func() { otel.SetMeterProvider(prev) })
+
+	hub := func() (HubLink, bool) { return HubLink{}, false }
+	if _, err := RegisterLive(Live{
+		FloorOpen: func(context.Context) ([]FloorCount, error) {
+			return []FloorCount{{State: "new", Source: "online", N: 2}, {State: "cooking", Source: "pos", N: 3}}, nil
+		},
+		TabletsConnected: func() int { return 1 },
+		Hub:              func() (HubLink, bool) { return hub() },
+		Version:          "2.1.1",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	ms, err := NewMeters()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ms.FloorAcceptSeconds.Record(context.Background(), 42, metricWithSource("online"))
+
+	got := collect(t, reader)
+
+	// floor.orders.open: every state x source, zero-filled.
+	pts := intGauge(t, got["floor.orders.open"])
+	if len(pts) != len(FloorStates)*len(FloorSources) {
+		t.Fatalf("floor.orders.open: %d series", len(pts))
+	}
+	for _, p := range pts {
+		st, src := attr(p.Attributes, "state"), attr(p.Attributes, "source")
+		want := int64(0)
+		switch st + "/" + src {
+		case "new/online":
+			want = 2
+		case "cooking/pos":
+			want = 3
+		}
+		if p.Value != want {
+			t.Fatalf("floor.orders.open{%s,%s} = %d, want %d", st, src, p.Value, want)
+		}
+	}
+	if pts := intGauge(t, got["floor.tablets.connected"]); len(pts) != 1 || pts[0].Value != 1 {
+		t.Fatalf("floor.tablets.connected = %+v", pts)
+	}
+	if pts := intGauge(t, got["agent.info"]); len(pts) != 1 || pts[0].Value != 1 || attr(pts[0].Attributes, "version") != "2.1.1" {
+		t.Fatalf("agent.info = %+v", pts)
+	}
+	// No hub ever reported: both hub gauges absent.
+	if _, ok := got["hub.link.up"]; ok {
+		t.Fatal("hub.link.up reported without a hub")
+	}
+	if _, ok := got["hub.status.age.seconds"]; ok {
+		t.Fatal("hub.status.age.seconds reported without a hub")
+	}
+	h, ok := got["floor.accept.seconds"].Data.(metricdata.Histogram[float64])
+	if !ok || len(h.DataPoints) != 1 || h.DataPoints[0].Sum != 42 || attr(h.DataPoints[0].Attributes, "source") != "online" {
+		t.Fatalf("floor.accept.seconds = %+v", got["floor.accept.seconds"].Data)
+	}
+
+	// A hub that went quiet 2 minutes ago.
+	hub = func() (HubLink, bool) { return HubLink{Up: false, Age: 2 * time.Minute}, true }
+	got = collect(t, reader)
+	if pts := intGauge(t, got["hub.link.up"]); len(pts) != 1 || pts[0].Value != 0 {
+		t.Fatalf("hub.link.up = %+v", pts)
+	}
+	age, ok := got["hub.status.age.seconds"].Data.(metricdata.Gauge[float64])
+	if !ok || len(age.DataPoints) != 1 || age.DataPoints[0].Value != 120 {
+		t.Fatalf("hub.status.age.seconds = %+v", got["hub.status.age.seconds"].Data)
+	}
+}
+
+func metricWithSource(src string) metric.RecordOption {
+	return metric.WithAttributes(attribute.String("source", src))
+}

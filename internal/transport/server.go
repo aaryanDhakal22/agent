@@ -67,6 +67,10 @@ type Server struct {
 	updates       *update.Requester
 	printerNet    *printernet.Watcher
 	mapFile       *mapfile.Downloader
+	// tabletStreams: open /api/events streams per paired tablet id
+	// (floor.tablets.connected counts the tablets, not the streams).
+	tabletMu      sync.Mutex
+	tabletStreams map[string]int
 }
 
 // SetAppUpdater wires the tablet-app release cache (/api/app/*).
@@ -100,6 +104,7 @@ func NewServer(
 		devices:       devices,
 		pairing:       &pairingCodes{},
 		touched:       map[string]time.Time{},
+		tabletStreams: map[string]int{},
 		version:       version,
 		commit:        commit,
 		port:          port,
@@ -413,6 +418,9 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 
 	ch, unsubscribe := s.broker.Subscribe()
 	defer unsubscribe()
+	if d, ok := ctx.Value(deviceCtxKey{}).(*device.Device); ok && d.Kind == device.KindTablet {
+		defer s.tabletOnStream(d.ID)()
+	}
 
 	s.logger.Info().Ctx(ctx).Int("subscribers", s.broker.Subscribers()).Msg("Mobile SSE client connected")
 	defer s.logger.Info().Ctx(ctx).Msg("Mobile SSE client disconnected")
@@ -439,6 +447,30 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 			flusher.Flush()
 		}
 	}
+}
+
+// tabletOnStream marks a paired tablet as on the SSE stream; the returned
+// func takes it off again.
+func (s *Server) tabletOnStream(id string) func() {
+	s.tabletMu.Lock()
+	s.tabletStreams[id]++
+	s.tabletMu.Unlock()
+	return func() {
+		s.tabletMu.Lock()
+		if s.tabletStreams[id]--; s.tabletStreams[id] <= 0 {
+			delete(s.tabletStreams, id)
+		}
+		s.tabletMu.Unlock()
+	}
+}
+
+// TabletsConnected is how many paired tablets are on /api/events right now
+// (the floor.tablets.connected gauge). Web-UI sessions and the store hub's
+// integration key aren't counted.
+func (s *Server) TabletsConnected() int {
+	s.tabletMu.Lock()
+	defer s.tabletMu.Unlock()
+	return len(s.tabletStreams)
 }
 
 // --- helpers --------------------------------------------------------------

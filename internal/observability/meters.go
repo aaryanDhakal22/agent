@@ -1,9 +1,12 @@
 package observability
 
 import (
+	"context"
 	"fmt"
+	"time"
 
 	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
 )
 
@@ -31,6 +34,9 @@ type Meters struct {
 	OrdersEscalated  metric.Int64Counter
 	FloorEventsSent  metric.Int64Counter
 	FloorSyncBacklog metric.Int64Gauge
+	// FloorAcceptSeconds: arrival (or a future order's re-ring) → accept,
+	// by source=online|pos.
+	FloorAcceptSeconds metric.Float64Histogram
 
 	// Duplex RPC channel (main→agent commands, agent→main replies/reports).
 	RPCCommandsReceived metric.Int64Counter
@@ -134,6 +140,17 @@ func NewMeters() (Meters, error) {
 		return Meters{}, fmt.Errorf("floor.sync.backlog: %w", err)
 	}
 
+	// Unit "s" and a name ending in "seconds": the Collector doesn't append
+	// the unit again, so Prometheus sees floor_accept_seconds_*.
+	if ms.FloorAcceptSeconds, err = m.Float64Histogram(
+		"floor.accept.seconds",
+		metric.WithUnit("s"),
+		metric.WithDescription("Time from an order's arrival (a future order: its re-ring) to its accept (source=online|pos)"),
+		metric.WithExplicitBucketBoundaries(5, 15, 30, 60, 90, 120, 180, 300, 600, 900, 1800),
+	); err != nil {
+		return Meters{}, fmt.Errorf("floor.accept.seconds: %w", err)
+	}
+
 	if ms.OrdersRetentionTrimmed, err = m.Int64Counter(
 		"orders.retention.trimmed",
 		metric.WithDescription("Orders deleted by the batch-retention sweeper"),
@@ -174,4 +191,109 @@ func NewMeters() (Meters, error) {
 	}
 
 	return ms, nil
+}
+
+// FloorCount is one floor.orders.open series: State is new|cooking|ready|
+// out|scheduled, Source online|pos.
+type FloorCount struct {
+	State  string
+	Source string
+	N      int64
+}
+
+// FloorStates / FloorSources are every floor.orders.open label value; each
+// combination is reported (0 when empty) so dashboards never see "no data".
+var (
+	FloorStates  = []string{"new", "cooking", "ready", "out", "scheduled"}
+	FloorSources = []string{"online", "pos"}
+)
+
+// HubLink is the store hub's last report as the gauges see it.
+type HubLink struct {
+	Up  bool          // reported within the stale window
+	Age time.Duration // since the last report
+}
+
+// Live feeds the observable gauges, read at every metric export (15 s).
+// Any nil func leaves its gauge out.
+type Live struct {
+	// FloorOpen counts the open batch's in-play orders.
+	FloorOpen func(ctx context.Context) ([]FloorCount, error)
+	// TabletsConnected: paired tablets on the /api/events stream now.
+	TabletsConnected func() int
+	// Hub: ok=false when no store hub has ever reported (both hub gauges
+	// are then absent).
+	Hub func() (HubLink, bool)
+	// Version is agent.info's version attribute.
+	Version string
+}
+
+// RegisterLive creates the observable gauges floor.orders.open,
+// floor.tablets.connected, hub.link.up, hub.status.age.seconds and
+// agent.info, and one callback that reports them all. The registration
+// lives as long as the meter provider.
+func RegisterLive(src Live) (metric.Registration, error) {
+	m := otel.Meter(MeterName)
+
+	floorOpen, err := m.Int64ObservableGauge("floor.orders.open",
+		metric.WithDescription("Open-batch orders in play by state (new|cooking|ready|out|scheduled) and source (online|pos)"))
+	if err != nil {
+		return nil, fmt.Errorf("floor.orders.open: %w", err)
+	}
+	tablets, err := m.Int64ObservableGauge("floor.tablets.connected",
+		metric.WithDescription("Paired tablets currently on the agent's SSE stream"))
+	if err != nil {
+		return nil, fmt.Errorf("floor.tablets.connected: %w", err)
+	}
+	hubUp, err := m.Int64ObservableGauge("hub.link.up",
+		metric.WithDescription("Store hub reported within the stale window: 1=up, 0=down (absent when no hub ever reported)"))
+	if err != nil {
+		return nil, fmt.Errorf("hub.link.up: %w", err)
+	}
+	hubAge, err := m.Float64ObservableGauge("hub.status.age.seconds",
+		metric.WithUnit("s"),
+		metric.WithDescription("Seconds since the store hub's last status report (absent when no hub ever reported)"))
+	if err != nil {
+		return nil, fmt.Errorf("hub.status.age.seconds: %w", err)
+	}
+	info, err := m.Int64ObservableGauge("agent.info",
+		metric.WithDescription("Always 1; the version attribute is the running agent's version"))
+	if err != nil {
+		return nil, fmt.Errorf("agent.info: %w", err)
+	}
+	infoAttrs := metric.WithAttributes(attribute.String("version", src.Version))
+
+	return m.RegisterCallback(func(ctx context.Context, o metric.Observer) error {
+		o.ObserveInt64(info, 1, infoAttrs)
+		if src.TabletsConnected != nil {
+			o.ObserveInt64(tablets, int64(src.TabletsConnected()))
+		}
+		if src.Hub != nil {
+			if h, ok := src.Hub(); ok {
+				up := int64(0)
+				if h.Up {
+					up = 1
+				}
+				o.ObserveInt64(hubUp, up)
+				o.ObserveFloat64(hubAge, h.Age.Seconds())
+			}
+		}
+		if src.FloorOpen != nil {
+			counts, err := src.FloorOpen(ctx)
+			if err != nil {
+				return fmt.Errorf("floor.orders.open: %w", err)
+			}
+			n := map[[2]string]int64{}
+			for _, c := range counts {
+				n[[2]string{c.State, c.Source}] += c.N
+			}
+			for _, st := range FloorStates {
+				for _, so := range FloorSources {
+					o.ObserveInt64(floorOpen, n[[2]string{st, so}], metric.WithAttributes(
+						attribute.String("state", st), attribute.String("source", so)))
+				}
+			}
+		}
+		return nil
+	}, floorOpen, tablets, hubUp, hubAge, info)
 }
