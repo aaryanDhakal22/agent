@@ -58,3 +58,8 @@ __pycache__/
 
 # Quibase APKs cached by dev roster agents (next to their DBs)
 sql/apk/
+
+# Local notes, not tracked.
+CLAUDE.md
+CLAUDE.local.md
+.claude/
