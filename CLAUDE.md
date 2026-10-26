@@ -24,7 +24,8 @@ the same shape flows through agent → SQLite → mobile UI.
 
 The agent is a **single static CGO-free binary** now — no Docker, no Postgres,
 no nginx. It stores everything in one **pure-Go SQLite** file and serves its own
-web UI. Dev, staging, and prod all run it the same way (`doppler run -- ./agent`).
+web UI. Dev runs it under `doppler run` (below); a Pi runs it under systemd from
+the verified bootstrap with no Doppler (see "Deploying on a Pi").
 
 ```bash
 task build                 # → ./bin/agent (host arch)
@@ -59,18 +60,13 @@ Requires
 console falls back to `go run`.
 
 **Deploy (staging + prod Pi, aarch64):** CI publishes a static `linux/arm64`
-binary — a rolling `staging` prerelease on every branch push, and an immutable
-release per `v*` tag. Download it to the Pi and run it:
-
-```bash
-gh release download staging-latest -p 'agent-linux-arm64*'   # or a v1.2.3 tag
-sha256sum -c agent-linux-arm64.sha256
-doppler run -- ./agent-linux-arm64                    # stop with: pkill agent
-```
-
-As-built staging differs from the above: the Pi `192.168.1.219` was planted
-manually and runs from an env-file snapshot rendered from Doppler (not live
-`doppler run` — DietPi Doppler CLI wouldn't install). See `../STAGING.md`.
+binary — the rolling `staging-latest` prerelease on every `staging` branch
+push, and an immutable release per `v*` tag. A Pi never downloads it by hand:
+`deploy/pi/publish.sh --env <staging|prod> --agent <staging-latest|vX.Y.Z>`
+(ops repo, root) signs a manifest naming that release onto the utility host,
+and the Pi installs it through the verified bootstrap / the update handshake
+(see "Deploying on a Pi" and `RELEASING.md`). The staging Pi `192.168.1.219`
+runs this layout since 2026-10-16 (`../STAGING.md`).
 
 - The pytest suite **builds the binary once and spawns throwaway agents** (temp
   SQLite, spare port, `MAIN_SERVER_URL`=dev main, no OTEL) plus a throwaway
@@ -90,49 +86,65 @@ manually and runs from an env-file snapshot rendered from Doppler (not live
 
 1. `config.Load()` validates `MAIN_SERVER_URL` (only required var). There is
    no `STORE_API_KEY` env var — a blank agent boots `unconfigured` and waits
-   for an admin-minted token to be pasted into its setup screen.
-2. `observability.Setup()` **before** the logger is wrapped — empty
+   to be linked (manager login, or an admin-minted token pasted into its setup
+   screen).
+2. SQLite file opens (`AGENT_DB_PATH`, directory created) + goose migrations
+   run — **before telemetry**, because a linked Pi's OTLP + Pushover secrets
+   live in `settings.secret_*` (`applyLinkedSecrets`; env wins).
+3. `observability.Setup()` **before** the logger is wrapped — empty
    `OTEL_EXPORTER_OTLP_ENDPOINT` installs no-op providers so the agent
    runs fully offline.
-3. Logger is then `observability.Wire`'d so every `logger.X().Ctx(ctx)...`
+4. Logger is then `observability.Wire`'d so every `logger.X().Ctx(ctx)...`
    line gets `trace_id`/`span_id` fields AND goes out via the OTLP log
-   bridge.
-4. SQLite file opens (`AGENT_DB_PATH`) + goose migrations run. Order + settings
-   + storeconfig repos are built.
+   bridge. Order + settings + storeconfig + device repos are built.
 5. **Hydrate**: read persisted `store_config` from DB. If present, hot-load
-   the printer roster into the Dispatcher so the agent keeps printing
-   across restarts even if main/ is unreachable.
-6. SSE Controller is constructed and given the device token read from the
-   DB (`settings.store_api_key`, the only source — no env fallback). Empty key
-   → no SSE connection until the setup screen provides one. The Controller's `SetKey` is the only API surface — it
-   cancels the current SSE goroutine and starts a fresh one with the new key.
-7. HTTP server + SSE controller + retention sweeper start as goroutines;
-   `<-ctx.Done()` blocks until SIGINT/SIGTERM.
+   the printer roster into the Dispatcher (and hand the map file its
+   `location.map`) so the agent keeps printing across restarts even if main/
+   is unreachable. The order service loads receipt prefs + the 2.1.0
+   integration settings, the dispatcher gets its `Rules` hook, and
+   `RecoverInterruptedAccepts` reverts cut-off accepts.
+6. RPC registry + SSE Controller are constructed; the controller is given the
+   device token read from the DB (`settings.store_api_key`, the only source —
+   no env fallback). Empty key → no SSE connection until the device is
+   linked. The Controller's `SetKey` is the only API surface — it cancels the
+   current SSE goroutine and starts a fresh one with the new key.
+7. HTTP server, discovery, retention, floor sync, escalation, driver reset
+   and the other loops start as goroutines; `<-ctx.Done()` blocks until
+   SIGINT/SIGTERM (exit 75 after a telemetry-bearing link with
+   `AGENT_SELF_RESTART=1`).
 
 **Clean Architecture layout inside `internal/`:**
 
 - `domain/order/` — canonical Snapshot (mirrors main/'s shape), Status,
-  StoredOrder, repository interfaces.
-- `domain/storeconfig/` — agent-side mirror of main's `StoreContext`.
-- `domain/printer/` — Printer interface, PrintJob value type.
+  StoredOrder, floor / pool / integration types, receipt prefs, repository
+  interfaces.
+- `domain/device/` — paired devices (`tablet` | `integration`).
+- `domain/storeconfig/` — agent-side mirror of main's `StoreContext` (+ opening hours).
+- `domain/printer/` — Printer interface, Ticket / Outcome value types.
 - `application/order/` — order service: OnArrival, Accept, Reprint (receipt
-  only), ResendKitchen (stations only). Owns
-  the Pushover sound decision (cash/credit/big-ticket).
+  only), ResendKitchen (stations only); floor (`floor.go`), pools / AUTO / geo
+  (`pools.go`, `trip.go`), driver reports (`reports.go`), store hub + future
+  orders (`integration.go`). Pushover is problems only (see Pushover).
 - `application/printer/` — Dispatcher (dynamic roster from store_config),
   Service (per-printer KeepCheck + Print), Registry (in-memory reachability
-  cache for the mobile API).
+  cache for the mobile API), plan (modes + rules), test print, roster report.
 - `application/sseclient/` — Controller. Wraps the raw `infra/sse/client`
   with `SetKey` semantics so the web UI can swap keys at runtime.
-- `application/retention/` — count-based rolling-window trimmer (keep newest N).
+- `application/retention/` — batch retention (open + `AGENT_KEEP_BATCHES`
+  closed), hourly.
+- `application/{floorsync,escalation,driverreset,acker,statesync,health,catchup,recovery,backup,appupdate,mapfile,update,printernet,dispatch}/`
+  — see the sections below.
 - `infra/database/` — SQLite (modernc) handle, sqlc models, repos, manual DB spans.
-- `infra/mainclient/` — HTTP client to main/ (token verify + history/config proxy + self-revoke).
+- `infra/mainclient/` — HTTP client to main/ (token verify + history/config proxy + self-revoke + RPC + uploads).
+- `infra/discovery/`, `infra/netscan/` — UDP LAN discovery; ARP + TCP 9100 sweep.
 - `infra/sse/` — SSE client (handshake + order parse, trace propagation).
 - `infra/ssebroker/` — mobile-facing SSE fan-out.
 - `infra/printer/escpos/` — TCP→port 9100 ESC/POS adapter.
 - `infra/printer/receipt/` — receipt builder against canonical Snapshot +
   StoreContext.
 - `infra/notify/` — Pushover.
-- `transport/` — HTTP server exposing the mobile-facing routes.
+- `transport/` — HTTP server: route table (`routes.go`), floor / pairing /
+  web-UI / diagnostics / receipt / update / pools / integration handlers.
 
 ## SSE client (non-obvious behaviours)
 
@@ -168,7 +180,10 @@ payload}` mirrors `main/.../internal/rpc`; wire shape is pinned in
   decodes, runs the handler, and POSTs the reply (reusing the request `id`) to
   `POST /store/v1/agent/rpc` on main via `mainclient.PostRPC` (store-key auth).
 - Unsolicited **reports** use `Registry.Report` (fresh `id`, no waiter).
-- Handlers are registered in `cmd/main.go`. The registry is threaded through
+- Handlers are registered in `cmd/main.go`: `ping`, `printer.report.request`,
+  `order.geo`, `agent.update`, `agent.rollback` (an unknown type gets no
+  reply). `Registry.Send` (waits for main's reply) backs `diag.report`,
+  `printer.moved` / `printer.add` and the `geo.*` requests. The registry is threaded through
   `sseclient.Controller` → `sseraw.New`; its `ReplyPoster.key` getter is wired
   to `sseCtrl.CurrentKey` **after** controller construction (breaks the
   registry↔controller construction cycle).
@@ -180,14 +195,16 @@ payload}` mirrors `main/.../internal/rpc`; wire shape is pinned in
 
 ## Provisioning: token + local password (state machine)
 
-A built agent is **generic** — not tied to any location until a token is pasted
-in. `GET /api/session` returns a `state` that drives the whole UI:
+A built agent is **generic** — not tied to any location until it is linked
+(normally with the store manager login, `POST /api/setup/link` — see "Headless
+recovery" below; or with a pasted admin-minted token). `GET /api/session`
+returns a `state` that drives the whole UI:
 
 | state | condition | screen |
 |---|---|---|
-| `unconfigured` | no token | paste an admin-minted token |
-| `needs_password` | token linked, no password | create a local password |
-| `locked` | token+password, no valid session | unlock with the password |
+| `unconfigured` | no token | link with the manager login, or paste an admin-minted token |
+| `needs_password` | token linked, no password (token path only — a manager link stores the manager's hash) | create a local password |
+| `locked` | token+password, no valid session | unlock with the password (manager login on a linked Pi) |
 | `ready` | token+password+valid session | the app |
 
 **Token** (`settings.store_api_key`, the ONLY source — no env var). Provisioned by
@@ -237,15 +254,25 @@ surfaces `sse_state`; the web UI header polls it (~5s) → green / amber / red.
 ## Printer roster from store_config
 
 There are no `PRINTER_IP` env vars anymore. The Dispatcher receives the
-printer list on every SSE handshake from main and rebuilds the roster
+printer list on every SSE handshake from main — and on every mid-stream
+`store_config` push after a printer edit in main — and rebuilds the roster
 whole-cloth: cancels prior KeepCheck goroutines, instantiates fresh
 Service+Printer pairs, starts new KeepChecks.
 
 ## Deploying on a Pi
 
-`deploy/quicc-agent.service` (systemd, `doppler run`, restart always, `:8080`)
-+ `deploy/README.md`. The restaurant Pi still runs **v1** (Docker + Postgres +
-nginx :80) — the switch is in `../CUTOVER.md`; never run both agents at once.
+The Pi install is the **verified bootstrap** in the ops repo (`deploy/pi/`,
+runbook `deploy/pi/RECOVERY.md`): a signed manifest on
+`utility.quiccpos.com/<env>` names the release; `agent-install.sh` puts it in
+`/opt/quicc-agent/releases/<V>` (`current` / `previous` symlinks), writes
+systemd `quicc-agent.service` (user `quicc`, `EnvironmentFile=/etc/quicc-agent.env`
++ optional `/etc/quicc-agent.local.env`, no Doppler), plus the root units
+`quicc-health.timer`, `quicc-update.path` (→ `update.sh`, §"Pi updates"),
+`quicc-boot-update.service` and `quicc-tailscale-join.path`. Data lives in
+`/var/lib/quicc-agent` (DB, map, APKs, update files). (The older
+`doppler run` unit that lived in this repo's `deploy/` was removed
+2026-10-26.) The switch from v1 is in `../CUTOVER.md`; never run both agents
+at once.
 
 ## Floor flow (agent decides, main mirrors)
 
@@ -334,8 +361,10 @@ nginx :80) — the switch is in `../CUTOVER.md`; never run both agents at once.
 - **Driver reports** (`application/order/reports.go`, repo `DriverReports`,
   `receipt/report.go`): one slip per driver who delivered in, or was clocked in
   during, a batch. Cash = `Snapshot.CashDue()` (the *cash* payments, or the
-  whole total when there are no payments; card = paid to the store);
-  tips A/T = all tips × (1 − `tip_tax_bps`); owed = cash − tips A/T (negative →
+  whole total when there are no payments; card = paid to the store) — since
+  2.1.0 less the tip, with tips counted only on card-paid lines (see 2.1.0
+  "Driver report money");
+  tips A/T = card tips × (1 − `tip_tax_bps`); owed = cash − tips A/T (negative →
   "STORE OWES DRIVER"). Printed by `Dispatcher.PrintDocument` (receipt printer,
   failover) **in the background after Close batch** and on demand via
   `POST /api/batches/{id}/driver-reports/print`. Golden: `testdata/driver_report.golden`.
@@ -667,7 +696,13 @@ Optional: `AGENT_DB_PATH` (SQLite file, default `~/.quicc/agent.db`),
 `AGENT_DISCOVERY_PORT` (UDP LAN discovery, default 48080, `0` off),
 `AGENT_UPDATE_DIR` (default the DB dir), `AGENT_UPDATE_ENABLED` (`1` = allow the
 update handshake off a Pi — tests), `UTILITY_URL` (manifest host for the
-latest-version check).
+latest-version check; unset = `https://utility.quiccpos.com` when `APP_ENV` is
+prod|staging, no check otherwise),
+`AGENT_HEALTH_FILE` (the Pi health timer's JSON, read in
+`application/health`; default `/var/lib/quicc-agent/health.json`),
+`AGENT_SELF_RESTART` (`1`, set by the Pi installer: exit 75 after a link that
+handed over an OTLP endpoint, so systemd restarts with telemetry). Not in
+`config.go`: the last two are read where used.
 
 `OTEL_EXPORTER_OTLP_ENDPOINT` accepts a full URL or a bare `host:port`
 (defaults to `http://`). OTLP transport is **HTTP** here, not gRPC; use
@@ -819,9 +854,14 @@ JS/CSS `no-cache` + content ETag, fonts immutable for a year.
 `/api/events`) and the Quibase setup/diagnostics routes (`/api/pairing/code`,
 `/api/device/self`, `/api/device/report-token`, `/api/diag`, `/api/diag/report`,
 `/api/printers/test`, `/api/printers/sample`, `/api/settings/receipt`,
-`/api/settings/deliveries`) need a paired tablet key **or** the web-UI session — no
+`/api/settings/deliveries`, `/api/settings/features|tickets|times`,
+`GET /api/update/status`) need a paired tablet key **or** the web-UI session — no
 longer LAN-open; `POST /api/pair` is open (needs a live code); the web-UI surface
-(history, print/resend, store-config, settings, devices) is session-gated.
+(history, print/resend, store-config, auto-accept / floor / driver-reset /
+password / unlink settings, devices, `POST /api/update[/rollback]`) is
+session-gated; `/api/integration/*` takes only the store hub's integration key
+(which in turn may only `GET` `/api/floor|events|drivers|settings/*` among the
+floor routes).
 `internal/infra/mainclient` is the agent's HTTP client to main.
 
 ## Files to look at for…
