@@ -151,11 +151,14 @@ type Health struct {
 // still in play (arrived / accepted / ready / on_delivery).
 type OrderCounts func(ctx context.Context) (total, active int64, err error)
 
-// Store persists the job + the Pushover dedupe key (settings row).
+// Store persists the job, the Pushover dedupe key and the last successful
+// update (settings row).
 type Store interface {
 	GetUpdateState(ctx context.Context) (job, notified string, err error)
 	SetUpdateJob(ctx context.Context, job string) error
 	SetUpdateNotified(ctx context.Context, key string) error
+	GetUpdateLastSuccess(ctx context.Context) (time.Time, error)
+	SetUpdateLastSuccess(ctx context.Context, at time.Time) error
 }
 
 // Reporter sends an RPC report to main (rpc.Registry.Report).
@@ -173,6 +176,13 @@ type Config struct {
 	Env       string
 	StoreName func() string
 	Now       func() time.Time
+	// OnFinished runs once per finished run (the same once as the
+	// developer Pushover, which survives the restart an update causes):
+	// the agent.update.runs counter.
+	OnFinished func(ctx context.Context, s Status)
+	// OnEvent hears a request taken and every finished run (the
+	// developer-mode events): level info|warn|error and a line of text.
+	OnEvent func(level, text string)
 }
 
 // Requester gates, writes and follows update requests.
@@ -192,6 +202,7 @@ type Requester struct {
 	notified   string  // "<id>:<state>" already paged
 	reported   string  // "<id>:<state>" main already has (this process)
 	lastIdleAt time.Time
+	lastOK     time.Time // the last update that finished ok (zero = none known)
 }
 
 // Supported decides whether this machine can update itself: a Pi
@@ -240,9 +251,14 @@ func (r *Requester) Load(ctx context.Context) {
 	if err != nil {
 		r.logger.Warn().Ctx(ctx).Err(err).Msg("update state not loaded")
 	}
+	lastOK, err := r.store.GetUpdateLastSuccess(ctx)
+	if err != nil {
+		r.logger.Warn().Ctx(ctx).Err(err).Msg("last update success not loaded")
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.notified = notified
+	r.lastOK = lastOK
 	if raw != "" {
 		var j job
 		if json.Unmarshal([]byte(raw), &j) == nil && j.ID != "" {
@@ -250,6 +266,40 @@ func (r *Requester) Load(ctx context.Context) {
 		}
 	}
 	r.readStatusLocked()
+	// An update that finished before the agent kept this (or before this
+	// database): take it from update.status.
+	if r.file != nil && isUpdateOK(r.file) {
+		if at := finishedAt(r.file, r.cfg.Now()); at.After(r.lastOK) {
+			r.lastOK = at
+			if err := r.store.SetUpdateLastSuccess(ctx, at); err != nil {
+				r.logger.Warn().Ctx(ctx).Err(err).Msg("last update success not persisted")
+			}
+		}
+	}
+}
+
+// LastSuccess is when the last Pi update finished ok (agent.update.last_success);
+// ok=false when none is known.
+func (r *Requester) LastSuccess() (time.Time, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.lastOK, !r.lastOK.IsZero()
+}
+
+func isUpdateOK(s *Status) bool {
+	return s.State == StateOK && (s.Action == ActionUpdate || s.Action == "")
+}
+
+// finishedAt is a finished status's end time (its start, else now, when the
+// file has none).
+func finishedAt(s *Status, now time.Time) time.Time {
+	if at, err := time.Parse(time.RFC3339, s.FinishedAt); err == nil {
+		return at.UTC()
+	}
+	if at, err := time.Parse(time.RFC3339, s.StartedAt); err == nil {
+		return at.UTC()
+	}
+	return now.UTC()
 }
 
 // Wake asks the loop to look now.
@@ -365,6 +415,7 @@ func (r *Requester) Request(ctx context.Context, action string, force bool, requ
 	r.persistJobLocked(ctx)
 	r.mu.Unlock()
 	r.logger.Info().Ctx(ctx).Str("id", id).Str("action", action).Str("requested_by", requestedBy).Msg("update requested")
+	r.event("info", fmt.Sprintf("%s requested by %s (%s)", action, requestedBy, id))
 	r.Wake()
 	return Reply{Accepted: true, State: StateRequested, ID: id}
 }
@@ -443,7 +494,7 @@ func (r *Requester) effectiveLocked(now time.Time) *Status {
 				s.FinishedAt = at.Add(runningStale).UTC().Format(time.RFC3339)
 			}
 		}
-		if s.RequestedBy == "" && j != nil {
+		if (s.RequestedBy == "" || s.RequestedBy == "unknown") && j != nil && j.ID == s.ID {
 			s.RequestedBy = j.RequestedBy
 		}
 		return &s
@@ -569,13 +620,41 @@ func (r *Requester) reportAndNotify(ctx context.Context, eff *Status) {
 		if err := r.store.SetUpdateNotified(ctx, k); err != nil {
 			r.logger.Warn().Ctx(ctx).Err(err).Msg("update notify key not persisted")
 		}
+		if isUpdateOK(eff) {
+			at := finishedAt(eff, r.cfg.Now())
+			r.mu.Lock()
+			newer := at.After(r.lastOK)
+			if newer {
+				r.lastOK = at
+			}
+			r.mu.Unlock()
+			if newer {
+				if err := r.store.SetUpdateLastSuccess(ctx, at); err != nil {
+					r.logger.Warn().Ctx(ctx).Err(err).Msg("last update success not persisted")
+				}
+			}
+		}
+		if r.cfg.OnFinished != nil {
+			r.cfg.OnFinished(ctx, *eff)
+		}
 		msg, sound := Message(r.cfg.StoreName(), eff)
 		r.logger.Info().Ctx(ctx).Str("id", eff.ID).Str("state", eff.State).Str("error", eff.Error).Msg(msg)
+		lvl := "info"
+		if eff.State == StateFailed || eff.State == StateRolledBack {
+			lvl = "error"
+		}
+		r.event(lvl, fmt.Sprintf("%s %s: %s %s -> %s (%s)", eff.Action, eff.State, eff.RequestedBy, orQ(eff.FromVersion), orQ(eff.ToVersion), eff.ID))
 		if r.notify != nil {
 			if err := r.notify(ctx, msg, sound); err != nil {
 				r.logger.Warn().Ctx(ctx).Err(err).Msg("update Pushover failed")
 			}
 		}
+	}
+}
+
+func (r *Requester) event(level, text string) {
+	if r.cfg.OnEvent != nil {
+		r.cfg.OnEvent(level, text)
 	}
 }
 

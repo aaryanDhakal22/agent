@@ -8,6 +8,7 @@ import (
 
 	"context"
 	"crypto/rand"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -15,6 +16,7 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -23,6 +25,7 @@ import (
 	"quiccpos/agent/internal/application/appupdate"
 	"quiccpos/agent/internal/application/backup"
 	"quiccpos/agent/internal/application/catchup"
+	"quiccpos/agent/internal/application/devlog"
 	"quiccpos/agent/internal/application/driverreset"
 	"quiccpos/agent/internal/application/escalation"
 	"quiccpos/agent/internal/application/floorsync"
@@ -54,6 +57,8 @@ import (
 	"quiccpos/agent/internal/transport"
 
 	"github.com/rs/zerolog"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/metric"
 	"gopkg.in/lumberjack.v2"
 )
 
@@ -66,6 +71,7 @@ var (
 )
 
 func main() {
+	procStart := time.Now()
 	bootstrap := zerolog.New(zerolog.ConsoleWriter{Out: os.Stdout}).With().Timestamp().Logger()
 
 	cfg, err := config.Load()
@@ -96,11 +102,17 @@ func main() {
 	}
 
 	// --- Observability ----------------------------------------------------
+	// The resource carries the linked store's tenant/location slugs (from the
+	// persisted store_config; "unlinked" with no store key). It is fixed for
+	// the process: a store linked later is labelled from the next start.
+	resTenant, resLocation := persistedStoreSlugs(ctx, db, bootstrap)
 	shutdownOtel, err := observability.Setup(ctx, observability.Config{
 		Endpoint:    cfg.OTELEndpoint,
 		ServiceName: cfg.OTELServiceName,
 		AppEnv:      cfg.AppEnv,
 		Version:     version,
+		Tenant:      resTenant,
+		Location:    resLocation,
 	})
 	if err != nil {
 		bootstrap.Error().Err(err).Msg("OTEL setup failed — continuing with no telemetry")
@@ -140,7 +152,10 @@ func main() {
 	zerolog.SetGlobalLevel(level)
 
 	rawLogger := zerolog.New(writer).With().Timestamp().Logger()
-	logger := observability.Wire(rawLogger, cfg.OTELServiceName)
+	// Developer-mode events (GET /api/dev/events): floor events the services
+	// add + every warn/error log line (its message only, never its fields).
+	devRing := devlog.New(devlog.DefaultSize)
+	logger := observability.Wire(rawLogger, cfg.OTELServiceName).Hook(devRing.Hook())
 	logger.Info().
 		Str("log_level", level.String()).
 		Str("app_env", cfg.AppEnv).
@@ -186,6 +201,13 @@ func main() {
 	}
 
 	dispatcher := printerApp.NewDispatcher(ctx, factory, printerRegistry, notifier, cfg.PrinterDetectDelay, receiptBuilder, logger, meters)
+	dispatcher.SetStatusHook(func(up bool, msg string) {
+		if up {
+			devRing.Add(devlog.Info, devlog.KindPrinter, msg)
+		} else {
+			devRing.Add(devlog.Warn, devlog.KindPrinter, msg)
+		}
+	})
 
 	// Printers on the LAN: learn each roster printer's MAC after a good probe,
 	// follow one that moved to a new IP, list unknown ones for "add". The
@@ -225,6 +247,7 @@ func main() {
 	// --- Order service + mobile-facing SSE broker -------------------------
 	broker := ssebroker.New()
 	orderService := orderApp.NewService(orderRepo, settingsRepo, printFn, notifier, broker, logger, meters)
+	orderService.SetDevLog(devRing)
 	// Driver reports print on the receipt printer (failover like a ticket),
 	// formatted with the live store context (timezone + store name).
 	orderService.SetDocumentPrinting(dispatcher.PrintDocument, func(rep order.DriverReport, from string) []byte {
@@ -259,6 +282,9 @@ func main() {
 		onApplied:  broker.PublishFloorChanged,
 		storeCtx:   &storeCtx,
 		logger:     logger.With().Str("module", "storeconfig-sink").Logger(),
+		telemetry:  cfg.OTELEndpoint != "",
+		resTenant:  resTenant,
+		resLoc:     resLocation,
 	}
 
 	// --- SSE controller ---------------------------------------------------
@@ -306,6 +332,18 @@ func main() {
 		},
 		Send:   registry.Send,
 		Linked: sseCtrl.Configured,
+		// The location's delivery radius (store_config) — the tablet changes
+		// it through main (location.radius); the in-memory copy is patched
+		// until main's store_config push lands.
+		Radius: func() (int64, bool) {
+			sc, _ := storeCtx.Load().(storeconfig.StoreContext)
+			return sc.Location.DeliveryRadiusM, sc.Location.ID != ""
+		},
+		SetRadius: func(m int64) {
+			sc, _ := storeCtx.Load().(storeconfig.StoreContext)
+			sc.Location.DeliveryRadiusM = m
+			storeCtx.Store(sc)
+		},
 	})
 	mapFile.OnChange(broker.PublishFloorChanged)
 	go mapFile.Run(ctx)
@@ -314,17 +352,25 @@ func main() {
 	// Pi updates: gate + drop update.request for the root updater, follow
 	// update.status, report agent.update.status, Pushover the developer.
 	exe, _ := os.Executable()
+	updateSupported := update.Supported(cfg.AppEnv, cfg.UpdateDir, cfg.UpdateEnabled)
+	if updateSupported {
+		initUpdateRuns(ctx, meters)
+	}
 	manifestEnv := update.ManifestEnv(cfg.AppEnv)
 	if manifestEnv == "" && cfg.UtilityURL != "" {
 		manifestEnv = "staging" // tests point UTILITY_URL at a fake
 	}
 	updater := update.New(update.Config{
 		Dir:       cfg.UpdateDir,
-		Supported: update.Supported(cfg.AppEnv, cfg.UpdateDir, cfg.UpdateEnabled),
+		Supported: updateSupported,
 		Version:   version,
 		Commit:    commit,
 		Env:       cfg.AppEnv,
 		StoreName: func() string { sc, _ := storeCtx.Load().(storeconfig.StoreContext); return sc.StoreName() },
+		OnFinished: func(_ context.Context, s update.Status) {
+			countUpdateRun(meters, procStart, s)
+		},
+		OnEvent: func(level, text string) { devRing.Add(level, devlog.KindUpdate, text) },
 	}, orderRepo.CountOpenBatchOrders, settingsRepo, registry.Report, notifier.Send,
 		update.NewLatest(update.ManifestURL(cfg.UtilityURL, manifestEnv), exe), logger)
 	updater.Load(ctx)
@@ -345,6 +391,19 @@ func main() {
 	registry.Register(update.MsgRollback, updateCmd(update.ActionRollback))
 	go updater.Run(ctx)
 	go printerWatcher.Run(ctx)
+	// Pi auto-update (2.2.0): after a successful Close batch (its driver
+	// reports printed), a newer agent in the manifest is installed through
+	// the normal update path (requested_by auto) when auto_update is on.
+	orderService.OnBatchClosed(func(rc context.Context) {
+		rep, reason := updater.AfterClose(rc)
+		switch {
+		case rep != nil && rep.Accepted:
+			devRing.Add(devlog.Info, devlog.KindUpdate, "Auto-update after Close batch requested ("+rep.ID+")")
+		case reason == update.AutoOff, reason == update.CodeNotSupported:
+		default:
+			devRing.Add(devlog.Info, devlog.KindUpdate, "Auto-update after Close batch: nothing to do ("+reason+")")
+		}
+	})
 
 	// Delivery guarantee: every stored order (new or a redelivery) is acked
 	// to main, which re-sends anything unacked after 10 s.
@@ -355,7 +414,16 @@ func main() {
 	// Floor state for a replacement Pi (agent.state) + the heartbeat.
 	stateSync := statesync.New(orderRepo.AgentState, registry.Report, sseCtrl.Configured, logger)
 	go stateSync.Run(ctx)
+	// The paired tablets (+ Quibase versions) come from the HTTP server,
+	// built further down.
+	var httpRef atomic.Pointer[transport.Server]
 	heartbeat := health.New(health.Inputs{
+		Tablets: func(rc context.Context) any {
+			if hs := httpRef.Load(); hs != nil {
+				return hs.Tablets(rc)
+			}
+			return nil
+		},
 		DeviceID: func(rc context.Context) string {
 			li, _ := settingsRepo.GetLinkInfo(rc)
 			return li.DeviceID
@@ -437,7 +505,11 @@ func main() {
 			notifier.SetKeys(sec.PushoverAppToken, sec.PushoverUserKey, sec.PushoverBossKey)
 		}
 	}
+	sseCtrl.OnDisconnected(func() {
+		devRing.Add(devlog.Warn, devlog.KindSSE, "Lost the connection to main")
+	})
 	sseCtrl.OnConnected(func() {
+		devRing.Add(devlog.Info, devlog.KindSSE, "Connected to main")
 		stateSync.Reset()
 		heartbeat.Wake()
 		appUpdater.Wake()
@@ -506,6 +578,8 @@ func main() {
 	})
 	httpServer := transport.NewServer(orderService, broker, printerRegistry, settingsRepo, sseCtrl, mainClient, session, deviceRepo, cfg.HTTPPort, version, commit, logger)
 	httpServer.SetAltPort(cfg.HTTPAltPort)
+	httpServer.SetDevLog(devRing)
+	httpRef.Store(httpServer)
 	httpServer.SetAppUpdater(appUpdater)
 	httpServer.SetMap(mapFile)
 	httpServer.SetUpdates(updater, printerWatcher)
@@ -563,10 +637,60 @@ func main() {
 		if os.Getenv("AGENT_SELF_RESTART") == "1" && cfg.OTELEndpoint == "" && out.Secrets.OTLPEndpoint != "" {
 			logger.Info().Msg("linked: restarting in 3 s to start telemetry")
 			time.Sleep(3 * time.Second)
+			// The restarted agent labels its telemetry with the store's slugs
+			// from the saved store_config: give the new store's first
+			// handshake up to 10 s more and make sure it is on disk (a re-used
+			// Pi may still hold the previous store's).
+			for i := 0; i < 20; i++ {
+				if sc, _ := storeCtx.Load().(storeconfig.StoreContext); sc.Tenant.Slug != "" && (out.TenantSlug == "" || sc.Tenant.Slug == out.TenantSlug) {
+					if err := storeConfigRepo.Save(ctx, sc); err != nil {
+						logger.Warn().Err(err).Msg("linked: saving store_config before the restart failed")
+					}
+					break
+				}
+				time.Sleep(500 * time.Millisecond)
+			}
 			restart.Store(true)
 			cancel()
 		}
 	})
+
+	// Live gauges (read at each metric export): open orders by state/source,
+	// tablets on the SSE stream, the store hub's link, the agent version.
+	if _, err := observability.RegisterLive(observability.Live{
+		FloorOpen: func(rc context.Context) ([]observability.FloorCount, error) {
+			rows, err := orderRepo.CountOpenFloor(rc)
+			if err != nil {
+				return nil, err
+			}
+			out := make([]observability.FloorCount, 0, len(rows))
+			for _, r := range rows {
+				src := "online"
+				if r.POS {
+					src = "pos"
+				}
+				out = append(out, observability.FloorCount{State: floorStateLabel(r.State), Source: src, N: r.N})
+			}
+			return out, nil
+		},
+		TabletsConnected: httpServer.TabletsConnected,
+		TabletVersions:   httpServer.TabletVersions,
+		Hub: func() (observability.HubLink, bool) {
+			now := time.Now()
+			v := orderService.IntegrationView(now)
+			if v.LastSeenAt == nil {
+				return observability.HubLink{}, false // no store hub ever reported
+			}
+			return observability.HubLink{Up: v.Connected, Age: now.Sub(*v.LastSeenAt)}, true
+		},
+		Version:           version,
+		SSEConnected:      func() bool { return sseCtrl.Status().Connected },
+		Started:           procStart,
+		HostUptime:        health.HostUptime,
+		UpdateLastSuccess: updater.LastSuccess,
+	}); err != nil {
+		logger.Warn().Err(err).Msg("Live metric gauges not registered")
+	}
 
 	resetAccess := httpServer.ResetAccess
 	onWipe.Store(&resetAccess)
@@ -595,6 +719,87 @@ func main() {
 		db.Close()
 		os.Exit(75) // systemd Restart=always brings it back with the new settings
 	}
+}
+
+// persistedStoreSlugs reads the linked store's tenant + location slugs from
+// the saved store_config for the telemetry resource. Both are "" (=
+// "unlinked") while the agent has no store key, or before the first
+// handshake was saved.
+func persistedStoreSlugs(ctx context.Context, db *sql.DB, lg zerolog.Logger) (tenant, location string) {
+	key, err := repositories.NewSettingsRepository(db, lg).GetStoreAPIKey(ctx)
+	if err != nil || key == "" {
+		return "", ""
+	}
+	sc, err := repositories.NewStoreConfigRepository(db, lg).Get(ctx)
+	if err != nil || sc == nil {
+		return "", ""
+	}
+	return sc.Tenant.Slug, sc.Location.Slug
+}
+
+// updateRunSeries are agent.update.runs' (action, result) pairs, created at 0
+// on a Pi so a run's first increment is a visible change in Prometheus.
+var updateRunSeries = [][2]string{
+	{update.ActionUpdate, update.StateOK}, {update.ActionUpdate, update.StateUpToDate},
+	{update.ActionUpdate, update.StateRolledBack}, {update.ActionUpdate, update.StateFailed},
+	{update.ActionRollback, update.StateOK}, {update.ActionRollback, update.StateFailed},
+}
+
+// updateRunsGrace: a run that finished right after start (the update's own
+// restart) is counted only once the zero series has been exported (15 s
+// interval), or Prometheus' increase() would miss the 0 -> 1 step.
+const updateRunsGrace = 20 * time.Second
+
+func initUpdateRuns(ctx context.Context, m observability.Meters) {
+	if m.UpdateRuns == nil {
+		return
+	}
+	for _, p := range updateRunSeries {
+		m.UpdateRuns.Add(ctx, 0, metric.WithAttributes(attribute.String("action", p[0]), attribute.String("result", p[1])))
+	}
+}
+
+// countUpdateRun adds one finished update / rollback to agent.update.runs.
+func countUpdateRun(m observability.Meters, procStart time.Time, s update.Status) {
+	if m.UpdateRuns == nil {
+		return
+	}
+	action := s.Action
+	if action != update.ActionRollback {
+		action = update.ActionUpdate
+	}
+	result := s.State
+	switch result {
+	case update.StateOK, update.StateUpToDate, update.StateRolledBack:
+	default:
+		result = update.StateFailed
+	}
+	add := func() {
+		m.UpdateRuns.Add(context.Background(), 1, metric.WithAttributes(
+			attribute.String("action", action), attribute.String("result", result)))
+	}
+	if wait := time.Until(procStart.Add(updateRunsGrace)); wait > 0 {
+		time.AfterFunc(wait, add)
+		return
+	}
+	add()
+}
+
+// floorStateLabel maps an order state to floor.orders.open's state label.
+func floorStateLabel(s order.State) string {
+	switch s {
+	case order.StateArrived:
+		return "new"
+	case order.StateAccepted:
+		return "cooking"
+	case order.StateReady:
+		return "ready"
+	case order.StateOnDelivery:
+		return "out"
+	case order.StateScheduled:
+		return "scheduled"
+	}
+	return string(s)
 }
 
 // applyLinkedSecrets fills empty config from the secrets a manager-login link
@@ -670,6 +875,14 @@ type storeConfigApplier struct {
 	// postApply, if set, runs after the roster is rebuilt (used to push a fresh
 	// printer.report up to main).
 	postApply func(context.Context)
+	// The tenant/location slugs the telemetry resource was built with
+	// (telemetry on). A store_config with other slugs (first link without a
+	// restart) is logged once: the labels follow on the next restart.
+	telemetry       bool
+	resTenant       string
+	resLoc          string
+	relabelNoticeMu sync.Mutex
+	relabelNotice   string
 }
 
 func (a *storeConfigApplier) Apply(ctx context.Context, sc storeconfig.StoreContext) error {
@@ -693,7 +906,31 @@ func (a *storeConfigApplier) Apply(ctx context.Context, sc storeconfig.StoreCont
 		Str("location", sc.Location.Name).
 		Int("printers", len(sc.Printers)).
 		Msg("store_config applied")
+	a.noticeRelabel(ctx, sc)
 	return nil
+}
+
+// noticeRelabel warns (once per new pair) when the store's slugs differ from
+// the ones the running telemetry resource carries.
+func (a *storeConfigApplier) noticeRelabel(ctx context.Context, sc storeconfig.StoreContext) {
+	if !a.telemetry || sc.Tenant.Slug == "" {
+		return
+	}
+	if sc.Tenant.Slug == a.resTenant && sc.Location.Slug == a.resLoc {
+		return
+	}
+	pair := sc.Tenant.Slug + "/" + sc.Location.Slug
+	a.relabelNoticeMu.Lock()
+	seen := a.relabelNotice == pair
+	a.relabelNotice = pair
+	a.relabelNoticeMu.Unlock()
+	if seen {
+		return
+	}
+	a.logger.Warn().Ctx(ctx).
+		Str("tenant_slug", sc.Tenant.Slug).Str("location_slug", sc.Location.Slug).
+		Str("telemetry_tenant", observability.StoreLabel(a.resTenant)).
+		Msg("store linked or changed: telemetry keeps its tenant/location labels until the agent restarts")
 }
 
 // resolveSessionSecret loads the persisted web-UI session-signing secret,

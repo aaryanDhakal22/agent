@@ -104,6 +104,7 @@ type Order struct {
 	ScheduledLeadMinutes sql.NullInt64  `json:"scheduled_lead_minutes"`
 	RingAt               sql.NullString `json:"ring_at"`
 	Rerung               bool           `json:"rerung"`
+	AutoAccepted         bool           `json:"auto_accepted"`
 }
 
 type OrderGeo struct {
@@ -130,14 +131,16 @@ type OrderTime struct {
 }
 
 type PairedDevice struct {
-	ID         string         `json:"id"`
-	Name       string         `json:"name"`
-	KeyHash    string         `json:"key_hash"`
-	KeyPrefix  string         `json:"key_prefix"`
-	CreatedAt  string         `json:"created_at"`
-	LastSeenAt sql.NullString `json:"last_seen_at"`
-	RevokedAt  sql.NullString `json:"revoked_at"`
-	Kind       string         `json:"kind"`
+	ID               string         `json:"id"`
+	Name             string         `json:"name"`
+	KeyHash          string         `json:"key_hash"`
+	KeyPrefix        string         `json:"key_prefix"`
+	CreatedAt        string         `json:"created_at"`
+	LastSeenAt       sql.NullString `json:"last_seen_at"`
+	RevokedAt        sql.NullString `json:"revoked_at"`
+	Kind             string         `json:"kind"`
+	AppVersion       string         `json:"app_version"`
+	AppVersionSeenAt sql.NullString `json:"app_version_seen_at"`
 }
 
 type PrinterMac struct {
@@ -148,42 +151,47 @@ type PrinterMac struct {
 }
 
 type Setting struct {
-	ID                     int64  `json:"id"`
-	AutoAccept             bool   `json:"auto_accept"`
-	StoreApiKey            string `json:"store_api_key"`
-	UpdatedAt              string `json:"updated_at"`
-	SessionSecret          string `json:"session_secret"`
-	UiPasswordHash         string `json:"ui_password_hash"`
-	UiPasswordHint         string `json:"ui_password_hint"`
-	KitchenNext            int64  `json:"kitchen_next"`
-	LastPrepMinutes        int64  `json:"last_prep_minutes"`
-	DriverResetTime        string `json:"driver_reset_time"`
-	LastDriverResetAt      string `json:"last_driver_reset_at"`
-	GreenTillMinutes       int64  `json:"green_till_minutes"`
-	TipTaxBps              int64  `json:"tip_tax_bps"`
-	LastReturnDriverID     string `json:"last_return_driver_id"`
-	LastReturnPosition     int64  `json:"last_return_position"`
-	LastReturnAt           string `json:"last_return_at"`
-	AppRelease             string `json:"app_release"`
-	SecretPushoverAppToken string `json:"secret_pushover_app_token"`
-	SecretPushoverUserKey  string `json:"secret_pushover_user_key"`
-	SecretPushoverBossKey  string `json:"secret_pushover_boss_key"`
-	SecretOtlpEndpoint     string `json:"secret_otlp_endpoint"`
-	SecretOtlpHeaders      string `json:"secret_otlp_headers"`
-	ManagerUsername        string `json:"manager_username"`
-	DeviceID               string `json:"device_id"`
-	LastBackupAt           string `json:"last_backup_at"`
-	ReceiptPrefs           string `json:"receipt_prefs"`
-	UpdateJob              string `json:"update_job"`
-	UpdateNotified         string `json:"update_notified"`
-	SoonReadyMinutes       int64  `json:"soon_ready_minutes"`
-	DeliveryTargetMinutes  int64  `json:"delivery_target_minutes"`
-	MapFile                string `json:"map_file"`
-	Features               string `json:"features"`
-	TicketToggles          string `json:"ticket_toggles"`
-	DefaultPickupMinutes   int64  `json:"default_pickup_minutes"`
-	DefaultDeliveryMinutes int64  `json:"default_delivery_minutes"`
-	IntegrationStatus      string `json:"integration_status"`
+	ID                     int64   `json:"id"`
+	AutoAccept             bool    `json:"auto_accept"`
+	StoreApiKey            string  `json:"store_api_key"`
+	UpdatedAt              string  `json:"updated_at"`
+	SessionSecret          string  `json:"session_secret"`
+	UiPasswordHash         string  `json:"ui_password_hash"`
+	UiPasswordHint         string  `json:"ui_password_hint"`
+	KitchenNext            int64   `json:"kitchen_next"`
+	LastPrepMinutes        int64   `json:"last_prep_minutes"`
+	DriverResetTime        string  `json:"driver_reset_time"`
+	LastDriverResetAt      string  `json:"last_driver_reset_at"`
+	GreenTillMinutes       int64   `json:"green_till_minutes"`
+	TipTaxBps              int64   `json:"tip_tax_bps"`
+	LastReturnDriverID     string  `json:"last_return_driver_id"`
+	LastReturnPosition     int64   `json:"last_return_position"`
+	LastReturnAt           string  `json:"last_return_at"`
+	AppRelease             string  `json:"app_release"`
+	SecretPushoverAppToken string  `json:"secret_pushover_app_token"`
+	SecretPushoverUserKey  string  `json:"secret_pushover_user_key"`
+	SecretPushoverBossKey  string  `json:"secret_pushover_boss_key"`
+	SecretOtlpEndpoint     string  `json:"secret_otlp_endpoint"`
+	SecretOtlpHeaders      string  `json:"secret_otlp_headers"`
+	ManagerUsername        string  `json:"manager_username"`
+	DeviceID               string  `json:"device_id"`
+	LastBackupAt           string  `json:"last_backup_at"`
+	ReceiptPrefs           string  `json:"receipt_prefs"`
+	UpdateJob              string  `json:"update_job"`
+	UpdateNotified         string  `json:"update_notified"`
+	SoonReadyMinutes       int64   `json:"soon_ready_minutes"`
+	DeliveryTargetMinutes  int64   `json:"delivery_target_minutes"`
+	MapFile                string  `json:"map_file"`
+	Features               string  `json:"features"`
+	TicketToggles          string  `json:"ticket_toggles"`
+	DefaultPickupMinutes   int64   `json:"default_pickup_minutes"`
+	DefaultDeliveryMinutes int64   `json:"default_delivery_minutes"`
+	IntegrationStatus      string  `json:"integration_status"`
+	UpdateLastSuccess      string  `json:"update_last_success"`
+	NearbyRule             string  `json:"nearby_rule"`
+	NearbyDetourMinutes    int64   `json:"nearby_detour_minutes"`
+	NearbyDistanceMi       float64 `json:"nearby_distance_mi"`
+	AutoUpdate             bool    `json:"auto_update"`
 }
 
 type StoreConfig struct {

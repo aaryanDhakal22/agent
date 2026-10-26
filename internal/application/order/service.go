@@ -9,6 +9,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"quiccpos/agent/internal/application/devlog"
 	"quiccpos/agent/internal/domain/order"
 	"quiccpos/agent/internal/domain/printer"
 	"quiccpos/agent/internal/infra/notify"
@@ -74,6 +75,10 @@ type Service struct {
 	integ    integrationState
 	storeIDs atomic.Pointer[func() (string, string)]
 	bg       sync.WaitGroup
+	// dev: the developer-mode event ring (SetDevLog; nil = off).
+	dev atomic.Pointer[devlog.Ring]
+	// onBatchClosed runs after a Close batch (OnBatchClosed).
+	onBatchClosed atomic.Pointer[func(ctx context.Context)]
 }
 
 func NewService(
@@ -144,6 +149,7 @@ func (s *Service) OnArrival(ctx context.Context, snap order.Snapshot) error {
 		s.logger.Info().Ctx(ctx).Str("order_id", id.String()).Msg("Order already stored — redelivery ignored")
 		return nil
 	}
+	s.devEvent(devlog.Info, devlog.KindOrder, "Order %s arrived (%s)", devlog.Short(id.String()), snap.Fulfillment.Type)
 
 	autoAccept, err := s.settings.GetAutoAccept(ctx)
 	if err != nil {
@@ -168,7 +174,7 @@ func (s *Service) OnArrival(ctx context.Context, snap order.Snapshot) error {
 			span.RecordError(err)
 		} else {
 			s.logger.Info().Ctx(ctx).Str("order_id", id.String()).Msg("Auto-accept ON — accepting immediately")
-			if _, err := s.Accept(ctx, id, nil); err != nil {
+			if _, err := s.AutoAccept(ctx, id); err != nil {
 				s.logger.Error().Ctx(ctx).Err(err).Str("order_id", id.String()).Msg("Auto-accept failed — order remains arrived")
 				span.RecordError(err)
 				// Fall through to broadcast so mobile sees the pending order.
@@ -198,8 +204,21 @@ func (s *Service) OnArrival(ctx context.Context, snap order.Snapshot) error {
 // fallback — keeps the order accepted and raises a Pushover instead, since the
 // kitchen already has tickets). prepMinutes nil = the last estimate used.
 func (s *Service) Accept(ctx context.Context, id uuid.UUID, prepMinutes *int) (*order.StoredOrder, error) {
+	return s.accept(ctx, id, prepMinutes, false)
+}
+
+// AutoAccept is Accept by auto-accept (a new order, a re-rung future order,
+// a web-UI resend): the order is marked auto_accepted, and the tablets get
+// its order.updated right after the claim — before the print — so they show
+// the "accepted automatically" banner at once (never order.arrived, unless
+// nothing printed and the claim was reverted).
+func (s *Service) AutoAccept(ctx context.Context, id uuid.UUID) (*order.StoredOrder, error) {
+	return s.accept(ctx, id, nil, true)
+}
+
+func (s *Service) accept(ctx context.Context, id uuid.UUID, prepMinutes *int, auto bool) (*order.StoredOrder, error) {
 	ctx, span := s.tracer.Start(ctx, "order.accept",
-		trace.WithAttributes(attribute.String("order.id", id.String())),
+		trace.WithAttributes(attribute.String("order.id", id.String()), attribute.Bool("order.auto_accepted", auto)),
 	)
 	defer span.End()
 
@@ -224,15 +243,20 @@ func (s *Service) Accept(ctx context.Context, id uuid.UUID, prepMinutes *int) (*
 		return fail(fmt.Errorf("%w: prep_minutes must be 0-240", ErrBadRequest))
 	}
 
-	so, err := s.repo.ClaimAccept(ctx, id, prep)
+	so, err := s.repo.ClaimAccept(ctx, id, prep, auto)
 	if err != nil {
 		return fail(err)
 	}
 	span.SetAttributes(attribute.Int64("order.kitchen_number", deref(so.Status.KitchenNumber)))
+	if auto {
+		s.publishUpdated(*so) // the tablet's banner shouldn't wait for the printer
+	}
 	// Once claimed, the print runs to the end even if the tablet's request is
 	// cancelled (Wi-Fi blip, app killed) — otherwise the remaining stations
 	// and failovers are skipped mid-job. The dispatcher caps a job at 25 s.
+	printStart := time.Now()
 	out, err := s.print(context.WithoutCancel(ctx), printable(*so), printer.ModeAccept)
+	s.recordPrintTime(ctx, *so, printStart, out, err)
 	if err != nil {
 		// Revert even if the request was cancelled mid-print.
 		rctx := context.WithoutCancel(ctx)
@@ -241,7 +265,8 @@ func (s *Service) Accept(ctx context.Context, id uuid.UUID, prepMinutes *int) (*
 		} else if back, gerr := s.repo.GetByID(rctx, id); gerr == nil {
 			s.publishUpdated(*back)
 		}
-		s.alertPrintIssues(ctx, so.Order, out, true)
+		s.devEvent(devlog.Error, devlog.KindPrint, "%s NOT accepted: nothing printed", label(*so))
+		s.alertPrintIssues(ctx, *so, out, true)
 		return fail(fmt.Errorf("%w: %w", ErrNothingPrinted, err))
 	}
 	// The tickets printed: the accept must reach main even if the tablet's
@@ -250,12 +275,69 @@ func (s *Service) Accept(ctx context.Context, id uuid.UUID, prepMinutes *int) (*
 		s.logger.Error().Ctx(ctx).Err(err).Str("order_id", id.String()).Msg("Failed to record accepted floor event (main won't see it)")
 	}
 	s.floorChanged()
+	s.recordAcceptTime(ctx, *so)
 
 	s.logger.Info().Ctx(ctx).Str("order_id", id.String()).Int64("kitchen_number", deref(so.Status.KitchenNumber)).
-		Int("tickets", len(out.Printed)).Msg("Order accepted and printed")
-	s.alertPrintIssues(ctx, so.Order, out, true)
+		Int("tickets", len(out.Printed)).Bool("auto", auto).Msg("Order accepted and printed")
+	how := "accepted"
+	if auto {
+		how = "auto-accepted"
+	}
+	s.devEvent(devlog.Info, devlog.KindOrder, "%s %s (prep %d min)", label(*so), how, prep)
+	s.printEvents(label(*so), out)
+	s.alertPrintIssues(ctx, *so, out, true)
 	s.publishUpdated(*so)
 	return so, nil
+}
+
+// recordAcceptTime feeds floor.accept.seconds: arrival → accept, or for a
+// future order ringing again, its re-ring → accept (the hours it waited
+// scheduled aren't staff time). POS checks arrive accepted and never get
+// here today; the source label is set anyway.
+func (s *Service) recordAcceptTime(ctx context.Context, so order.StoredOrder) {
+	if s.meters.FloorAcceptSeconds == nil {
+		return
+	}
+	from := so.Status.ArrivalDate
+	if so.Status.Rerung && so.Status.RingAt != nil && so.Status.RingAt.After(from) {
+		from = *so.Status.RingAt
+	}
+	at := time.Now()
+	if so.Status.AcceptedAt != nil {
+		at = *so.Status.AcceptedAt
+	}
+	if from.IsZero() || at.Before(from) {
+		return
+	}
+	src := "online"
+	if so.IsPOS() {
+		src = "pos"
+	}
+	s.meters.FloorAcceptSeconds.Record(ctx, at.Sub(from).Seconds(), metric.WithAttributes(attribute.String("source", src)))
+}
+
+// recordPrintTime feeds orders.print.seconds: one accept's print job (an
+// online accept, or a new POS order's station tickets), from its start until
+// every ticket was written or given up. result: ok = every ticket printed
+// (rerouted ones included), partial = some printed and some didn't, failed =
+// nothing printed. A plan with nothing to print records nothing.
+func (s *Service) recordPrintTime(ctx context.Context, so order.StoredOrder, start time.Time, out printer.Outcome, err error) {
+	if s.meters.OrdersPrintSeconds == nil || errors.Is(err, printer.ErrNoTickets) {
+		return
+	}
+	result := "ok"
+	switch {
+	case err != nil:
+		result = "failed"
+	case len(out.Failed) > 0:
+		result = "partial"
+	}
+	src := "online"
+	if so.IsPOS() {
+		src = "pos"
+	}
+	s.meters.OrdersPrintSeconds.Record(ctx, time.Since(start).Seconds(), metric.WithAttributes(
+		attribute.String("result", result), attribute.String("source", src)))
 }
 
 // RecoverInterruptedAccepts runs once at startup: an order claimed for accept
@@ -323,7 +405,7 @@ func (s *Service) PrintSnapshot(ctx context.Context, snap order.Snapshot) error 
 	)
 	defer span.End()
 	out, err := s.print(ctx, snap, printer.ModeReceipt)
-	s.alertPrintIssues(ctx, snap, out, false)
+	s.alertPrintIssues(ctx, order.StoredOrder{Order: snap}, out, false)
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "print failed")
@@ -372,7 +454,7 @@ func (s *Service) resendExisting(ctx context.Context, so *order.StoredOrder) err
 	}
 	autoAccept, err := s.settings.GetAutoAccept(ctx)
 	if err == nil && autoAccept {
-		_, err := s.Accept(ctx, uuid.MustParse(so.Order.ID), nil)
+		_, err := s.AutoAccept(ctx, uuid.MustParse(so.Order.ID))
 		return err
 	}
 	s.broadcastArrived(ctx, *so)
@@ -394,7 +476,7 @@ func (s *Service) Reprint(ctx context.Context, id uuid.UUID) (*order.StoredOrder
 	}
 
 	out, err := s.print(ctx, printable(*so), printer.ModeReceipt)
-	s.alertPrintIssues(ctx, so.Order, out, false)
+	s.alertPrintIssues(ctx, *so, out, false)
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "print failed")
@@ -444,7 +526,7 @@ func (s *Service) ResendKitchen(ctx context.Context, id uuid.UUID) (*order.Store
 	if errors.Is(err, printer.ErrNoTickets) {
 		return fail(out, ErrNothingForKitchen)
 	}
-	s.alertPrintIssues(ctx, so.Order, out, false)
+	s.alertPrintIssues(ctx, *so, out, false)
 	if err != nil {
 		s.logger.Error().Ctx(ctx).Err(err).Str("order_id", id.String()).Msg("Kitchen resend printed nothing")
 		return fail(out, fmt.Errorf("%w: %w", ErrKitchenNotPrinted, err))
@@ -535,21 +617,34 @@ func (s *Service) broadcastArrived(ctx context.Context, so order.StoredOrder) {
 // alertPrintIssues sends ONE Pushover for an order's print trouble: tickets
 // that printed nowhere, tickets rerouted off a dead station, and (on the first
 // print only — withUnrouted) items main couldn't match to a printer, which
-// went to every station and mean the menu needs fixing.
-func (s *Service) alertPrintIssues(ctx context.Context, snap order.Snapshot, out printer.Outcome, withUnrouted bool) {
+// went to every station and mean the menu needs fixing. The log line and the
+// developer events name the order by its number only (no customer).
+func (s *Service) alertPrintIssues(ctx context.Context, so order.StoredOrder, out printer.Outcome, withUnrouted bool) {
+	snap := so.Order
+	what := label(so)
+	if so.Status.State == "" { // a bare snapshot (History reprint)
+		what = snapLabel(snap)
+	}
 	var parts []string
 	for _, f := range out.Failed {
 		parts = append(parts, fmt.Sprintf("NOT PRINTED: %s ticket for %s", f.Kind, f.Station))
+		s.devEvent(devlog.Error, devlog.KindPrint, "%s %s ticket for %s NOT printed", what, f.Kind, f.Station)
 	}
 	for _, p := range out.Printed {
 		if p.ReroutedFrom != "" {
 			parts = append(parts, fmt.Sprintf("%s ticket rerouted to %s", p.ReroutedFrom, p.PrintedOn))
+			s.devEvent(devlog.Warn, devlog.KindPrint, "%s %s ticket rerouted to %s", what, p.ReroutedFrom, p.PrintedOn)
 		}
 	}
 	if withUnrouted && len(out.Unrouted) > 0 {
 		parts = append(parts, "no printer for: "+strings.Join(out.Unrouted, ", ")+" (sent to every station)")
+		s.devEvent(devlog.Warn, devlog.KindPrint, "%s has %d item(s) with no printer (sent to every station)", what, len(out.Unrouted))
 	}
 	if len(parts) == 0 {
+		return
+	}
+	s.logger.Warn().Ctx(ctx).Str("order_id", snap.ID).Strs("issues", parts).Msg("Print trouble on " + what)
+	if s.notifier == nil {
 		return
 	}
 	who := snap.Customer.DisplayName
@@ -557,10 +652,6 @@ func (s *Service) alertPrintIssues(ctx context.Context, snap order.Snapshot, out
 		who = "(no name)"
 	}
 	msg := fmt.Sprintf("Order %s: %s", who, strings.Join(parts, "; "))
-	s.logger.Warn().Ctx(ctx).Str("order_id", snap.ID).Msg(msg)
-	if s.notifier == nil {
-		return
-	}
 	// In the background: the accept response mustn't wait on Pushover.
 	go func(ctx context.Context) {
 		if err := s.notifier.SendFloor(ctx, msg, "siren"); err != nil {

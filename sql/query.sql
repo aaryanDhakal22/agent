@@ -38,7 +38,8 @@ SET state              = 'accepted',
     prep_minutes       = sqlc.arg(prep_minutes),
     estimated_ready_at = sqlc.arg(estimated_ready_at),
     kitchen_number     = COALESCE(kitchen_number, sqlc.arg(kitchen_number)),
-    accept_pending     = 1
+    accept_pending     = 1,
+    auto_accepted      = sqlc.arg(auto_accepted)
 WHERE id = sqlc.arg(id) AND state = 'arrived';
 
 -- name: RevertAccept :exec
@@ -48,7 +49,8 @@ SET state              = 'arrived',
     printed_date       = NULL,
     accepted_at        = NULL,
     estimated_ready_at = NULL,
-    accept_pending     = 0
+    accept_pending     = 0,
+    auto_accepted      = false
 WHERE id = ? AND state = 'accepted';
 
 -- name: ClearAcceptPending :exec
@@ -312,6 +314,9 @@ UPDATE paired_devices SET revoked_at = ? WHERE revoked_at IS NULL;
 -- name: RevokePairedDevice :execrows
 UPDATE paired_devices SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL;
 
+-- name: SetPairedDeviceAppVersion :exec
+UPDATE paired_devices SET app_version = ?, app_version_seen_at = ? WHERE id = ?;
+
 -- name: RenamePairedDevice :execrows
 UPDATE paired_devices SET name = ? WHERE id = ? AND revoked_at IS NULL;
 
@@ -448,6 +453,18 @@ SELECT CAST(count(*) AS INTEGER) AS total,
 FROM orders
 WHERE batch_id = (SELECT id FROM batches WHERE closed_at IS NULL ORDER BY id DESC LIMIT 1);
 
+-- Metrics: floor.orders.open (open batch, by state and online/POS; POS
+-- counter checks with no kitchen item are left out, as on Kitchen).
+-- name: CountOpenFloorOrders :many
+SELECT state,
+       CAST(ext_source <> '' AS INTEGER) AS pos,
+       CAST(count(*) AS INTEGER) AS n
+FROM orders
+WHERE batch_id = (SELECT id FROM batches WHERE closed_at IS NULL ORDER BY id DESC LIMIT 1)
+  AND state IN ('arrived', 'scheduled', 'accepted', 'ready', 'on_delivery')
+  AND board_hidden = 0
+GROUP BY state, pos;
+
 -- name: GetUpdateState :one
 SELECT update_job, update_notified FROM settings WHERE id = 1;
 
@@ -456,6 +473,12 @@ UPDATE settings SET update_job = ? WHERE id = 1;
 
 -- name: SetUpdateNotified :exec
 UPDATE settings SET update_notified = ? WHERE id = 1;
+
+-- name: GetUpdateLastSuccess :one
+SELECT update_last_success FROM settings WHERE id = 1;
+
+-- name: SetUpdateLastSuccess :exec
+UPDATE settings SET update_last_success = ? WHERE id = 1;
 
 -- Printer MACs (2.0.6) --------------------------------------------------------
 
@@ -553,10 +576,19 @@ DELETE FROM auto_plans WHERE created_at < ?;
 -- Delivery settings + store map (2.0.9) -------------------------------------------
 
 -- name: GetDeliveryPrefs :one
-SELECT soon_ready_minutes, delivery_target_minutes FROM settings WHERE id = 1;
+SELECT soon_ready_minutes, delivery_target_minutes, nearby_rule, nearby_detour_minutes, nearby_distance_mi
+FROM settings WHERE id = 1;
 
 -- name: SetDeliveryPrefs :exec
-UPDATE settings SET soon_ready_minutes = ?, delivery_target_minutes = ? WHERE id = 1;
+UPDATE settings SET soon_ready_minutes = ?, delivery_target_minutes = ?, nearby_rule = ?,
+    nearby_detour_minutes = ?, nearby_distance_mi = ?
+WHERE id = 1;
+
+-- name: GetAutoUpdate :one
+SELECT auto_update FROM settings WHERE id = 1;
+
+-- name: SetAutoUpdate :exec
+UPDATE settings SET auto_update = ? WHERE id = 1;
 
 -- name: GetMapFile :one
 SELECT map_file FROM settings WHERE id = 1;

@@ -115,6 +115,9 @@ func (s *Server) deviceFromRequest(r *http.Request) (*device.Device, bool, error
 		return nil, false, err
 	}
 	s.touchDevice(d.ID)
+	if v := r.Header.Get(quibaseVersionHeader); v != "" {
+		s.noteAppVersion(d, v)
+	}
 	return d, true, nil
 }
 

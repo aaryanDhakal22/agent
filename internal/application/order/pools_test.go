@@ -384,17 +384,30 @@ func TestPinForwardsToMain(t *testing.T) {
 func TestDeliveryPrefsValidation(t *testing.T) {
 	ctx := context.Background()
 	svc, _, _ := newPoolService(t)
-	for _, p := range []order.DeliveryPrefs{{SoonReadyMinutes: -1, DeliveryTargetMinutes: 45}, {SoonReadyMinutes: 31, DeliveryTargetMinutes: 45},
-		{SoonReadyMinutes: 5, DeliveryTargetMinutes: 14}, {SoonReadyMinutes: 5, DeliveryTargetMinutes: 121}} {
-		if err := svc.SetDeliveryPrefs(ctx, p); !errors.Is(err, ErrBadRequest) {
+	for _, p := range []DeliveryPatch{{SoonReadyMinutes: ptr[int64](-1)}, {SoonReadyMinutes: ptr[int64](31)},
+		{DeliveryTargetMinutes: ptr[int64](14)}, {DeliveryTargetMinutes: ptr[int64](121)}, {NearbyRule: ptr("near")},
+		{NearbyDetourMinutes: ptr[int64](0)}, {NearbyDetourMinutes: ptr[int64](31)}, {NearbyDistanceMi: ptr(0.05)},
+		{NearbyDistanceMi: ptr(10.5)}, {DeliveryRadiusM: ptr[int64](499)}, {DeliveryRadiusM: ptr[int64](80468)}} {
+		if _, err := svc.UpdateDeliverySettings(ctx, p); !errors.Is(err, ErrBadRequest) {
 			t.Fatalf("%+v: %v", p, err)
 		}
 	}
-	if err := svc.SetDeliveryPrefs(ctx, order.DeliveryPrefs{SoonReadyMinutes: 0, DeliveryTargetMinutes: 120}); err != nil {
-		t.Fatal(err)
+	if got := svc.DeliveryPrefs(ctx); got != order.DefaultDeliveryPrefs {
+		t.Fatalf("a refused patch changed the settings: %+v", got)
+	}
+	out, err := svc.UpdateDeliverySettings(ctx, DeliveryPatch{SoonReadyMinutes: ptr[int64](0), DeliveryTargetMinutes: ptr[int64](120)})
+	if err != nil || out.SoonReadyMinutes != 0 || out.NearbyRule != order.NearbyDetour || out.DeliveryRadiusM != nil {
+		t.Fatalf("%v %+v", err, out)
+	}
+	// A subset keeps the rest.
+	if out, err = svc.UpdateDeliverySettings(ctx, DeliveryPatch{NearbyRule: ptr("distance"), NearbyDistanceMi: ptr(0.5)}); err != nil ||
+		out.SoonReadyMinutes != 0 || out.DeliveryTargetMinutes != 120 || out.NearbyRule != "distance" || out.NearbyDistanceMi != 0.5 ||
+		out.NearbyDetourMinutes != 5 {
+		t.Fatalf("%v %+v", err, out)
 	}
 	f, err := svc.Floor(ctx)
-	if err != nil || f.SoonReadyMinutes != 0 || f.DeliveryTargetMinutes != 120 || f.Store != nil || f.Map != nil {
+	if err != nil || f.SoonReadyMinutes != 0 || f.DeliveryTargetMinutes != 120 || f.NearbyRule != "distance" ||
+		f.NearbyDistanceMi != 0.5 || f.NearbyDetourMinutes != 5 || f.Store != nil || f.Map != nil {
 		t.Fatalf("floor: %v %+v", err, f)
 	}
 }

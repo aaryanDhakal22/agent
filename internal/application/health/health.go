@@ -53,9 +53,10 @@ type Report struct {
 	PrintersUp     int            `json:"printers_up"`
 	PrintersDown   int            `json:"printers_down"`
 	LastBackupAt   string         `json:"last_backup_at,omitempty"`
-	System         map[string]any `json:"system,omitempty"` // from HealthFile (sd_errors, throttled, …)
-	Pi             SystemHealth   `json:"pi"`               // System, parsed (throttled bits, staleness)
-	Update         any            `json:"update,omitempty"` // update.Health: versions, update state, last result
+	System         map[string]any `json:"system,omitempty"`  // from HealthFile (sd_errors, throttled, …)
+	Pi             SystemHealth   `json:"pi"`                // System, parsed (throttled bits, staleness)
+	Update         any            `json:"update,omitempty"`  // update.Health: versions, update state, last result
+	Tablets        any            `json:"tablets,omitempty"` // 2.2.0: paired tablets + their Quibase version
 	Problems       []string       `json:"problems,omitempty"`
 }
 
@@ -69,6 +70,8 @@ type Inputs struct {
 	LastBackup   func(ctx context.Context) string
 	// Update is the Pi update block (update.Requester.Health).
 	Update func(ctx context.Context) any
+	// Tablets are the paired tablets with their Quibase version (2.2.0).
+	Tablets func(ctx context.Context) any
 }
 
 type Heartbeat struct {
@@ -169,12 +172,8 @@ func (h *Heartbeat) collect(ctx context.Context) Report {
 			r.TempC = v / 1000
 		}
 	}
-	if b, err := os.ReadFile("/proc/uptime"); err == nil {
-		if f := strings.Fields(string(b)); len(f) > 0 {
-			if v, err := strconv.ParseFloat(f[0], 64); err == nil {
-				r.SystemUptimeS = int64(v)
-			}
-		}
+	if v, ok := HostUptime(); ok {
+		r.SystemUptimeS = int64(v)
 	}
 	if b, err := os.ReadFile("/proc/loadavg"); err == nil {
 		if f := strings.Fields(string(b)); len(f) > 0 {
@@ -208,6 +207,9 @@ func (h *Heartbeat) collect(ctx context.Context) Report {
 	if h.in.Update != nil {
 		r.Update = h.in.Update(ctx)
 	}
+	if h.in.Tablets != nil {
+		r.Tablets = h.in.Tablets(ctx)
+	}
 	if b, err := os.ReadFile(h.HealthFile); err == nil {
 		var sys map[string]any
 		if json.Unmarshal(b, &sys) == nil {
@@ -235,6 +237,22 @@ func (h *Heartbeat) collect(ctx context.Context) Report {
 	h.last = r
 	h.mu.Unlock()
 	return r
+}
+
+// HostUptime is seconds since the machine booted (/proc/uptime); ok=false
+// where that can't be read (not Linux). The Pi's health file doesn't carry
+// it: the kernel's own counter is read directly.
+func HostUptime() (float64, bool) {
+	b, err := os.ReadFile("/proc/uptime")
+	if err != nil {
+		return 0, false
+	}
+	f := strings.Fields(string(b))
+	if len(f) == 0 {
+		return 0, false
+	}
+	v, err := strconv.ParseFloat(f[0], 64)
+	return v, err == nil
 }
 
 // registerGauges exports the newest readings (agent.disk.free, agent.temp,

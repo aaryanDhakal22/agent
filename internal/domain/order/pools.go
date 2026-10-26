@@ -3,6 +3,7 @@ package order
 import (
 	"context"
 	"fmt"
+	"math"
 	"strings"
 	"time"
 )
@@ -88,7 +89,9 @@ type PlanRun struct {
 	SuggestedIDs []string
 }
 
-// DeliveryPrefs are the AUTO settings (Settings > Orders).
+// DeliveryPrefs are the delivery settings (Settings > Orders): AUTO's two,
+// and (2.2.0) the "nearby" rule that tells staff an unassigned delivery is
+// near the next driver's run.
 type DeliveryPrefs struct {
 	// SoonReadyMinutes: a cooking delivery estimated ready within this many
 	// minutes is planned by AUTO as if ready.
@@ -96,10 +99,28 @@ type DeliveryPrefs struct {
 	// DeliveryTargetMinutes: placed-to-door target; AUTO treats the last 10
 	// minutes before it as urgent and anything past it as late.
 	DeliveryTargetMinutes int64 `json:"delivery_target_minutes"`
+	// NearbyRule: detour | distance | bundle | off (GET
+	// /api/deliveries/next-check).
+	NearbyRule string `json:"nearby_rule"`
+	// NearbyDetourMinutes: rule detour - nearby when inserting the order into
+	// the driver's run adds at most this many minutes of driving.
+	NearbyDetourMinutes int64 `json:"nearby_detour_minutes"`
+	// NearbyDistanceMi: rule distance - nearby when it is at most this far
+	// (straight line) from a stop already in the driver's pool.
+	NearbyDistanceMi float64 `json:"nearby_distance_mi"`
 }
 
+// Nearby rules.
+const (
+	NearbyDetour   = "detour"
+	NearbyDistance = "distance"
+	NearbyBundle   = "bundle"
+	NearbyOff      = "off"
+)
+
 // DefaultDeliveryPrefs are the migration defaults.
-var DefaultDeliveryPrefs = DeliveryPrefs{SoonReadyMinutes: 5, DeliveryTargetMinutes: 45}
+var DefaultDeliveryPrefs = DeliveryPrefs{SoonReadyMinutes: 5, DeliveryTargetMinutes: 45,
+	NearbyRule: NearbyDetour, NearbyDetourMinutes: 5, NearbyDistanceMi: 1.0}
 
 // Validate checks the ranges the contract allows.
 func (p DeliveryPrefs) Validate() error {
@@ -109,8 +130,26 @@ func (p DeliveryPrefs) Validate() error {
 	if p.DeliveryTargetMinutes < 15 || p.DeliveryTargetMinutes > 120 {
 		return fmt.Errorf("delivery_target_minutes must be 15-120")
 	}
+	switch p.NearbyRule {
+	case NearbyDetour, NearbyDistance, NearbyBundle, NearbyOff:
+	default:
+		return fmt.Errorf("nearby_rule must be detour, distance, bundle or off")
+	}
+	if p.NearbyDetourMinutes < 1 || p.NearbyDetourMinutes > 30 {
+		return fmt.Errorf("nearby_detour_minutes must be 1-30")
+	}
+	if math.IsNaN(p.NearbyDistanceMi) || p.NearbyDistanceMi < 0.1 || p.NearbyDistanceMi > 10 {
+		return fmt.Errorf("nearby_distance_mi must be 0.1-10")
+	}
 	return nil
 }
+
+// Delivery radius limits (PUT /api/settings/deliveries delivery_radius_m):
+// 500 m to 50 miles.
+const (
+	MinDeliveryRadiusM = 500
+	MaxDeliveryRadiusM = 80467
+)
 
 // PoolRepository persists pools, geo and AUTO plans (part of the order
 // repository; every pool change writes its floor events in the same tx).

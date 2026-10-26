@@ -20,6 +20,7 @@ type memStore struct {
 	mu       sync.Mutex
 	job      string
 	notified string
+	lastOK   time.Time
 }
 
 func (m *memStore) GetUpdateState(context.Context) (string, string, error) {
@@ -30,6 +31,17 @@ func (m *memStore) GetUpdateState(context.Context) (string, string, error) {
 func (m *memStore) SetUpdateJob(_ context.Context, j string) error {
 	m.mu.Lock()
 	m.job = j
+	m.mu.Unlock()
+	return nil
+}
+func (m *memStore) GetUpdateLastSuccess(context.Context) (time.Time, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.lastOK, nil
+}
+func (m *memStore) SetUpdateLastSuccess(_ context.Context, at time.Time) error {
+	m.mu.Lock()
+	m.lastOK = at
 	m.mu.Unlock()
 	return nil
 }
@@ -49,6 +61,7 @@ type rig struct {
 	now      time.Time
 	reports  []map[string]any
 	pages    []string
+	finished []string // OnFinished: "<action>:<state>"
 	failSend bool
 }
 
@@ -58,7 +71,8 @@ func newRig(t *testing.T) *rig {
 
 func (g *rig) requester(supported bool) *Requester {
 	r := New(Config{Dir: g.dir, Supported: supported, Version: "2.0.5", Commit: "abc", Env: "staging",
-		StoreName: func() string { return "Lombardi's Pizza" }, Now: func() time.Time { return g.now }},
+		StoreName: func() string { return "Lombardi's Pizza" }, Now: func() time.Time { return g.now },
+		OnFinished: func(_ context.Context, s Status) { g.finished = append(g.finished, s.Action+":"+s.State) }},
 		func(context.Context) (int64, int64, error) { return g.total, g.active, nil },
 		g.store,
 		func(_ context.Context, msgType string, payload any) error {
@@ -305,6 +319,57 @@ func TestOldResultNotPaged(t *testing.T) {
 	r.Tick(context.Background())
 	if len(g.pages) != 0 || len(g.reports) != 1 {
 		t.Fatalf("pages %v reports %v", g.pages, g.reports)
+	}
+}
+
+// agent.update.runs counts each finished run once (across restarts) and
+// agent.update.last_success keeps the last ok update through a later failure.
+func TestFinishedOnceAndLastSuccess(t *testing.T) {
+	g := newRig(t)
+	ctx := context.Background()
+	start := g.now
+	g.writeStatus(Status{ID: "u1", Action: "update", State: StateOK, FromVersion: "2.1.0", ToVersion: "2.1.1",
+		StartedAt: start.Format(time.RFC3339), FinishedAt: start.Add(time.Minute).Format(time.RFC3339)})
+	g.now = start.Add(2 * time.Minute)
+	r := g.requester(true)
+	if at, ok := r.LastSuccess(); !ok || !at.Equal(start.Add(time.Minute)) {
+		t.Fatalf("last success after load %v %v", at, ok)
+	}
+	r.Tick(ctx)
+	r.Tick(ctx)
+	r2 := g.requester(true) // the restart an update causes
+	r2.Tick(ctx)
+	if len(g.finished) != 1 || g.finished[0] != "update:ok" {
+		t.Fatalf("finished %v", g.finished)
+	}
+
+	// A later update rolls back: counted, last success unchanged.
+	g.writeStatus(Status{ID: "u2", Action: "update", State: StateRolledBack, FromVersion: "2.1.1", ToVersion: "2.1.2",
+		StartedAt: g.now.Format(time.RFC3339), FinishedAt: g.now.Add(time.Minute).Format(time.RFC3339)})
+	g.now = g.now.Add(3 * time.Minute)
+	r3 := g.requester(true)
+	r3.Tick(ctx)
+	if len(g.finished) != 2 || g.finished[1] != "update:rolled_back" {
+		t.Fatalf("finished %v", g.finished)
+	}
+	if at, ok := r3.LastSuccess(); !ok || !at.Equal(start.Add(time.Minute)) {
+		t.Fatalf("last success after a rollback %v %v", at, ok)
+	}
+	if !g.store.lastOK.Equal(start.Add(time.Minute)) {
+		t.Fatalf("persisted last success %v", g.store.lastOK)
+	}
+
+	// A successful manual rollback is a finished run, not an update success.
+	g.writeStatus(Status{ID: "r1", Action: "rollback", State: StateOK, FromVersion: "2.1.1", ToVersion: "2.1.0",
+		StartedAt: g.now.Format(time.RFC3339), FinishedAt: g.now.Add(time.Minute).Format(time.RFC3339)})
+	g.now = g.now.Add(3 * time.Minute)
+	r4 := g.requester(true)
+	r4.Tick(ctx)
+	if len(g.finished) != 3 || g.finished[2] != "rollback:ok" {
+		t.Fatalf("finished %v", g.finished)
+	}
+	if at, _ := r4.LastSuccess(); !at.Equal(start.Add(time.Minute)) {
+		t.Fatalf("rollback moved last success to %v", at)
 	}
 }
 

@@ -51,7 +51,7 @@ func arrive(t *testing.T, r *OrderRepository, fulfillment string) order.StoredOr
 
 func accept(t *testing.T, r *OrderRepository, so order.StoredOrder) order.StoredOrder {
 	t.Helper()
-	got, err := r.ClaimAccept(context.Background(), uuid.MustParse(so.Order.ID), 20)
+	got, err := r.ClaimAccept(context.Background(), uuid.MustParse(so.Order.ID), 20, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -153,14 +153,14 @@ func TestKitchenNumbers(t *testing.T) {
 	}
 
 	// A reverted claim keeps its number on re-accept; the next order gets 1101.
-	gb, err := r.ClaimAccept(ctx, uuid.MustParse(b.Order.ID), 30)
+	gb, err := r.ClaimAccept(ctx, uuid.MustParse(b.Order.ID), 30, false)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := r.RevertAccept(ctx, uuid.MustParse(b.Order.ID)); err != nil {
 		t.Fatal(err)
 	}
-	again, err := r.ClaimAccept(ctx, uuid.MustParse(b.Order.ID), 30)
+	again, err := r.ClaimAccept(ctx, uuid.MustParse(b.Order.ID), 30, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -650,7 +650,7 @@ func TestInterruptedAcceptIsFound(t *testing.T) {
 	r := newFloorRepo(t)
 	done := accept(t, r, arrive(t, r, "pickup")) // claim + record
 	cut := arrive(t, r, "pickup")
-	if _, err := r.ClaimAccept(ctx, uuid.MustParse(cut.Order.ID), 20); err != nil {
+	if _, err := r.ClaimAccept(ctx, uuid.MustParse(cut.Order.ID), 20, false); err != nil {
 		t.Fatal(err)
 	}
 	ids, err := r.ListInterruptedAccepts(ctx)

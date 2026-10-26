@@ -67,6 +67,9 @@ func (c *Controller) OnRejected(f func(key string)) { c.state.SetOnRejected(f) }
 // OnConnected runs f after every successful SSE (re)connect.
 func (c *Controller) OnConnected(f func()) { c.state.SetOnConnected(f) }
 
+// OnDisconnected runs f when an established SSE stream to main ends.
+func (c *Controller) OnDisconnected(f func()) { c.state.SetOnDisconnected(f) }
+
 // Status returns a snapshot of the live SSE connection health (for the web UI's
 // green light + /api/session). Not connected when there's no key.
 func (c *Controller) Status() sseraw.ConnStatus {

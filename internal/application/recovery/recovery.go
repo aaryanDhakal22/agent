@@ -44,13 +44,15 @@ var (
 
 // Outcome is what a successful link did.
 type Outcome struct {
-	APIKey   string               `json:"-"`
-	Tenant   string               `json:"tenant"`
-	Location string               `json:"location"`
-	Username string               `json:"username"`
-	Restored *order.RestoreResult `json:"restored,omitempty"`
-	Secrets  order.Secrets        `json:"-"`
-	Revoked  int                  `json:"revoked_agents"`
+	APIKey   string `json:"-"`
+	Tenant   string `json:"tenant"`
+	Location string `json:"location"`
+	// TenantSlug: the linked tenant's slug (the telemetry label).
+	TenantSlug string               `json:"-"`
+	Username   string               `json:"username"`
+	Restored   *order.RestoreResult `json:"restored,omitempty"`
+	Secrets    order.Secrets        `json:"-"`
+	Revoked    int                  `json:"revoked_agents"`
 }
 
 type linkResponse struct {
@@ -122,7 +124,7 @@ func (s *Service) Link(ctx context.Context, username, password, agentName string
 
 	// Restore BEFORE persisting the key: the order stream only starts once
 	// the key is set, so restored orders and new arrivals can't interleave.
-	out := &Outcome{APIKey: lr.APIKey, Tenant: lr.Tenant.Name, Location: lr.Location.Name,
+	out := &Outcome{APIKey: lr.APIKey, Tenant: lr.Tenant.Name, Location: lr.Location.Name, TenantSlug: lr.Tenant.Slug,
 		Username: lr.Manager.Username, Secrets: lr.Secrets, Revoked: len(lr.Revoked)}
 	data, err := s.fetchRestore(ctx, lr.APIKey)
 	if err != nil {

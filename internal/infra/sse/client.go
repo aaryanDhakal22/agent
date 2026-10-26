@@ -75,6 +75,7 @@ type ConnState struct {
 	lastError      atomic.Value // string
 	onRejected     atomic.Value // func(string) — fired once when authRejected latches false→true
 	onConnected    atomic.Value // func() — fired after every successful connect
+	onDisconnected atomic.Value // func() — fired when an established stream ends
 }
 
 func NewConnState() *ConnState { return &ConnState{} }
@@ -90,6 +91,10 @@ func (s *ConnState) SetOnRejected(f func(key string)) { s.onRejected.Store(f) }
 // successful (re)connect — the agent uses it to catch up on orders it may
 // have missed while the stream was down.
 func (s *ConnState) SetOnConnected(f func()) { s.onConnected.Store(f) }
+
+// SetOnDisconnected registers a callback run when a stream that reached HTTP
+// 200 ends (not on a failed dial, nor on shutdown / a key swap).
+func (s *ConnState) SetOnDisconnected(f func()) { s.onDisconnected.Store(f) }
 
 // markRejected latches authRejected and fires the onRejected callback the first
 // time it transitions false→true, so a steady reconnect loop against a dead key
@@ -174,6 +179,11 @@ func (c *Client) Start(ctx context.Context) {
 		if ctx.Err() != nil {
 			c.logger.Info().Msg("SSE client stopped — context cancelled")
 			return
+		}
+		if c.streamed {
+			if f, ok := c.state.onDisconnected.Load().(func()); ok && f != nil {
+				f()
+			}
 		}
 		if err != nil {
 			c.logger.Error().Err(err).Int("reconnect_count", c.reconnectCount).Dur("retry_in", backoff).

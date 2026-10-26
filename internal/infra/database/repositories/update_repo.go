@@ -6,6 +6,7 @@ import (
 	"errors"
 	"time"
 
+	"quiccpos/agent/internal/domain/order"
 	"quiccpos/agent/internal/domain/printer"
 	"quiccpos/agent/internal/infra/database/models"
 )
@@ -43,6 +44,23 @@ func (r *SettingsRepository) SetUpdateNotified(ctx context.Context, key string) 
 	return models.New(r.db).SetUpdateNotified(ctx, key)
 }
 
+// GetUpdateLastSuccess is when the last Pi update finished ok (zero = none
+// known).
+func (r *SettingsRepository) GetUpdateLastSuccess(ctx context.Context) (time.Time, error) {
+	v, err := models.New(r.db).GetUpdateLastSuccess(ctx)
+	if errors.Is(err, sql.ErrNoRows) || (err == nil && v == "") {
+		return time.Time{}, nil
+	}
+	if err != nil {
+		return time.Time{}, err
+	}
+	return time.Parse(time.RFC3339, v)
+}
+
+func (r *SettingsRepository) SetUpdateLastSuccess(ctx context.Context, at time.Time) error {
+	return models.New(r.db).SetUpdateLastSuccess(ctx, at.UTC().Format(time.RFC3339))
+}
+
 // PrinterNetRepository persists learned printer MACs.
 type PrinterNetRepository struct{ db *sql.DB }
 
@@ -71,4 +89,43 @@ func (r *PrinterNetRepository) SaveMAC(ctx context.Context, m printer.NetAddress
 	return models.New(r.db).UpsertPrinterMAC(ctx, models.UpsertPrinterMACParams{
 		PrinterID: m.PrinterID, Mac: m.MAC, Ip: m.IP, SeenAt: m.SeenAt.UTC().Format(time.RFC3339Nano),
 	})
+}
+
+// OpenFloorCount is one (state, online|POS) bucket of the open batch's
+// in-play orders (the floor.orders.open gauge).
+type OpenFloorCount struct {
+	State order.State
+	POS   bool
+	N     int64
+}
+
+// CountOpenFloor counts the open batch's orders still in play (arrived,
+// scheduled, accepted, ready, on_delivery) by state and online/POS. POS
+// counter checks hidden from Kitchen are left out. No span: the metric
+// reader calls it every export (15 s), which would be a root trace each time.
+func (r *OrderRepository) CountOpenFloor(ctx context.Context) ([]OpenFloorCount, error) {
+	rows, err := models.New(r.db).CountOpenFloorOrders(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]OpenFloorCount, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, OpenFloorCount{State: order.State(row.State), POS: row.Pos != 0, N: row.N})
+	}
+	return out, nil
+}
+
+// GetAutoUpdate is the auto_update setting: update the Pi right after Close
+// batch when the manifest names a newer agent (default on).
+func (r *SettingsRepository) GetAutoUpdate(ctx context.Context) (v bool, err error) {
+	ctx, _, end := dbSpan(ctx, "settings.get_auto_update")
+	defer end(&err)
+	return models.New(r.db).GetAutoUpdate(ctx)
+}
+
+// SetAutoUpdate saves the auto_update setting.
+func (r *SettingsRepository) SetAutoUpdate(ctx context.Context, on bool) (err error) {
+	ctx, _, end := dbSpan(ctx, "settings.set_auto_update")
+	defer end(&err)
+	return models.New(r.db).SetAutoUpdate(ctx, on)
 }

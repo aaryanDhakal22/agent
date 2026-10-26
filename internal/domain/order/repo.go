@@ -28,10 +28,11 @@ type Repository interface {
 
 	// ClaimAccept transitions arrived→accepted and returns the order, assigning
 	// its kitchen number (kept across a revert + re-accept) and the prep
-	// estimate. ErrAlreadyAccepted if it isn't arrived; ErrNotFound if missing.
+	// estimate (auto: accepted by auto-accept, Status.AutoAccepted).
+	// ErrAlreadyAccepted if it isn't arrived; ErrNotFound if missing.
 	// The caller prints afterwards and calls RevertAccept if nothing printed,
 	// so a printer outage never causes a silently lost order.
-	ClaimAccept(ctx context.Context, id uuid.UUID, prepMinutes int) (*StoredOrder, error)
+	ClaimAccept(ctx context.Context, id uuid.UUID, prepMinutes int, auto bool) (*StoredOrder, error)
 
 	// RevertAccept puts a claimed order back to arrived.
 	RevertAccept(ctx context.Context, id uuid.UUID) error

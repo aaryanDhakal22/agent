@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"quiccpos/agent/internal/application/devlog"
 	"strings"
 	"sync"
 	"time"
@@ -250,8 +251,12 @@ func (s *Service) SetIntegrationStatus(ctx context.Context, st order.Integration
 	if persist {
 		s.integ.hubSaved = st
 	}
+	wasLinked := s.integ.hubLink
 	s.integ.hubLink = true
 	s.integ.hubMu.Unlock()
+	if !wasLinked {
+		s.devEvent(devlog.Info, devlog.KindHub, "Store hub connected (insert mode %s)", st.InsertMode)
+	}
 	if persist {
 		if err := s.repo.SetIntegrationStatus(ctx, st); err != nil {
 			s.logger.Warn().Ctx(ctx).Err(err).Msg("persist integration status failed (kept in memory)")
@@ -281,6 +286,7 @@ func (s *Service) CheckIntegrationLink(now time.Time) {
 	}
 	s.integ.hubMu.Unlock()
 	if changed {
+		s.devEvent(devlog.Warn, devlog.KindHub, "POS link down: the store hub stopped reporting")
 		s.logger.Warn().Msg("POS link down: the store hub stopped reporting")
 		if s.broker != nil {
 			s.broker.Publish("integration.status", v)
@@ -362,13 +368,17 @@ func (s *Service) UpsertExternal(ctx context.Context, extRef string, in order.Ex
 // hub mustn't wait on a dead printer); nothing printed only raises an alert.
 func (s *Service) printPOS(ctx context.Context, so order.StoredOrder) {
 	s.background(ctx, func(ctx context.Context) {
+		start := time.Now()
 		out, err := s.print(ctx, printable(so), printer.ModeAccept)
+		s.recordPrintTime(ctx, so, start, out, err)
 		if errors.Is(err, printer.ErrNoTickets) {
 			return
 		}
-		s.alertPrintIssues(ctx, so.Order, out, false)
+		s.alertPrintIssues(ctx, so, out, false)
 		if err != nil {
 			s.logger.Warn().Ctx(ctx).Err(err).Str("order_id", so.Order.ID).Msg("POS order: no kitchen ticket printed")
+		} else {
+			s.printEvents(label(so)+" (POS)", out)
 		}
 	})
 }
@@ -647,7 +657,7 @@ func (s *Service) RaiseDue(ctx context.Context, now time.Time) (int, error) {
 	for _, so := range list {
 		if auto {
 			id := uuid.MustParse(so.Order.ID)
-			if _, err := s.Accept(ctx, id, nil); err == nil {
+			if _, err := s.AutoAccept(ctx, id); err == nil {
 				s.logger.Info().Ctx(ctx).Str("order_id", so.Order.ID).Msg("Future order is due: auto-accepted")
 				continue
 			}

@@ -262,7 +262,7 @@ function agentApp() {
     upd: null, updErr: '', updBusy: '',
 
     // --- settings ---
-    autoAccept: false, autoAcceptLoaded: false, floorForm: { green: '', tiptax: '' }, deliveryForm: { soon: '', target: '' }, timesForm: { pickup: '', delivery: '' },
+    autoAccept: false, autoAcceptLoaded: false, autoUpdate: true, autoUpdateLoaded: false, floorForm: { green: '', tiptax: '' }, deliveryForm: { soon: '', target: '' }, timesForm: { pickup: '', delivery: '' },
     rcpt: null, rcptForm: null, footMode: 'default', customFooter: '', rcptPreview: 'r', rcptErr: '', rcptBusy: '',
     pair: null, storeCfg: null, storeCfgErr: '', storeCfgErrRaw: '',
     cp: { current: '', next: '', confirm: '', hint: '', err: '', busy: false },
@@ -1368,6 +1368,15 @@ function agentApp() {
     // Updates (Settings › Account)
     async loadUpdate() {
       try { this.upd = await this.call('/api/update/status'); this.updErr = ''; } catch (e) { this.updErr = e.message; }
+      try { const a = await this.call('/api/settings/auto-update'); this.autoUpdate = !!a.auto_update; this.autoUpdateLoaded = true; } catch (e) { /* older agent: no toggle */ }
+    },
+    async toggleAutoUpdate() {
+      const v = !this.autoUpdate;
+      this.autoUpdate = v;
+      try {
+        await this.call('/api/settings/auto-update', { method: 'PUT', body: { auto_update: v } });
+        this.toast(v ? 'The Pi updates itself after Close batch' : 'Automatic updates are off');
+      } catch (e) { this.autoUpdate = !v; this.toast('Not saved. ' + e.message, true); }
     },
     get updStateText() {
       const u = this.upd; if (!u) return '—';

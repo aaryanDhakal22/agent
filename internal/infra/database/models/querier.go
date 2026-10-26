@@ -32,6 +32,9 @@ type Querier interface {
 	CountDeliveriesInBatch(ctx context.Context, batchID int64) ([]CountDeliveriesInBatchRow, error)
 	// Pi updates (2.0.6) ----------------------------------------------------------
 	CountOpenBatchOrders(ctx context.Context) (CountOpenBatchOrdersRow, error)
+	// Metrics: floor.orders.open (open batch, by state and online/POS; POS
+	// counter checks with no kitchen item are left out, as on Kitchen).
+	CountOpenFloorOrders(ctx context.Context) ([]CountOpenFloorOrdersRow, error)
 	CountUnsyncedFloorEvents(ctx context.Context) (int64, error)
 	CreateDriver(ctx context.Context, arg CreateDriverParams) error
 	// Paired devices (counter tablets) -------------------------------------------
@@ -54,6 +57,7 @@ type Querier interface {
 	// Settings -----------------------------------------------------------------
 	GetAutoAccept(ctx context.Context) (bool, error)
 	GetAutoPlan(ctx context.Context, id string) (AutoPlan, error)
+	GetAutoUpdate(ctx context.Context) (bool, error)
 	GetBatch(ctx context.Context, id int64) (Batch, error)
 	// Delivery settings + store map (2.0.9) -------------------------------------------
 	GetDeliveryPrefs(ctx context.Context) (GetDeliveryPrefsRow, error)
@@ -82,6 +86,7 @@ type Querier interface {
 	// Store config (starter pack from main/'s SSE handshake) --------------------
 	GetStoreConfig(ctx context.Context) (GetStoreConfigRow, error)
 	GetUIPassword(ctx context.Context) (GetUIPasswordRow, error)
+	GetUpdateLastSuccess(ctx context.Context) (string, error)
 	GetUpdateState(ctx context.Context) (GetUpdateStateRow, error)
 	// AUTO plans ------------------------------------------------------------------------
 	InsertAutoPlan(ctx context.Context, arg InsertAutoPlanParams) error
@@ -167,6 +172,7 @@ type Querier interface {
 	ScheduleOrder(ctx context.Context, arg ScheduleOrderParams) (int64, error)
 	SetAppRelease(ctx context.Context, appRelease string) error
 	SetAutoAccept(ctx context.Context, autoAccept bool) error
+	SetAutoUpdate(ctx context.Context, autoUpdate bool) error
 	SetDeliveryPrefs(ctx context.Context, arg SetDeliveryPrefsParams) error
 	SetDriverOut(ctx context.Context, id string) error
 	// Undo a mistaken return: back out on the run, at its old queue position.
@@ -198,6 +204,7 @@ type Querier interface {
 	// The order's stop number is cleared; the service renumbers the pools.
 	SetOrderPool(ctx context.Context, arg SetOrderPoolParams) (int64, error)
 	SetOrderSnapshot(ctx context.Context, arg SetOrderSnapshotParams) error
+	SetPairedDeviceAppVersion(ctx context.Context, arg SetPairedDeviceAppVersionParams) error
 	// Renumbers one pooled order (0 rows = no longer in that pool, or unchanged).
 	SetPoolSeq(ctx context.Context, arg SetPoolSeqParams) (int64, error)
 	SetPosCheckNumber(ctx context.Context, arg SetPosCheckNumberParams) error
@@ -206,6 +213,7 @@ type Querier interface {
 	SetStoreAPIKey(ctx context.Context, storeApiKey string) error
 	SetUIPassword(ctx context.Context, arg SetUIPasswordParams) error
 	SetUpdateJob(ctx context.Context, updateJob string) error
+	SetUpdateLastSuccess(ctx context.Context, updateLastSuccess string) error
 	SetUpdateNotified(ctx context.Context, updateNotified string) error
 	TouchPairedDevice(ctx context.Context, arg TouchPairedDeviceParams) error
 	// A changed POS check: the new snapshot (items, money, notes, address) and

@@ -46,3 +46,23 @@ func TestTraceIDHeaderNoopTracer(t *testing.T) {
 		t.Fatalf("X-Trace-Id = %q, want empty without an active span", got)
 	}
 }
+
+// floor.tablets.connected counts tablets, not streams.
+func TestTabletsConnectedCountsDistinctTablets(t *testing.T) {
+	s := &Server{tabletStreams: map[string]int{}}
+	offA1 := s.tabletOnStream("a")
+	offA2 := s.tabletOnStream("a") // a reconnect overlapping the old stream
+	offB := s.tabletOnStream("b")
+	if n := s.TabletsConnected(); n != 2 {
+		t.Fatalf("connected = %d, want 2", n)
+	}
+	offA1()
+	offB()
+	if n := s.TabletsConnected(); n != 1 {
+		t.Fatalf("connected = %d, want 1", n)
+	}
+	offA2()
+	if n := s.TabletsConnected(); n != 0 {
+		t.Fatalf("connected = %d, want 0", n)
+	}
+}

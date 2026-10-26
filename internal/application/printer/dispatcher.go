@@ -54,6 +54,8 @@ type Dispatcher struct {
 	build           TicketBuilder
 	// probeHook (SetProbeHook) sees every health probe: printer id + address.
 	probeHook func(ctx context.Context, printerID, ip string, up bool)
+	// statusHook (SetStatusHook) hears a printer go down / come back.
+	statusHook func(up bool, msg string)
 	// rules (SetRules) are the store's print switches, read per job.
 	rules func() Rules
 }
@@ -84,6 +86,14 @@ func (d *Dispatcher) RosterPrinters() []RosterPrinter {
 		out[i] = RosterPrinter{ID: sl.entry.ID, Name: sl.entry.Name, IP: sl.svc.Printer().IP(), IsReceipt: sl.entry.IsReceipt}
 	}
 	return out
+}
+
+// SetStatusHook registers f to run when a roster printer goes down or comes
+// back (applies to the next roster; call it before the first Apply).
+func (d *Dispatcher) SetStatusHook(f func(up bool, msg string)) {
+	d.mu.Lock()
+	d.statusHook = f
+	d.mu.Unlock()
 }
 
 // SetProbeHook registers f to run after every printer health probe (applies
@@ -155,6 +165,7 @@ func (d *Dispatcher) Apply(ctx context.Context, printers []storeconfig.PrinterCo
 	for _, p := range printers {
 		dev := d.factory(p.Name, p.IP)
 		svc := NewService(dev, d.registry, d.logger, d.meters)
+		svc.onStatus = d.statusHook
 		if hook := d.probeHook; hook != nil {
 			id := p.ID
 			svc.onProbe = func(ctx context.Context, ip string, up bool) { hook(ctx, id, ip, up) }

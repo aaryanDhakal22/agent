@@ -104,7 +104,7 @@ func (r *OrderRepository) ListArrived(ctx context.Context) (out []order.StoredOr
 // (a slow or dead printer must not hold the single SQLite connection); the
 // caller reverts with RevertAccept if nothing printed. Two concurrent accepts
 // (mobile double-tap) can't both win: the loser's UPDATE matches 0 rows.
-func (r *OrderRepository) ClaimAccept(ctx context.Context, id uuid.UUID, prepMinutes int) (result *order.StoredOrder, err error) {
+func (r *OrderRepository) ClaimAccept(ctx context.Context, id uuid.UUID, prepMinutes int, auto bool) (result *order.StoredOrder, err error) {
 	ctx, _, end := dbSpan(ctx, "orders.claim_accept")
 	defer end(&err)
 
@@ -139,6 +139,7 @@ func (r *OrderRepository) ClaimAccept(ctx context.Context, id uuid.UUID, prepMin
 		PrepMinutes:      sql.NullInt64{Int64: int64(prepMinutes), Valid: prepMinutes > 0},
 		EstimatedReadyAt: nullTSIf(now.Add(time.Duration(prepMinutes)*time.Minute), prepMinutes > 0),
 		KitchenNumber:    kitchen,
+		AutoAccepted:     auto,
 		ID:               id.String(),
 	})
 	if err != nil {
@@ -233,6 +234,7 @@ func toStored(row models.Order) (order.StoredOrder, error) {
 	st.ExtSource, st.ExtRef = row.ExtSource, row.ExtRef
 	st.DisplayNumber = optInt(row.DisplayNumber)
 	st.Paid, st.BoardHidden, st.LocalOnly, st.Rerung = row.Paid, row.BoardHidden, row.LocalOnly, row.Rerung
+	st.AutoAccepted = row.AutoAccepted
 	st.PosCheckNumber = optInt(row.PosCheckNumber)
 	st.PosDriverNote = row.PosDriverNote
 	st.ScheduledLeadMinutes = optInt(row.ScheduledLeadMinutes)

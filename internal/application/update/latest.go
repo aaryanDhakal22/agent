@@ -178,6 +178,16 @@ func (l *Latest) Get(ctx context.Context) (version string, available bool) {
 	return version, sha != "" && own != "" && !strings.EqualFold(sha, own)
 }
 
+// Current is the cached manifest's agent version + sha ("" before a fetch).
+func (l *Latest) Current() (version, sha string) {
+	if l == nil {
+		return "", ""
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.version, l.sha
+}
+
 // Refresh fetches now (tests, and the first check at startup).
 func (l *Latest) Refresh(ctx context.Context) error {
 	l.mu.Lock()

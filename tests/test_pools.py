@@ -194,16 +194,18 @@ def test_delivery_settings_and_floor_fields(floor) -> None:  # noqa: F811
     assert f["soon_ready_minutes"] == 5 and f["delivery_target_minutes"] == 45
     assert "store" in f and "map" in f and f["map"] is None, "no map downloaded on a test agent"
     for bad in ({"soon_ready_minutes": -1, "delivery_target_minutes": 45}, {"soon_ready_minutes": 31, "delivery_target_minutes": 45},
-                {"soon_ready_minutes": 5, "delivery_target_minutes": 14}, {"soon_ready_minutes": 5, "delivery_target_minutes": 121},
-                {"soon_ready_minutes": 5}):
+                {"soon_ready_minutes": 5, "delivery_target_minutes": 14}, {"soon_ready_minutes": 5, "delivery_target_minutes": 121}):
         r = a.http.put(f"{a.base}/api/settings/deliveries", json=bad, timeout=5)
         assert r.status_code == 400 and r.json()["code"] == "bad_request", bad
+    # 2.2.0: any subset; the answer is the full settings object.
+    r = a.http.put(f"{a.base}/api/settings/deliveries", json={"soon_ready_minutes": 5}, timeout=5)
+    assert r.status_code == 200 and r.json()["delivery_target_minutes"] == 45 and r.json()["nearby_rule"] == "detour", r.text
     # A paired tablet may change them too (device auth).
     code = post(a, "/api/pairing/code").json()["code"]
     key = requests.post(f"{a.base}/api/pair", json={"code": code, "name": "Tab"}, timeout=5).json()["key"]
     body = {"soon_ready_minutes": 0, "delivery_target_minutes": 120}
     r = requests.put(f"{a.base}/api/settings/deliveries", json=body, headers={"X-Agent-Device-Key": key}, timeout=5)
-    assert r.status_code == 200 and r.json() == body, r.text
+    assert r.status_code == 200 and body.items() <= r.json().items(), r.text
     f = a.http.get(f"{a.base}/api/floor", timeout=5).json()
     assert f["soon_ready_minutes"] == 0 and f["delivery_target_minutes"] == 120
     assert requests.put(f"{a.base}/api/settings/deliveries", json=body, timeout=5).status_code == 401

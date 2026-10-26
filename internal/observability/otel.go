@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploghttp"
 	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetrichttp"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
@@ -38,6 +39,23 @@ type Config struct {
 	ServiceName string
 	AppEnv      string
 	Version     string
+	// Tenant / Location are the linked store's slugs (resource attributes
+	// `tenant` / `location`, which the Collector turns into labels on every
+	// series). Empty = Unlinked. Fixed for the process: a store linked at
+	// runtime shows up on the next start.
+	Tenant   string
+	Location string
+}
+
+// Unlinked is the tenant/location label of an agent with no store yet.
+const Unlinked = "unlinked"
+
+// StoreLabel is the tenant/location label for a slug ("" = Unlinked).
+func StoreLabel(slug string) string {
+	if slug == "" {
+		return Unlinked
+	}
+	return slug
 }
 
 type Shutdown func(context.Context) error
@@ -126,13 +144,16 @@ func normalizeEndpoint(ep string) string {
 	return "http://" + ep
 }
 
-func instanceID() string {
-	if hn, err := os.Hostname(); err == nil && hn != "" {
-		return hn
+// instanceID is "<tenant>-<hostname>": every store's Pi is "quiccpos-pi",
+// so the hostname alone would collide across stores.
+func instanceID(tenant string) string {
+	hn, err := os.Hostname()
+	if err != nil || hn == "" {
+		b := make([]byte, 8)
+		_, _ = rand.Read(b)
+		hn = hex.EncodeToString(b)
 	}
-	b := make([]byte, 8)
-	_, _ = rand.Read(b)
-	return hex.EncodeToString(b)
+	return StoreLabel(tenant) + "-" + hn
 }
 
 // newResource merges our service attributes onto the SDK default resource.
@@ -147,7 +168,9 @@ func newResource(cfg Config) (*resource.Resource, error) {
 			semconv.ServiceName(cfg.ServiceName),
 			semconv.ServiceVersion(cfg.Version),
 			semconv.DeploymentEnvironmentNameKey.String(cfg.AppEnv),
-			semconv.ServiceInstanceID(instanceID()),
+			semconv.ServiceInstanceID(instanceID(cfg.Tenant)),
+			attribute.String("tenant", StoreLabel(cfg.Tenant)),
+			attribute.String("location", StoreLabel(cfg.Location)),
 		),
 	)
 }

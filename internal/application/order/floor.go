@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"quiccpos/agent/internal/application/devlog"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -39,6 +40,10 @@ type Floor struct {
 	// AUTO delivery settings (2.0.9).
 	SoonReadyMinutes      int64 `json:"soon_ready_minutes"`
 	DeliveryTargetMinutes int64 `json:"delivery_target_minutes"`
+	// The nearby rule (2.2.0): detour | distance | bundle | off + its limits.
+	NearbyRule          string  `json:"nearby_rule"`
+	NearbyDetourMinutes int64   `json:"nearby_detour_minutes"`
+	NearbyDistanceMi    float64 `json:"nearby_distance_mi"`
 	// Store is the store pin (null until main geocoded it); Map the store's
 	// offline map file on this Pi (null until downloaded).
 	Store *FloorStore `json:"store"`
@@ -84,6 +89,7 @@ func (s *Service) Floor(ctx context.Context) (*Floor, error) {
 		PrepChoices: PrepChoices, UnsyncedEvents: n, DriverResetTime: rs.Time,
 		GreenTillMinutes: prefs.GreenTillMinutes, TipTaxPercent: float64(prefs.TipTaxBps) / 100,
 		SoonReadyMinutes: dp.SoonReadyMinutes, DeliveryTargetMinutes: dp.DeliveryTargetMinutes,
+		NearbyRule: dp.NearbyRule, NearbyDetourMinutes: dp.NearbyDetourMinutes, NearbyDistanceMi: dp.NearbyDistanceMi,
 		Store: store, Map: mp, Settings: s.IntegrationSettings(), Integration: s.IntegrationView(time.Now())}, nil
 }
 
@@ -97,6 +103,7 @@ func (s *Service) Ready(ctx context.Context, id string) (*order.StoredOrder, err
 	}
 	s.floorChanged()
 	s.publishUpdated(*so)
+	s.devEvent(devlog.Info, devlog.KindOrder, "%s ready", label(*so))
 	return so, nil
 }
 
@@ -108,6 +115,7 @@ func (s *Service) AssignDriver(ctx context.Context, driverID string, orderIDs []
 	if err != nil {
 		return nil, spanErr(span, err)
 	}
+	s.devEvent(devlog.Info, devlog.KindOrder, "Out on a run: %s", labels(out))
 	s.floorChanged()
 	for _, so := range out {
 		s.publishUpdated(so)
@@ -127,6 +135,9 @@ func (s *Service) DriverReturned(ctx context.Context, driverID string) ([]order.
 	out, err := s.repo.DriverReturned(ctx, driverID)
 	if err != nil {
 		return nil, spanErr(span, err)
+	}
+	if len(out) > 0 {
+		s.devEvent(devlog.Info, devlog.KindOrder, "Delivered: %s", labels(out))
 	}
 	s.floorChanged()
 	for _, so := range out {
@@ -160,9 +171,20 @@ func (s *Service) CloseBatch(ctx context.Context, force bool) (*order.Batch, []o
 		}
 	}
 	s.publishDrivers(ctx)
-	s.printReportsAfterClose(ctx, closed.ID)
+	s.devEvent(devlog.Info, devlog.KindOrder, "Batch %d closed (%d auto-finished)", closed.ID, len(finished))
+	s.printReportsAfterClose(ctx, closed.ID, s.afterClose)
 	s.forgetPOSDeliveries(ctx, closed.ID)
 	return closed, finished, nil
+}
+
+// OnBatchClosed registers the hook run after a successful Close batch, once
+// its driver reports printed (or failed): cmd/main.go's Pi auto-update.
+func (s *Service) OnBatchClosed(fn func(ctx context.Context)) { s.onBatchClosed.Store(&fn) }
+
+func (s *Service) afterClose(ctx context.Context) {
+	if fn := s.onBatchClosed.Load(); fn != nil && *fn != nil {
+		(*fn)(ctx)
+	}
 }
 
 // forgetPOSDeliveries tells main to drop the points of a closed batch's POS
@@ -452,7 +474,8 @@ func (s *Service) EscalateOverdue(ctx context.Context, now time.Time, after time
 		}
 		msg := fmt.Sprintf("NOT ACCEPTED for %d min: %s order #%s for %s",
 			int(waiting.Minutes()), formatServiceType(so.Order.Fulfillment.Type), so.Order.SourceEventID, who)
-		s.logger.Warn().Ctx(ctx).Str("order_id", so.Order.ID).Msg(msg)
+		s.logger.Warn().Ctx(ctx).Str("order_id", so.Order.ID).
+			Msgf("Order %s not accepted for %d min", devlog.Short(so.Order.ID), int(waiting.Minutes()))
 		if s.notifier != nil {
 			if err := s.notifier.SendFloor(ctx, msg, "siren"); err != nil {
 				s.logger.Warn().Ctx(ctx).Err(err).Msg("Pushover escalation failed (non-fatal)")
