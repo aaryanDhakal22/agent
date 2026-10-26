@@ -59,6 +59,11 @@ CREATE TABLE orders (
     rerung                 boolean NOT NULL DEFAULT false,
     -- 00016_v220: accepted by auto-accept.
     auto_accepted          boolean NOT NULL DEFAULT false,
+    -- 00017_not_delivered: came back with its driver (2.2.1).
+    came_back               boolean NOT NULL DEFAULT false,
+    not_delivered_action    text    NOT NULL DEFAULT '',
+    not_delivered_at        text,
+    not_delivered_driver_id text    NOT NULL DEFAULT '',
     CHECK (state IN ('arrived', 'scheduled', 'accepted', 'ready', 'on_delivery', 'delivered', 'cancelled'))
 );
 CREATE INDEX idx_orders_arrival_date ON orders (arrival_date DESC);

@@ -64,6 +64,8 @@ func (s *Server) routes() []routeDef {
 		{"POST", "/api/orders/{id}/ready", "device", "Mark an accepted order ready", s.handleReady},
 		{"POST", "/api/orders/{id}/reprint", "device", "Reprint the customer receipt only (no state change)", s.handleReprint},
 		{"POST", "/api/orders/{id}/kitchen", "device", "Resend to kitchen: the station tickets only (no receipt, ignores pickup-cash) -> 200 {order, printed, failed, rerouted} | 409 not_accepted / nothing_for_kitchen | 502 print_failed | 404", s.handleResendKitchen},
+		{"POST", "/api/orders/{id}/not-delivered", "device", "Not delivered {action: retry|cancel}: a delivery (on_delivery|delivered, open batch) leaves the driver's run -> retry = ready, no driver, came_back | cancel = cancelled -> StoredOrder | 400 bad_action | 404 | 409 not_out_or_delivered", s.handleNotDelivered},
+		{"POST", "/api/orders/{id}/release", "device", "Release a came-back order: a normal unassigned ready delivery again -> StoredOrder | 404 | 409 not_came_back", s.handleReleaseCameBack},
 		{"POST", "/api/deliveries/assign", "device", "Send ready deliveries out with a driver {driver_id, order_ids} (pre-1.4.0 Quibase; the orders leave their pools)", s.handleAssign},
 		{"POST", "/api/deliveries/pool", "device", "Pool deliveries (accepted|ready) with an available driver {order_ids, driver_id|null = unassign}, all or nothing -> []StoredOrder | 400 | 404 not_found/driver_not_found | 409 invalid_state/driver_not_available", s.handlePool},
 		{"POST", "/api/deliveries/auto-plan", "device", "AUTO: suggest runs for the available drivers (changes nothing; stored for confirm) -> {plan_id, runs, unassigned, ...} | 409 no_drivers", s.handleAutoPlan},

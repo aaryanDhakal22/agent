@@ -711,6 +711,9 @@ func (s *Service) planInput(ctx context.Context, now time.Time) (*dispatch.Input
 		default:
 			continue
 		}
+		if so.Status.CameBack {
+			continue // held until staff release it (2.2.1)
+		}
 		if so.Status.PoolDriverID != "" {
 			if !available[so.Status.PoolDriverID] {
 				continue // pooled with a driver who isn't in the queue now

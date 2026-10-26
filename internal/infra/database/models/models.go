@@ -105,6 +105,10 @@ type Order struct {
 	RingAt               sql.NullString `json:"ring_at"`
 	Rerung               bool           `json:"rerung"`
 	AutoAccepted         bool           `json:"auto_accepted"`
+	CameBack             bool           `json:"came_back"`
+	NotDeliveredAction   string         `json:"not_delivered_action"`
+	NotDeliveredAt       sql.NullString `json:"not_delivered_at"`
+	NotDeliveredDriverID string         `json:"not_delivered_driver_id"`
 }
 
 type OrderGeo struct {

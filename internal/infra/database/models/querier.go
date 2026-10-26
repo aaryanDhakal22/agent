@@ -10,6 +10,9 @@ import (
 )
 
 type Querier interface {
+	// Close batch: a came-back order nobody took out again never reached the
+	// customer - cancelled (not auto-delivered).
+	CancelCameBack(ctx context.Context, arg CancelCameBackParams) (int64, error)
 	// A void at the POS (or Close batch): cancelled, out of any pool. A delivered
 	// order stays delivered (its driver collected it).
 	CancelExternalOrder(ctx context.Context, arg CancelExternalOrderParams) (int64, error)
@@ -30,6 +33,7 @@ type Querier interface {
 	CountAllDrivers(ctx context.Context) (int64, error)
 	CountAllOrders(ctx context.Context) (int64, error)
 	CountDeliveriesInBatch(ctx context.Context, batchID int64) ([]CountDeliveriesInBatchRow, error)
+	CountOnDeliveryByDriver(ctx context.Context, driverID sql.NullString) (int64, error)
 	// Pi updates (2.0.6) ----------------------------------------------------------
 	CountOpenBatchOrders(ctx context.Context) (CountOpenBatchOrdersRow, error)
 	// Metrics: floor.orders.open (open batch, by state and online/POS; POS
@@ -137,7 +141,13 @@ type Querier interface {
 	MarkDelivered(ctx context.Context, arg MarkDeliveredParams) (int64, error)
 	MarkFloorEventFailed(ctx context.Context, arg MarkFloorEventFailedParams) error
 	MarkFloorEventSynced(ctx context.Context, arg MarkFloorEventSyncedParams) error
-	// Leaving with a driver empties the order's pool slot.
+	// 2.2.1: a delivery that came back with its driver leaves the run. retry =
+	// ready again with no driver, held aside (came_back) until released; cancel =
+	// cancelled. Either way no driver, no pool, no out / delivered time, so it
+	// counts on no driver report.
+	MarkNotDelivered(ctx context.Context, arg MarkNotDeliveredParams) (int64, error)
+	// Leaving with a driver empties the order's pool slot (and ends a came-back
+	// hold: only the POS mirror sends a came-back order out).
 	MarkOnDelivery(ctx context.Context, arg MarkOnDeliveryParams) (int64, error)
 	MarkReady(ctx context.Context, arg MarkReadyParams) (int64, error)
 	MaxIntegrationSeq(ctx context.Context) (int64, error)
@@ -155,6 +165,8 @@ type Querier interface {
 	// ring_at passed: it rings again like a new order. last_alert_at starts the
 	// 2-minute escalation from now, not from the first arrival.
 	RaiseScheduled(ctx context.Context, arg RaiseScheduledParams) (int64, error)
+	// A came-back order is released: a normal unassigned ready delivery again.
+	ReleaseCameBack(ctx context.Context, id string) (int64, error)
 	RenameDriver(ctx context.Context, arg RenameDriverParams) (int64, error)
 	RenamePairedDevice(ctx context.Context, arg RenamePairedDeviceParams) (int64, error)
 	// Close batch: drivers out on a run are back in the queue (clocked-out stay off).

@@ -41,6 +41,17 @@ func TestSwapRestoresIdenticalFloor(t *testing.T) {
 	if _, err := a.AssignDriver(ctx, d1.ID, []string{del.Order.ID}); err != nil {
 		t.Fatal(err)
 	}
+	// 2.2.1: a delivery that came back with Juma waits in the came-back list.
+	back := accept(t, a, arrive(t, a, "delivery"))
+	if _, err := a.MarkReady(ctx, back.Order.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.AssignDriver(ctx, d2.ID, []string{back.Order.ID}); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := a.NotDelivered(ctx, back.Order.ID, order.NotDeliveredRetry); err != nil {
+		t.Fatal(err)
+	}
 	if err := a.SetFloorPrefs(ctx, order.FloorPrefs{GreenTillMinutes: 7, TipTaxBps: 1500}); err != nil {
 		t.Fatal(err)
 	}
@@ -79,7 +90,7 @@ func TestSwapRestoresIdenticalFloor(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.Orders != 4 || res.Waiting != 1 || res.Drivers != 2 || res.Shifts != 2 || res.BatchID != stA.Batch.ID {
+	if res.Orders != 5 || res.Waiting != 1 || res.Drivers != 2 || res.Shifts != 2 || res.BatchID != stA.Batch.ID {
 		t.Fatalf("restore result %+v", res)
 	}
 
@@ -125,6 +136,9 @@ func TestSwapRestoresIdenticalFloor(t *testing.T) {
 	}
 	if byID[cooking.Order.ID].Status.State != order.StateAccepted {
 		t.Fatal("the cooking order must stay accepted on B")
+	}
+	if st := byID[back.Order.ID].Status; !st.CameBack || st.NotDelivered == nil || st.NotDelivered.DriverID != d2.ID {
+		t.Fatalf("the came-back order on B: %+v", st)
 	}
 
 	// The next kitchen number continues, never repeats.

@@ -58,6 +58,8 @@ const (
 	FloorEventOrderStatus   = "order.status"
 	FloorEventDriversRoster = "drivers.roster"
 	FloorEventDriverShift   = "driver.shift"
+	// FloorEventNotDelivered (2.2.1): a delivery came back with its driver.
+	FloorEventNotDelivered = "order.not_delivered"
 )
 
 // FloorEvent is one change to sync to main. Payload is the complete JSON sent
@@ -86,6 +88,25 @@ type OrderStatusEvent struct {
 	// The agent's whole status + batch, stored by main so a replacement Pi
 	// (swapped SD card) can restore the open batch exactly.
 	BatchID     int64   `json:"batch_id,omitempty"`
+	AgentStatus *Status `json:"agent_status,omitempty"`
+}
+
+// NotDeliveredEvent is the payload of an order.not_delivered floor event: the
+// order left its driver's run and is ready again with no driver (retry) or
+// cancelled. main allows this one backwards step. Auto marks Close batch
+// cancelling a came-back order nobody took out again.
+type NotDeliveredEvent struct {
+	EventID    string    `json:"event_id"`
+	Type       string    `json:"type"` // order.not_delivered
+	OrderID    string    `json:"order_id"`
+	Action     string    `json:"action"` // retry | cancel
+	Status     State     `json:"status"` // the order's state after it: ready | cancelled
+	DriverID   string    `json:"driver_id,omitempty"`
+	DriverName string    `json:"driver_name,omitempty"`
+	Auto       bool      `json:"auto,omitempty"`
+	At         time.Time `json:"at"`
+	BatchID    int64     `json:"batch_id,omitempty"`
+	// The agent's whole status, as on order.status (a replacement Pi's restore).
 	AgentStatus *Status `json:"agent_status,omitempty"`
 }
 
@@ -328,6 +349,15 @@ type FloorRepository interface {
 	// since cutoff; MarkAlerted stamps last_alert_at.
 	ListOverdueArrived(ctx context.Context, cutoff time.Time) ([]StoredOrder, error)
 	MarkAlerted(ctx context.Context, id string, at time.Time) error
+
+	// NotDelivered takes a delivery that came back with its driver off the
+	// run (on_delivery or delivered, open batch): retry → ready, no driver,
+	// came_back; cancel → cancelled. The driver stays out while other stops
+	// remain, else is back in the queue; returnedDriver reports that.
+	// ErrNotOutOrDelivered otherwise.
+	NotDelivered(ctx context.Context, id, action string) (so *StoredOrder, returnedDriver bool, err error)
+	// ReleaseCameBack ends a came-back hold (ErrNotCameBack when not held).
+	ReleaseCameBack(ctx context.Context, id string) (*StoredOrder, error)
 
 	// RecordAccepted writes the order.status=accepted floor event (after the
 	// tickets printed — a reverted claim never reaches main) and, for an

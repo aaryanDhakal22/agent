@@ -85,6 +85,9 @@ func poolInTx(ctx context.Context, q *models.Queries, ids []string, driverID str
 		if !poolable(so) {
 			return nil, fmt.Errorf("order %s (%s): %w", id, so.Status.State, order.ErrInvalidState)
 		}
+		if so.Status.CameBack && driverID != "" {
+			return nil, fmt.Errorf("order %s: %w", id, order.ErrCameBack)
+		}
 		list = append(list, so)
 	}
 	out := make([]order.StoredOrder, 0, len(list))
@@ -558,6 +561,9 @@ func (r *OrderRepository) ConfirmAutoPlan(ctx context.Context, id string, runs [
 					return err
 				case !poolable(so):
 					skipped = append(skipped, order.PoolSkip{OrderID: oid, Reason: order.SkipInvalidState})
+					continue
+				case so.Status.CameBack:
+					skipped = append(skipped, order.PoolSkip{OrderID: oid, Reason: order.SkipCameBack})
 					continue
 				case so.Status.PoolDriverID != "":
 					skipped = append(skipped, order.PoolSkip{OrderID: oid, Reason: order.SkipAlreadyPooled})

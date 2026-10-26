@@ -81,6 +81,7 @@ const (
 	SkipInvalidState       = "invalid_state"
 	SkipAlreadyPooled      = "already_pooled"
 	SkipDriverNotAvailable = "driver_not_available"
+	SkipCameBack           = "came_back" // held in the came-back list (2.2.1)
 )
 
 // PlanRun is one driver's suggested additions from a stored AUTO plan.

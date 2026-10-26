@@ -29,6 +29,14 @@ func (s *Server) floorErr(w http.ResponseWriter, r *http.Request, err error) {
 		s.writeJSON(w, http.StatusConflict, map[string]any{"error": err.Error(), "code": "batch_has_leftovers", "leftovers": lo.Orders})
 	case errors.As(err, &nr):
 		s.writeJSON(w, http.StatusConflict, map[string]any{"error": err.Error(), "code": "not_ready", "order_ids": nr.IDs})
+	case errors.Is(err, orderApp.ErrBadAction):
+		s.writeJSON(w, http.StatusBadRequest, errCodeMap("bad_action", "bad_action"))
+	case errors.Is(err, order.ErrNotOutOrDelivered):
+		s.writeJSON(w, http.StatusConflict, errCodeMap("not_out_or_delivered", "not_out_or_delivered"))
+	case errors.Is(err, order.ErrNotCameBack):
+		s.writeJSON(w, http.StatusConflict, errCodeMap("not_came_back", "not_came_back"))
+	case errors.Is(err, order.ErrCameBack):
+		s.writeJSON(w, http.StatusConflict, errCodeMap("came_back", "came_back"))
 	case errors.Is(err, orderApp.ErrNoDrivers):
 		s.writeJSON(w, http.StatusConflict, errCodeMap(err.Error(), "no_drivers"))
 	case errors.Is(err, orderApp.ErrPosPullOff):
@@ -87,6 +95,44 @@ func (s *Server) handleReady(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	so, err := s.service.Ready(r.Context(), id.String())
+	if err != nil {
+		s.floorErr(w, r, err)
+		return
+	}
+	s.writeJSON(w, http.StatusOK, so)
+}
+
+// POST /api/orders/{id}/not-delivered {action: retry|cancel} (2.2.1). The
+// not-delivered errors answer {"error": code, "code": code}.
+func (s *Server) handleNotDelivered(w http.ResponseWriter, r *http.Request) {
+	id, err := parseID(r)
+	if err != nil {
+		s.writeError(w, r, http.StatusBadRequest, err)
+		return
+	}
+	var req struct {
+		Action string `json:"action"`
+	}
+	if err := decodeBody(r, &req); err != nil {
+		s.floorErr(w, r, err)
+		return
+	}
+	so, err := s.service.NotDelivered(r.Context(), id.String(), req.Action)
+	if err != nil {
+		s.floorErr(w, r, err)
+		return
+	}
+	s.writeJSON(w, http.StatusOK, so)
+}
+
+// POST /api/orders/{id}/release — a came-back order back to the deliveries.
+func (s *Server) handleReleaseCameBack(w http.ResponseWriter, r *http.Request) {
+	id, err := parseID(r)
+	if err != nil {
+		s.writeError(w, r, http.StatusBadRequest, err)
+		return
+	}
+	so, err := s.service.ReleaseCameBack(r.Context(), id.String())
 	if err != nil {
 		s.floorErr(w, r, err)
 		return
