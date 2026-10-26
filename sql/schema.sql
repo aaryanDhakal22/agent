@@ -57,6 +57,8 @@ CREATE TABLE orders (
     scheduled_lead_minutes integer,
     ring_at                text,
     rerung                 boolean NOT NULL DEFAULT false,
+    -- 00016_v220: accepted by auto-accept.
+    auto_accepted          boolean NOT NULL DEFAULT false,
     CHECK (state IN ('arrived', 'scheduled', 'accepted', 'ready', 'on_delivery', 'delivered', 'cancelled'))
 );
 CREATE INDEX idx_orders_arrival_date ON orders (arrival_date DESC);
@@ -114,7 +116,10 @@ CREATE TABLE paired_devices (
     last_seen_at text,
     revoked_at   text,
     -- 00014_integration: tablet | integration (the store hub).
-    kind         text NOT NULL DEFAULT 'tablet' CHECK (kind IN ('tablet', 'integration'))
+    kind         text NOT NULL DEFAULT 'tablet' CHECK (kind IN ('tablet', 'integration')),
+    -- 00016_v220: the Quibase version the tablet last sent (X-Quibase-Version).
+    app_version         text NOT NULL DEFAULT '',
+    app_version_seen_at text
 );
 
 -- 00014_integration: the hub's cursor feed (kept 3 days).
@@ -179,6 +184,12 @@ CREATE TABLE settings (
     integration_status        text NOT NULL DEFAULT '',
     -- 00015_update_last_success: when the last Pi update finished ok (RFC 3339).
     update_last_success       text NOT NULL DEFAULT '',
+    -- 00016_v220: the nearby rule for the next driver's run + Pi auto-update
+    -- after Close batch.
+    nearby_rule               text    NOT NULL DEFAULT 'detour',
+    nearby_detour_minutes     integer NOT NULL DEFAULT 5,
+    nearby_distance_mi        real    NOT NULL DEFAULT 1.0,
+    auto_update               boolean NOT NULL DEFAULT true,
     CHECK (id = 1)
 );
 

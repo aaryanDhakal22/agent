@@ -585,12 +585,14 @@ func (r *OrderRepository) DeliveryPrefs(ctx context.Context) (order.DeliveryPref
 	if err != nil {
 		return order.DefaultDeliveryPrefs, err
 	}
-	return order.DeliveryPrefs{SoonReadyMinutes: row.SoonReadyMinutes, DeliveryTargetMinutes: row.DeliveryTargetMinutes}, nil
+	return order.DeliveryPrefs{SoonReadyMinutes: row.SoonReadyMinutes, DeliveryTargetMinutes: row.DeliveryTargetMinutes,
+		NearbyRule: row.NearbyRule, NearbyDetourMinutes: row.NearbyDetourMinutes, NearbyDistanceMi: row.NearbyDistanceMi}, nil
 }
 
 func (r *OrderRepository) SetDeliveryPrefs(ctx context.Context, p order.DeliveryPrefs) error {
 	return models.New(r.db).SetDeliveryPrefs(ctx, models.SetDeliveryPrefsParams{
-		SoonReadyMinutes: p.SoonReadyMinutes, DeliveryTargetMinutes: p.DeliveryTargetMinutes})
+		SoonReadyMinutes: p.SoonReadyMinutes, DeliveryTargetMinutes: p.DeliveryTargetMinutes,
+		NearbyRule: p.NearbyRule, NearbyDetourMinutes: p.NearbyDetourMinutes, NearbyDistanceMi: p.NearbyDistanceMi})
 }
 
 // --- store map file (settings.map_file) ----------------------------------------

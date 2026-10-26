@@ -882,15 +882,16 @@ func TestAutoAcceptSchedulesFutureOrders(t *testing.T) {
 	if err := svc.OnArrival(ctx, asap); err != nil {
 		t.Fatal(err)
 	}
-	if got := storedOf(t, svc, asap.ID); got.Status.State != order.StateAccepted {
-		t.Fatalf("asap = %s", got.Status.State)
+	if got := storedOf(t, svc, asap.ID); got.Status.State != order.StateAccepted || !got.Status.AutoAccepted {
+		t.Fatalf("asap = %s auto %v", got.Status.State, got.Status.AutoAccepted)
 	}
 	// At ring_at it is accepted (prep = its lead) and printed.
 	if n, err := svc.RaiseDue(ctx, promised.Add(-35*time.Minute).Add(time.Second)); n != 1 || err != nil {
 		t.Fatalf("raise = %d %v", n, err)
 	}
 	got := storedOf(t, svc, s.ID)
-	if got.Status.State != order.StateAccepted || *got.Status.PrepMinutes != 35 || got.Status.KitchenNumber == nil {
+	if got.Status.State != order.StateAccepted || *got.Status.PrepMinutes != 35 || got.Status.KitchenNumber == nil ||
+		!got.Status.AutoAccepted {
 		t.Fatalf("at ring = %+v", got.Status)
 	}
 	if p := prints.all(); len(p) != 2 || p[1].OrderID != s.ID || p[1].Mode != printer.ModeAccept {

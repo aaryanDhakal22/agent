@@ -39,6 +39,8 @@ func (s *Server) floorErr(w http.ResponseWriter, r *http.Request, err error) {
 		s.writeJSON(w, http.StatusConflict, errCodeMap(err.Error(), "pos_number_taken"))
 	case errors.Is(err, orderApp.ErrMainOffline):
 		s.writeJSON(w, http.StatusServiceUnavailable, errCodeMap("Can't reach the server — try again.", "main_offline"))
+	case errors.Is(err, orderApp.ErrMainUnsupported):
+		s.writeJSON(w, http.StatusNotImplemented, errCodeMap("The server doesn't support this yet.", "main_unsupported"))
 	case errors.Is(err, order.ErrNotFound):
 		s.writeJSON(w, http.StatusNotFound, errCodeMap(err.Error(), "not_found"))
 	case errors.Is(err, order.ErrDriverNotFound):

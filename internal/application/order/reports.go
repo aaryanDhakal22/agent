@@ -170,11 +170,18 @@ func (s *Service) PrintDriverReports(ctx context.Context, batchID int64) ([]Repo
 
 // printReportsAfterClose prints the closed batch's driver reports in the
 // background (the close-batch response doesn't wait on the printer).
-func (s *Service) printReportsAfterClose(ctx context.Context, batchID int64) {
+// then (may be nil) runs afterwards, in the same goroutine.
+func (s *Service) printReportsAfterClose(ctx context.Context, batchID int64, then func(context.Context)) {
 	if s.printDoc == nil || s.buildReport == nil {
+		if then != nil {
+			go then(context.WithoutCancel(ctx))
+		}
 		return
 	}
 	go func(ctx context.Context) {
+		if then != nil {
+			defer then(ctx)
+		}
 		res, err := s.PrintDriverReports(ctx, batchID)
 		if err != nil {
 			s.logger.Error().Ctx(ctx).Err(err).Int64("batch", batchID).Msg("driver reports after close failed")

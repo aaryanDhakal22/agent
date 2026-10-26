@@ -96,6 +96,14 @@ func (r *DeviceRepository) RevokeAll(ctx context.Context, at time.Time) (err err
 	return models.New(r.db).RevokeAllPairedDevices(ctx, nullTS(at))
 }
 
+// SetAppVersion records the Quibase version a device reported.
+func (r *DeviceRepository) SetAppVersion(ctx context.Context, id, version string, at time.Time) (err error) {
+	ctx, _, end := dbSpan(ctx, "devices.set_app_version")
+	defer end(&err)
+	return models.New(r.db).SetPairedDeviceAppVersion(ctx, models.SetPairedDeviceAppVersionParams{
+		AppVersion: version, AppVersionSeenAt: nullTS(at), ID: id})
+}
+
 func toDevice(row models.PairedDevice) (device.Device, error) {
 	created, err := parseTS(row.CreatedAt)
 	if err != nil {
@@ -109,6 +117,10 @@ func toDevice(row models.PairedDevice) (device.Device, error) {
 	if err != nil {
 		return device.Device{}, err
 	}
+	verAt, err := optTS(row.AppVersionSeenAt)
+	if err != nil {
+		return device.Device{}, err
+	}
 	return device.Device{ID: row.ID, Name: row.Name, Kind: row.Kind, KeyPrefix: row.KeyPrefix, CreatedAt: created,
-		LastSeenAt: seen, RevokedAt: revoked}, nil
+		LastSeenAt: seen, RevokedAt: revoked, AppVersion: row.AppVersion, AppVersionSeenAt: verAt}, nil
 }

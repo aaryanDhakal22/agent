@@ -766,7 +766,7 @@
               <template x-for="d in devices" :key="d.id">
                 <div class="li">
                   <div class="main"><b x-text="d.name"></b>
-                    <div class="small muted"><span class="mono" x-text="d.key_prefix + '…'"></span> · <span x-text="d.revoked_at ? 'revoked ' + dateTime(d.revoked_at) : (d.last_seen_at ? 'seen ' + ago(d.last_seen_at) : 'never used')"></span></div>
+                    <div class="small muted"><span class="mono" x-text="d.key_prefix + '…'"></span> · <span x-text="d.revoked_at ? 'revoked ' + dateTime(d.revoked_at) : (d.last_seen_at ? 'seen ' + ago(d.last_seen_at) : 'never used')"></span><template x-if="d.app_version"><span> · <span class="mono" x-text="'Quibase ' + d.app_version"></span></span></template></div>
                   </div>
                   <button type="button" class="btn" x-show="!d.revoked_at" @click="revokeDevice(d)">Revoke</button>
                 </div>
@@ -820,6 +820,10 @@
           <div class="srow" style="margin-top:14px">
             <div class="lblcol"><div class="lbl">Update now</div><p class="help" x-text="updBlockedText"></p></div>
             <button type="button" class="btn btn-p" :disabled="!!updBusy || !(upd && upd.can_update_now)" @click="startUpdate()" x-text="updBusy === '/api/update' ? 'Starting…' : 'Update now'"></button>
+          </div>
+          <div class="srow">
+            <div class="lblcol"><div class="lbl" id="au-l">Update after Close batch</div><p class="help">Right after a batch is closed, install a newer version if one is published. Never while orders are open.</p></div>
+            <button type="button" class="sw" :class="{ on: autoUpdate }" role="switch" :aria-checked="autoUpdate" aria-labelledby="au-l" :disabled="!autoUpdateLoaded" @click="toggleAutoUpdate()"><span></span></button>
           </div>
           <div class="srow">
             <div class="lblcol"><div class="lbl">Roll back</div><p class="help">Back to the version this Pi ran before. Only while no orders are open.</p></div>

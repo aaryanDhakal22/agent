@@ -145,6 +145,9 @@ type diagResponse struct {
 	QuietAlertMinutes int           `json:"quiet_alert_minutes"`
 	FloorBacklog      int64         `json:"floor_backlog"`
 	AcksPending       int           `json:"acks_pending"`
+	// Tablets (2.2.0): the paired tablets, their Quibase version and
+	// whether they are on /api/events now.
+	Tablets []TabletInfo `json:"tablets"`
 }
 
 // sseState is the main-connection verdict shared by /api/session and /api/diag.
@@ -234,6 +237,7 @@ func (s *Server) handleDiag(w http.ResponseWriter, r *http.Request) {
 		out.OpenNow = &open
 	}
 
+	out.Tablets = s.Tablets(ctx)
 	out.Problems = diagProblems(out)
 	s.writeJSON(w, http.StatusOK, out)
 }

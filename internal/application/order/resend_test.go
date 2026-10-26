@@ -41,7 +41,7 @@ func (f *fakeRepo) GetByID(_ context.Context, id uuid.UUID) (*order.StoredOrder,
 func (f *fakeRepo) ListPage(context.Context, int, int) ([]order.StoredOrder, error) { return nil, nil }
 func (f *fakeRepo) ListArrived(context.Context) ([]order.StoredOrder, error)        { return nil, nil }
 func (f *fakeRepo) TrimToNewest(context.Context, int) (int64, error)                { return 0, nil }
-func (f *fakeRepo) ClaimAccept(_ context.Context, id uuid.UUID, _ int) (*order.StoredOrder, error) {
+func (f *fakeRepo) ClaimAccept(_ context.Context, id uuid.UUID, _ int, _ bool) (*order.StoredOrder, error) {
 	so, ok := f.orders[id.String()]
 	if !ok {
 		return nil, order.ErrNotFound

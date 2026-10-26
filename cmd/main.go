@@ -25,6 +25,7 @@ import (
 	"quiccpos/agent/internal/application/appupdate"
 	"quiccpos/agent/internal/application/backup"
 	"quiccpos/agent/internal/application/catchup"
+	"quiccpos/agent/internal/application/devlog"
 	"quiccpos/agent/internal/application/driverreset"
 	"quiccpos/agent/internal/application/escalation"
 	"quiccpos/agent/internal/application/floorsync"
@@ -151,7 +152,10 @@ func main() {
 	zerolog.SetGlobalLevel(level)
 
 	rawLogger := zerolog.New(writer).With().Timestamp().Logger()
-	logger := observability.Wire(rawLogger, cfg.OTELServiceName)
+	// Developer-mode events (GET /api/dev/events): floor events the services
+	// add + every warn/error log line (its message only, never its fields).
+	devRing := devlog.New(devlog.DefaultSize)
+	logger := observability.Wire(rawLogger, cfg.OTELServiceName).Hook(devRing.Hook())
 	logger.Info().
 		Str("log_level", level.String()).
 		Str("app_env", cfg.AppEnv).
@@ -197,6 +201,13 @@ func main() {
 	}
 
 	dispatcher := printerApp.NewDispatcher(ctx, factory, printerRegistry, notifier, cfg.PrinterDetectDelay, receiptBuilder, logger, meters)
+	dispatcher.SetStatusHook(func(up bool, msg string) {
+		if up {
+			devRing.Add(devlog.Info, devlog.KindPrinter, msg)
+		} else {
+			devRing.Add(devlog.Warn, devlog.KindPrinter, msg)
+		}
+	})
 
 	// Printers on the LAN: learn each roster printer's MAC after a good probe,
 	// follow one that moved to a new IP, list unknown ones for "add". The
@@ -236,6 +247,7 @@ func main() {
 	// --- Order service + mobile-facing SSE broker -------------------------
 	broker := ssebroker.New()
 	orderService := orderApp.NewService(orderRepo, settingsRepo, printFn, notifier, broker, logger, meters)
+	orderService.SetDevLog(devRing)
 	// Driver reports print on the receipt printer (failover like a ticket),
 	// formatted with the live store context (timezone + store name).
 	orderService.SetDocumentPrinting(dispatcher.PrintDocument, func(rep order.DriverReport, from string) []byte {
@@ -320,6 +332,18 @@ func main() {
 		},
 		Send:   registry.Send,
 		Linked: sseCtrl.Configured,
+		// The location's delivery radius (store_config) — the tablet changes
+		// it through main (location.radius); the in-memory copy is patched
+		// until main's store_config push lands.
+		Radius: func() (int64, bool) {
+			sc, _ := storeCtx.Load().(storeconfig.StoreContext)
+			return sc.Location.DeliveryRadiusM, sc.Location.ID != ""
+		},
+		SetRadius: func(m int64) {
+			sc, _ := storeCtx.Load().(storeconfig.StoreContext)
+			sc.Location.DeliveryRadiusM = m
+			storeCtx.Store(sc)
+		},
 	})
 	mapFile.OnChange(broker.PublishFloorChanged)
 	go mapFile.Run(ctx)
@@ -346,6 +370,7 @@ func main() {
 		OnFinished: func(_ context.Context, s update.Status) {
 			countUpdateRun(meters, procStart, s)
 		},
+		OnEvent: func(level, text string) { devRing.Add(level, devlog.KindUpdate, text) },
 	}, orderRepo.CountOpenBatchOrders, settingsRepo, registry.Report, notifier.Send,
 		update.NewLatest(update.ManifestURL(cfg.UtilityURL, manifestEnv), exe), logger)
 	updater.Load(ctx)
@@ -366,6 +391,19 @@ func main() {
 	registry.Register(update.MsgRollback, updateCmd(update.ActionRollback))
 	go updater.Run(ctx)
 	go printerWatcher.Run(ctx)
+	// Pi auto-update (2.2.0): after a successful Close batch (its driver
+	// reports printed), a newer agent in the manifest is installed through
+	// the normal update path (requested_by auto) when auto_update is on.
+	orderService.OnBatchClosed(func(rc context.Context) {
+		rep, reason := updater.AfterClose(rc)
+		switch {
+		case rep != nil && rep.Accepted:
+			devRing.Add(devlog.Info, devlog.KindUpdate, "Auto-update after Close batch requested ("+rep.ID+")")
+		case reason == update.AutoOff, reason == update.CodeNotSupported:
+		default:
+			devRing.Add(devlog.Info, devlog.KindUpdate, "Auto-update after Close batch: nothing to do ("+reason+")")
+		}
+	})
 
 	// Delivery guarantee: every stored order (new or a redelivery) is acked
 	// to main, which re-sends anything unacked after 10 s.
@@ -376,7 +414,16 @@ func main() {
 	// Floor state for a replacement Pi (agent.state) + the heartbeat.
 	stateSync := statesync.New(orderRepo.AgentState, registry.Report, sseCtrl.Configured, logger)
 	go stateSync.Run(ctx)
+	// The paired tablets (+ Quibase versions) come from the HTTP server,
+	// built further down.
+	var httpRef atomic.Pointer[transport.Server]
 	heartbeat := health.New(health.Inputs{
+		Tablets: func(rc context.Context) any {
+			if hs := httpRef.Load(); hs != nil {
+				return hs.Tablets(rc)
+			}
+			return nil
+		},
 		DeviceID: func(rc context.Context) string {
 			li, _ := settingsRepo.GetLinkInfo(rc)
 			return li.DeviceID
@@ -458,7 +505,11 @@ func main() {
 			notifier.SetKeys(sec.PushoverAppToken, sec.PushoverUserKey, sec.PushoverBossKey)
 		}
 	}
+	sseCtrl.OnDisconnected(func() {
+		devRing.Add(devlog.Warn, devlog.KindSSE, "Lost the connection to main")
+	})
 	sseCtrl.OnConnected(func() {
+		devRing.Add(devlog.Info, devlog.KindSSE, "Connected to main")
 		stateSync.Reset()
 		heartbeat.Wake()
 		appUpdater.Wake()
@@ -527,6 +578,8 @@ func main() {
 	})
 	httpServer := transport.NewServer(orderService, broker, printerRegistry, settingsRepo, sseCtrl, mainClient, session, deviceRepo, cfg.HTTPPort, version, commit, logger)
 	httpServer.SetAltPort(cfg.HTTPAltPort)
+	httpServer.SetDevLog(devRing)
+	httpRef.Store(httpServer)
 	httpServer.SetAppUpdater(appUpdater)
 	httpServer.SetMap(mapFile)
 	httpServer.SetUpdates(updater, printerWatcher)
@@ -621,6 +674,7 @@ func main() {
 			return out, nil
 		},
 		TabletsConnected: httpServer.TabletsConnected,
+		TabletVersions:   httpServer.TabletVersions,
 		Hub: func() (observability.HubLink, bool) {
 			now := time.Now()
 			v := orderService.IntegrationView(now)

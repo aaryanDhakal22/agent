@@ -85,11 +85,11 @@ func TestClaimAndRevertAccept(t *testing.T) {
 	}
 	id := uuid.MustParse(s.ID)
 
-	so, err := repo.ClaimAccept(ctx, id, 20)
+	so, err := repo.ClaimAccept(ctx, id, 20, false)
 	if err != nil || so.Status.State != order.StateAccepted || so.Status.PrintedDate == nil {
 		t.Fatalf("claim: %v %+v", err, so)
 	}
-	if _, err := repo.ClaimAccept(ctx, id, 20); err != order.ErrAlreadyAccepted {
+	if _, err := repo.ClaimAccept(ctx, id, 20, false); err != order.ErrAlreadyAccepted {
 		t.Fatalf("second claim: want ErrAlreadyAccepted, got %v", err)
 	}
 	if err := repo.RevertAccept(ctx, id); err != nil {
@@ -99,10 +99,10 @@ func TestClaimAndRevertAccept(t *testing.T) {
 	if got.Status.State != order.StateArrived || got.Status.PrintedDate != nil {
 		t.Fatalf("revert: %+v", got.Status)
 	}
-	if _, err := repo.ClaimAccept(ctx, id, 20); err != nil {
+	if _, err := repo.ClaimAccept(ctx, id, 20, false); err != nil {
 		t.Fatalf("re-claim after revert: %v", err)
 	}
-	if _, err := repo.ClaimAccept(ctx, uuid.New(), 20); err != order.ErrNotFound {
+	if _, err := repo.ClaimAccept(ctx, uuid.New(), 20, false); err != order.ErrNotFound {
 		t.Fatalf("missing order: want ErrNotFound, got %v", err)
 	}
 }

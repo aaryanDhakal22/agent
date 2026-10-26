@@ -29,6 +29,9 @@ type Service struct {
 	// onProbe runs after every health probe (KeepCheck, ProbeNow) with the
 	// address probed — the dispatcher's hook for learning printer MACs.
 	onProbe func(ctx context.Context, ip string, up bool)
+	// onStatus runs when KeepCheck sees the printer go down or come back
+	// (the developer-mode events), with the message it logs.
+	onStatus func(up bool, msg string)
 }
 
 func NewService(p printer.Printer, registry *Registry, logger zerolog.Logger, meters observability.Meters) *Service {
@@ -82,6 +85,9 @@ func (s *Service) KeepCheck(ctx context.Context, delay time.Duration, notifier *
 		if err != nil {
 			if !lastStatusKnown || lastUp {
 				msg := fmt.Sprintf("The %s Printer is unreachable.", name)
+				if s.onStatus != nil {
+					s.onStatus(false, msg)
+				}
 				s.logger.Warn().Ctx(ctx).Err(err).Msg(msg)
 				if notifier != nil {
 					if nerr := notifier.SendFloor(ctx, msg, "printer-error"); nerr != nil {
@@ -103,6 +109,9 @@ func (s *Service) KeepCheck(ctx context.Context, delay time.Duration, notifier *
 
 		if lastStatusKnown && !lastUp {
 			msg := fmt.Sprintf("The %s Printer is back online.", name)
+			if s.onStatus != nil {
+				s.onStatus(true, msg)
+			}
 			s.logger.Info().Ctx(ctx).Msg(msg)
 			if notifier != nil {
 				if nerr := notifier.SendFloor(ctx, msg, "classical"); nerr != nil {

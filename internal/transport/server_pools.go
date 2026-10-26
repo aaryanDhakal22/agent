@@ -124,26 +124,39 @@ func (s *Server) handlePinOrder(w http.ResponseWriter, r *http.Request) {
 	s.writeJSON(w, http.StatusAccepted, map[string]any{})
 }
 
-// PUT /api/settings/deliveries {soon_ready_minutes, delivery_target_minutes}.
+// PUT /api/settings/deliveries — any subset of {soon_ready_minutes,
+// delivery_target_minutes, nearby_rule, nearby_detour_minutes,
+// nearby_distance_mi, delivery_radius_m} -> 200 the full settings | 400 |
+// 503 main_offline / 501 main_unsupported (a radius main couldn't take:
+// nothing changed).
 func (s *Server) handleSetDeliveryPrefs(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		SoonReadyMinutes      *int64 `json:"soon_ready_minutes"`
-		DeliveryTargetMinutes *int64 `json:"delivery_target_minutes"`
-	}
+	var req orderApp.DeliveryPatch
 	if err := decodeBody(r, &req); err != nil {
 		s.floorErr(w, r, err)
 		return
 	}
-	if req.SoonReadyMinutes == nil || req.DeliveryTargetMinutes == nil {
-		s.writeJSON(w, http.StatusBadRequest, errCodeMap("soon_ready_minutes and delivery_target_minutes are required", "bad_request"))
-		return
-	}
-	p := order.DeliveryPrefs{SoonReadyMinutes: *req.SoonReadyMinutes, DeliveryTargetMinutes: *req.DeliveryTargetMinutes}
-	if err := s.service.SetDeliveryPrefs(r.Context(), p); err != nil {
+	out, err := s.service.UpdateDeliverySettings(r.Context(), req)
+	if err != nil {
 		s.floorErr(w, r, err)
 		return
 	}
-	s.writeJSON(w, http.StatusOK, p)
+	s.writeJSON(w, http.StatusOK, out)
+}
+
+// GET /api/settings/deliveries -> the full delivery settings.
+func (s *Server) handleGetDeliveryPrefs(w http.ResponseWriter, r *http.Request) {
+	s.writeJSON(w, http.StatusOK, s.service.DeliverySettings(r.Context()))
+}
+
+// GET /api/deliveries/next-check[?driver_id=] -> is an unassigned delivery
+// near the next (or that) driver's run?
+func (s *Server) handleNextCheck(w http.ResponseWriter, r *http.Request) {
+	out, err := s.service.NextCheck(r.Context(), strings.TrimSpace(r.URL.Query().Get("driver_id")))
+	if err != nil {
+		s.floorErr(w, r, err)
+		return
+	}
+	s.writeJSON(w, http.StatusOK, out)
 }
 
 // GET /api/map.pmtiles — the store's offline map (Range supported), 404

@@ -57,6 +57,7 @@ type Querier interface {
 	// Settings -----------------------------------------------------------------
 	GetAutoAccept(ctx context.Context) (bool, error)
 	GetAutoPlan(ctx context.Context, id string) (AutoPlan, error)
+	GetAutoUpdate(ctx context.Context) (bool, error)
 	GetBatch(ctx context.Context, id int64) (Batch, error)
 	// Delivery settings + store map (2.0.9) -------------------------------------------
 	GetDeliveryPrefs(ctx context.Context) (GetDeliveryPrefsRow, error)
@@ -171,6 +172,7 @@ type Querier interface {
 	ScheduleOrder(ctx context.Context, arg ScheduleOrderParams) (int64, error)
 	SetAppRelease(ctx context.Context, appRelease string) error
 	SetAutoAccept(ctx context.Context, autoAccept bool) error
+	SetAutoUpdate(ctx context.Context, autoUpdate bool) error
 	SetDeliveryPrefs(ctx context.Context, arg SetDeliveryPrefsParams) error
 	SetDriverOut(ctx context.Context, id string) error
 	// Undo a mistaken return: back out on the run, at its old queue position.
@@ -202,6 +204,7 @@ type Querier interface {
 	// The order's stop number is cleared; the service renumbers the pools.
 	SetOrderPool(ctx context.Context, arg SetOrderPoolParams) (int64, error)
 	SetOrderSnapshot(ctx context.Context, arg SetOrderSnapshotParams) error
+	SetPairedDeviceAppVersion(ctx context.Context, arg SetPairedDeviceAppVersionParams) error
 	// Renumbers one pooled order (0 rows = no longer in that pool, or unchanged).
 	SetPoolSeq(ctx context.Context, arg SetPoolSeqParams) (int64, error)
 	SetPosCheckNumber(ctx context.Context, arg SetPosCheckNumberParams) error

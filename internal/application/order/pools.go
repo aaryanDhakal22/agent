@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"math"
 	"net/http"
+	"quiccpos/agent/internal/application/devlog"
 	"sort"
 	"time"
 
@@ -59,6 +60,11 @@ type GeoDeps struct {
 	// a store key at all.
 	Send   RPCSend
 	Linked func() bool
+	// Radius is the location's delivery radius from store_config (ok=false
+	// before the first handshake); SetRadius patches the in-memory copy
+	// after main took a new one (its store_config push follows).
+	Radius    func() (int64, bool)
+	SetRadius func(int64)
 }
 
 // SetGeo wires the store pin / map / main RPC hooks.
@@ -292,6 +298,7 @@ func (s *Service) SendOut(ctx context.Context, driverID string, req SendOutReque
 		return nil, spanErr(span, err)
 	}
 	span.SetAttributes(attribute.Int("orders", len(sent)), attribute.Int("marked_ready", len(readied)))
+	s.devEvent(devlog.Info, devlog.KindOrder, "Out on a run: %s", labels(sent))
 	s.floorChanged()
 	for _, so := range sent {
 		s.publishUpdated(so)

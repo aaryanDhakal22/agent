@@ -27,6 +27,10 @@ type Device struct {
 	CreatedAt  time.Time  `json:"created_at"`
 	LastSeenAt *time.Time `json:"last_seen_at,omitempty"`
 	RevokedAt  *time.Time `json:"revoked_at,omitempty"`
+	// AppVersion is the Quibase version the tablet last sent
+	// (X-Quibase-Version "<name>+<code>", 2.2.0); "" = never.
+	AppVersion       string     `json:"app_version"`
+	AppVersionSeenAt *time.Time `json:"app_version_seen_at,omitempty"`
 }
 
 var ErrNotFound = errors.New("device not found")
@@ -41,4 +45,6 @@ type Repository interface {
 	// Rename changes an active device's name (ErrNotFound if revoked/unknown).
 	Rename(ctx context.Context, id, name string) error
 	RevokeAll(ctx context.Context, at time.Time) error
+	// SetAppVersion records the Quibase version a device reported.
+	SetAppVersion(ctx context.Context, id, version string, at time.Time) error
 }

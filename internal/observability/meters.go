@@ -245,6 +245,9 @@ type Live struct {
 	FloorOpen func(ctx context.Context) ([]FloorCount, error)
 	// TabletsConnected: paired tablets on the /api/events stream now.
 	TabletsConnected func() int
+	// TabletVersions: tablets on the /api/events stream now, by the Quibase
+	// version they reported ("unknown" = none) — floor.tablets.version.
+	TabletVersions func() map[string]int
 	// Hub: ok=false when no store hub has ever reported (both hub gauges
 	// are then absent).
 	Hub func() (HubLink, bool)
@@ -264,7 +267,7 @@ type Live struct {
 }
 
 // RegisterLive creates the observable gauges floor.orders.open,
-// floor.tablets.connected, hub.link.up, hub.status.age.seconds, agent.info,
+// floor.tablets.connected, floor.tablets.version, hub.link.up, hub.status.age.seconds, agent.info,
 // sse.connected, agent.uptime.seconds, host.uptime.seconds and
 // agent.update.last_success, and one callback that reports them all. The
 // registration lives as long as the meter provider.
@@ -280,6 +283,11 @@ func RegisterLive(src Live) (metric.Registration, error) {
 		metric.WithDescription("Paired tablets currently on the agent's SSE stream"))
 	if err != nil {
 		return nil, fmt.Errorf("floor.tablets.connected: %w", err)
+	}
+	tabletVersions, err := m.Int64ObservableGauge("floor.tablets.version",
+		metric.WithDescription("Paired tablets currently on the agent's SSE stream, by Quibase version (attribute app_version)"))
+	if err != nil {
+		return nil, fmt.Errorf("floor.tablets.version: %w", err)
 	}
 	hubUp, err := m.Int64ObservableGauge("hub.link.up",
 		metric.WithDescription("Store hub reported within the stale window: 1=up, 0=down (absent when no hub ever reported)"))
@@ -348,6 +356,11 @@ func RegisterLive(src Live) (metric.Registration, error) {
 		}
 		if src.TabletsConnected != nil {
 			o.ObserveInt64(tablets, int64(src.TabletsConnected()))
+		}
+		if src.TabletVersions != nil {
+			for v, n := range src.TabletVersions() {
+				o.ObserveInt64(tabletVersions, int64(n), metric.WithAttributes(attribute.String("app_version", v)))
+			}
 		}
 		if src.Hub != nil {
 			if h, ok := src.Hub(); ok {

@@ -114,3 +114,18 @@ func (r *OrderRepository) CountOpenFloor(ctx context.Context) ([]OpenFloorCount,
 	}
 	return out, nil
 }
+
+// GetAutoUpdate is the auto_update setting: update the Pi right after Close
+// batch when the manifest names a newer agent (default on).
+func (r *SettingsRepository) GetAutoUpdate(ctx context.Context) (v bool, err error) {
+	ctx, _, end := dbSpan(ctx, "settings.get_auto_update")
+	defer end(&err)
+	return models.New(r.db).GetAutoUpdate(ctx)
+}
+
+// SetAutoUpdate saves the auto_update setting.
+func (r *SettingsRepository) SetAutoUpdate(ctx context.Context, on bool) (err error) {
+	ctx, _, end := dbSpan(ctx, "settings.set_auto_update")
+	defer end(&err)
+	return models.New(r.db).SetAutoUpdate(ctx, on)
+}

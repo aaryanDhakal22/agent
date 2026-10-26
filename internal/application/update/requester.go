@@ -180,6 +180,9 @@ type Config struct {
 	// developer Pushover, which survives the restart an update causes):
 	// the agent.update.runs counter.
 	OnFinished func(ctx context.Context, s Status)
+	// OnEvent hears a request taken and every finished run (the
+	// developer-mode events): level info|warn|error and a line of text.
+	OnEvent func(level, text string)
 }
 
 // Requester gates, writes and follows update requests.
@@ -412,6 +415,7 @@ func (r *Requester) Request(ctx context.Context, action string, force bool, requ
 	r.persistJobLocked(ctx)
 	r.mu.Unlock()
 	r.logger.Info().Ctx(ctx).Str("id", id).Str("action", action).Str("requested_by", requestedBy).Msg("update requested")
+	r.event("info", fmt.Sprintf("%s requested by %s (%s)", action, requestedBy, id))
 	r.Wake()
 	return Reply{Accepted: true, State: StateRequested, ID: id}
 }
@@ -490,7 +494,7 @@ func (r *Requester) effectiveLocked(now time.Time) *Status {
 				s.FinishedAt = at.Add(runningStale).UTC().Format(time.RFC3339)
 			}
 		}
-		if s.RequestedBy == "" && j != nil {
+		if (s.RequestedBy == "" || s.RequestedBy == "unknown") && j != nil && j.ID == s.ID {
 			s.RequestedBy = j.RequestedBy
 		}
 		return &s
@@ -635,11 +639,22 @@ func (r *Requester) reportAndNotify(ctx context.Context, eff *Status) {
 		}
 		msg, sound := Message(r.cfg.StoreName(), eff)
 		r.logger.Info().Ctx(ctx).Str("id", eff.ID).Str("state", eff.State).Str("error", eff.Error).Msg(msg)
+		lvl := "info"
+		if eff.State == StateFailed || eff.State == StateRolledBack {
+			lvl = "error"
+		}
+		r.event(lvl, fmt.Sprintf("%s %s: %s %s -> %s (%s)", eff.Action, eff.State, eff.RequestedBy, orQ(eff.FromVersion), orQ(eff.ToVersion), eff.ID))
 		if r.notify != nil {
 			if err := r.notify(ctx, msg, sound); err != nil {
 				r.logger.Warn().Ctx(ctx).Err(err).Msg("update Pushover failed")
 			}
 		}
+	}
+}
+
+func (r *Requester) event(level, text string) {
+	if r.cfg.OnEvent != nil {
+		r.cfg.OnEvent(level, text)
 	}
 }
 

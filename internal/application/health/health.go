@@ -53,9 +53,10 @@ type Report struct {
 	PrintersUp     int            `json:"printers_up"`
 	PrintersDown   int            `json:"printers_down"`
 	LastBackupAt   string         `json:"last_backup_at,omitempty"`
-	System         map[string]any `json:"system,omitempty"` // from HealthFile (sd_errors, throttled, …)
-	Pi             SystemHealth   `json:"pi"`               // System, parsed (throttled bits, staleness)
-	Update         any            `json:"update,omitempty"` // update.Health: versions, update state, last result
+	System         map[string]any `json:"system,omitempty"`  // from HealthFile (sd_errors, throttled, …)
+	Pi             SystemHealth   `json:"pi"`                // System, parsed (throttled bits, staleness)
+	Update         any            `json:"update,omitempty"`  // update.Health: versions, update state, last result
+	Tablets        any            `json:"tablets,omitempty"` // 2.2.0: paired tablets + their Quibase version
 	Problems       []string       `json:"problems,omitempty"`
 }
 
@@ -69,6 +70,8 @@ type Inputs struct {
 	LastBackup   func(ctx context.Context) string
 	// Update is the Pi update block (update.Requester.Health).
 	Update func(ctx context.Context) any
+	// Tablets are the paired tablets with their Quibase version (2.2.0).
+	Tablets func(ctx context.Context) any
 }
 
 type Heartbeat struct {
@@ -203,6 +206,9 @@ func (h *Heartbeat) collect(ctx context.Context) Report {
 	}
 	if h.in.Update != nil {
 		r.Update = h.in.Update(ctx)
+	}
+	if h.in.Tablets != nil {
+		r.Tablets = h.in.Tablets(ctx)
 	}
 	if b, err := os.ReadFile(h.HealthFile); err == nil {
 		var sys map[string]any

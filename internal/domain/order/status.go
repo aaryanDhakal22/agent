@@ -98,6 +98,10 @@ type Status struct {
 	ScheduledLeadMinutes *int64     `json:"scheduled_lead_minutes,omitempty"`
 	RingAt               *time.Time `json:"ring_at,omitempty"`
 	Rerung               bool       `json:"rerung,omitempty"`
+
+	// AutoAccepted (2.2.0): accepted by auto-accept, not by staff (a future
+	// order auto-accepted at its re-ring too). The tablet shows a banner.
+	AutoAccepted bool `json:"auto_accepted,omitempty"`
 }
 
 // Flag is a note the hub puts on an order ("Settle manually: unmapped item X").
