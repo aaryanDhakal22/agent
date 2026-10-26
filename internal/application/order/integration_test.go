@@ -108,6 +108,7 @@ func newIntegService(t *testing.T) (*Service, *repositories.OrderRepository, cha
 			InsertExpected: log.insert && mode == printer.ModeAccept}, nil
 	}
 	svc := NewService(repo, repositories.NewSettingsRepository(db, zerolog.Nop()), print, nil, broker, zerolog.Nop(), meters)
+	noAutoAssign(t, repo)
 	svc.LoadIntegrationSettings(ctx)
 	rpc := &rpcLog{}
 	svc.SetGeo(GeoDeps{Send: rpc.send, Linked: func() bool { return true }})

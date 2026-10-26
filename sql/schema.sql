@@ -59,6 +59,12 @@ CREATE TABLE orders (
     rerung                 boolean NOT NULL DEFAULT false,
     -- 00016_v220: accepted by auto-accept.
     auto_accepted          boolean NOT NULL DEFAULT false,
+    -- 00017_not_delivered: came back with its driver (2.2.1).
+    came_back               boolean NOT NULL DEFAULT false,
+    not_delivered_action    text    NOT NULL DEFAULT '',
+    not_delivered_at        text,
+    not_delivered_driver_id text    NOT NULL DEFAULT '',
+    run_seq                 integer,
     CHECK (state IN ('arrived', 'scheduled', 'accepted', 'ready', 'on_delivery', 'delivered', 'cancelled'))
 );
 CREATE INDEX idx_orders_arrival_date ON orders (arrival_date DESC);
@@ -190,6 +196,8 @@ CREATE TABLE settings (
     nearby_detour_minutes     integer NOT NULL DEFAULT 5,
     nearby_distance_mi        real    NOT NULL DEFAULT 1.0,
     auto_update               boolean NOT NULL DEFAULT true,
+    -- 00017_not_delivered: simple auto-assign to the next driver (2.2.1).
+    auto_assign               boolean NOT NULL DEFAULT true,
     CHECK (id = 1)
 );
 

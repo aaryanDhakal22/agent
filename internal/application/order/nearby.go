@@ -89,7 +89,7 @@ func (s *Service) NextCheck(ctx context.Context, driverID string) (*NextCheck, e
 	soon := now.Add(time.Duration(prefs.SoonReadyMinutes) * time.Minute)
 	var pool, cands []order.StoredOrder
 	for _, so := range open {
-		if so.Status.State != order.StateAccepted && so.Status.State != order.StateReady {
+		if (so.Status.State != order.StateAccepted && so.Status.State != order.StateReady) || so.Status.CameBack {
 			continue
 		}
 		switch so.Status.PoolDriverID {

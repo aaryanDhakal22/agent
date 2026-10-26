@@ -534,7 +534,7 @@ func (s *Server) withCORS(h http.HandlerFunc) http.HandlerFunc {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, "+deviceKeyHeader+", "+quibaseVersionHeader)
-		w.Header().Set("Access-Control-Expose-Headers", "X-Trace-Id")
+		w.Header().Set("Access-Control-Expose-Headers", "X-Trace-Id, "+autoAssignedHeader)
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)
 			return

@@ -348,6 +348,7 @@
               <div class="dlv" role="listitem" :class="{ cooking: so.status.state === 'accepted' }">
                 <span class="num mono" x-text="displayNumber(so)"></span>
                 <span class="tag pos" x-show="isPOS(so)">POS</span>
+                <span class="tag" x-show="!!so.status.came_back" title="Came back with its driver. Release it on the tablet to send it again.">CAME BACK</span>
                 <span class="grow" style="min-width:0"><span style="font-weight:600;display:block" x-text="custName(so.order)"></span><span class="small muted" style="display:block;overflow-wrap:anywhere" x-show="addrLine(so.order)" x-text="addrLine(so.order)"></span></span>
                 <span class="small muted" x-show="so.status.state === 'accepted'">cooking</span>
                 <span class="mono" style="font-weight:700" x-text="moneyLabel(so.order)"></span>

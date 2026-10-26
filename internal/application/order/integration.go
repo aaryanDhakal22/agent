@@ -357,8 +357,25 @@ func (s *Service) UpsertExternal(ctx context.Context, extRef string, in order.Ex
 			}
 		}
 	}
-	if p := in.DriverPosNumber; p != nil && strings.TrimSpace(*p) != "" && strings.TrimSpace(*p) != res.PrevDriverPos {
-		s.mirrorDriver(ctx, so, strings.TrimSpace(*p))
+	pos := ""
+	if p := in.DriverPosNumber; p != nil {
+		pos = strings.TrimSpace(*p)
+	}
+	switch prev := res.PrevDriverPos; {
+	case strings.HasPrefix(prev, order.CameBackMark):
+		// Came back (2.2.1): the POS still showing the driver it came back
+		// from is not mirrored again; once it shows none, any later number
+		// mirrors like a first one.
+		switch {
+		case pos == "":
+			if _, err := s.repo.SetExtDriver(ctx, so.Order.ID, "", ""); err != nil {
+				s.logger.Warn().Ctx(ctx).Err(err).Msg("forget the came-back POS driver number failed")
+			}
+		case pos != strings.TrimPrefix(prev, order.CameBackMark):
+			s.mirrorDriver(ctx, so, pos)
+		}
+	case pos != "" && pos != prev:
+		s.mirrorDriver(ctx, so, pos)
 	}
 	s.feedNotify()
 	return &UpsertResult{OrderID: so.Order.ID, Created: res.Created, Changed: res.Changed}, nil

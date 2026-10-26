@@ -6,7 +6,8 @@
 //
 // The same tick (2.1.0) rings scheduled future orders again once their ring
 // time comes (they then escalate like any waiting order) and notices the
-// store hub going quiet (POS link down).
+// store hub going quiet (POS link down), and (2.2.1) runs the simple
+// auto-assign check.
 package escalation
 
 import (
@@ -28,6 +29,9 @@ type Escalator interface {
 	EscalateOverdue(ctx context.Context, now time.Time, after time.Duration) (int, error)
 	RaiseDue(ctx context.Context, now time.Time) (int, error)
 	CheckIntegrationLink(now time.Time)
+	// AutoAssignTick (2.2.1): the next idle driver gets ready deliveries
+	// (a cooking one crossing into soon-ready included).
+	AutoAssignTick(ctx context.Context)
 }
 
 // Run blocks until ctx is done, checking every 15s.
@@ -47,6 +51,7 @@ func Run(ctx context.Context, svc Escalator, logger zerolog.Logger) {
 				log.Warn().Err(err).Msg("Escalation check failed")
 			}
 			svc.CheckIntegrationLink(now)
+			svc.AutoAssignTick(ctx)
 		}
 	}
 }

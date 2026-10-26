@@ -44,6 +44,46 @@ type Input struct {
 	// Params overrides the tuning constants (the simulator's knob). Omitted
 	// fields keep DefaultParams.
 	Params *Params `json:"params,omitempty"`
+	// Hold is the "far apart: send the first, hold the other for the
+	// returning driver" rule (2.2.1, the store's nearby rule). nil = off.
+	Hold *HoldRule `json:"hold,omitempty"`
+}
+
+// HoldRule (2.2.1): a run may not carry a candidate that is not nearby the
+// run being built — its stops taken oldest-placed first, starting with the
+// oldest — when an out driver's return still gets that order to the door by
+// placed + target (it is held for him instead: Unassigned reason
+// held_for_returning_driver). Not nearby per Rule:
+//
+//   - detour:   the cheapest insertion into store -> kept stops -> store adds
+//     more than DetourMinutes (whole minutes);
+//   - distance: farther than DistanceM (straight line) from every kept stop;
+//   - bundle:   AUTO's own bundling decides (no extra run rule);
+//   - off / "": the rule is off.
+//
+// Pooled orders are never held (staff chose them). A left-over candidate
+// (no_driver) the returning driver can still take in time is reported
+// held_for_returning_driver under any rule but off.
+type HoldRule struct {
+	Rule          string  `json:"rule"`
+	DetourMinutes float64 `json:"detour_minutes"`
+	DistanceM     float64 `json:"distance_m"`
+}
+
+// Hold rules (the agent's nearby_rule values).
+const (
+	HoldDetour   = "detour"
+	HoldDistance = "distance"
+	HoldBundle   = "bundle"
+	HoldOff      = "off"
+)
+
+// HeldFor names the out driver an order is held for (the earliest return
+// that still makes the target).
+type HeldFor struct {
+	DriverID string    `json:"driver_id"`
+	Name     string    `json:"name"`
+	ReturnAt time.Time `json:"return_at"`
 }
 
 // LatLng is a WGS84 point.
@@ -80,6 +120,7 @@ type Driver struct {
 // OutDriver is a driver currently on a run.
 type OutDriver struct {
 	ID       string    `json:"id"`
+	Name     string    `json:"name,omitempty"`
 	ReturnAt time.Time `json:"return_at"`
 }
 
@@ -140,6 +181,8 @@ type Stop struct {
 type Unassigned struct {
 	OrderID string `json:"order_id"`
 	Reason  string `json:"reason"`
+	// HeldFor is set with reason held_for_returning_driver.
+	HeldFor *HeldFor `json:"held_for,omitempty"`
 }
 
 // Unassigned reasons (contract).
@@ -149,4 +192,6 @@ const (
 	ReasonNoDriver      = "no_driver"       // drivers all used (or none available)
 	ReasonNoFeasibleRun = "no_feasible_run" // no driver can take it (only locked pools, none fit)
 	ReasonOverLimit     = "over_limit"      // beyond the MaxCandidates oldest
+	// ReasonHeld (2.2.1): left for a returning driver (Input.Hold), see HeldFor.
+	ReasonHeld = "held_for_returning_driver"
 )

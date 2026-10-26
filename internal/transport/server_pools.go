@@ -103,6 +103,22 @@ func (s *Server) handlePoolTrip(w http.ResponseWriter, r *http.Request) {
 	s.writeJSON(w, http.StatusOK, trip)
 }
 
+// GET /api/drivers/{id}/send-check[?order_ids=a,b] (2.2.1) -> {hold: [...]}.
+func (s *Server) handleSendCheck(w http.ResponseWriter, r *http.Request) {
+	var ids []string
+	for _, part := range strings.Split(r.URL.Query().Get("order_ids"), ",") {
+		if p := strings.TrimSpace(part); p != "" {
+			ids = append(ids, p)
+		}
+	}
+	res, err := s.service.SendCheck(r.Context(), r.PathValue("id"), ids)
+	if err != nil {
+		s.floorErr(w, r, err)
+		return
+	}
+	s.writeJSON(w, http.StatusOK, res)
+}
+
 // POST /api/orders/{id}/pin {lat, lng} -> 202 {} (main answers with order.geo).
 func (s *Server) handlePinOrder(w http.ResponseWriter, r *http.Request) {
 	var req struct {

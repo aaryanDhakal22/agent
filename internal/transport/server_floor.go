@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 
 	"quiccpos/agent/internal/application/appupdate"
@@ -29,6 +30,14 @@ func (s *Server) floorErr(w http.ResponseWriter, r *http.Request, err error) {
 		s.writeJSON(w, http.StatusConflict, map[string]any{"error": err.Error(), "code": "batch_has_leftovers", "leftovers": lo.Orders})
 	case errors.As(err, &nr):
 		s.writeJSON(w, http.StatusConflict, map[string]any{"error": err.Error(), "code": "not_ready", "order_ids": nr.IDs})
+	case errors.Is(err, orderApp.ErrBadAction):
+		s.writeJSON(w, http.StatusBadRequest, errCodeMap("bad_action", "bad_action"))
+	case errors.Is(err, order.ErrNotOutOrDelivered):
+		s.writeJSON(w, http.StatusConflict, errCodeMap("not_out_or_delivered", "not_out_or_delivered"))
+	case errors.Is(err, order.ErrNotCameBack):
+		s.writeJSON(w, http.StatusConflict, errCodeMap("not_came_back", "not_came_back"))
+	case errors.Is(err, order.ErrCameBack):
+		s.writeJSON(w, http.StatusConflict, errCodeMap("came_back", "came_back"))
 	case errors.Is(err, orderApp.ErrNoDrivers):
 		s.writeJSON(w, http.StatusConflict, errCodeMap(err.Error(), "no_drivers"))
 	case errors.Is(err, orderApp.ErrPosPullOff):
@@ -94,6 +103,44 @@ func (s *Server) handleReady(w http.ResponseWriter, r *http.Request) {
 	s.writeJSON(w, http.StatusOK, so)
 }
 
+// POST /api/orders/{id}/not-delivered {action: retry|cancel} (2.2.1). The
+// not-delivered errors answer {"error": code, "code": code}.
+func (s *Server) handleNotDelivered(w http.ResponseWriter, r *http.Request) {
+	id, err := parseID(r)
+	if err != nil {
+		s.writeError(w, r, http.StatusBadRequest, err)
+		return
+	}
+	var req struct {
+		Action string `json:"action"`
+	}
+	if err := decodeBody(r, &req); err != nil {
+		s.floorErr(w, r, err)
+		return
+	}
+	so, err := s.service.NotDelivered(r.Context(), id.String(), req.Action)
+	if err != nil {
+		s.floorErr(w, r, err)
+		return
+	}
+	s.writeJSON(w, http.StatusOK, so)
+}
+
+// POST /api/orders/{id}/release — a came-back order back to the deliveries.
+func (s *Server) handleReleaseCameBack(w http.ResponseWriter, r *http.Request) {
+	id, err := parseID(r)
+	if err != nil {
+		s.writeError(w, r, http.StatusBadRequest, err)
+		return
+	}
+	so, err := s.service.ReleaseCameBack(r.Context(), id.String())
+	if err != nil {
+		s.floorErr(w, r, err)
+		return
+	}
+	s.writeJSON(w, http.StatusOK, so)
+}
+
 // POST /api/deliveries/assign {driver_id, order_ids}
 func (s *Server) handleAssign(w http.ResponseWriter, r *http.Request) {
 	var req struct {
@@ -112,9 +159,13 @@ func (s *Server) handleAssign(w http.ResponseWriter, r *http.Request) {
 	s.writeJSON(w, http.StatusOK, out)
 }
 
-// POST /api/drivers/{id}/returned
+// POST /api/drivers/{id}/returned — the delivered orders (a JSON array, as
+// every Quibase reads it). The simple auto-assign this return triggered
+// (2.2.1) rides in the X-Auto-Assigned-Order-Ids header (comma-separated,
+// only when it pooled something) and, with ?v=2, in an object body
+// {orders, auto_assigned_order_ids}.
 func (s *Server) handleDriverReturned(w http.ResponseWriter, r *http.Request) {
-	out, err := s.service.DriverReturned(r.Context(), r.PathValue("id"))
+	out, assigned, err := s.service.ReturnDriver(r.Context(), r.PathValue("id"))
 	if err != nil {
 		s.floorErr(w, r, err)
 		return
@@ -122,8 +173,21 @@ func (s *Server) handleDriverReturned(w http.ResponseWriter, r *http.Request) {
 	if out == nil {
 		out = []order.StoredOrder{}
 	}
+	if assigned == nil {
+		assigned = []string{}
+	}
+	if len(assigned) > 0 {
+		w.Header().Set(autoAssignedHeader, strings.Join(assigned, ","))
+	}
+	if r.URL.Query().Get("v") == "2" {
+		s.writeJSON(w, http.StatusOK, map[string]any{"orders": out, "auto_assigned_order_ids": assigned})
+		return
+	}
 	s.writeJSON(w, http.StatusOK, out)
 }
+
+// autoAssignedHeader carries the order ids a driver's return auto-assigned.
+const autoAssignedHeader = "X-Auto-Assigned-Order-Ids"
 
 // GET /api/drivers
 func (s *Server) handleListDrivers(w http.ResponseWriter, r *http.Request) {

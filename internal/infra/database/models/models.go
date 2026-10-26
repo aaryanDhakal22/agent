@@ -105,6 +105,11 @@ type Order struct {
 	RingAt               sql.NullString `json:"ring_at"`
 	Rerung               bool           `json:"rerung"`
 	AutoAccepted         bool           `json:"auto_accepted"`
+	CameBack             bool           `json:"came_back"`
+	NotDeliveredAction   string         `json:"not_delivered_action"`
+	NotDeliveredAt       sql.NullString `json:"not_delivered_at"`
+	NotDeliveredDriverID string         `json:"not_delivered_driver_id"`
+	RunSeq               sql.NullInt64  `json:"run_seq"`
 }
 
 type OrderGeo struct {
@@ -192,6 +197,7 @@ type Setting struct {
 	NearbyDetourMinutes    int64   `json:"nearby_detour_minutes"`
 	NearbyDistanceMi       float64 `json:"nearby_distance_mi"`
 	AutoUpdate             bool    `json:"auto_update"`
+	AutoAssign             bool    `json:"auto_assign"`
 }
 
 type StoreConfig struct {

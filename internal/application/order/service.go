@@ -79,6 +79,8 @@ type Service struct {
 	dev atomic.Pointer[devlog.Ring]
 	// onBatchClosed runs after a Close batch (OnBatchClosed).
 	onBatchClosed atomic.Pointer[func(ctx context.Context)]
+	// autoMu: one auto-assign at a time (autoassign.go).
+	autoMu sync.Mutex
 }
 
 func NewService(
@@ -204,7 +206,11 @@ func (s *Service) OnArrival(ctx context.Context, snap order.Snapshot) error {
 // fallback — keeps the order accepted and raises a Pushover instead, since the
 // kitchen already has tickets). prepMinutes nil = the last estimate used.
 func (s *Service) Accept(ctx context.Context, id uuid.UUID, prepMinutes *int) (*order.StoredOrder, error) {
-	return s.accept(ctx, id, prepMinutes, false)
+	so, err := s.accept(ctx, id, prepMinutes, false)
+	if err == nil && so.IsDelivery() {
+		s.autoAssignBG(ctx, "accepted")
+	}
+	return so, err
 }
 
 // AutoAccept is Accept by auto-accept (a new order, a re-rung future order,
@@ -213,7 +219,11 @@ func (s *Service) Accept(ctx context.Context, id uuid.UUID, prepMinutes *int) (*
 // the "accepted automatically" banner at once (never order.arrived, unless
 // nothing printed and the claim was reverted).
 func (s *Service) AutoAccept(ctx context.Context, id uuid.UUID) (*order.StoredOrder, error) {
-	return s.accept(ctx, id, nil, true)
+	so, err := s.accept(ctx, id, nil, true)
+	if err == nil && so.IsDelivery() {
+		s.autoAssignBG(ctx, "accepted")
+	}
+	return so, err
 }
 
 func (s *Service) accept(ctx context.Context, id uuid.UUID, prepMinutes *int, auto bool) (*order.StoredOrder, error) {

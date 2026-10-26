@@ -165,7 +165,7 @@ func (r *OrderRepository) Restore(ctx context.Context, data order.RestoreData) (
 				poolID, pooledAt, poolSeq = sql.NullString{String: st.PoolDriverID, Valid: true}, nullTSPtr(st.PooledAt), nullInt(st.PoolSeq)
 				poolPlan = sql.NullString{String: st.PoolPlanID, Valid: st.PoolPlanID != ""}
 			}
-			if err := q.RestoreOrder(ctx, models.RestoreOrderParams{
+			p := models.RestoreOrderParams{
 				ID: snap.ID, TenantID: snap.TenantID, LocationID: snap.LocationID, Source: snap.Source,
 				SourceEventID: snap.SourceEventID, Snapshot: string(raw), State: string(st.State),
 				ArrivalDate: fmtTS(st.ArrivalDate), PrintedDate: nullTSPtr(st.PrintedDate), BatchID: batchID,
@@ -175,7 +175,12 @@ func (r *OrderRepository) Restore(ctx context.Context, data order.RestoreData) (
 				DriverID: driverID, DriverName: st.DriverName, CancelledAt: nullTSPtr(st.CancelledAt),
 				PoolDriverID: poolID, PooledAt: pooledAt, PoolSeq: poolSeq, PoolPlanID: poolPlan,
 				ScheduledLeadMinutes: nullInt(st.ScheduledLeadMinutes), RingAt: nullTSPtr(st.RingAt), Rerung: st.Rerung,
-			}); err != nil {
+				CameBack: st.CameBack && st.State == order.StateReady, RunSeq: nullInt(st.RunSeq),
+			}
+			if nd := st.NotDelivered; nd != nil {
+				p.NotDeliveredAction, p.NotDeliveredAt, p.NotDeliveredDriverID = nd.Action, nullTSPtr(&nd.At), nd.DriverID
+			}
+			if err := q.RestoreOrder(ctx, p); err != nil {
 				return fmt.Errorf("restore order %s: %w", snap.ID, err)
 			}
 			res.Orders++

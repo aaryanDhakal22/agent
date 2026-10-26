@@ -376,13 +376,14 @@ func (s *Snapshot) WipePII() {
 
 // Feed event types (integration_events.type).
 const (
-	FeedOrderAccepted    = "order.accepted"
-	FeedRunSent          = "run.sent"
-	FeedOrderReady       = "order.ready"
-	FeedAddressConfirmed = "address.confirmed"
-	FeedOrderCancelled   = "order.cancelled"
-	FeedSettingsChanged  = "settings.changed"
-	FeedBatchClosed      = "batch.closed"
+	FeedOrderAccepted     = "order.accepted"
+	FeedRunSent           = "run.sent"
+	FeedOrderReady        = "order.ready"
+	FeedAddressConfirmed  = "address.confirmed"
+	FeedOrderCancelled    = "order.cancelled"
+	FeedSettingsChanged   = "settings.changed"
+	FeedBatchClosed       = "batch.closed"
+	FeedOrderNotDelivered = "order.not_delivered"
 )
 
 // FeedRetention is how long feed events are kept.
@@ -443,6 +444,24 @@ type AddressConfirmedData struct {
 	Lat     float64           `json:"lat"`
 	Lng     float64           `json:"lng"`
 }
+
+// OrderNotDeliveredData is an order.not_delivered event (2.2.1): a delivery
+// came back with its driver. The hub clears that driver off the POS check
+// (ext_ref) when the POS still shows them; driver_pos_number is null when
+// the driver has none.
+type OrderNotDeliveredData struct {
+	FeedOrderRef
+	Action          string  `json:"action"` // retry | cancel
+	DriverID        string  `json:"driver_id"`
+	DriverName      string  `json:"driver_name"`
+	DriverPosNumber *string `json:"driver_pos_number"`
+}
+
+// CameBackMark prefixes a came-back POS order's remembered driver number
+// (orders.ext_driver_pos = "!" + the number it came back from): the POS
+// still showing that number is not mirrored again; once the POS shows no
+// driver the memory is cleared, so any later assignment mirrors.
+const CameBackMark = "!"
 
 // BatchClosedData is a batch.closed event.
 type BatchClosedData struct {

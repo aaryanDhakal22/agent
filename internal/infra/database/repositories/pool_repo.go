@@ -85,6 +85,9 @@ func poolInTx(ctx context.Context, q *models.Queries, ids []string, driverID str
 		if !poolable(so) {
 			return nil, fmt.Errorf("order %s (%s): %w", id, so.Status.State, order.ErrInvalidState)
 		}
+		if so.Status.CameBack && driverID != "" {
+			return nil, fmt.Errorf("order %s: %w", id, order.ErrCameBack)
+		}
 		list = append(list, so)
 	}
 	out := make([]order.StoredOrder, 0, len(list))
@@ -159,6 +162,20 @@ func (r *OrderRepository) SendOut(ctx context.Context, driverID string, include 
 		}
 		if len(include) > 0 {
 			if _, err := poolInTx(ctx, q, include, d.ID, now); err != nil {
+				return err
+			}
+		}
+		for _, id := range dedupe(meta.Exclude) { // left behind: back to unassigned
+			so, err := loadOrder(ctx, q, id)
+			switch {
+			case errors.Is(err, order.ErrNotFound):
+				continue
+			case err != nil:
+				return err
+			case so.Status.PoolDriverID != d.ID:
+				continue
+			}
+			if _, err := setPool(ctx, q, so, "", "", now); err != nil {
 				return err
 			}
 		}
@@ -277,6 +294,19 @@ func recordDeliveryRun(ctx context.Context, q *models.Queries, d models.Driver, 
 		BatchID: sent[0].Status.BatchID, DriverID: d.ID, DriverName: d.Name, PlanID: meta.PlanID,
 		SuggestedIDs: suggested,
 		Stops:        order.EstimateStops(ids, meta.StopOrder, now, storeTo, times),
+	}
+	// The run's stop order is kept on the orders (run_seq, the tablet's
+	// address list under a driver who is out) and on the caller's sent list.
+	for i, st := range ev.Stops {
+		seq := int64(i + 1)
+		if err := q.SetRunSeq(ctx, models.SetRunSeqParams{RunSeq: sql.NullInt64{Int64: seq, Valid: true}, ID: st.OrderID}); err != nil {
+			return fmt.Errorf("set run seq: %w", err)
+		}
+		for j := range sent {
+			if sent[j].Order.ID == st.OrderID {
+				sent[j].Status.RunSeq = &seq
+			}
+		}
 	}
 	// POS stops reach main anonymous: an opaque id and times, never the
 	// order id, a name or an address.
@@ -530,6 +560,19 @@ func (r *OrderRepository) GetAutoPlan(ctx context.Context, id string) (raw []byt
 	return []byte(row.PlanJson), nil
 }
 
+// LatestAutoPlan — see order.PoolRepository.
+func (r *OrderRepository) LatestAutoPlan(ctx context.Context) (createdAt time.Time, confirmed bool, err error) {
+	row, err := models.New(r.db).GetLatestAutoPlan(ctx)
+	if errors.Is(err, sql.ErrNoRows) {
+		return time.Time{}, false, nil
+	}
+	if err != nil {
+		return time.Time{}, false, err
+	}
+	at, err := parseTS(row.CreatedAt)
+	return at, row.ConfirmedAt.Valid, err
+}
+
 // ConfirmAutoPlan — see order.PoolRepository. Each suggestion is checked on
 // its own (one sent meanwhile doesn't block the rest).
 func (r *OrderRepository) ConfirmAutoPlan(ctx context.Context, id string, runs []order.PlanRun, at time.Time) (applied []order.StoredOrder, skipped []order.PoolSkip, err error) {
@@ -559,6 +602,9 @@ func (r *OrderRepository) ConfirmAutoPlan(ctx context.Context, id string, runs [
 				case !poolable(so):
 					skipped = append(skipped, order.PoolSkip{OrderID: oid, Reason: order.SkipInvalidState})
 					continue
+				case so.Status.CameBack:
+					skipped = append(skipped, order.PoolSkip{OrderID: oid, Reason: order.SkipCameBack})
+					continue
 				case so.Status.PoolDriverID != "":
 					skipped = append(skipped, order.PoolSkip{OrderID: oid, Reason: order.SkipAlreadyPooled})
 					continue
@@ -586,13 +632,15 @@ func (r *OrderRepository) DeliveryPrefs(ctx context.Context) (order.DeliveryPref
 		return order.DefaultDeliveryPrefs, err
 	}
 	return order.DeliveryPrefs{SoonReadyMinutes: row.SoonReadyMinutes, DeliveryTargetMinutes: row.DeliveryTargetMinutes,
-		NearbyRule: row.NearbyRule, NearbyDetourMinutes: row.NearbyDetourMinutes, NearbyDistanceMi: row.NearbyDistanceMi}, nil
+		NearbyRule: row.NearbyRule, NearbyDetourMinutes: row.NearbyDetourMinutes, NearbyDistanceMi: row.NearbyDistanceMi,
+		AutoAssign: row.AutoAssign}, nil
 }
 
 func (r *OrderRepository) SetDeliveryPrefs(ctx context.Context, p order.DeliveryPrefs) error {
 	return models.New(r.db).SetDeliveryPrefs(ctx, models.SetDeliveryPrefsParams{
 		SoonReadyMinutes: p.SoonReadyMinutes, DeliveryTargetMinutes: p.DeliveryTargetMinutes,
-		NearbyRule: p.NearbyRule, NearbyDetourMinutes: p.NearbyDetourMinutes, NearbyDistanceMi: p.NearbyDistanceMi})
+		NearbyRule: p.NearbyRule, NearbyDetourMinutes: p.NearbyDetourMinutes, NearbyDistanceMi: p.NearbyDistanceMi,
+		AutoAssign: p.AutoAssign})
 }
 
 // --- store map file (settings.map_file) ----------------------------------------

@@ -186,6 +186,11 @@ func (r *OrderRepository) AssignDriver(ctx context.Context, driverID string, ord
 		if err != nil {
 			return err
 		}
+		for _, id := range orderIDs { // a came-back order waits for its release
+			if so, err := loadOrder(ctx, q, id); err == nil && so.Status.CameBack {
+				return fmt.Errorf("order %s: %w", id, order.ErrCameBack)
+			}
+		}
 		if out, err = sendRun(ctx, q, d, orderIDs, now); err != nil {
 			return err
 		}
@@ -303,6 +308,27 @@ func (r *OrderRepository) CloseBatch(ctx context.Context, force bool) (closed *o
 					return err
 				}
 				if err := feedCancelled(ctx, q, fresh, now); err != nil {
+					return err
+				}
+				finished = append(finished, fresh)
+				continue
+			}
+			if so.Status.CameBack {
+				// Came back with its driver and nobody took it out again: it
+				// never reached the customer — cancelled, not auto-delivered
+				// (main gets it as a not-delivered cancel).
+				if _, err := q.CancelCameBack(ctx, models.CancelCameBackParams{CancelledAt: ts, ID: row.ID}); err != nil {
+					return err
+				}
+				fresh, err := loadOrder(ctx, q, row.ID)
+				if err != nil {
+					return err
+				}
+				fromID := ""
+				if nd := fresh.Status.NotDelivered; nd != nil {
+					fromID = nd.DriverID
+				}
+				if err := recordNotDelivered(ctx, q, fresh, order.NotDeliveredCancel, fromID, "", true, now); err != nil {
 					return err
 				}
 				finished = append(finished, fresh)
@@ -526,6 +552,14 @@ func (r *OrderRepository) ListDrivers(ctx context.Context) (out []order.Driver, 
 	if err != nil {
 		return nil, err
 	}
+	runs := map[string][]string{} // driver -> its run that is out, in stop order
+	stops, err := q.ListRunStops(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for _, st := range stops {
+		runs[st.DriverID.String] = append(runs[st.DriverID.String], st.ID)
+	}
 	clockedIn := map[string]string{}
 	for _, sh := range open {
 		clockedIn[sh.DriverID] = sh.ClockIn
@@ -540,8 +574,12 @@ func (r *OrderRepository) ListDrivers(ctx context.Context) (out []order.Driver, 
 		if err != nil {
 			return nil, err
 		}
-		out = append(out, order.Driver{ID: d.ID, Name: d.Name, Position: d.Position, Status: d.Status,
-			LastReturnedAt: ret, Deliveries: counts[d.ID], ClockedInAt: in, PosNumber: d.PosNumber})
+		dr := order.Driver{ID: d.ID, Name: d.Name, Position: d.Position, Status: d.Status,
+			LastReturnedAt: ret, Deliveries: counts[d.ID], ClockedInAt: in, PosNumber: d.PosNumber}
+		if d.Status == order.DriverOut {
+			dr.RunOrderIDs = runs[d.ID]
+		}
+		out = append(out, dr)
 	}
 	return out, nil
 }

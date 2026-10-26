@@ -10,6 +10,9 @@ import (
 )
 
 type Querier interface {
+	// Close batch: a came-back order nobody took out again never reached the
+	// customer - cancelled (not auto-delivered).
+	CancelCameBack(ctx context.Context, arg CancelCameBackParams) (int64, error)
 	// A void at the POS (or Close batch): cancelled, out of any pool. A delivered
 	// order stays delivered (its driver collected it).
 	CancelExternalOrder(ctx context.Context, arg CancelExternalOrderParams) (int64, error)
@@ -30,6 +33,7 @@ type Querier interface {
 	CountAllDrivers(ctx context.Context) (int64, error)
 	CountAllOrders(ctx context.Context) (int64, error)
 	CountDeliveriesInBatch(ctx context.Context, batchID int64) ([]CountDeliveriesInBatchRow, error)
+	CountOnDeliveryByDriver(ctx context.Context, driverID sql.NullString) (int64, error)
 	// Pi updates (2.0.6) ----------------------------------------------------------
 	CountOpenBatchOrders(ctx context.Context) (CountOpenBatchOrdersRow, error)
 	// Metrics: floor.orders.open (open batch, by state and online/POS; POS
@@ -70,6 +74,8 @@ type Querier interface {
 	GetIntegrationStatus(ctx context.Context) (string, error)
 	GetLastBackup(ctx context.Context) (string, error)
 	GetLastReturn(ctx context.Context) (GetLastReturnRow, error)
+	// Auto-assign waits while an AUTO preview may be on a tablet.
+	GetLatestAutoPlan(ctx context.Context) (GetLatestAutoPlanRow, error)
 	GetLinkInfo(ctx context.Context) (GetLinkInfoRow, error)
 	GetMapFile(ctx context.Context) (string, error)
 	// Batches -------------------------------------------------------------------
@@ -129,6 +135,8 @@ type Querier interface {
 	ListPoolByDriver(ctx context.Context, poolDriverID sql.NullString) ([]Order, error)
 	// Printer MACs (2.0.6) --------------------------------------------------------
 	ListPrinterMACs(ctx context.Context) ([]PrinterMac, error)
+	// Every driver's run that is out, stops in run order.
+	ListRunStops(ctx context.Context) ([]ListRunStopsRow, error)
 	// Driver report: shifts that overlap a batch window (opened_at .. closed_at).
 	ListShiftsOverlapping(ctx context.Context, arg ListShiftsOverlappingParams) ([]DriverShift, error)
 	ListShiftsSince(ctx context.Context, clockIn string) ([]DriverShift, error)
@@ -137,7 +145,13 @@ type Querier interface {
 	MarkDelivered(ctx context.Context, arg MarkDeliveredParams) (int64, error)
 	MarkFloorEventFailed(ctx context.Context, arg MarkFloorEventFailedParams) error
 	MarkFloorEventSynced(ctx context.Context, arg MarkFloorEventSyncedParams) error
-	// Leaving with a driver empties the order's pool slot.
+	// 2.2.1: a delivery that came back with its driver leaves the run. retry =
+	// ready again with no driver, held aside (came_back) until released; cancel =
+	// cancelled. Either way no driver, no pool, no out / delivered time, so it
+	// counts on no driver report.
+	MarkNotDelivered(ctx context.Context, arg MarkNotDeliveredParams) (int64, error)
+	// Leaving with a driver empties the order's pool slot (and ends a came-back
+	// hold: only the POS mirror sends a came-back order out).
 	MarkOnDelivery(ctx context.Context, arg MarkOnDeliveryParams) (int64, error)
 	MarkReady(ctx context.Context, arg MarkReadyParams) (int64, error)
 	MaxIntegrationSeq(ctx context.Context) (int64, error)
@@ -149,12 +163,16 @@ type Querier interface {
 	NextDriverPosition(ctx context.Context) (int64, error)
 	// Allocates a kitchen number: returns the post-increment value (caller subtracts 1).
 	NextKitchenNumber(ctx context.Context) (int64, error)
+	// A stop joining a run that is out goes last.
+	NextRunSeq(ctx context.Context, driverID sql.NullString) (int64, error)
 	OpenBatch(ctx context.Context, openedAt string) (Batch, error)
 	// Driver shifts ----------------------------------------------------------------
 	OpenShift(ctx context.Context, arg OpenShiftParams) error
 	// ring_at passed: it rings again like a new order. last_alert_at starts the
 	// 2-minute escalation from now, not from the first arrival.
 	RaiseScheduled(ctx context.Context, arg RaiseScheduledParams) (int64, error)
+	// A came-back order is released: a normal unassigned ready delivery again.
+	ReleaseCameBack(ctx context.Context, id string) (int64, error)
 	RenameDriver(ctx context.Context, arg RenameDriverParams) (int64, error)
 	RenamePairedDevice(ctx context.Context, arg RenamePairedDeviceParams) (int64, error)
 	// Close batch: drivers out on a run are back in the queue (clocked-out stay off).
@@ -209,6 +227,7 @@ type Querier interface {
 	SetPoolSeq(ctx context.Context, arg SetPoolSeqParams) (int64, error)
 	SetPosCheckNumber(ctx context.Context, arg SetPosCheckNumberParams) error
 	SetReceiptPrefs(ctx context.Context, receiptPrefs string) error
+	SetRunSeq(ctx context.Context, arg SetRunSeqParams) error
 	SetSessionSecret(ctx context.Context, sessionSecret string) error
 	SetStoreAPIKey(ctx context.Context, storeApiKey string) error
 	SetUIPassword(ctx context.Context, arg SetUIPasswordParams) error

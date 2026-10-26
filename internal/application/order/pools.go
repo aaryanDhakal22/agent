@@ -250,6 +250,9 @@ type SendOutRequest struct {
 	MarkReady bool     `json:"mark_ready"`
 	Include   []string `json:"include_order_ids"`
 	PlanID    string   `json:"plan_id"`
+	// Exclude (2.2.1): pool orders that stay behind, back to unassigned
+	// (staff took the send-check's hold advice).
+	Exclude []string `json:"exclude_order_ids"`
 }
 
 // SendOut sends the driver out with their pool (plus Include), like
@@ -260,7 +263,7 @@ func (s *Service) SendOut(ctx context.Context, driverID string, req SendOutReque
 		attribute.Bool("mark_ready", req.MarkReady), attribute.String("plan.id", req.PlanID))
 	defer span.End()
 
-	meta := order.RunMeta{PlanID: req.PlanID}
+	meta := order.RunMeta{PlanID: req.PlanID, Exclude: req.Exclude}
 	pool := s.poolOf(ctx, driverID)
 	if req.PlanID != "" { // Send Out while AUTO's yellow stops show
 		if plan, err := s.loadPlan(ctx, req.PlanID); err == nil {
@@ -302,6 +305,13 @@ func (s *Service) SendOut(ctx context.Context, driverID string, req SendOutReque
 	s.floorChanged()
 	for _, so := range sent {
 		s.publishUpdated(so)
+	}
+	for _, id := range req.Exclude { // left behind, unassigned
+		if uid, err := uuid.Parse(id); err == nil {
+			if so, err := s.repo.GetByID(ctx, uid); err == nil && so.Status.State != order.StateOnDelivery {
+				s.publishUpdated(*so)
+			}
+		}
 	}
 	// An include may have taken orders out of another driver's pool.
 	for _, so := range s.resequencePools(ctx, nil) {
@@ -688,6 +698,9 @@ func (s *Service) planInput(ctx context.Context, now time.Time) (*dispatch.Input
 	if store, _ := s.floorGeo(); store != nil {
 		in.Store = &dispatch.LatLng{Lat: store.Lat, Lng: store.Lng}
 	}
+	// 2.2.1: far apart, send the first and hold the other for a returning
+	// driver — by the store's nearby rule (off = no hold).
+	in.Hold = holdRule(prefs)
 
 	available := map[string]bool{}
 	for _, d := range drivers { // queue order (position)
@@ -710,6 +723,9 @@ func (s *Service) planInput(ctx context.Context, now time.Time) (*dispatch.Input
 		case order.StateAccepted, order.StateReady:
 		default:
 			continue
+		}
+		if so.Status.CameBack {
+			continue // held until staff release it (2.2.1)
 		}
 		if so.Status.PoolDriverID != "" {
 			if !available[so.Status.PoolDriverID] {
@@ -734,7 +750,7 @@ func (s *Service) planInput(ctx context.Context, now time.Time) (*dispatch.Input
 			}
 			in.Drivers = append(in.Drivers, dispatch.Driver{ID: d.ID, Name: d.Name, Pool: ids})
 		case order.DriverOut:
-			in.OutDrivers = append(in.OutDrivers, dispatch.OutDriver{ID: d.ID, ReturnAt: s.estimateReturn(ctx, outRuns[d.ID], now)})
+			in.OutDrivers = append(in.OutDrivers, dispatch.OutDriver{ID: d.ID, Name: d.Name, ReturnAt: s.estimateReturn(ctx, outRuns[d.ID], now)})
 		}
 	}
 	pairs, err := s.repo.DriveTimes(ctx, ids)

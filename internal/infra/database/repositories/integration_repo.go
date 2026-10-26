@@ -362,6 +362,10 @@ func (r *OrderRepository) MirrorJoinRun(ctx context.Context, driverID, orderID s
 		if readied, err = readyForRun(ctx, q, orderID, now); err != nil {
 			return err
 		}
+		seq, err := q.NextRunSeq(ctx, sql.NullString{String: d.ID, Valid: true})
+		if err != nil {
+			return err
+		}
 		n, err := q.MarkOnDelivery(ctx, models.MarkOnDeliveryParams{OutAt: nullTS(now),
 			DriverID: sql.NullString{String: d.ID, Valid: true}, DriverName: d.Name, ID: orderID})
 		if err != nil {
@@ -369,6 +373,9 @@ func (r *OrderRepository) MirrorJoinRun(ctx context.Context, driverID, orderID s
 		}
 		if n == 0 {
 			return fmt.Errorf("order %s: %w", orderID, order.ErrInvalidState)
+		}
+		if err := q.SetRunSeq(ctx, models.SetRunSeqParams{RunSeq: sql.NullInt64{Int64: seq, Valid: true}, ID: orderID}); err != nil {
+			return err
 		}
 		if fresh, err = loadOrder(ctx, q, orderID); err != nil {
 			return err

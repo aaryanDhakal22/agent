@@ -37,6 +37,7 @@ type DeliveryPatch struct {
 	NearbyDetourMinutes   *int64   `json:"nearby_detour_minutes"`
 	NearbyDistanceMi      *float64 `json:"nearby_distance_mi"`
 	DeliveryRadiusM       *int64   `json:"delivery_radius_m"`
+	AutoAssign            *bool    `json:"auto_assign"`
 }
 
 // DeliverySettings is the full settings object PUT answers with.
@@ -81,6 +82,9 @@ func (s *Service) UpdateDeliverySettings(ctx context.Context, p DeliveryPatch) (
 	if p.NearbyDistanceMi != nil {
 		next.NearbyDistanceMi = *p.NearbyDistanceMi
 	}
+	if p.AutoAssign != nil {
+		next.AutoAssign = *p.AutoAssign
+	}
 	if err := next.Validate(); err != nil {
 		return nil, spanErr(span, fmt.Errorf("%w: %w", ErrBadRequest, err))
 	}
@@ -99,6 +103,9 @@ func (s *Service) UpdateDeliverySettings(ctx context.Context, p DeliveryPatch) (
 	}
 	if s.broker != nil {
 		s.broker.PublishFloorChanged()
+	}
+	if next.AutoAssign && !cur.AutoAssign {
+		s.autoAssignBG(ctx) // switched on: an idle driver may get orders now
 	}
 	out := s.DeliverySettings(ctx)
 	if p.DeliveryRadiusM != nil {

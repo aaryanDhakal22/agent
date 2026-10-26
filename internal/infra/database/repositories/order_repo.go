@@ -235,6 +235,19 @@ func toStored(row models.Order) (order.StoredOrder, error) {
 	st.DisplayNumber = optInt(row.DisplayNumber)
 	st.Paid, st.BoardHidden, st.LocalOnly, st.Rerung = row.Paid, row.BoardHidden, row.LocalOnly, row.Rerung
 	st.AutoAccepted = row.AutoAccepted
+	st.CameBack = row.CameBack
+	st.RunSeq = optInt(row.RunSeq)
+	if row.NotDeliveredAction != "" {
+		at, err := optTS(row.NotDeliveredAt)
+		if err != nil {
+			return order.StoredOrder{}, fmt.Errorf("parse not_delivered_at for order %s: %w", row.ID, err)
+		}
+		nd := &order.NotDelivered{Action: row.NotDeliveredAction, DriverID: row.NotDeliveredDriverID}
+		if at != nil {
+			nd.At = at.UTC()
+		}
+		st.NotDelivered = nd
+	}
 	st.PosCheckNumber = optInt(row.PosCheckNumber)
 	st.PosDriverNote = row.PosDriverNote
 	st.ScheduledLeadMinutes = optInt(row.ScheduledLeadMinutes)

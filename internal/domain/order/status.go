@@ -102,6 +102,31 @@ type Status struct {
 	// AutoAccepted (2.2.0): accepted by auto-accept, not by staff (a future
 	// order auto-accepted at its re-ring too). The tablet shows a banner.
 	AutoAccepted bool `json:"auto_accepted,omitempty"`
+
+	// Not delivered (2.2.1): the driver came back with the food. CameBack
+	// holds a retried order aside (ready, no driver, no pool) until staff
+	// release it; NotDelivered is the last such action (kept after release
+	// and on a cancelled order).
+	CameBack     bool          `json:"came_back,omitempty"`
+	NotDelivered *NotDelivered `json:"not_delivered,omitempty"`
+	// RunSeq is a sent order's stop number on its driver's run (1..n, the
+	// run's stop order; a stop joining the run goes last). Set while
+	// on_delivery and kept once delivered.
+	RunSeq *int64 `json:"run_seq,omitempty"`
+}
+
+// Not-delivered actions (POST /api/orders/{id}/not-delivered).
+const (
+	NotDeliveredRetry  = "retry"
+	NotDeliveredCancel = "cancel"
+)
+
+// NotDelivered records a delivery that came back: the action staff chose,
+// when, and the driver it came back from.
+type NotDelivered struct {
+	Action   string    `json:"action"` // retry | cancel
+	At       time.Time `json:"at"`
+	DriverID string    `json:"driver_id"`
 }
 
 // Flag is a note the hub puts on an order ("Settle manually: unmapped item X").
@@ -125,6 +150,15 @@ func (so StoredOrder) OrderID() uuid.UUID { return so.Order.MustParseID() }
 
 var ErrNotFound = fmt.Errorf("order not found")
 var ErrAlreadyAccepted = fmt.Errorf("order already accepted")
+
+// Not delivered (2.2.1): the order is not out with a driver or delivered in
+// the open batch (or not a delivery); release on an order that isn't held as
+// came back; a came-back order can't be pooled or sent until released.
+var (
+	ErrNotOutOrDelivered = fmt.Errorf("order is not out with a driver or delivered in the open batch")
+	ErrNotCameBack       = fmt.Errorf("order is not in the came-back list")
+	ErrCameBack          = fmt.Errorf("order came back with its driver: release it first")
+)
 
 // ErrInvalidState is returned when a floor transition doesn't apply to the
 // order's current state (e.g. Ready on an order that isn't accepted, or a
