@@ -59,16 +59,16 @@ func TestSpacing_WhereTheFeedsGo(t *testing.T) {
 	im, mm, ii := feedDots(8), feedDots(4), feedDots(12)
 	for _, want := range []string{
 		"1 Pepperoni Pizza\n" + cmdBaseSz + cmdBoldOff + im + "  - Extra cheese\n" + mm + "  - Onions\n",
-		"1 Garlic Knots\n" + cmdBaseSz + cmdBoldOff + ii + cmdBoldOn, // no modifiers → item→item
+		"1 Garlic Knots\n" + cmdBaseSz + cmdBoldOff + ii + cmdBoldOn, // item→item
 		"1 Cheese Pizza\n" + cmdBaseSz + cmdBoldOff + im + "  - Well done\n",
 	} {
 		if !strings.Contains(s, want) {
 			t.Errorf("missing %q in %q", want, s)
 		}
 	}
-	// After an item WITH modifiers there's no item→item feed.
-	if strings.Contains(s, "  - Onions\n"+ii) {
-		t.Error("item→item applies only after an item with no modifiers")
+	// After an item WITH modifiers the item→item feed comes too (owner, 2026-10-26).
+	if !strings.Contains(s, "  - Onions\n"+ii) {
+		t.Error("item→item applies after an item with modifiers as well")
 	}
 	if feedDots(0) != "" || feedDots(8) != "\x1b\x4a\x08" {
 		t.Error("feedDots")

@@ -244,8 +244,8 @@ func buildFull(snap order.Snapshot, sc storeconfig.StoreContext, reroutedFrom st
 
 	sp := prefs.Spacing
 	for i, item := range snap.Items {
-		if i > 0 && len(snap.Items[i-1].Children) == 0 {
-			w(feedDots(sp.ItemItem)) // after an item with no modifiers
+		if i > 0 {
+			w(feedDots(sp.ItemItem)) // between items, with or without modifiers
 		}
 		w(separator())
 		nl()
@@ -438,8 +438,8 @@ func buildStation(snap order.Snapshot, t printer.Ticket, prefs order.ReceiptPref
 	// --- This station's items ----------------------------------------------
 	sp := prefs.Spacing
 	for i, it := range t.Mine {
-		if i > 0 && len(t.Mine[i-1].Children) == 0 {
-			w(feedDots(sp.ItemItem)) // after an item with no modifiers
+		if i > 0 {
+			w(feedDots(sp.ItemItem)) // between items, with or without modifiers
 		}
 		w(cmdBoldOn)
 		w(textSize(prefs.KitchenItemSize))
