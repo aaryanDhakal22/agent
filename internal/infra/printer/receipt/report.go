@@ -84,6 +84,20 @@ func BuildDriverReport(rep order.DriverReport, sc storeconfig.StoreContext, rero
 			w("  Tip " + dollars(l.TipCents))
 			nl()
 		}
+		if l.Note != "" { // 2.2.3: how it matched the POS
+			w("  * " + truncRunes(l.Note, lineWidth-4))
+			nl()
+		}
+	}
+	if len(rep.Notes) > 0 {
+		w(separator())
+		nl()
+	}
+	for _, n := range rep.Notes {
+		for _, line := range wordWrap("* "+n, lineWidth, "  ") {
+			w(line)
+			nl()
+		}
 	}
 
 	// --- Totals -----------------------------------------------------------
@@ -115,6 +129,25 @@ func BuildDriverReport(rep order.DriverReport, sc storeconfig.StoreContext, rero
 	w(cmdBaseSz)
 	w(cmdBoldOff)
 	nl()
+	if p := rep.POS; p != nil { // 2.2.3: was it checked against the POS?
+		if p.Checked {
+			pos := "POS checked"
+			if p.AsOf != nil {
+				pos += " " + p.AsOf.In(loc).Format("3:04 PM")
+			}
+			w(pos)
+			nl()
+		} else {
+			w(cmdBoldOn)
+			w("POS NOT CHECKED")
+			w(cmdBoldOff)
+			nl()
+			if p.Note != "" {
+				w(truncRunes(p.Note, lineWidth))
+				nl()
+			}
+		}
+	}
 	w("Printed " + printedAt.In(loc).Format("Jan 2 3:04 PM"))
 	nl()
 

@@ -119,17 +119,10 @@ func (s *Service) UndoReturn(ctx context.Context, driverID string) (*order.Drive
 	return d, nil
 }
 
-// DriverReports returns the finished driver reports of a batch (0 = open).
+// DriverReports returns the finished driver reports of a batch (0 = open),
+// merged with the store hub's POS driver ledger as it is now (2.2.3).
 func (s *Service) DriverReports(ctx context.Context, batchID int64) ([]order.DriverReport, error) {
-	reps, err := s.repo.DriverReports(ctx, batchID)
-	if err != nil {
-		return nil, err
-	}
-	tax := s.FloorPrefs(ctx).TipTaxBps
-	for i := range reps {
-		reps[i].Finish(tax)
-	}
-	return reps, nil
+	return s.mergedReports(ctx, batchID, nil)
 }
 
 // ReportPrint is the outcome of printing one driver's slip.
@@ -144,12 +137,16 @@ type ReportPrint struct {
 func (s *Service) PrintDriverReports(ctx context.Context, batchID int64) ([]ReportPrint, error) {
 	ctx, span := s.span(ctx, "batch.driver_reports.print", attribute.Int64("batch.id", batchID))
 	defer span.End()
-	if s.printDoc == nil || s.buildReport == nil {
-		return nil, spanErr(span, fmt.Errorf("driver report printing is not configured"))
+	if !s.CanPrintReports() {
+		return nil, spanErr(span, ErrPrintingUnavailable)
 	}
+	s.RefreshLedger(ctx) // a fresh POS ledger first (2.2.3)
 	reps, err := s.DriverReports(ctx, batchID)
 	if err != nil {
 		return nil, spanErr(span, err)
+	}
+	if extra := ledgerNote(reps); extra != "" {
+		s.logger.Info().Ctx(ctx).Int64("batch", batchID).Str("pos_only", extra).Msg("Driver reports: POS-only deliveries added")
 	}
 	out := make([]ReportPrint, 0, len(reps))
 	var failed []string

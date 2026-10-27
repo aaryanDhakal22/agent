@@ -415,6 +415,13 @@ func readyForRun(ctx context.Context, q *models.Queries, id string, now time.Tim
 
 // --- the feed ------------------------------------------------------------------
 
+// AppendFeed — see order.IntegrationRepository.
+func (r *OrderRepository) AppendFeed(ctx context.Context, typ string, at time.Time, data any) (err error) {
+	ctx, _, end := dbSpan(ctx, "integration_events.append")
+	defer end(&err)
+	return insertFeed(ctx, models.New(r.db), typ, at, data)
+}
+
 // ListFeed — see order.IntegrationRepository.
 func (r *OrderRepository) ListFeed(ctx context.Context, after int64, limit int) (out []order.FeedEvent, maxSeq int64, err error) {
 	ctx, _, end := dbSpan(ctx, "integration_events.list")

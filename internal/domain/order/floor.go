@@ -209,6 +209,12 @@ type DriverReport struct {
 	TipTaxBps        int64              `json:"tip_tax_bps"`
 	TipAfterTaxCents int64              `json:"tip_after_tax_cents"`
 	OwedCents        int64              `json:"owed_cents"`
+	// 2.2.3: the driver's Driver # (also on a POS driver Quibase doesn't
+	// know: DriverID ""), whether the report was checked against the POS
+	// ledger (nil = the store has no POS hub) and notes for the slip.
+	DriverPosNumber string     `json:"driver_pos_number,omitempty"`
+	POS             *ReportPOS `json:"pos,omitempty"`
+	Notes           []string   `json:"notes,omitempty"`
 }
 
 // DriverReportLine is one delivery on a driver report.
@@ -224,6 +230,13 @@ type DriverReportLine struct {
 	CashCents     int64      `json:"cash_cents"` // collected in cash less its tip (0 for card)
 	TotalCents    int64      `json:"total_cents"`
 	DeliveredAt   *time.Time `json:"delivered_at,omitempty"`
+	// 2.2.3: the POS check (POS orders), when it went out, how it matched
+	// the POS ledger (MatchBoth / MatchPOSOnly / MatchQuibaseOnly; "" =
+	// online, or not checked) and a short note for the slip.
+	ExtRef string     `json:"ext_ref,omitempty"`
+	OutAt  *time.Time `json:"out_at,omitempty"`
+	Match  string     `json:"match,omitempty"`
+	Note   string     `json:"note,omitempty"`
 }
 
 // NewDriverReportLine builds a report line from a delivered order. Card-paid
@@ -240,6 +253,8 @@ func NewDriverReportLine(so StoredOrder) DriverReportLine {
 		Customer:      ShortCustomerName(snap.Customer.DisplayName),
 		TotalCents:    snap.Money.Total,
 		DeliveredAt:   so.Status.DeliveredAt,
+		ExtRef:        so.Status.ExtRef,
+		OutAt:         so.Status.OutAt,
 	}
 	if a := snap.Fulfillment.Address; a != nil {
 		l.Address = strings.TrimSpace(a.Line1)
@@ -248,11 +263,7 @@ func NewDriverReportLine(so StoredOrder) DriverReportLine {
 		}
 	}
 	if so.IsPOS() {
-		if so.Status.CashDueCents > 0 || !so.Status.Paid {
-			l.Cash, l.CashCents = true, so.Status.CashDueCents
-		} else {
-			l.TipCents = so.Status.TipCents
-		}
+		l.Cash, l.CashCents, l.TipCents = posMoney(so.Status.Paid, so.Status.CashDueCents, so.Status.TipCents)
 		return l
 	}
 	if due := snap.CashDue(); due > 0 {

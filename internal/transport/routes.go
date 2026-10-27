@@ -97,7 +97,9 @@ func (s *Server) routes() []routeDef {
 		{"PATCH", "/api/drivers/{id}", "device", "Rename a driver / set their POS number {name?, pos_number? (\"\" clears)} (409 pos_number_taken)", s.handleRenameDriver},
 		{"DELETE", "/api/drivers/{id}", "device", "Remove a driver", s.handleRemoveDriver},
 		{"POST", "/api/drivers/{id}/clock-in", "device", "Clock a driver in: joins the back of the queue, shift opened", s.handleClockIn},
-		{"POST", "/api/drivers/{id}/clock-out", "device", "Clock a driver out: leaves the queue, shift closed (409 while out on a run)", s.handleClockOut},
+		{"POST", "/api/drivers/{id}/clock-out", "device", "Clock a driver out: leaves the queue, shift closed (409 while out on a run); prints their report -> {...Driver, report_print}", s.handleClockOut},
+		{"GET", "/api/drivers/{id}/report", "device", "The driver's report for the open batch so far, merged with the POS driver ledger", s.handleDriverReport},
+		{"POST", "/api/drivers/{id}/report/print", "device", "Print the driver's report for the open batch so far (receipt printer) -> {driver_name, printed_on, report} | 502 nothing_printed", s.handlePrintDriverReport},
 		{"GET", "/api/drivers/shifts", "device", "Driver shift records (?days=7), newest first", s.handleListShifts},
 		{"GET", "/api/settings/driver-reset", "device", "Daily driver clock-out time {time, last_run}", s.handleGetDriverReset},
 		{"POST", "/api/drivers/{id}/returned", "device", "Driver is back: their run is delivered, back of the queue", s.handleDriverReturned},
@@ -135,6 +137,7 @@ func (s *Server) routes() []routeDef {
 		{"PUT", "/api/integration/orders/{ext_ref}", "integration", "Upsert a POS check (stored accepted, local only) -> {order_id, created, changed} | 409 pos_pull_off", s.handleIntegrationUpsert},
 		{"POST", "/api/integration/orders/{ext_ref}/void", "integration", "A POS check voided at the terminal -> the cancelled order", s.handleIntegrationVoid},
 		{"PATCH", "/api/integration/online-orders/{order_id}", "integration", "An online order the hub inserted / refused {paid?, pos_check_number?, flag?|null} -> StoredOrder", s.handleIntegrationPatchOnline},
+		{"PUT", "/api/integration/driver-ledger", "integration", "The POS's delivery checks of the day {operation_day, generated_at, checks, unknown_pos_numbers} -> 204 (kept in memory)", s.handleIntegrationDriverLedger},
 		{"GET", "/api/integration/events", "integration", "The hub feed (?after=<seq>&wait=<sec <=25>, long-poll) -> {events:[{seq,type,at,data}], next}; kept 3 days", s.handleIntegrationEvents},
 
 		// Web-UI-only — session-gated.
