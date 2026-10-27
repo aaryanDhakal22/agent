@@ -50,7 +50,7 @@ type ReceiptPrefs struct {
 	DriverReportSize string `json:"driver_report_size"`
 	// Spacing: extra paper (printer dots) on kitchen tickets and customer
 	// receipts between an item and its first modifier, between modifiers,
-	// and after an item with no modifiers before the next item. 0 = none
+	// and between one item (with or without modifiers) and the next. 0 = none
 	// (the look before this setting).
 	Spacing LineSpacing `json:"spacing"`
 }
