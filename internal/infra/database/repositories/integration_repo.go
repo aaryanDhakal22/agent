@@ -10,6 +10,8 @@ import (
 
 	"quiccpos/agent/internal/domain/order"
 	"quiccpos/agent/internal/infra/database/models"
+
+	"github.com/google/uuid"
 )
 
 // The store hub integration (2.1.0): POS orders, the hub's feed, feature /
@@ -28,10 +30,12 @@ func insertFeed(ctx context.Context, q *models.Queries, typ string, at time.Time
 	return q.InsertIntegrationEvent(ctx, models.InsertIntegrationEventParams{Type: typ, Payload: string(raw), CreatedAt: fmtTS(at)})
 }
 
-// feedReady appends order.ready for an order that just became ready.
+// feedReady appends order.ready for an order that just became ready (with
+// the money the hub's order callout needs: a terminal takeout is called out
+// only once it is paid).
 func feedReady(ctx context.Context, q *models.Queries, so order.StoredOrder, at time.Time) error {
 	return insertFeed(ctx, q, order.FeedOrderReady, at, order.OrderReadyData{FeedOrderRef: order.RefOf(so),
-		Number: so.Number(), FulfillmentType: so.Order.Fulfillment.Type})
+		Number: so.Number(), FulfillmentType: so.Order.Fulfillment.Type, Paid: so.Status.Paid, CashDueCents: so.Status.CashDueCents})
 }
 
 // feedCancelled appends order.cancelled.
@@ -57,6 +61,12 @@ func integrationSettings(ctx context.Context, q *models.Queries) (order.Integrat
 		set.Tickets = order.DefaultTicketToggles()
 	}
 	set.Times = order.Times{DefaultPickupMinutes: row.DefaultPickupMinutes, DefaultDeliveryMinutes: row.DefaultDeliveryMinutes}
+	if set.Finishing, err = order.DecodeFinishing([]byte(row.Finishing)); err != nil {
+		set.Finishing = order.DefaultFinishing()
+	}
+	if set.Callout, err = order.DecodeCallout([]byte(row.Callout)); err != nil {
+		set.Callout = order.DefaultCallout()
+	}
 	return set, nil
 }
 
@@ -80,9 +90,18 @@ func (r *OrderRepository) SetIntegrationSettings(ctx context.Context, set order.
 	if err != nil {
 		return err
 	}
+	fin, err := json.Marshal(set.Finishing)
+	if err != nil {
+		return err
+	}
+	co, err := json.Marshal(set.Callout)
+	if err != nil {
+		return err
+	}
 	return r.withTx(ctx, func(q *models.Queries) error {
 		if err := q.SetIntegrationSettings(ctx, models.SetIntegrationSettingsParams{Features: string(f), TicketToggles: string(t),
-			DefaultPickupMinutes: set.Times.DefaultPickupMinutes, DefaultDeliveryMinutes: set.Times.DefaultDeliveryMinutes}); err != nil {
+			DefaultPickupMinutes: set.Times.DefaultPickupMinutes, DefaultDeliveryMinutes: set.Times.DefaultDeliveryMinutes,
+			Finishing: string(fin), Callout: string(co)}); err != nil {
 			return err
 		}
 		return insertFeed(ctx, q, order.FeedSettingsChanged, time.Now(), set)
@@ -112,6 +131,13 @@ func (r *OrderRepository) SetIntegrationStatus(ctx context.Context, st order.Int
 // --- POS orders ------------------------------------------------------------------
 
 // UpsertExternal — see order.IntegrationRepository.
+//
+// 00020: a terminal change to a check already on the tablet is diffed
+// (lines added / removed); a kitchen line rings the tablet until OK
+// (pos_change), a ready order with a kitchen line added goes back to
+// cooking (out of its pool), lines removed stay struck through
+// (removed_items). Visibility on Kitchen is sticky: a hidden check that now
+// qualifies is shown as new. A check the POS closed is finished once ready.
 func (r *OrderRepository) UpsertExternal(ctx context.Context, extRef string, in order.ExternalOrder, meta order.ExternalMeta) (res order.ExternalResult, err error) {
 	ctx, _, end := dbSpan(ctx, "orders.upsert_external")
 	defer end(&err)
@@ -134,12 +160,21 @@ func (r *OrderRepository) UpsertExternal(ctx context.Context, extRef string, in 
 		}
 		snap := in.Snapshot(row.ID, row.TenantID, row.LocationID, extRef, meta.Now)
 		snap.ReceivedAt = cur.Order.ReceivedAt
-		if cur.IsFinished() {
+		state := cur.Status.State
+		done := state == order.StateDelivered || state == order.StateCancelled
+		wasShown := !row.BoardHidden
+		added, removed, _, removedItems := order.POSDiff(cur.Order.Items, snap.Items)
+		reopen := !done && state == order.StateReady && wasShown && order.AnyKitchen(added) && !cur.Status.CameBack
+		frozen := done || (cur.Status.FinishedAt != nil && !reopen)
+		hidden := in.BoardHidden && !wasShown // once on Kitchen, it stays
+		if frozen {
 			// Done on the floor: only the money and paid move (never re-opened).
 			kept := cur.Order
 			kept.Money, kept.Payments = snap.Money, snap.Payments
 			snap = kept
-			in.BoardHidden = row.BoardHidden
+			hidden = row.BoardHidden
+		} else if wasShown {
+			markPOSLines(&snap, cur.Order, removedItems)
 		}
 		raw, err := json.Marshal(snap)
 		if err != nil {
@@ -148,11 +183,16 @@ func (r *OrderRepository) UpsertExternal(ctx context.Context, extRef string, in 
 		if err := q.UpdateExternalOrder(ctx, models.UpdateExternalOrderParams{Snapshot: string(raw), ExtHash: in.Hash,
 			DisplayNumber: sql.NullInt64{Int64: in.DisplayNumber, Valid: in.DisplayNumber > 0}, Paid: in.Paid,
 			CashDueCents: sql.NullInt64{Int64: in.CashDueCents, Valid: true}, TipCents: sql.NullInt64{Int64: in.TipCents, Valid: true},
-			BoardHidden: in.BoardHidden, ID: row.ID}); err != nil {
+			BoardHidden: hidden, ID: row.ID}); err != nil {
 			return fmt.Errorf("update pos order: %w", err)
 		}
+		if in.Closed != row.PosClosed {
+			if err := q.SetPosClosed(ctx, models.SetPosClosedParams{PosClosed: in.Closed, ID: row.ID}); err != nil {
+				return err
+			}
+		}
 		res.Changed = true
-		if !cur.IsFinished() {
+		if !frozen {
 			wasDelivery, isDelivery := cur.IsDelivery(), snap.Fulfillment.Type == "delivery"
 			// Became a delivery, or a delivery whose address changed: locate
 			// it. Stopped being one: main forgets its point, and it leaves
@@ -167,11 +207,118 @@ func (r *OrderRepository) UpsertExternal(ctx context.Context, extRef string, in 
 					return err
 				}
 			}
+			if row.BoardHidden && !in.BoardHidden && state == order.StateAccepted {
+				// Too small before, it qualifies now: on Kitchen as a new order.
+				if err := q.ShowPosOrder(ctx, models.ShowPosOrderParams{At: nullTS(meta.Now),
+					EstimatedReadyAt: nullTS(meta.Now.Add(time.Duration(meta.PrepMinutes) * time.Minute)), ID: row.ID}); err != nil {
+					return err
+				}
+				res.Shown = true
+			}
+			if reopen {
+				n, err := q.ReopenPosOrder(ctx, models.ReopenPosOrderParams{
+					EstimatedReadyAt: nullTS(meta.Now.Add(time.Duration(meta.PrepMinutes) * time.Minute)), ID: row.ID})
+				if err != nil {
+					return fmt.Errorf("back to cooking: %w", err)
+				}
+				res.Reopened = n > 0
+			}
+			if wasShown && !done && (len(added) > 0 || len(removed) > 0) {
+				if order.AnyKitchen(added) || order.AnyKitchen(removed) {
+					if err := recordPOSChange(ctx, q, cur, added, removed, res.Reopened, meta.Now, &res); err != nil {
+						return err
+					}
+				}
+				if state == order.StateAccepted || state == order.StateReady {
+					for _, it := range removedItems {
+						if it.Kitchen {
+							res.VoidPrint = append(res.VoidPrint, it)
+						}
+					}
+				}
+			}
+		}
+		if in.Closed && !(snap.Fulfillment.Type == "delivery") {
+			fin, err := finishClosed(ctx, q, row.ID, hidden, meta.Now)
+			if err != nil {
+				return err
+			}
+			res.Finished = fin
 		}
 		res.Order, err = loadOrder(ctx, q, row.ID)
 		return err
 	})
 	return res, err
+}
+
+// markPOSLines carries the ADDED marks over a terminal edit (and marks lines
+// new since the check was on the tablet) and keeps the removed lines struck
+// through.
+func markPOSLines(snap *order.Snapshot, before order.Snapshot, removedItems []order.LineItem) {
+	oldKeys := order.POSLineKeys(before.Items)
+	wasAdded := map[string]bool{}
+	seen := map[string]bool{}
+	for i, it := range before.Items {
+		seen[oldKeys[i]] = true
+		wasAdded[oldKeys[i]] = it.Added
+	}
+	newKeys := order.POSLineKeys(snap.Items)
+	for i := range snap.Items {
+		k := newKeys[i]
+		snap.Items[i].Added = !seen[k] || wasAdded[k]
+	}
+	snap.RemovedItems = append(append([]order.LineItem(nil), before.RemovedItems...), removedItems...)
+}
+
+// recordPOSChange stores (or merges into the unacknowledged one) a terminal
+// change that rings the tablet.
+func recordPOSChange(ctx context.Context, q *models.Queries, cur order.StoredOrder, added, removed []order.ChangeLine, reopened bool, now time.Time, res *order.ExternalResult) error {
+	kind := order.ChangeCooking
+	switch {
+	case reopened:
+		kind = order.ChangeReopened
+	case cur.Status.State == order.StateOnDelivery:
+		kind = order.ChangeOut
+	case cur.Status.State == order.StateReady:
+		kind = order.ChangeReady
+	}
+	n := order.PosChange{ID: uuid.NewString(), At: now.UTC(), Kind: kind, Added: added, Removed: removed}
+	if kind == order.ChangeOut {
+		n.DriverName = cur.Status.DriverName
+	}
+	if n.Added == nil {
+		n.Added = []order.ChangeLine{}
+	}
+	if n.Removed == nil {
+		n.Removed = []order.ChangeLine{}
+	}
+	c := n
+	if prev := cur.Status.PosChange; prev != nil {
+		c = *prev
+		c.Merge(n)
+	}
+	c.RenderText(cur.Number())
+	raw, err := json.Marshal(c)
+	if err != nil {
+		return err
+	}
+	if err := q.SetPosChange(ctx, models.SetPosChangeParams{PosChange: string(raw), ID: cur.Order.ID}); err != nil {
+		return err
+	}
+	res.Change = &c
+	return nil
+}
+
+// finishClosed finishes a pickup / counter check the POS closed: a ready one
+// (not finished yet), or one that never was on Kitchen (hidden: ready and
+// finished at once). One still cooking finishes when marked ready.
+func finishClosed(ctx context.Context, q *models.Queries, id string, hidden bool, now time.Time) (bool, error) {
+	n, err := q.SetOrderFinished(ctx, models.SetOrderFinishedParams{FinishedAt: nullTS(now), FinishedBy: order.FinishedByPOS, ID: id})
+	if err != nil || n > 0 || !hidden {
+		return n > 0, err
+	}
+	n, err = q.FinishHiddenClosed(ctx, models.FinishHiddenClosedParams{At: nullTS(now), ID: id})
+	return n > 0, err
 }
 
 func insertExternal(ctx context.Context, q *models.Queries, extRef string, in order.ExternalOrder, meta order.ExternalMeta, res *order.ExternalResult) error {
@@ -195,6 +342,16 @@ func insertExternal(ctx context.Context, q *models.Queries, extRef string, in or
 		BoardHidden: in.BoardHidden, SentAt: nullTS(sent),
 	}); err != nil {
 		return fmt.Errorf("insert pos order: %w", err)
+	}
+	if in.Closed {
+		if err := q.SetPosClosed(ctx, models.SetPosClosedParams{PosClosed: true, ID: meta.OrderID}); err != nil {
+			return err
+		}
+		if in.CheckType != "delivery" {
+			if res.Finished, err = finishClosed(ctx, q, meta.OrderID, in.BoardHidden, meta.Now); err != nil {
+				return err
+			}
+		}
 	}
 	res.Created = true
 	res.Order, err = loadOrder(ctx, q, meta.OrderID)
@@ -494,4 +651,66 @@ func (r *OrderRepository) RaiseDue(ctx context.Context, now time.Time) (out []or
 		return nil
 	})
 	return out, err
+}
+
+// --- finishing, terminal changes, callout (00020) ---------------------------------
+
+// AckPosChange — see order.IntegrationRepository.
+func (r *OrderRepository) AckPosChange(ctx context.Context, id, changeID string) (so *order.StoredOrder, acked bool, err error) {
+	ctx, _, end := dbSpan(ctx, "orders.ack_pos_change")
+	defer end(&err)
+	var fresh order.StoredOrder
+	err = r.withTx(ctx, func(q *models.Queries) error {
+		cur, err := loadOrder(ctx, q, id)
+		if err != nil {
+			return err
+		}
+		if c := cur.Status.PosChange; c != nil && (changeID == "" || changeID == c.ID) {
+			if err := q.SetPosChange(ctx, models.SetPosChangeParams{PosChange: "", ID: id}); err != nil {
+				return err
+			}
+			acked = true
+		}
+		fresh, err = loadOrder(ctx, q, id)
+		return err
+	})
+	if err != nil {
+		return nil, false, err
+	}
+	return &fresh, acked, nil
+}
+
+// FinishDueOnlinePickups — see order.IntegrationRepository.
+func (r *OrderRepository) FinishDueOnlinePickups(ctx context.Context, cutoff, now time.Time) (out []order.StoredOrder, err error) {
+	ctx, _, end := dbSpan(ctx, "orders.finish_due_pickups")
+	defer end(&err)
+	err = r.withTx(ctx, func(q *models.Queries) error {
+		ids, err := q.ListDueOnlinePickups(ctx, nullTS(cutoff))
+		if err != nil {
+			return err
+		}
+		for _, id := range ids {
+			n, err := q.SetOrderFinished(ctx, models.SetOrderFinishedParams{FinishedAt: nullTS(now), FinishedBy: order.FinishedByAuto, ID: id})
+			if err != nil {
+				return err
+			}
+			if n == 0 {
+				continue
+			}
+			so, err := loadOrder(ctx, q, id)
+			if err != nil {
+				return err
+			}
+			out = append(out, so)
+		}
+		return nil
+	})
+	return out, err
+}
+
+// InsertCalloutTest — see order.IntegrationRepository.
+func (r *OrderRepository) InsertCalloutTest(ctx context.Context, t order.CalloutTestData) (err error) {
+	ctx, _, end := dbSpan(ctx, "integration_events.callout_test")
+	defer end(&err)
+	return insertFeed(ctx, models.New(r.db), order.FeedCalloutTest, time.Now(), t)
 }

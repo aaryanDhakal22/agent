@@ -54,6 +54,9 @@ type Querier interface {
 	DeleteOrdersOutsideKeptBatches(ctx context.Context, limit int64) (int64, error)
 	DeleteOrphanOrderGeo(ctx context.Context) error
 	DeleteOrphanOrderTimes(ctx context.Context) error
+	// A POS check that was never on Kitchen (board hidden) closed at the POS:
+	// ready and finished at once (no feed event: nothing is called out).
+	FinishHiddenClosed(ctx context.Context, arg FinishHiddenClosedParams) (int64, error)
 	// Close-batch auto-finish: force an order to its terminal state.
 	FinishOrder(ctx context.Context, arg FinishOrderParams) error
 	GetActiveDriverByPosNumber(ctx context.Context, posNumber string) (Driver, error)
@@ -115,6 +118,8 @@ type Querier interface {
 	// the next batch instead.
 	ListBatchLeftovers(ctx context.Context, batchID int64) ([]Order, error)
 	ListBatches(ctx context.Context, limit int64) ([]ListBatchesRow, error)
+	// Online pickups / dine-in ready since before the cutoff and not finished yet.
+	ListDueOnlinePickups(ctx context.Context, cutoff sql.NullString) ([]string, error)
 	ListDueScheduled(ctx context.Context, ringAt sql.NullString) ([]Order, error)
 	ListIntegrationEvents(ctx context.Context, arg ListIntegrationEventsParams) ([]IntegrationEvent, error)
 	// Claimed but never recorded: the agent stopped between claim and record.
@@ -175,6 +180,9 @@ type Querier interface {
 	ReleaseCameBack(ctx context.Context, id string) (int64, error)
 	RenameDriver(ctx context.Context, arg RenameDriverParams) (int64, error)
 	RenamePairedDevice(ctx context.Context, arg RenamePairedDeviceParams) (int64, error)
+	// A ready POS order the terminal added a kitchen item to: back to cooking,
+	// out of any pool, not finished.
+	ReopenPosOrder(ctx context.Context, arg ReopenPosOrderParams) (int64, error)
 	// Close batch: drivers out on a run are back in the queue (clocked-out stay off).
 	ResetDriversAvailable(ctx context.Context) error
 	ResetKitchenNumber(ctx context.Context) error
@@ -214,6 +222,11 @@ type Querier interface {
 	SetLinkInfo(ctx context.Context, arg SetLinkInfoParams) error
 	SetManagerPasswordHash(ctx context.Context, uiPasswordHash string) error
 	SetMapFile(ctx context.Context, mapFile string) error
+	// Finishing orders, terminal changes (00020) -----------------------------------
+	// A ready pickup / counter order is done with (picked up): the POS closed its
+	// check ('pos') or an online pickup sat ready for the store's finish time
+	// ('auto'). It stays ready; it no longer counts as open.
+	SetOrderFinished(ctx context.Context, arg SetOrderFinishedParams) (int64, error)
 	SetOrderFlag(ctx context.Context, arg SetOrderFlagParams) error
 	SetOrderPaid(ctx context.Context, arg SetOrderPaidParams) error
 	// Driver pools (2.0.9) ----------------------------------------------------------
@@ -225,7 +238,9 @@ type Querier interface {
 	SetPairedDeviceAppVersion(ctx context.Context, arg SetPairedDeviceAppVersionParams) error
 	// Renumbers one pooled order (0 rows = no longer in that pool, or unchanged).
 	SetPoolSeq(ctx context.Context, arg SetPoolSeqParams) (int64, error)
+	SetPosChange(ctx context.Context, arg SetPosChangeParams) error
 	SetPosCheckNumber(ctx context.Context, arg SetPosCheckNumberParams) error
+	SetPosClosed(ctx context.Context, arg SetPosClosedParams) error
 	SetReceiptPrefs(ctx context.Context, receiptPrefs string) error
 	SetRunSeq(ctx context.Context, arg SetRunSeqParams) error
 	SetSessionSecret(ctx context.Context, sessionSecret string) error
@@ -234,6 +249,8 @@ type Querier interface {
 	SetUpdateJob(ctx context.Context, updateJob string) error
 	SetUpdateLastSuccess(ctx context.Context, updateLastSuccess string) error
 	SetUpdateNotified(ctx context.Context, updateNotified string) error
+	// A hidden POS check that now qualifies for Kitchen: shown as if new.
+	ShowPosOrder(ctx context.Context, arg ShowPosOrderParams) error
 	TouchPairedDevice(ctx context.Context, arg TouchPairedDeviceParams) error
 	// A changed POS check: the new snapshot (items, money, notes, address) and
 	// the paid / cash / tip / hidden figures. No state change.

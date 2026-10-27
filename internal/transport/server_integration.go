@@ -78,6 +78,69 @@ func (s *Server) handleSetTimes(w http.ResponseWriter, r *http.Request) {
 	s.putSettings(w, r, func(set *order.IntegrationSettings) any { return &set.Times })
 }
 
+// GET /api/settings/finishing
+func (s *Server) handleGetFinishing(w http.ResponseWriter, _ *http.Request) {
+	s.writeJSON(w, http.StatusOK, s.service.IntegrationSettings().Finishing)
+}
+
+// PUT /api/settings/finishing {online_pickup_minutes?}
+func (s *Server) handleSetFinishing(w http.ResponseWriter, r *http.Request) {
+	s.putSettings(w, r, func(set *order.IntegrationSettings) any { return &set.Finishing })
+}
+
+// GET /api/settings/callout
+func (s *Server) handleGetCalloutSettings(w http.ResponseWriter, _ *http.Request) {
+	s.writeJSON(w, http.StatusOK, s.service.IntegrationSettings().Callout)
+}
+
+// PUT /api/settings/callout {enabled?, voice?, volume?, music_dip?, restore_seconds?, chime?}
+func (s *Server) handleSetCalloutSettings(w http.ResponseWriter, r *http.Request) {
+	s.putSettings(w, r, func(set *order.IntegrationSettings) any { return &set.Callout })
+}
+
+// GET /api/callout -> {settings, hub_connected, hub}
+func (s *Server) handleGetCallout(w http.ResponseWriter, _ *http.Request) {
+	s.writeJSON(w, http.StatusOK, s.service.Callout(time.Now()))
+}
+
+// POST /api/callout/test {number, voice?, kind?} -> 202 {id, hub_connected}
+func (s *Server) handleCalloutTest(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Number int    `json:"number"`
+		Voice  string `json:"voice"`
+		Kind   string `json:"kind"`
+	}
+	if err := decodeBody(r, &req); err != nil {
+		s.floorErr(w, r, err)
+		return
+	}
+	res, err := s.service.CalloutTest(r.Context(), req.Kind, req.Number, req.Voice)
+	if err != nil {
+		s.floorErr(w, r, err)
+		return
+	}
+	s.writeJSON(w, http.StatusAccepted, res)
+}
+
+// POST /api/orders/{id}/change/ack {change_id?} -> StoredOrder | 409 no_change
+func (s *Server) handleAckChange(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		ChangeID string `json:"change_id"`
+	}
+	if r.ContentLength != 0 {
+		if err := decodeBody(r, &req); err != nil {
+			s.floorErr(w, r, err)
+			return
+		}
+	}
+	so, err := s.service.AckPosChange(r.Context(), r.PathValue("id"), req.ChangeID)
+	if err != nil {
+		s.floorErr(w, r, err)
+		return
+	}
+	s.writeJSON(w, http.StatusOK, so)
+}
+
 // --- future orders + ambiguous addresses (device routes) ---------------------------
 
 // POST /api/orders/{id}/schedule {lead_minutes} -> StoredOrder | 409 not_future.
@@ -194,6 +257,8 @@ func (s *Server) handleIntegrationConfig(w http.ResponseWriter, r *http.Request)
 		"features":      set.Features,
 		"tickets":       set.Tickets,
 		"times":         set.Times,
+		"finishing":     set.Finishing,
+		"callout":       set.Callout,
 		"drivers":       drivers,
 		"printers":      printers,
 		"agent_version": s.version,

@@ -42,6 +42,8 @@ func (s *Server) floorErr(w http.ResponseWriter, r *http.Request, err error) {
 		s.writeJSON(w, http.StatusConflict, errCodeMap(err.Error(), "no_drivers"))
 	case errors.Is(err, orderApp.ErrPosPullOff):
 		s.writeJSON(w, http.StatusConflict, errCodeMap(err.Error(), "pos_pull_off"))
+	case errors.Is(err, orderApp.ErrNoChange):
+		s.writeJSON(w, http.StatusConflict, errCodeMap(err.Error(), "no_change"))
 	case errors.Is(err, orderApp.ErrNotFuture):
 		s.writeJSON(w, http.StatusConflict, errCodeMap(err.Error(), "not_future"))
 	case errors.Is(err, order.ErrPosNumberTaken):
