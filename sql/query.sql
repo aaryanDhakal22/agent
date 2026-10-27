@@ -205,7 +205,10 @@ SELECT * FROM drivers WHERE id = ?;
 SELECT CAST(COALESCE(MAX(position), 0) + 1 AS INTEGER) AS next_position FROM drivers;
 
 -- name: CreateDriver :exec
-INSERT INTO drivers (id, name, position, pos_number) VALUES (?, ?, ?, ?);
+INSERT INTO drivers (id, name, position, pos_number, pushover_device) VALUES (?, ?, ?, ?, ?);
+
+-- name: SetDriverPushoverDevice :execrows
+UPDATE drivers SET pushover_device = ? WHERE id = ? AND active;
 
 -- name: SetDriverPosNumber :execrows
 UPDATE drivers SET pos_number = ? WHERE id = ? AND active;
@@ -422,6 +425,7 @@ UPDATE settings SET last_prep_minutes = ? WHERE id = 1;
 UPDATE settings
 SET store_api_key = '', ui_password_hash = '', ui_password_hint = '',
     secret_pushover_app_token = '', secret_pushover_user_key = '', secret_pushover_boss_key = '',
+    secret_pushover_admin_devices = '',
     secret_otlp_endpoint = '', secret_otlp_headers = '', manager_username = '', device_id = '',
     updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
 WHERE id = 1;
@@ -443,14 +447,23 @@ ON CONFLICT (id) DO UPDATE SET
 -- name: SetLinkInfo :exec
 UPDATE settings
 SET secret_pushover_app_token = ?, secret_pushover_user_key = ?, secret_pushover_boss_key = ?,
+    secret_pushover_admin_devices = ?,
     secret_otlp_endpoint = ?, secret_otlp_headers = ?,
     manager_username = ?, device_id = ?, ui_password_hash = ?, ui_password_hint = ?
 WHERE id = 1;
 
 -- name: GetLinkInfo :one
 SELECT secret_pushover_app_token, secret_pushover_user_key, secret_pushover_boss_key,
+       secret_pushover_admin_devices,
        secret_otlp_endpoint, secret_otlp_headers, manager_username, device_id
 FROM settings WHERE id = 1;
+
+-- name: SetPushoverSecrets :exec
+-- The Pushover part of the link secrets, refreshed from main (2.3.7).
+UPDATE settings
+SET secret_pushover_app_token = ?, secret_pushover_user_key = ?, secret_pushover_boss_key = ?,
+    secret_pushover_admin_devices = ?
+WHERE id = 1;
 
 -- name: SetManagerPasswordHash :exec
 UPDATE settings SET ui_password_hash = ? WHERE id = 1;

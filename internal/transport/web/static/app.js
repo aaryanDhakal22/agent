@@ -12,6 +12,9 @@
 
 const HIST_NUM = 20;
 const DEFAULT_PREPS = [10, 15, 20, 30, 45, 60];
+// A Pushover device name (the Pi checks the same rule).
+const DEVICE_RE = /^[A-Za-z0-9_-]{1,25}$/;
+const DEVICE_HELP = 'A phone name is up to 25 letters, digits, - or _ (as in the Pushover app).';
 const DEFAULT_GREEN = 20;
 const THEME_KEY = 'quicc.agent.theme';
 const PAGES = ['overview', 'live', 'drivers', 'history', 'printers', 'settings'];
@@ -249,7 +252,7 @@ function agentApp() {
     diag: null, diagErr: false, devices: [], devicesLoaded: false, appLatest: null, batches: [], reportBatch: 'current', reports: [], reportsErr: '',
 
     // --- drivers ---
-    newDriver: '', newDriverNum: '', names: {}, origNames: {}, nums: {}, origNums: {}, reset: { time: '', last_run: null, form: '' },
+    newDriver: '', newDriverNum: '', newDriverDev: '', names: {}, origNames: {}, nums: {}, origNums: {}, devs: {}, origDevs: {}, reset: { time: '', last_run: null, form: '' },
 
     // --- history ---
     hist: { q: '', status: '', sort: 'desc', from: '', to: '', offset: 0, rows: [], more: false, loading: false, err: '', errRaw: '', loaded: false },
@@ -640,6 +643,9 @@ function agentApp() {
         const n = d.pos_number || '';
         if (this.nums[d.id] === undefined || this.nums[d.id] === this.origNums[d.id]) this.nums[d.id] = n;
         this.origNums[d.id] = n;
+        const dev = d.pushover_device || '';
+        if (this.devs[d.id] === undefined || this.devs[d.id] === this.origDevs[d.id]) this.devs[d.id] = dev;
+        this.origDevs[d.id] = dev;
       }
     },
     get prepChoices() {
@@ -996,11 +1002,28 @@ function agentApp() {
       try { const r = await this.call('/api/settings/driver-reset'); this.reset = { time: r.time, last_run: r.last_run || null, form: r.time }; } catch { /* keep */ }
     },
     async addDriver() {
-      const name = this.newDriver.trim(), num = this.newDriverNum.trim(); if (!name) return;
+      const name = this.newDriver.trim(), num = this.newDriverNum.trim(), dev = this.newDriverDev.trim(); if (!name) return;
+      if (dev && !DEVICE_RE.test(dev)) { this.toast(DEVICE_HELP, true); return; }
       try {
-        await this.call('/api/drivers', { method: 'POST', body: { name, pos_number: num } });
-        this.newDriver = ''; this.newDriverNum = ''; this.toast('Added ' + name);
+        await this.call('/api/drivers', { method: 'POST', body: { name, pos_number: num, pushover_device: dev } });
+        this.newDriver = ''; this.newDriverNum = ''; this.newDriverDev = ''; this.toast('Added ' + name);
       } catch (e) { this.toast(e.code === 'pos_number_taken' ? 'Another driver already has Driver # ' + num + '.' : e.message, true); } finally { this.loadFloor(); }
+    },
+    // Phone = the driver's Pushover device name: Send Out pushes them the route.
+    async saveDriverDevice(d) {
+      const dev = (this.devs[d.id] || '').trim(); if (dev === (d.pushover_device || '')) return;
+      if (dev && !DEVICE_RE.test(dev)) { this.toast(DEVICE_HELP, true); return; }
+      try {
+        await this.call('/api/drivers/' + d.id, { method: 'PATCH', body: { pushover_device: dev } });
+        this.origDevs[d.id] = dev; this.toast(dev ? d.name + "'s phone saved" : d.name + "'s phone cleared");
+      } catch (e) { this.toast(e.message, true); } finally { this.loadFloor(); }
+    },
+    async testRoute(d) {
+      this.busy['rt' + d.id] = true;
+      try {
+        await this.call('/api/drivers/' + d.id + '/route/test', { method: 'POST' });
+        this.toast('Test route sent to ' + d.name);
+      } catch (e) { this.toast(e.message, true); } finally { this.busy['rt' + d.id] = false; }
     },
     // Driver # = the driver's login number on the store's POS (the hub matches by it).
     async saveDriverNum(d) {

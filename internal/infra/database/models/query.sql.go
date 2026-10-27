@@ -133,6 +133,7 @@ const clearProvisioning = `-- name: ClearProvisioning :exec
 UPDATE settings
 SET store_api_key = '', ui_password_hash = '', ui_password_hint = '',
     secret_pushover_app_token = '', secret_pushover_user_key = '', secret_pushover_boss_key = '',
+    secret_pushover_admin_devices = '',
     secret_otlp_endpoint = '', secret_otlp_headers = '', manager_username = '', device_id = '',
     updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
 WHERE id = 1
@@ -342,14 +343,15 @@ func (q *Queries) CountUnsyncedFloorEvents(ctx context.Context) (int64, error) {
 }
 
 const createDriver = `-- name: CreateDriver :exec
-INSERT INTO drivers (id, name, position, pos_number) VALUES (?, ?, ?, ?)
+INSERT INTO drivers (id, name, position, pos_number, pushover_device) VALUES (?, ?, ?, ?, ?)
 `
 
 type CreateDriverParams struct {
-	ID        string `json:"id"`
-	Name      string `json:"name"`
-	Position  int64  `json:"position"`
-	PosNumber string `json:"pos_number"`
+	ID             string `json:"id"`
+	Name           string `json:"name"`
+	Position       int64  `json:"position"`
+	PosNumber      string `json:"pos_number"`
+	PushoverDevice string `json:"pushover_device"`
 }
 
 func (q *Queries) CreateDriver(ctx context.Context, arg CreateDriverParams) error {
@@ -358,6 +360,7 @@ func (q *Queries) CreateDriver(ctx context.Context, arg CreateDriverParams) erro
 		arg.Name,
 		arg.Position,
 		arg.PosNumber,
+		arg.PushoverDevice,
 	)
 	return err
 }
@@ -544,7 +547,7 @@ func (q *Queries) FinishOrder(ctx context.Context, arg FinishOrderParams) error 
 }
 
 const getActiveDriverByPosNumber = `-- name: GetActiveDriverByPosNumber :one
-SELECT id, name, active, position, status, last_returned_at, created_at, pos_number FROM drivers WHERE pos_number = ? AND pos_number <> '' AND active
+SELECT id, name, active, position, status, last_returned_at, created_at, pos_number, pushover_device FROM drivers WHERE pos_number = ? AND pos_number <> '' AND active
 `
 
 func (q *Queries) GetActiveDriverByPosNumber(ctx context.Context, posNumber string) (Driver, error) {
@@ -559,6 +562,7 @@ func (q *Queries) GetActiveDriverByPosNumber(ctx context.Context, posNumber stri
 		&i.LastReturnedAt,
 		&i.CreatedAt,
 		&i.PosNumber,
+		&i.PushoverDevice,
 	)
 	return i, err
 }
@@ -656,7 +660,7 @@ func (q *Queries) GetDeliveryPrefs(ctx context.Context) (GetDeliveryPrefsRow, er
 }
 
 const getDriver = `-- name: GetDriver :one
-SELECT id, name, active, position, status, last_returned_at, created_at, pos_number FROM drivers WHERE id = ?
+SELECT id, name, active, position, status, last_returned_at, created_at, pos_number, pushover_device FROM drivers WHERE id = ?
 `
 
 func (q *Queries) GetDriver(ctx context.Context, id string) (Driver, error) {
@@ -671,6 +675,7 @@ func (q *Queries) GetDriver(ctx context.Context, id string) (Driver, error) {
 		&i.LastReturnedAt,
 		&i.CreatedAt,
 		&i.PosNumber,
+		&i.PushoverDevice,
 	)
 	return i, err
 }
@@ -811,18 +816,20 @@ func (q *Queries) GetLatestAutoPlan(ctx context.Context) (GetLatestAutoPlanRow, 
 
 const getLinkInfo = `-- name: GetLinkInfo :one
 SELECT secret_pushover_app_token, secret_pushover_user_key, secret_pushover_boss_key,
+       secret_pushover_admin_devices,
        secret_otlp_endpoint, secret_otlp_headers, manager_username, device_id
 FROM settings WHERE id = 1
 `
 
 type GetLinkInfoRow struct {
-	SecretPushoverAppToken string `json:"secret_pushover_app_token"`
-	SecretPushoverUserKey  string `json:"secret_pushover_user_key"`
-	SecretPushoverBossKey  string `json:"secret_pushover_boss_key"`
-	SecretOtlpEndpoint     string `json:"secret_otlp_endpoint"`
-	SecretOtlpHeaders      string `json:"secret_otlp_headers"`
-	ManagerUsername        string `json:"manager_username"`
-	DeviceID               string `json:"device_id"`
+	SecretPushoverAppToken     string `json:"secret_pushover_app_token"`
+	SecretPushoverUserKey      string `json:"secret_pushover_user_key"`
+	SecretPushoverBossKey      string `json:"secret_pushover_boss_key"`
+	SecretPushoverAdminDevices string `json:"secret_pushover_admin_devices"`
+	SecretOtlpEndpoint         string `json:"secret_otlp_endpoint"`
+	SecretOtlpHeaders          string `json:"secret_otlp_headers"`
+	ManagerUsername            string `json:"manager_username"`
+	DeviceID                   string `json:"device_id"`
 }
 
 func (q *Queries) GetLinkInfo(ctx context.Context) (GetLinkInfoRow, error) {
@@ -832,6 +839,7 @@ func (q *Queries) GetLinkInfo(ctx context.Context) (GetLinkInfoRow, error) {
 		&i.SecretPushoverAppToken,
 		&i.SecretPushoverUserKey,
 		&i.SecretPushoverBossKey,
+		&i.SecretPushoverAdminDevices,
 		&i.SecretOtlpEndpoint,
 		&i.SecretOtlpHeaders,
 		&i.ManagerUsername,
@@ -1303,7 +1311,7 @@ func (q *Queries) InsertIntegrationEvent(ctx context.Context, arg InsertIntegrat
 
 const listActiveDrivers = `-- name: ListActiveDrivers :many
 
-SELECT id, name, active, position, status, last_returned_at, created_at, pos_number FROM drivers WHERE active ORDER BY position ASC, created_at ASC
+SELECT id, name, active, position, status, last_returned_at, created_at, pos_number, pushover_device FROM drivers WHERE active ORDER BY position ASC, created_at ASC
 `
 
 // Drivers -------------------------------------------------------------------
@@ -1325,6 +1333,7 @@ func (q *Queries) ListActiveDrivers(ctx context.Context) ([]Driver, error) {
 			&i.LastReturnedAt,
 			&i.CreatedAt,
 			&i.PosNumber,
+			&i.PushoverDevice,
 		); err != nil {
 			return nil, err
 		}
@@ -1423,7 +1432,7 @@ func (q *Queries) ListArrivedOrders(ctx context.Context) ([]Order, error) {
 }
 
 const listAvailableDrivers = `-- name: ListAvailableDrivers :many
-SELECT id, name, active, position, status, last_returned_at, created_at, pos_number FROM drivers WHERE active AND status = 'available'
+SELECT id, name, active, position, status, last_returned_at, created_at, pos_number, pushover_device FROM drivers WHERE active AND status = 'available'
 `
 
 func (q *Queries) ListAvailableDrivers(ctx context.Context) ([]Driver, error) {
@@ -1444,6 +1453,7 @@ func (q *Queries) ListAvailableDrivers(ctx context.Context) ([]Driver, error) {
 			&i.LastReturnedAt,
 			&i.CreatedAt,
 			&i.PosNumber,
+			&i.PushoverDevice,
 		); err != nil {
 			return nil, err
 		}
@@ -3492,6 +3502,23 @@ func (q *Queries) SetDriverPosition(ctx context.Context, arg SetDriverPositionPa
 	return err
 }
 
+const setDriverPushoverDevice = `-- name: SetDriverPushoverDevice :execrows
+UPDATE drivers SET pushover_device = ? WHERE id = ? AND active
+`
+
+type SetDriverPushoverDeviceParams struct {
+	PushoverDevice string `json:"pushover_device"`
+	ID             string `json:"id"`
+}
+
+func (q *Queries) SetDriverPushoverDevice(ctx context.Context, arg SetDriverPushoverDeviceParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, setDriverPushoverDevice, arg.PushoverDevice, arg.ID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const setDriverResetTime = `-- name: SetDriverResetTime :exec
 UPDATE settings SET driver_reset_time = ? WHERE id = 1
 `
@@ -3669,21 +3696,23 @@ const setLinkInfo = `-- name: SetLinkInfo :exec
 
 UPDATE settings
 SET secret_pushover_app_token = ?, secret_pushover_user_key = ?, secret_pushover_boss_key = ?,
+    secret_pushover_admin_devices = ?,
     secret_otlp_endpoint = ?, secret_otlp_headers = ?,
     manager_username = ?, device_id = ?, ui_password_hash = ?, ui_password_hint = ?
 WHERE id = 1
 `
 
 type SetLinkInfoParams struct {
-	SecretPushoverAppToken string `json:"secret_pushover_app_token"`
-	SecretPushoverUserKey  string `json:"secret_pushover_user_key"`
-	SecretPushoverBossKey  string `json:"secret_pushover_boss_key"`
-	SecretOtlpEndpoint     string `json:"secret_otlp_endpoint"`
-	SecretOtlpHeaders      string `json:"secret_otlp_headers"`
-	ManagerUsername        string `json:"manager_username"`
-	DeviceID               string `json:"device_id"`
-	UiPasswordHash         string `json:"ui_password_hash"`
-	UiPasswordHint         string `json:"ui_password_hint"`
+	SecretPushoverAppToken     string `json:"secret_pushover_app_token"`
+	SecretPushoverUserKey      string `json:"secret_pushover_user_key"`
+	SecretPushoverBossKey      string `json:"secret_pushover_boss_key"`
+	SecretPushoverAdminDevices string `json:"secret_pushover_admin_devices"`
+	SecretOtlpEndpoint         string `json:"secret_otlp_endpoint"`
+	SecretOtlpHeaders          string `json:"secret_otlp_headers"`
+	ManagerUsername            string `json:"manager_username"`
+	DeviceID                   string `json:"device_id"`
+	UiPasswordHash             string `json:"ui_password_hash"`
+	UiPasswordHint             string `json:"ui_password_hint"`
 }
 
 // Link + restore (00008) --------------------------------------------------------
@@ -3692,6 +3721,7 @@ func (q *Queries) SetLinkInfo(ctx context.Context, arg SetLinkInfoParams) error 
 		arg.SecretPushoverAppToken,
 		arg.SecretPushoverUserKey,
 		arg.SecretPushoverBossKey,
+		arg.SecretPushoverAdminDevices,
 		arg.SecretOtlpEndpoint,
 		arg.SecretOtlpHeaders,
 		arg.ManagerUsername,
@@ -3893,6 +3923,31 @@ type SetPosClosedParams struct {
 
 func (q *Queries) SetPosClosed(ctx context.Context, arg SetPosClosedParams) error {
 	_, err := q.db.ExecContext(ctx, setPosClosed, arg.PosClosed, arg.ID)
+	return err
+}
+
+const setPushoverSecrets = `-- name: SetPushoverSecrets :exec
+UPDATE settings
+SET secret_pushover_app_token = ?, secret_pushover_user_key = ?, secret_pushover_boss_key = ?,
+    secret_pushover_admin_devices = ?
+WHERE id = 1
+`
+
+type SetPushoverSecretsParams struct {
+	SecretPushoverAppToken     string `json:"secret_pushover_app_token"`
+	SecretPushoverUserKey      string `json:"secret_pushover_user_key"`
+	SecretPushoverBossKey      string `json:"secret_pushover_boss_key"`
+	SecretPushoverAdminDevices string `json:"secret_pushover_admin_devices"`
+}
+
+// The Pushover part of the link secrets, refreshed from main (2.3.7).
+func (q *Queries) SetPushoverSecrets(ctx context.Context, arg SetPushoverSecretsParams) error {
+	_, err := q.db.ExecContext(ctx, setPushoverSecrets,
+		arg.SecretPushoverAppToken,
+		arg.SecretPushoverUserKey,
+		arg.SecretPushoverBossKey,
+		arg.SecretPushoverAdminDevices,
+	)
 	return err
 }
 

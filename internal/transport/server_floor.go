@@ -25,9 +25,20 @@ import (
 func (s *Server) floorErr(w http.ResponseWriter, r *http.Request, err error) {
 	var lo *order.LeftoversError
 	var nr *order.ErrNotReady
+	var re *orderApp.RouteError
 	switch {
 	case errors.As(err, &lo):
 		s.writeJSON(w, http.StatusConflict, map[string]any{"error": err.Error(), "code": "batch_has_leftovers", "leftovers": lo.Orders})
+	case errors.As(err, &re):
+		status := http.StatusBadGateway
+		if re.Code == "not_configured" {
+			status = http.StatusServiceUnavailable
+		}
+		s.writeJSON(w, status, errCodeMap(routeErrText(re.Code), re.Code))
+	case errors.Is(err, orderApp.ErrBadDevice):
+		s.writeJSON(w, http.StatusBadRequest, errCodeMap(err.Error(), "bad_device"))
+	case errors.Is(err, orderApp.ErrNoDevice):
+		s.writeJSON(w, http.StatusConflict, errCodeMap(err.Error(), "no_device"))
 	case errors.As(err, &nr):
 		s.writeJSON(w, http.StatusConflict, map[string]any{"error": err.Error(), "code": "not_ready", "order_ids": nr.IDs})
 	case errors.Is(err, orderApp.ErrBadAction):
@@ -211,10 +222,15 @@ func (s *Server) handleListDrivers(w http.ResponseWriter, r *http.Request) {
 // POST /api/drivers {name, pos_number?}
 func (s *Server) handleCreateDriver(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Name      string `json:"name"`
-		PosNumber string `json:"pos_number"`
+		Name           string `json:"name"`
+		PosNumber      string `json:"pos_number"`
+		PushoverDevice string `json:"pushover_device"`
 	}
 	if err := decodeBody(r, &req); err != nil {
+		s.floorErr(w, r, err)
+		return
+	}
+	if err := orderApp.ValidateDevice(req.PushoverDevice); err != nil {
 		s.floorErr(w, r, err)
 		return
 	}
@@ -223,24 +239,70 @@ func (s *Server) handleCreateDriver(w http.ResponseWriter, r *http.Request) {
 		s.floorErr(w, r, err)
 		return
 	}
+	if req.PushoverDevice != "" {
+		if err := s.service.SetDriverDevice(r.Context(), d.ID, req.PushoverDevice); err != nil {
+			s.floorErr(w, r, err)
+			return
+		}
+		d.PushoverDevice = strings.TrimSpace(req.PushoverDevice)
+	}
 	s.writeJSON(w, http.StatusCreated, d)
 }
 
-// PATCH /api/drivers/{id} {name?, pos_number?} ("" clears the number)
+// PATCH /api/drivers/{id} {name?, pos_number?, pushover_device?} ("" clears
+// the number / device)
 func (s *Server) handleRenameDriver(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Name      *string `json:"name"`
-		PosNumber *string `json:"pos_number"`
+		Name           *string `json:"name"`
+		PosNumber      *string `json:"pos_number"`
+		PushoverDevice *string `json:"pushover_device"`
 	}
 	if err := decodeBody(r, &req); err != nil {
 		s.floorErr(w, r, err)
 		return
 	}
-	if err := s.service.UpdateDriver(r.Context(), r.PathValue("id"), req.Name, req.PosNumber); err != nil {
+	id := r.PathValue("id")
+	if req.PushoverDevice != nil {
+		if err := orderApp.ValidateDevice(*req.PushoverDevice); err != nil {
+			s.floorErr(w, r, err)
+			return
+		}
+	}
+	if req.Name != nil || req.PosNumber != nil || req.PushoverDevice == nil {
+		if err := s.service.UpdateDriver(r.Context(), id, req.Name, req.PosNumber); err != nil {
+			s.floorErr(w, r, err)
+			return
+		}
+	}
+	if req.PushoverDevice != nil {
+		if err := s.service.SetDriverDevice(r.Context(), id, *req.PushoverDevice); err != nil {
+			s.floorErr(w, r, err)
+			return
+		}
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// POST /api/drivers/{id}/route/test — a sample route to the driver's phone.
+func (s *Server) handleTestRoute(w http.ResponseWriter, r *http.Request) {
+	if err := s.service.TestRoute(r.Context(), r.PathValue("id")); err != nil {
 		s.floorErr(w, r, err)
 		return
 	}
-	w.WriteHeader(http.StatusNoContent)
+	s.writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+func routeErrText(code string) string {
+	switch code {
+	case "device_not_found":
+		return "Pushover doesn't know this phone — check the device name."
+	case "not_configured":
+		return "Pushover isn't set up on this Pi."
+	case "pushover_rejected":
+		return "Pushover refused the message."
+	default:
+		return "Couldn't reach Pushover — try again."
+	}
 }
 
 // DELETE /api/drivers/{id}

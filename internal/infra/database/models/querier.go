@@ -205,6 +205,7 @@ type Querier interface {
 	SetDriverOutAt(ctx context.Context, arg SetDriverOutAtParams) (int64, error)
 	SetDriverPosNumber(ctx context.Context, arg SetDriverPosNumberParams) (int64, error)
 	SetDriverPosition(ctx context.Context, arg SetDriverPositionParams) error
+	SetDriverPushoverDevice(ctx context.Context, arg SetDriverPushoverDeviceParams) (int64, error)
 	SetDriverResetTime(ctx context.Context, driverResetTime string) error
 	// Back from a run: available again, at the back of the queue.
 	SetDriverReturned(ctx context.Context, arg SetDriverReturnedParams) error
@@ -241,6 +242,8 @@ type Querier interface {
 	SetPosChange(ctx context.Context, arg SetPosChangeParams) error
 	SetPosCheckNumber(ctx context.Context, arg SetPosCheckNumberParams) error
 	SetPosClosed(ctx context.Context, arg SetPosClosedParams) error
+	// The Pushover part of the link secrets, refreshed from main (2.3.7).
+	SetPushoverSecrets(ctx context.Context, arg SetPushoverSecretsParams) error
 	SetReceiptPrefs(ctx context.Context, receiptPrefs string) error
 	SetRunSeq(ctx context.Context, arg SetRunSeqParams) error
 	SetSessionSecret(ctx context.Context, sessionSecret string) error

@@ -53,8 +53,10 @@ type Service struct {
 	notifier *notify.Notifier
 	broker   *ssebroker.Broker
 	logger   zerolog.Logger
-	tracer   trace.Tracer
-	meters   observability.Meters
+	// routeUnscopedWarned: the "no admin device" warning is logged once.
+	routeUnscopedWarned atomic.Bool
+	tracer              trace.Tracer
+	meters              observability.Meters
 	// onFloorEvent is called after every committed floor change so the sync
 	// sender pushes it to main right away (set via OnFloorEvent).
 	// Set by cmd/main after the SSE client may already be running: atomic.

@@ -410,7 +410,7 @@
     <section class="stack" x-show="page === 'drivers'" aria-labelledby="h-drivers">
       <div class="page-head"><div>
         <h1 id="h-drivers">Drivers</h1>
-        <p>Clock a driver in to put them in the queue — the first available driver is next up; a driver who returns goes to the back. <b>Driver #</b> is the driver's login number on the store's POS (how POS checks find the driver). Everyone is clocked out daily at <b x-text="wallTime(reset.time || '10:00')"></b> (<button type="button" class="link-btn" @click="goSettings('clockout')">change</button>).</p>
+        <p>Clock a driver in to put them in the queue — the first available driver is next up; a driver who returns goes to the back. <b>Driver #</b> is the driver's login number on the store's POS (how POS checks find the driver). <b>Phone</b> is the driver's phone in Pushover: Send Out pushes them the route. Everyone is clocked out daily at <b x-text="wallTime(reset.time || '10:00')"></b> (<button type="button" class="link-btn" @click="goSettings('clockout')">change</button>).</p>
       </div></div>
       <section class="card card-pad">
         <div class="list">
@@ -424,6 +424,10 @@
                 <label class="small muted" :for="'dnum-' + d.id">Driver #</label>
                 <input class="field field-sm mono" style="width:5.5em" :id="'dnum-' + d.id" x-model="nums[d.id]" maxlength="12" inputmode="numeric" placeholder="—" :title="'POS login number of ' + d.name" @keydown.enter.prevent="saveDriverNum(d)" />
                 <button type="button" class="btn btn-sm" x-show="(nums[d.id] || '').trim() !== (d.pos_number || '')" @click="saveDriverNum(d)">Save #</button>
+                <label class="small muted" :for="'ddev-' + d.id">Phone</label>
+                <input class="field field-sm mono" style="width:8em" :id="'ddev-' + d.id" x-model="devs[d.id]" maxlength="25" placeholder="—" :title="'Pushover device name of ' + d.name" @keydown.enter.prevent="saveDriverDevice(d)" />
+                <button type="button" class="btn btn-sm" x-show="(devs[d.id] || '').trim() !== (d.pushover_device || '')" @click="saveDriverDevice(d)">Save phone</button>
+                <button type="button" class="btn btn-sm" x-show="d.pushover_device && (devs[d.id] || '').trim() === d.pushover_device" :disabled="!!busy['rt' + d.id]" @click="testRoute(d)">Send test</button>
                 <span class="badge" :class="driverStatus(d).cls" x-text="driverStatus(d).text"></span>
                 <span class="small muted" x-text="(d.clocked_in_at ? 'in since ' + clock(d.clocked_in_at) + ' · ' : '') + d.deliveries + ' run' + (d.deliveries === 1 ? '' : 's') + ' this batch'"></span>
               </div>
@@ -443,6 +447,8 @@
           <input id="new-driver" class="field" style="flex:1 1 200px;width:auto" placeholder="Driver name" maxlength="40" x-model="newDriver" />
           <label class="sr-only" for="new-driver-num">Driver number (their POS login #)</label>
           <input id="new-driver-num" class="field mono" style="flex:0 0 8em;width:auto" placeholder="Driver #" maxlength="12" inputmode="numeric" x-model="newDriverNum" />
+          <label class="sr-only" for="new-driver-dev">Phone (Pushover device name)</label>
+          <input id="new-driver-dev" class="field mono" style="flex:0 0 10em;width:auto" placeholder="Phone (Pushover)" maxlength="25" x-model="newDriverDev" />
           <button type="submit" class="btn btn-p btn-lg">Add driver</button>
         </form>
       </section>

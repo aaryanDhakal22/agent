@@ -152,7 +152,8 @@ func (r *SettingsRepository) GetLinkInfo(ctx context.Context) (li order.LinkInfo
 	}
 	return order.LinkInfo{
 		Secrets: order.Secrets{PushoverAppToken: row.SecretPushoverAppToken, PushoverUserKey: row.SecretPushoverUserKey,
-			PushoverBossKey: row.SecretPushoverBossKey, OTLPEndpoint: row.SecretOtlpEndpoint, OTLPHeaders: row.SecretOtlpHeaders},
+			PushoverBossKey: row.SecretPushoverBossKey, PushoverAdminDevices: row.SecretPushoverAdminDevices,
+			OTLPEndpoint: row.SecretOtlpEndpoint, OTLPHeaders: row.SecretOtlpHeaders},
 		ManagerUsername: row.ManagerUsername, DeviceID: row.DeviceID,
 	}, nil
 }
@@ -161,9 +162,18 @@ func (r *SettingsRepository) GetLinkInfo(ctx context.Context) (li order.LinkInfo
 func (r *SettingsRepository) SetLinkInfo(ctx context.Context, li order.LinkInfo, passwordHash, hint string) error {
 	return models.New(r.db).SetLinkInfo(ctx, models.SetLinkInfoParams{
 		SecretPushoverAppToken: li.Secrets.PushoverAppToken, SecretPushoverUserKey: li.Secrets.PushoverUserKey,
-		SecretPushoverBossKey: li.Secrets.PushoverBossKey, SecretOtlpEndpoint: li.Secrets.OTLPEndpoint,
-		SecretOtlpHeaders: li.Secrets.OTLPHeaders, ManagerUsername: li.ManagerUsername, DeviceID: li.DeviceID,
+		SecretPushoverBossKey: li.Secrets.PushoverBossKey, SecretPushoverAdminDevices: li.Secrets.PushoverAdminDevices,
+		SecretOtlpEndpoint: li.Secrets.OTLPEndpoint,
+		SecretOtlpHeaders:  li.Secrets.OTLPHeaders, ManagerUsername: li.ManagerUsername, DeviceID: li.DeviceID,
 		UiPasswordHash: passwordHash, UiPasswordHint: hint,
+	})
+}
+
+// SetPushoverSecrets — see order.SettingsRepository.
+func (r *SettingsRepository) SetPushoverSecrets(ctx context.Context, sec order.Secrets) error {
+	return models.New(r.db).SetPushoverSecrets(ctx, models.SetPushoverSecretsParams{
+		SecretPushoverAppToken: sec.PushoverAppToken, SecretPushoverUserKey: sec.PushoverUserKey,
+		SecretPushoverBossKey: sec.PushoverBossKey, SecretPushoverAdminDevices: sec.PushoverAdminDevices,
 	})
 }
 

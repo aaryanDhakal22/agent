@@ -587,7 +587,8 @@ func (r *OrderRepository) ListDrivers(ctx context.Context) (out []order.Driver, 
 			return nil, err
 		}
 		dr := order.Driver{ID: d.ID, Name: d.Name, Position: d.Position, Status: d.Status,
-			LastReturnedAt: ret, Deliveries: counts[d.ID], ClockedInAt: in, PosNumber: d.PosNumber}
+			LastReturnedAt: ret, Deliveries: counts[d.ID], ClockedInAt: in, PosNumber: d.PosNumber,
+			PushoverDevice: d.PushoverDevice}
 		if d.Status == order.DriverOut {
 			dr.RunOrderIDs = runs[d.ID]
 		}
@@ -623,6 +624,20 @@ func (r *OrderRepository) SetDriverPosNumber(ctx context.Context, id, posNumber 
 	n, err := models.New(r.db).SetDriverPosNumber(ctx, models.SetDriverPosNumberParams{PosNumber: posNumber, ID: id})
 	if err != nil {
 		return posNumberErr(err)
+	}
+	if n == 0 {
+		return order.ErrDriverNotFound
+	}
+	return nil
+}
+
+// SetDriverPushoverDevice — see order.FloorRepository.
+func (r *OrderRepository) SetDriverPushoverDevice(ctx context.Context, id, device string) (err error) {
+	ctx, _, end := dbSpan(ctx, "drivers.set_pushover_device")
+	defer end(&err)
+	n, err := models.New(r.db).SetDriverPushoverDevice(ctx, models.SetDriverPushoverDeviceParams{PushoverDevice: device, ID: id})
+	if err != nil {
+		return err
 	}
 	if n == 0 {
 		return order.ErrDriverNotFound

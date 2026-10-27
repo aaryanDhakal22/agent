@@ -287,12 +287,12 @@ func (s *Service) SendOut(ctx context.Context, driverID string, req SendOutReque
 		if meta.SuggestedIDs == nil {
 			meta.SuggestedIDs = []string{}
 		}
+		if len(req.Include) == 0 && seqIntact(pool) {
+			meta.StopOrder = seqOrder(pool) // the confirmed plan's order
+		}
 	}
-	if meta.StopOrder == nil && len(req.Include) == 0 && seqIntact(pool) {
-		meta.StopOrder = seqOrder(pool) // the order the tablet shows
-	}
-	if meta.StopOrder == nil {
-		meta.StopOrder = s.expectedStopOrder(ctx, driverID, req.Include)
+	if meta.StopOrder == nil { // 2.3.7: AUTO decides the stop order (it is the route's)
+		meta.StopOrder = s.autoStopOrder(ctx, driverID, req.Include)
 	}
 	span.SetAttributes(attribute.String("plan.used", meta.PlanID))
 
@@ -319,6 +319,7 @@ func (s *Service) SendOut(ctx context.Context, driverID string, req SendOutReque
 	}
 	s.publishDrivers(ctx)
 	s.publishDispatched(ctx, driverID, sent)
+	s.sendRoute(ctx, driverID, sent)
 	s.logger.Info().Ctx(ctx).Str("driver_id", driverID).Int("orders", len(sent)).Int("marked_ready", len(readied)).
 		Str("plan_id", req.PlanID).Msg("Driver sent out with their pool")
 	return sent, nil
@@ -390,30 +391,6 @@ func seqOrder(pool []order.StoredOrder) []string {
 		ids = append(ids, so.Order.ID)
 	}
 	return ids
-}
-
-// expectedStopOrder is the fastest driving order of the run Send Out is about
-// to send (pool + include), for the delivery.run stop estimates.
-func (s *Service) expectedStopOrder(ctx context.Context, driverID string, include []string) []string {
-	open, err := s.repo.ListOpenDeliveries(ctx)
-	if err != nil {
-		return nil
-	}
-	want := map[string]bool{}
-	for _, id := range include {
-		want[id] = true
-	}
-	var run []order.StoredOrder
-	for _, so := range open {
-		if so.Status.PoolDriverID == driverID || want[so.Order.ID] {
-			run = append(run, so)
-		}
-	}
-	if len(run) < 2 {
-		return nil
-	}
-	t := s.localTrip(ctx, run)
-	return t.OrderIDs
 }
 
 // --- geo ---------------------------------------------------------------------
