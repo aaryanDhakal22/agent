@@ -409,6 +409,9 @@ func buildStation(snap order.Snapshot, t printer.Ticket, prefs order.ReceiptPref
 	if t.ReroutedFrom != "" {
 		writeRerouted(w, nl, t.ReroutedFrom)
 	}
+	if t.Void {
+		writeVoid(w, nl)
+	}
 
 	// --- Ticket number, customer ---------------------------------------------
 	w(cmdCenter)
@@ -440,7 +443,11 @@ func buildStation(snap order.Snapshot, t printer.Ticket, prefs order.ReceiptPref
 		}
 		w(cmdBoldOn)
 		w(textSize(prefs.KitchenItemSize))
-		for _, line := range wordWrap(fmt.Sprintf("%d %s", it.Quantity, itemName(it)), itemWidth(prefs.KitchenItemSize), "  ") {
+		label := fmt.Sprintf("%d %s", it.Quantity, itemName(it))
+		if t.Void {
+			label = "VOID " + label
+		}
+		for _, line := range wordWrap(label, itemWidth(prefs.KitchenItemSize), "  ") {
 			w(line)
 			nl()
 		}
@@ -615,6 +622,21 @@ func writeRerouted(w func(string), nl func(), from string) {
 	w(cmdDoubleSz)
 	w(cmdInvertOn)
 	w(" REROUTED from " + strings.ToUpper(from) + " ")
+	w(cmdInvertOff)
+	w(cmdBaseSz)
+	w(cmdBoldOff)
+	nl()
+	nl()
+}
+
+// writeVoid prints the inverted "VOID" banner that tops a void ticket (lines
+// voided at the POS terminal, 00020).
+func writeVoid(w func(string), nl func()) {
+	w(cmdCenter)
+	w(cmdBoldOn)
+	w(cmdDoubleSz)
+	w(cmdInvertOn)
+	w(" VOID - REMOVED ")
 	w(cmdInvertOff)
 	w(cmdBaseSz)
 	w(cmdBoldOff)

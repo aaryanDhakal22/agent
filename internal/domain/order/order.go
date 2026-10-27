@@ -44,6 +44,11 @@ type Snapshot struct {
 	KitchenNumber    *int64     `json:"kitchen_order_number,omitempty"`
 	EstimatedReadyAt *time.Time `json:"estimated_ready_at,omitempty"`
 	DriverName       string     `json:"driver_name,omitempty"`
+
+	// RemovedItems (POS orders only): lines voided at the terminal after the
+	// check was on the tablet - struck through, red, REMOVED on Kitchen and in
+	// History. Never printed or counted (Items is what the order is now).
+	RemovedItems []LineItem `json:"removed_items,omitempty"`
 }
 
 type Money struct {
@@ -108,6 +113,13 @@ type LineItem struct {
 	MenuItemID string `json:"menu_item_id,omitempty"`
 	PrinterID  string `json:"printer_id,omitempty"`
 	Routing    string `json:"routing,omitempty"` // matched | unmatched | unassigned | "" (pre-routing)
+
+	// POS orders only: PosRef is the POS line's own id (stable across
+	// edits), Kitchen says the POS sends it to a kitchen station, Added marks
+	// a line rung at the terminal after the check was on the tablet (ADDED).
+	PosRef  string `json:"pos_ref,omitempty"`
+	Kitchen bool   `json:"kitchen,omitempty"`
+	Added   bool   `json:"added,omitempty"`
 }
 
 // Routing values (LineItem.Routing).

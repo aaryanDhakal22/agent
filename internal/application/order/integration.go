@@ -197,6 +197,12 @@ func (s *Service) UpdateIntegrationSettings(ctx context.Context, change func(*or
 	if err := set.Times.Validate(); err != nil {
 		return set, fmt.Errorf("%w: %w", ErrBadRequest, err)
 	}
+	if err := set.Finishing.Validate(); err != nil {
+		return set, fmt.Errorf("%w: %w", ErrBadRequest, err)
+	}
+	if err := set.Callout.Validate(); err != nil {
+		return set, fmt.Errorf("%w: %w", ErrBadRequest, err)
+	}
 	if err := s.repo.SetIntegrationSettings(ctx, set); err != nil {
 		return set, err
 	}
@@ -276,8 +282,8 @@ func (s *Service) SetIntegrationStatus(ctx context.Context, st order.Integration
 }
 
 func sameHubStatus(a, b order.IntegrationStatus) bool {
-	ja, _ := json.Marshal(order.IntegrationStatus{OK: a.OK, InsertMode: a.InsertMode, OperationDay: a.OperationDay, Problems: a.Problems, Version: a.Version})
-	jb, _ := json.Marshal(order.IntegrationStatus{OK: b.OK, InsertMode: b.InsertMode, OperationDay: b.OperationDay, Problems: b.Problems, Version: b.Version})
+	ja, _ := json.Marshal(order.IntegrationStatus{OK: a.OK, InsertMode: a.InsertMode, OperationDay: a.OperationDay, Problems: a.Problems, Version: a.Version, Callout: a.Callout})
+	jb, _ := json.Marshal(order.IntegrationStatus{OK: b.OK, InsertMode: b.InsertMode, OperationDay: b.OperationDay, Problems: b.Problems, Version: b.Version, Callout: b.Callout})
 	return string(ja) == string(jb)
 }
 
@@ -346,14 +352,22 @@ func (s *Service) UpsertExternal(ctx context.Context, extRef string, in order.Ex
 	case res.Created:
 		s.logger.Info().Ctx(ctx).Str("order_id", so.Order.ID).Str("ext_ref", extRef).Str("type", in.CheckType).Msg("POS order pulled")
 		if s.broker != nil {
-			s.broker.Publish("order.added", map[string]any{"order": so, "chime": so.IsDelivery() && !so.Status.BoardHidden})
+			// The soft chime for every check that lands on the tablet (a
+			// delivery, or a counter / takeout check on Kitchen); never for
+			// one hidden or already finished.
+			s.broker.Publish("order.added", map[string]any{"order": so, "chime": !so.Status.BoardHidden && so.Status.FinishedAt == nil})
 		}
 		if set.Tickets.POSFor(in.CheckType) {
 			s.printPOS(ctx, so)
 		}
 		s.geoLocate(ctx, so)
 	case res.Changed:
-		s.publishUpdated(so)
+		if res.Shown && s.broker != nil {
+			// Too small for Kitchen before, it qualifies now: as a new order.
+			s.broker.Publish("order.added", map[string]any{"order": so, "chime": true})
+		} else {
+			s.publishUpdated(so)
+		}
 		switch {
 		case res.AddressChanged: // a new address, or newly a delivery
 			s.geoLocate(ctx, so)
@@ -364,6 +378,7 @@ func (s *Service) UpsertExternal(ctx context.Context, extRef string, in order.Ex
 			}
 		}
 	}
+	s.afterPOSUpsert(ctx, res)
 	pos := ""
 	if p := in.DriverPosNumber; p != nil {
 		pos = strings.TrimSpace(*p)

@@ -163,7 +163,19 @@ func (r *OrderRepository) MarkReady(ctx context.Context, id string) (result *ord
 		if err := recordOrderStatus(ctx, q, so, false, now); err != nil {
 			return err
 		}
-		return feedReady(ctx, q, so, now)
+		if err := feedReady(ctx, q, so, now); err != nil {
+			return err
+		}
+		// A POS pickup / counter check the POS already closed is done with
+		// the moment it is ready (00020).
+		if so.IsPOS() && so.Status.PosClosed && !so.IsDelivery() {
+			if _, err := q.SetOrderFinished(ctx, models.SetOrderFinishedParams{FinishedAt: nullTS(now), FinishedBy: order.FinishedByPOS, ID: id}); err != nil {
+				return err
+			}
+			so, err = loadOrder(ctx, q, id)
+			return err
+		}
+		return nil
 	})
 	if err != nil {
 		return nil, err

@@ -495,7 +495,7 @@ UPDATE settings SET kitchen_next = ?, last_prep_minutes = ? WHERE id = 1;
 
 -- name: CountOpenBatchOrders :one
 SELECT CAST(count(*) AS INTEGER) AS total,
-       CAST(COALESCE(SUM(CASE WHEN state IN ('arrived', 'accepted', 'ready', 'on_delivery') THEN 1 ELSE 0 END), 0) AS INTEGER) AS active
+       CAST(COALESCE(SUM(CASE WHEN state IN ('arrived', 'accepted', 'ready', 'on_delivery') AND finished_at IS NULL THEN 1 ELSE 0 END), 0) AS INTEGER) AS active
 FROM orders
 WHERE batch_id = (SELECT id FROM batches WHERE closed_at IS NULL ORDER BY id DESC LIMIT 1);
 
@@ -744,13 +744,55 @@ DELETE FROM integration_events WHERE created_at < ?;
 -- Integration settings (2.1.0) ---------------------------------------------------
 
 -- name: GetIntegrationSettings :one
-SELECT features, ticket_toggles, default_pickup_minutes, default_delivery_minutes FROM settings WHERE id = 1;
+SELECT features, ticket_toggles, default_pickup_minutes, default_delivery_minutes, finishing, callout FROM settings WHERE id = 1;
 
 -- name: SetIntegrationSettings :exec
-UPDATE settings SET features = ?, ticket_toggles = ?, default_pickup_minutes = ?, default_delivery_minutes = ? WHERE id = 1;
+UPDATE settings SET features = ?, ticket_toggles = ?, default_pickup_minutes = ?, default_delivery_minutes = ?,
+    finishing = ?, callout = ?
+WHERE id = 1;
 
 -- name: GetIntegrationStatus :one
 SELECT integration_status FROM settings WHERE id = 1;
 
 -- name: SetIntegrationStatus :exec
 UPDATE settings SET integration_status = ? WHERE id = 1;
+
+-- Finishing orders, terminal changes (00020) -----------------------------------
+
+-- name: SetOrderFinished :execrows
+-- A ready pickup / counter order is done with (picked up): the POS closed its
+-- check ('pos') or an online pickup sat ready for the store's finish time
+-- ('auto'). It stays ready; it no longer counts as open.
+UPDATE orders SET finished_at = sqlc.arg(finished_at), finished_by = sqlc.arg(finished_by)
+WHERE id = sqlc.arg(id) AND state = 'ready' AND finished_at IS NULL;
+
+-- name: FinishHiddenClosed :execrows
+-- A POS check that was never on Kitchen (board hidden) closed at the POS:
+-- ready and finished at once (no feed event: nothing is called out).
+UPDATE orders SET state = 'ready', ready_at = sqlc.arg(at), finished_at = sqlc.arg(at), finished_by = 'pos'
+WHERE id = sqlc.arg(id) AND state = 'accepted' AND board_hidden;
+
+-- name: ListDueOnlinePickups :many
+-- Online pickups / dine-in ready since before the cutoff and not finished yet.
+SELECT id FROM orders
+WHERE state = 'ready' AND finished_at IS NULL AND ext_source = '' AND ready_at IS NOT NULL AND ready_at <= sqlc.arg(cutoff)
+  AND COALESCE(json_extract(snapshot, '$.fulfillment.type'), '') <> 'delivery';
+
+-- name: SetPosClosed :exec
+UPDATE orders SET pos_closed = ? WHERE id = ?;
+
+-- name: SetPosChange :exec
+UPDATE orders SET pos_change = ? WHERE id = ?;
+
+-- name: ReopenPosOrder :execrows
+-- A ready POS order the terminal added a kitchen item to: back to cooking,
+-- out of any pool, not finished.
+UPDATE orders
+SET state = 'accepted', ready_at = NULL, finished_at = NULL, finished_by = '', estimated_ready_at = sqlc.arg(estimated_ready_at),
+    pool_driver_id = NULL, pooled_at = NULL, pool_seq = NULL, pool_plan_id = NULL
+WHERE id = sqlc.arg(id) AND state = 'ready' AND NOT came_back;
+
+-- name: ShowPosOrder :exec
+-- A hidden POS check that now qualifies for Kitchen: shown as if new.
+UPDATE orders SET board_hidden = false, accepted_at = sqlc.arg(at), estimated_ready_at = sqlc.arg(estimated_ready_at)
+WHERE id = sqlc.arg(id);

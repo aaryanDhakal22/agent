@@ -31,6 +31,10 @@ const (
 	// ModeKitchen is "Resend to kitchen": only the station tickets accept
 	// would print, ignoring the pickup-cash rule.
 	ModeKitchen Mode = "kitchen"
+	// ModeVoid (00020): lines voided at the POS terminal on a POS order, as
+	// station tickets under a VOID banner (only where the POS ticket switch
+	// for the order's type is on - the service checks it).
+	ModeVoid Mode = "void"
 )
 
 // Ticket is one thing to print for an order. A planned order is a set of
@@ -49,6 +53,8 @@ type Ticket struct {
 	// ReroutedFrom is set when the ticket printed on a fallback printer
 	// because TargetID was unreachable — rendered as a "REROUTED from X" banner.
 	ReroutedFrom string
+	// Void: a VOID ticket (ModeVoid) - the items are what was voided.
+	Void bool
 }
 
 // TicketResult records where one ticket printed (or why it didn't).
