@@ -45,7 +45,7 @@ func TestBuildDriverReport_MergedGolden(t *testing.T) {
 	}
 	s := string(got)
 	for _, want := range []string{"58" + cmdBoldOff, "61 531 Stevenson Ln", "CASH ORDERS (3)", "CARD ORDERS (3)", "  * POS only", "  * Quibase had Ali", "* #62 is on Bob's report (POS)",
-		"* #63 voided in POS - not counted", "POS checked 11:49 PM", leftRight("Deliveries", "6", stationWidth)} {
+		"* #63 voided in POS - not counted", "POS checked 11:49 PM", leftRight("Deliveries", "6", lineWidth)} {
 		if !strings.Contains(s, want) {
 			t.Errorf("missing %q", want)
 		}

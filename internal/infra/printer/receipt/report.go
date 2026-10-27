@@ -27,11 +27,15 @@ func BuildDriverReport(rep order.DriverReport, sc storeconfig.StoreContext, size
 	w := func(s string) { buf.WriteString(s) }
 	nl := func() { buf.WriteString(cmdFeed) }
 	bold := func(s string) { w(cmdBoldOn); w(s); w(cmdBoldOff); nl() }
-	lineWidth := driverReportWidth(size) // the full printer width at that size
+	// Headers, groups and totals print large (the base size of the other
+	// slips, 41 characters — the store's 72 mm-wide Online printer wraps a
+	// 48-character line); only the delivery lines use the report's text size.
+	itemWidth := driverReportWidth(size)
 	separator := func() string { return strings.Repeat("-", lineWidth) }
+	itemSize := driverReportSize(size)
 
 	w(cmdInit)
-	w(driverReportSize(size))
+	w(cmdBaseSz)
 	if reroutedFrom != "" {
 		w(cmdCenter)
 		w(cmdBoldOn)
@@ -44,8 +48,15 @@ func BuildDriverReport(rep order.DriverReport, sc storeconfig.StoreContext, size
 
 	// --- Header -----------------------------------------------------------
 	w(cmdCenter)
-	bold("DRIVER REPORT")
-	bold(truncRunes(strings.ToUpper(rep.DriverName), lineWidth))
+	w(cmdBoldOn)
+	w(cmdDoubleSz)
+	w("DRIVER REPORT")
+	nl()
+	w(cmdQuadSz)
+	w(truncRunes(strings.ToUpper(rep.DriverName), 12))
+	nl()
+	w(cmdBaseSz)
+	w(cmdBoldOff)
 	if sc.Location.Name != "" {
 		w(truncRunes(sc.Location.Name, lineWidth))
 		nl()
@@ -84,13 +95,15 @@ func BuildDriverReport(rep order.DriverReport, sc storeconfig.StoreContext, size
 		} else if l.DisplayNumber != nil {
 			num = fmt.Sprintf("%d", *l.DisplayNumber) // a POS check
 		}
-		bold(truncRunes(strings.TrimSpace(num+" "+l.Street), lineWidth))
-		w(leftRight("Tip: "+dollars(l.OrderTipCents), "Total: "+dollars(l.SlipTotalCents), lineWidth))
+		w(itemSize)
+		bold(truncRunes(strings.TrimSpace(num+" "+l.Street), itemWidth))
+		w(leftRight("Tip: "+dollars(l.OrderTipCents), "Total: "+dollars(l.SlipTotalCents), itemWidth))
 		nl()
 		if l.Note != "" { // how it matched the POS
-			w("  * " + truncRunes(l.Note, lineWidth-4))
+			w("  * " + truncRunes(l.Note, itemWidth-4))
 			nl()
 		}
+		w(cmdBaseSz)
 	}
 	if len(cash) > 0 {
 		bold(fmt.Sprintf("CASH ORDERS (%d)", len(cash)))
@@ -141,13 +154,21 @@ func BuildDriverReport(rep order.DriverReport, sc storeconfig.StoreContext, size
 	if amount < 0 || (amount == 0 && exact < 0) {
 		label, amount, exact = "STORE OWES DRIVER", -amount, -exact
 	}
-	bold(leftRight(label, dollars(amount), lineWidth))
+	w(cmdCenter)
+	w(cmdBoldOn)
+	w(cmdDoubleSz)
+	w(label)
+	nl()
+	w(cmdQuadSz)
+	w(dollars(amount))
+	nl()
+	w(cmdBaseSz)
+	w(cmdBoldOff)
 	if exact != amount {
-		w(rightAlign("exact "+dollars(exact), lineWidth))
+		w("exact " + dollars(exact))
 		nl()
 	}
 	nl()
-	w(cmdCenter)
 	if p := rep.POS; p != nil { // was it checked against the POS?
 		if p.Checked {
 			pos := "POS checked"
@@ -172,13 +193,14 @@ func BuildDriverReport(rep order.DriverReport, sc storeconfig.StoreContext, size
 	return buf.Bytes()
 }
 
-// driverReportWidth is the full line at the slip's size on an 80 mm
-// printer (576 dots): font A 48 characters (also at double height), font B 64.
+// driverReportWidth is the delivery lines' width at the slip's size, sized
+// for the store's 72 mm printer (font A 41 characters like the receipt,
+// also at double height; font B 54) — 48 / 64 wrapped there.
 func driverReportWidth(size string) int {
 	if size == order.SizeSmall {
-		return 64
+		return 54 // font B on the store's 72 mm printer
 	}
-	return stationWidth
+	return lineWidth
 }
 
 // driverReportSize is the slip's one text size: small = font B, normal =

@@ -51,7 +51,7 @@ func TestBuildDriverReport_Golden(t *testing.T) {
 func TestBuildDriverReport_Content(t *testing.T) {
 	rep, sc := reportFixture()
 	s := string(BuildDriverReport(rep, sc, "", "Online", printed))
-	const W = stationWidth // font A, the full 80 mm line
+	const W = lineWidth // 41: fits the store's 72 mm printer (48 wrapped there)
 	for _, want := range []string{
 		" REROUTED from ONLINE ",
 		"ABDUL",
@@ -73,8 +73,8 @@ func TestBuildDriverReport_Content(t *testing.T) {
 		leftRight("Total cash owed", "$40.99", W),
 		leftRight("Total tip (A/T)", "$8.46", W),
 		"($9.00 - 6%)",
-		leftRight("OWED TO STORE", "$33.00", W), // $32.53 rounded
-		rightAlign("exact $32.53", W),
+		"OWED TO STORE", "$33.00", // $32.53 rounded, large and centred
+		"exact $32.53",
 	} {
 		if !strings.Contains(s, want) {
 			t.Errorf("missing %q", want)
@@ -90,14 +90,16 @@ func TestBuildDriverReport_Content(t *testing.T) {
 	if strings.Index(s, "1107 4 Elm St") > strings.Index(s, "9 Oak Ave") || strings.Index(s, "CASH ORDERS") > strings.Index(s, "CARD ORDERS") {
 		t.Error("cash orders must print above card orders")
 	}
-	// No large text anywhere: no GS ! size and no double-height ESC ! at the
-	// default size (normal = font A single height).
-	if strings.Contains(s, "\x1d\x21") || strings.Contains(s, cmdBaseSz) || !strings.Contains(s, cmdNormalSz) {
-		t.Errorf("driver report must be one normal size: %q", s)
+	// Title, name and the owed amount large again (owner, 2026-10-27); the
+	// delivery lines in the report's text size (normal = font A).
+	for _, big := range []string{cmdDoubleSz + "DRIVER REPORT", cmdQuadSz + "ABDUL", cmdQuadSz + "$33.00", cmdNormalSz + cmdBoldOn + "1104 12 Main St"} {
+		if !strings.Contains(s, big) {
+			t.Errorf("missing %q in %q", big, s)
+		}
 	}
-	// Font B (small) uses its full 64-character line.
-	if small := string(BuildDriverReport(rep, sc, "small", "", printed)); !strings.Contains(small, leftRight("Tip: $2.00", "Total: $22.49", 64)) {
-		t.Error("small: tip and total at the far ends of a 64-character line")
+	// Font B (small) uses a 54-character line (the store's 72 mm printer).
+	if small := string(BuildDriverReport(rep, sc, "small", "", printed)); !strings.Contains(small, leftRight("Tip: $2.00", "Total: $22.49", 54)) {
+		t.Error("small: tip and total at the far ends of a 54-character line")
 	}
 }
 
@@ -106,8 +108,8 @@ func TestBuildDriverReport_Sizes(t *testing.T) {
 	rep, sc := reportFixture()
 	for size, cmd := range map[string]string{"small": cmdSmallSz, "normal": cmdNormalSz, "": cmdNormalSz, "large": cmdBaseSz} {
 		s := string(BuildDriverReport(rep, sc, size, "", printed))
-		if !strings.HasPrefix(s, cmdInit+cmd) || strings.Contains(s, "\x1d\x21") {
-			t.Errorf("size %q: starts %q", size, s[:6])
+		if !strings.HasPrefix(s, cmdInit+cmdBaseSz) || !strings.Contains(s, cmd+cmdBoldOn+"1104 12 Main St") {
+			t.Errorf("size %q: the delivery lines must use %q", size, cmd)
 		}
 	}
 }
@@ -117,13 +119,13 @@ func TestBuildDriverReport_StoreOwesAndEmpty(t *testing.T) {
 		Lines: []order.DriverReportLine{{Customer: "Sam T.", TipCents: 1000}}} // card only
 	rep.Finish(600)
 	s := string(BuildDriverReport(rep, storeconfig.StoreContext{}, "", "", printed))
-	if !strings.Contains(s, leftRight("STORE OWES DRIVER", "$9.00", stationWidth)) || !strings.Contains(s, "exact $9.40") || strings.Contains(s, "-$") {
+	if !strings.Contains(s, "STORE OWES DRIVER") || !strings.Contains(s, "$9.00") || !strings.Contains(s, "exact $9.40") || strings.Contains(s, "-$") {
 		t.Errorf("store-owes slip wrong:\n%s", s)
 	}
 	empty := order.DriverReport{BatchID: 1, BatchOpenedAt: printed, DriverName: "Deep", Lines: []order.DriverReportLine{}}
 	empty.Finish(600)
 	s = string(BuildDriverReport(empty, storeconfig.StoreContext{}, "", "", printed))
-	for _, want := range []string{"No deliveries this batch", leftRight("Deliveries", "0", stationWidth), "OWED TO STORE", "$0.00", " - open"} {
+	for _, want := range []string{"No deliveries this batch", leftRight("Deliveries", "0", lineWidth), "OWED TO STORE", "$0.00", " - open"} {
 		if !strings.Contains(s, want) {
 			t.Errorf("empty slip missing %q", want)
 		}
