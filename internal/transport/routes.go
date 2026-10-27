@@ -101,9 +101,10 @@ func (s *Server) routes() []routeDef {
 		{"GET", "/api/settings/times", "device", "Default times {default_pickup_minutes, default_delivery_minutes}", s.handleGetTimes},
 		{"PUT", "/api/settings/times", "device", "Set default times (each 1-240; missing keys keep their value) -> the times | 400", s.handleSetTimes},
 		{"GET", "/api/drivers", "device", "Driver roster in queue order (+ deliveries this batch)", s.handleListDrivers},
-		{"POST", "/api/drivers", "device", "Add a driver {name, pos_number?} (409 pos_number_taken)", s.handleCreateDriver},
+		{"POST", "/api/drivers", "device", "Add a driver {name, pos_number?, pushover_device?} (409 pos_number_taken, 400 bad_device)", s.handleCreateDriver},
 		{"POST", "/api/drivers/reorder", "device", "Set the queue order {ids}", s.handleReorderDrivers},
-		{"PATCH", "/api/drivers/{id}", "device", "Rename a driver / set their POS number {name?, pos_number? (\"\" clears)} (409 pos_number_taken)", s.handleRenameDriver},
+		{"PATCH", "/api/drivers/{id}", "device", "Rename a driver / set their POS number / Pushover device {name?, pos_number?, pushover_device? (\"\" clears)} (409 pos_number_taken, 400 bad_device)", s.handleRenameDriver},
+		{"POST", "/api/drivers/{id}/route/test", "device", "Send the driver's phone a sample route (Pushover) -> {ok} | 409 no_device | 502 device_not_found|pushover_rejected|pushover_unreachable | 503 not_configured", s.handleTestRoute},
 		{"DELETE", "/api/drivers/{id}", "device", "Remove a driver", s.handleRemoveDriver},
 		{"POST", "/api/drivers/{id}/clock-in", "device", "Clock a driver in: joins the back of the queue, shift opened", s.handleClockIn},
 		{"POST", "/api/drivers/{id}/clock-out", "device", "Clock a driver out: leaves the queue, shift closed (409 while out on a run); prints their report in the background -> {...Driver, report_printing}; SSE driver.report_printed", s.handleClockOut},
@@ -125,7 +126,7 @@ func (s *Server) routes() []routeDef {
 		{"GET", "/api/app/latest", "device", "Newest Quibase release cached for tablets (204 none)", s.handleAppLatest},
 		{"GET", "/api/app/apk", "device", "Download the cached Quibase APK", s.handleAppAPK},
 		{"GET", "/api/update/status", "device", "Pi update state: versions, latest, pending request, last result, can_update_now/blocked_reason", s.handleUpdateStatus},
-		{"GET", "/api/events", "device", "SSE: order.arrived|added|updated|escalated, drivers.updated|dispatched, batch.closed, floor.updated, settings.updated, integration.status|toast", s.handleEvents},
+		{"GET", "/api/events", "device", "SSE: order.arrived|added|updated|escalated, drivers.updated|dispatched, driver.route, batch.closed, floor.updated, settings.updated, integration.status|toast", s.handleEvents},
 
 		// Quibase setup + diagnostics — paired tablet (or web-UI session).
 		{"POST", "/api/pairing/code", "device", "Show a 6-digit tablet pairing code (5 min) — web UI or a paired tablet (Pair another tablet)", s.handlePairingCode},

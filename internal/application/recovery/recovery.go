@@ -231,6 +231,44 @@ func (s *Service) RefreshManagerHash(ctx context.Context) (bool, error) {
 	return true, s.settings.SetUIPasswordHash(ctx, m.PasswordHash)
 }
 
+// RefreshSecrets pulls the Pushover secrets from main (2.3.7: the admin's
+// device names may change in Doppler after the link) and applies a change
+// through OnSecrets. An older main (404) keeps what was stored at link.
+func (s *Service) RefreshSecrets(ctx context.Context) (bool, error) {
+	key, err := s.settings.GetStoreAPIKey(ctx)
+	if err != nil || key == "" {
+		return false, err
+	}
+	status, raw, err := s.main.Get(ctx, key, "/store/v1/agent/secrets", "")
+	if err != nil || status != http.StatusOK {
+		return false, err
+	}
+	var fresh order.Secrets
+	if err := json.Unmarshal(raw, &fresh); err != nil {
+		return false, err
+	}
+	li, err := s.settings.GetLinkInfo(ctx)
+	if err != nil {
+		return false, err
+	}
+	old := li.Secrets
+	if fresh.PushoverAppToken == old.PushoverAppToken && fresh.PushoverUserKey == old.PushoverUserKey &&
+		fresh.PushoverBossKey == old.PushoverBossKey && fresh.PushoverAdminDevices == old.PushoverAdminDevices {
+		return false, nil
+	}
+	if err := s.settings.SetPushoverSecrets(ctx, fresh); err != nil {
+		return false, err
+	}
+	merged := old
+	merged.PushoverAppToken, merged.PushoverUserKey = fresh.PushoverAppToken, fresh.PushoverUserKey
+	merged.PushoverBossKey, merged.PushoverAdminDevices = fresh.PushoverBossKey, fresh.PushoverAdminDevices
+	if s.OnSecrets != nil {
+		s.OnSecrets(merged)
+	}
+	s.logger.Info().Ctx(ctx).Msg("Pushover secrets refreshed from main")
+	return true, nil
+}
+
 func truncate(s string, n int) string {
 	if len(s) <= n {
 		return s

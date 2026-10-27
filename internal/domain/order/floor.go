@@ -39,6 +39,9 @@ type Driver struct {
 	// PosNumber is the driver's login number on the store's POS (2.1.0) —
 	// how the hub matches drivers, never by name.
 	PosNumber string `json:"pos_number,omitempty"`
+	// PushoverDevice (2.3.7) is the driver's phone in Pushover: Send Out
+	// pushes them the route ("" = none).
+	PushoverDevice string `json:"pushover_device,omitempty"`
 	// RunOrderIDs (2.2.1): a driver who is out — the orders of the run, in
 	// stop order (first stop first). Empty otherwise.
 	RunOrderIDs []string `json:"run_order_ids,omitempty"`
@@ -383,6 +386,8 @@ type FloorRepository interface {
 	RenameDriver(ctx context.Context, id, name string) error
 	// SetDriverPosNumber sets ("" clears) a driver's POS number.
 	SetDriverPosNumber(ctx context.Context, id, posNumber string) error
+	// SetDriverPushoverDevice sets ("" clears) a driver's Pushover device.
+	SetDriverPushoverDevice(ctx context.Context, id, device string) error
 	// RemoveDriver also returns the orders its pool held (back to unassigned).
 	RemoveDriver(ctx context.Context, id string) ([]StoredOrder, error)
 	ReorderDrivers(ctx context.Context, ids []string) error

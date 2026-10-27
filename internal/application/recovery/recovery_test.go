@@ -19,6 +19,7 @@ type fakeMain struct {
 	linkBody   string
 	restore    string
 	cred       string
+	secrets    string // "" = an older main (404)
 	posts      int
 	err        error
 }
@@ -32,6 +33,10 @@ func (f *fakeMain) Get(_ context.Context, key, path, _ string) (int, []byte, err
 		return 200, []byte(f.restore), nil
 	case "/store/v1/agent/credential":
 		return 200, []byte(f.cred), nil
+	case "/store/v1/agent/secrets":
+		if f.secrets != "" {
+			return 200, []byte(f.secrets), nil
+		}
 	}
 	return 404, nil, nil
 }
@@ -60,6 +65,11 @@ func (s *fakeSettings) SetStoreAPIKey(_ context.Context, k string) error {
 func (s *fakeSettings) GetLinkInfo(context.Context) (order.LinkInfo, error) { return s.li, nil }
 func (s *fakeSettings) SetLinkInfo(_ context.Context, li order.LinkInfo, hash, hint string) error {
 	s.li, s.hash, s.hint = li, hash, hint
+	return nil
+}
+func (s *fakeSettings) SetPushoverSecrets(_ context.Context, sec order.Secrets) error {
+	s.li.Secrets.PushoverAppToken, s.li.Secrets.PushoverUserKey = sec.PushoverAppToken, sec.PushoverUserKey
+	s.li.Secrets.PushoverBossKey, s.li.Secrets.PushoverAdminDevices = sec.PushoverBossKey, sec.PushoverAdminDevices
 	return nil
 }
 func (s *fakeSettings) GetUIPassword(context.Context) (string, string, error) {
@@ -178,5 +188,32 @@ func TestRefreshManagerHash(t *testing.T) {
 	st2 := &fakeSettings{key: "k", hash: "$2a$10$local"}
 	if changed, _ := New(st2, &fakeRepo{}, m, zerolog.Nop()).RefreshManagerHash(context.Background()); changed || st2.hash != "$2a$10$local" {
 		t.Fatal("a token-provisioned agent's password must not be replaced")
+	}
+}
+
+func TestRefreshSecrets(t *testing.T) {
+	ctx := context.Background()
+	m := &fakeMain{secrets: `{"pushover_app_token":"app","pushover_user_key":"usr","pushover_admin_devices":"AaryanPhone"}`}
+	st := &fakeSettings{key: "k", li: order.LinkInfo{Secrets: order.Secrets{PushoverAppToken: "app", PushoverUserKey: "usr",
+		OTLPEndpoint: "https://otlp"}}}
+	svc := New(st, &fakeRepo{}, m, zerolog.Nop())
+	var applied *order.Secrets
+	svc.OnSecrets = func(sec order.Secrets) { applied = &sec }
+	changed, err := svc.RefreshSecrets(ctx)
+	if err != nil || !changed || st.li.Secrets.PushoverAdminDevices != "AaryanPhone" {
+		t.Fatalf("changed %v err %v li %+v", changed, err, st.li.Secrets)
+	}
+	if applied == nil || applied.PushoverAdminDevices != "AaryanPhone" || applied.OTLPEndpoint != "https://otlp" {
+		t.Fatalf("applied %+v", applied)
+	}
+	// Same again: nothing to apply.
+	applied = nil
+	if changed, _ := svc.RefreshSecrets(ctx); changed || applied != nil {
+		t.Fatal("an unchanged refresh must not apply")
+	}
+	// An older main (404) keeps what was stored.
+	m.secrets = ""
+	if changed, err := svc.RefreshSecrets(ctx); changed || err != nil || st.li.Secrets.PushoverAdminDevices != "AaryanPhone" {
+		t.Fatalf("404: changed %v err %v", changed, err)
 	}
 }

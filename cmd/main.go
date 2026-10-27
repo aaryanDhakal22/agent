@@ -172,6 +172,7 @@ func main() {
 
 	// --- Notifier ---------------------------------------------------------
 	notifier := notify.NewNotifier(cfg.PushoverAppToken, cfg.PushoverUserKey, cfg.PushoverBossKey)
+	notifier.SetAdminDevices(notify.ParseDevices(cfg.PushoverAdminDevices))
 	if err := notifier.Send(ctx, "Agent started", "classical"); err != nil {
 		logger.Warn().Err(err).Msg("Startup notification failed — continuing")
 	}
@@ -231,6 +232,7 @@ func main() {
 
 	if saved, err := storeConfigRepo.Get(ctx); err == nil && saved != nil {
 		storeCtx.Store(*saved)
+		notifier.SetOwnerDevices(ownerDevices(*saved))
 		dispatcher.Apply(ctx, saved.Printers)
 		mapFile.Want(saved.Location.Map)
 		logger.Info().Ctx(ctx).
@@ -276,6 +278,7 @@ func main() {
 
 	// --- Store_config SSE handshake sink ----------------------------------
 	sink := &storeConfigApplier{
+		notifier:   notifier,
 		repo:       storeConfigRepo,
 		dispatcher: dispatcher,
 		mapFile:    mapFile,
@@ -500,9 +503,13 @@ func main() {
 	appUpdater.Load(ctx)
 	go appUpdater.Run(ctx, 5*time.Minute)
 	recoverySvc := recovery.New(settingsRepo, orderRepo, mainClient, logger)
+	pushoverFromEnv := os.Getenv("PUSHOVER_APP_TOKEN") != "" || os.Getenv("PUSHOVER_USER_KEY") != ""
 	recoverySvc.OnSecrets = func(sec order.Secrets) {
-		if cfg.PushoverAppToken == "" && cfg.PushoverUserKey == "" {
+		if !pushoverFromEnv {
 			notifier.SetKeys(sec.PushoverAppToken, sec.PushoverUserKey, sec.PushoverBossKey)
+		}
+		if os.Getenv("PUSHOVER_ADMIN_DEVICE") == "" {
+			notifier.SetAdminDevices(notify.ParseDevices(sec.PushoverAdminDevices))
 		}
 	}
 	sseCtrl.OnDisconnected(func() {
@@ -515,6 +522,9 @@ func main() {
 		appUpdater.Wake()
 		if _, err := recoverySvc.RefreshManagerHash(ctx); err != nil {
 			logger.Debug().Err(err).Msg("manager login refresh failed")
+		}
+		if _, err := recoverySvc.RefreshSecrets(ctx); err != nil {
+			logger.Debug().Err(err).Msg("Pushover secrets refresh failed")
 		}
 		catchupHook()
 		orderService.RelocatePOS(ctx) // POS deliveries pulled while main was away
@@ -804,6 +814,12 @@ func floorStateLabel(s order.State) string {
 
 // applyLinkedSecrets fills empty config from the secrets a manager-login link
 // stored (env wins).
+// ownerDevices: the store owner's Pushover devices (location config
+// pushover_owner_devices, set by the store login in main).
+func ownerDevices(sc storeconfig.StoreContext) []string {
+	return notify.ParseDevices(sc.LocationConfigString("pushover_owner_devices", ""))
+}
+
 func applyLinkedSecrets(cfg *config.Config, sec order.Secrets) {
 	if cfg.OTELEndpoint == "" && sec.OTLPEndpoint != "" {
 		cfg.OTELEndpoint = sec.OTLPEndpoint
@@ -813,6 +829,9 @@ func applyLinkedSecrets(cfg *config.Config, sec order.Secrets) {
 	}
 	if cfg.PushoverAppToken == "" && cfg.PushoverUserKey == "" {
 		cfg.PushoverAppToken, cfg.PushoverUserKey, cfg.PushoverBossKey = sec.PushoverAppToken, sec.PushoverUserKey, sec.PushoverBossKey
+	}
+	if os.Getenv("PUSHOVER_ADMIN_DEVICE") == "" {
+		cfg.PushoverAdminDevices = sec.PushoverAdminDevices
 	}
 }
 
@@ -870,8 +889,10 @@ type storeConfigApplier struct {
 	mapFile    *mapfile.Downloader
 	// onApplied tells the tablets to refetch /api/floor (store pin, map).
 	onApplied func()
-	storeCtx  *atomic.Value
-	logger    zerolog.Logger
+	// notifier gets the store owner's Pushover devices (location config).
+	notifier *notify.Notifier
+	storeCtx *atomic.Value
+	logger   zerolog.Logger
 	// postApply, if set, runs after the roster is rebuilt (used to push a fresh
 	// printer.report up to main).
 	postApply func(context.Context)
@@ -887,6 +908,9 @@ type storeConfigApplier struct {
 
 func (a *storeConfigApplier) Apply(ctx context.Context, sc storeconfig.StoreContext) error {
 	a.storeCtx.Store(sc)
+	if a.notifier != nil {
+		a.notifier.SetOwnerDevices(ownerDevices(sc))
+	}
 	a.dispatcher.Apply(ctx, sc.Printers)
 	if a.mapFile != nil {
 		a.mapFile.Want(sc.Location.Map) // downloads only when the version changed

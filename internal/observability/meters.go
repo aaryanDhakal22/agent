@@ -31,8 +31,11 @@ type Meters struct {
 	OrdersRetentionTrimmed metric.Int64Counter
 
 	// Floor flow (agent-owned states synced to main).
-	OrdersEscalated  metric.Int64Counter
-	FloorEventsSent  metric.Int64Counter
+	OrdersEscalated metric.Int64Counter
+	FloorEventsSent metric.Int64Counter
+	// DriverRouteSent (2.3.7): Send Out's route Pushover to the driver, by
+	// result=ok|rejected|device_not_found|unreachable|not_configured.
+	DriverRouteSent  metric.Int64Counter
 	FloorSyncBacklog metric.Int64Gauge
 	// FloorAcceptSeconds: arrival (or a future order's re-ring) → accept,
 	// by source=online|pos.
@@ -124,6 +127,13 @@ func NewMeters() (Meters, error) {
 		metric.WithDescription("Orders reprinted on demand (source=mobile|webui)"),
 	); err != nil {
 		return Meters{}, fmt.Errorf("orders.reprinted: %w", err)
+	}
+
+	if ms.DriverRouteSent, err = m.Int64Counter(
+		"driver.route.sent",
+		metric.WithDescription("Route Pushovers sent to a driver on Send Out, by result"),
+	); err != nil {
+		return Meters{}, fmt.Errorf("driver.route.sent: %w", err)
 	}
 
 	if ms.OrdersEscalated, err = m.Int64Counter(

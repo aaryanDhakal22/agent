@@ -92,6 +92,8 @@ CREATE TABLE drivers (
     created_at       text    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     -- 00014_integration: the driver's POS login number (unique when set).
     pos_number       text    NOT NULL DEFAULT '',
+    -- 00020_driver_route: the driver's phone in Pushover ('' = none).
+    pushover_device  text    NOT NULL DEFAULT '',
     CHECK (status IN ('off', 'available', 'out'))
 );
 CREATE UNIQUE INDEX idx_drivers_pos_number ON drivers (pos_number) WHERE pos_number <> '' AND active;
@@ -172,6 +174,8 @@ CREATE TABLE settings (
     secret_pushover_app_token text NOT NULL DEFAULT '',
     secret_pushover_user_key  text NOT NULL DEFAULT '',
     secret_pushover_boss_key  text NOT NULL DEFAULT '',
+    -- 00020_driver_route: the admin's Pushover devices (comma list).
+    secret_pushover_admin_devices text NOT NULL DEFAULT '',
     secret_otlp_endpoint      text NOT NULL DEFAULT '',
     secret_otlp_headers       text NOT NULL DEFAULT '',
     manager_username          text NOT NULL DEFAULT '',

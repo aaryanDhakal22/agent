@@ -34,6 +34,10 @@ type Config struct {
 	PushoverUserKey    string
 	// PushoverBossKey (optional) also receives floor problems.
 	PushoverBossKey string
+	// PushoverAdminDevices (2.3.7, optional): the admin's phones on the
+	// user key, a comma list — system alerts go only there. Unset = main's
+	// AGENT_SECRET_PUSHOVER_ADMIN_DEVICE handed over at link.
+	PushoverAdminDevices string
 
 	// AgentDBPath is the path to the pure-Go SQLite file (AGENT_DB_PATH).
 	// Defaults to ~/.quicc/agent.db.
@@ -62,16 +66,17 @@ type Config struct {
 
 func Load() (*Config, error) {
 	cfg := &Config{
-		AppEnv:             getEnvDefault("APP_ENV", "dev"),
-		MainServerURL:      os.Getenv("MAIN_SERVER_URL"),
-		HTTPPort:           getEnvDefault("HTTP_PORT", "8080"),
-		HTTPAltPort:        getEnvDefault("HTTP_ALT_PORT", ""),
-		PrinterDetectDelay: getPrinterDetectDelay(),
-		PushoverAppToken:   os.Getenv("PUSHOVER_APP_TOKEN"),
-		PushoverUserKey:    os.Getenv("PUSHOVER_USER_KEY"),
-		PushoverBossKey:    os.Getenv("PUSHOVER_BOSS_KEY"),
-		LogLevel:           os.Getenv("LOG_LEVEL"),
-		LogOutput:          os.Getenv("LOG_OUTPUT"),
+		AppEnv:               getEnvDefault("APP_ENV", "dev"),
+		MainServerURL:        os.Getenv("MAIN_SERVER_URL"),
+		HTTPPort:             getEnvDefault("HTTP_PORT", "8080"),
+		HTTPAltPort:          getEnvDefault("HTTP_ALT_PORT", ""),
+		PrinterDetectDelay:   getPrinterDetectDelay(),
+		PushoverAppToken:     os.Getenv("PUSHOVER_APP_TOKEN"),
+		PushoverUserKey:      os.Getenv("PUSHOVER_USER_KEY"),
+		PushoverBossKey:      os.Getenv("PUSHOVER_BOSS_KEY"),
+		PushoverAdminDevices: os.Getenv("PUSHOVER_ADMIN_DEVICE"),
+		LogLevel:             os.Getenv("LOG_LEVEL"),
+		LogOutput:            os.Getenv("LOG_OUTPUT"),
 
 		AgentDBPath: getAgentDBPath(),
 		KeepBatches: getKeepBatches(),

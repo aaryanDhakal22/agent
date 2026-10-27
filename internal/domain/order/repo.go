@@ -176,6 +176,8 @@ type SettingsRepository interface {
 	// LinkInfo is what a manager-login link stored (secrets from main, the
 	// manager username, this agent's device id).
 	GetLinkInfo(ctx context.Context) (LinkInfo, error)
+	// SetPushoverSecrets stores the Pushover part of the secrets (2.3.7).
+	SetPushoverSecrets(ctx context.Context, sec Secrets) error
 	// SetLinkInfo stores a link; the manager's bcrypt hash becomes the web-UI
 	// password (offline unlock with the manager login).
 	SetLinkInfo(ctx context.Context, li LinkInfo, passwordHash, hint string) error
@@ -190,9 +192,11 @@ type Secrets struct {
 	PushoverAppToken string `json:"pushover_app_token,omitempty"`
 	PushoverUserKey  string `json:"pushover_user_key,omitempty"`
 	PushoverBossKey  string `json:"pushover_boss_key,omitempty"`
-	OTLPEndpoint     string `json:"otlp_endpoint,omitempty"`
-	OTLPHeaders      string `json:"otlp_headers,omitempty"`
-	TailscaleAuthKey string `json:"tailscale_authkey,omitempty"`
+	// PushoverAdminDevices (2.3.7): the admin's phones, a comma list.
+	PushoverAdminDevices string `json:"pushover_admin_devices,omitempty"`
+	OTLPEndpoint         string `json:"otlp_endpoint,omitempty"`
+	OTLPHeaders          string `json:"otlp_headers,omitempty"`
+	TailscaleAuthKey     string `json:"tailscale_authkey,omitempty"`
 }
 
 // LinkInfo is a stored manager-login link.
