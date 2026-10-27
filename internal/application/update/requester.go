@@ -266,6 +266,7 @@ func (r *Requester) Load(ctx context.Context) {
 		}
 	}
 	r.readStatusLocked()
+	r.dropSupersededLocked(ctx)
 	// An update that finished before the agent kept this (or before this
 	// database): take it from update.status.
 	if r.file != nil && isUpdateOK(r.file) {
@@ -333,6 +334,10 @@ func (r *Requester) Run(ctx context.Context) {
 func (r *Requester) Tick(ctx context.Context) {
 	r.mu.Lock()
 	now := r.cfg.Now()
+	if r.job != nil && r.job.WrittenAt == nil {
+		r.readStatusLocked()
+		r.dropSupersededLocked(ctx)
+	}
 	if r.job != nil && r.job.WrittenAt == nil && now.Sub(r.lastIdleAt) >= idleEvery {
 		r.lastIdleAt = now
 		r.tryWriteWaitingLocked(ctx)
@@ -371,16 +376,23 @@ func (r *Requester) Request(ctx context.Context, action string, force bool, requ
 	r.mu.Lock()
 	now := r.cfg.Now()
 	r.readStatusLocked()
+	r.dropSupersededLocked(ctx)
 	// A retried request (same id) gets the current answer.
 	if r.job != nil && r.job.ID == id {
 		st := r.stateLocked(now)
 		r.mu.Unlock()
 		return Reply{Accepted: true, State: st, ID: id}
 	}
-	if r.inProgressLocked(now) {
-		st := r.stateLocked(now)
+	// Only a request the root updater has (or may have) picked up blocks a new
+	// one. A forced request still waiting for idle was never written, so the
+	// new request takes its place (once it passes its own gate below).
+	if st := r.stateLocked(now); st == StateRequested || st == StateRunning {
 		r.mu.Unlock()
 		return Reply{State: st, Code: CodeInProgress, ID: id}
+	}
+	replaced := ""
+	if r.job != nil && r.job.WrittenAt == nil {
+		replaced = r.job.ID
 	}
 	total, active, err := r.orders(ctx)
 	if err != nil {
@@ -402,7 +414,7 @@ func (r *Requester) Request(ctx context.Context, action string, force bool, requ
 		r.persistJobLocked(ctx)
 		r.mu.Unlock()
 		r.logger.Info().Ctx(ctx).Str("id", id).Str("requested_by", requestedBy).Int64("orders_open", active).
-			Msg("forced update accepted — waiting for the store to be idle")
+			Str("replaced", replaced).Msg("forced update accepted — waiting for the store to be idle")
 		r.Wake()
 		return Reply{Accepted: true, State: StateWaiting, ID: id}
 	}
@@ -414,7 +426,8 @@ func (r *Requester) Request(ctx context.Context, action string, force bool, requ
 	r.job = j
 	r.persistJobLocked(ctx)
 	r.mu.Unlock()
-	r.logger.Info().Ctx(ctx).Str("id", id).Str("action", action).Str("requested_by", requestedBy).Msg("update requested")
+	r.logger.Info().Ctx(ctx).Str("id", id).Str("action", action).Str("requested_by", requestedBy).
+		Str("replaced", replaced).Msg("update requested")
 	r.event("info", fmt.Sprintf("%s requested by %s (%s)", action, requestedBy, id))
 	r.Wake()
 	return Reply{Accepted: true, State: StateRequested, ID: id}
@@ -427,13 +440,14 @@ func (r *Requester) View(ctx context.Context) View {
 	r.mu.Lock()
 	now := r.cfg.Now()
 	r.readStatusLocked()
+	r.dropSupersededLocked(ctx)
 	v.State = r.stateLocked(now)
 	if r.job != nil && (v.State == StateWaiting || v.State == StateRequested || v.State == StateRunning) {
 		p := r.job.Pending
 		v.Pending = &p
 	}
 	v.Last = r.lastLocked(now)
-	inProgress := r.inProgressLocked(now)
+	inProgress := v.State == StateRequested || v.State == StateRunning // a waiting job is replaced
 	r.mu.Unlock()
 	switch {
 	case !r.cfg.Supported:
@@ -476,6 +490,42 @@ func (r *Requester) readStatusLocked() {
 		return
 	}
 	r.file = &s
+}
+
+// dropSupersededLocked forgets a forced update still waiting for idle once
+// update.status shows another update that finished well (ok / up to date)
+// after the forced one was asked for — e.g. one started by hand with its own
+// id. Without this the waiting job outlived the install and kept refusing every
+// new request as "already running".
+func (r *Requester) dropSupersededLocked(ctx context.Context) {
+	j, f := r.job, r.file
+	if j == nil || j.WrittenAt != nil || j.Action != ActionUpdate || f == nil || f.ID == j.ID {
+		return
+	}
+	if f.Action != ActionUpdate && f.Action != "" || f.State != StateOK && f.State != StateUpToDate {
+		return
+	}
+	at, ok := statusTime(f)
+	if !ok || !at.After(j.RequestedAt) {
+		return
+	}
+	r.job = nil
+	if err := r.store.SetUpdateJob(ctx, ""); err != nil {
+		r.logger.Warn().Ctx(ctx).Err(err).Msg("update job not cleared")
+	}
+	r.logger.Info().Ctx(ctx).Str("id", j.ID).Str("by", f.ID).Msg("waiting forced update dropped — another update already finished")
+	r.event("info", fmt.Sprintf("waiting update %s dropped: %s already finished (%s)", j.ID, f.ID, f.State))
+}
+
+// statusTime is when update.status finished (else started); ok=false when it
+// carries neither.
+func statusTime(s *Status) (time.Time, bool) {
+	for _, v := range []string{s.FinishedAt, s.StartedAt} {
+		if at, err := time.Parse(time.RFC3339, v); err == nil {
+			return at.UTC(), true
+		}
+	}
+	return time.Time{}, false
 }
 
 // effectiveLocked is the status that describes the newest request: the
