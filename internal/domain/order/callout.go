@@ -116,6 +116,16 @@ type CalloutTestData struct {
 // to 4 digits).
 const MaxCalloutNumber = 9999
 
+// CalloutRenderData is a callout.render feed event (2.3.2): the tablet's
+// PREVIEW "on this tablet" - the hub renders "Order ready for ticket number
+// <number>" with Voice ("" = the chosen voice) and uploads the WAV to
+// PUT /api/integration/callout-audio/<id>; nothing plays in the store.
+type CalloutRenderData struct {
+	ID     string `json:"id"`
+	Voice  string `json:"voice"`
+	Number int    `json:"number"`
+}
+
 // --- terminal changes ----------------------------------------------------------------
 
 // ChangeLine is one line added to or removed from a POS check.

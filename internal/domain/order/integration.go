@@ -410,6 +410,9 @@ const (
 	// FeedCalloutTest (00020): speak a callout now on the store speaker - a
 	// TEST CALLOUT or a voice PREVIEW from the tablet.
 	FeedCalloutTest = "callout.test"
+	// FeedCalloutRender (2.3.2): render a callout for the tablet's PREVIEW
+	// "on this tablet" and upload the WAV to the Pi (nothing plays).
+	FeedCalloutRender = "callout.render"
 )
 
 // FeedRetention is how long feed events are kept.

@@ -83,6 +83,9 @@ type Service struct {
 	autoMu sync.Mutex
 	// ledger: the POS driver ledger from the store hub (2.3.0, ledger.go).
 	ledger ledgerState
+	// preview: the callout PREVIEW "on this tablet" audio (2.3.2,
+	// callout_preview.go), in memory only.
+	preview previewState
 }
 
 func NewService(

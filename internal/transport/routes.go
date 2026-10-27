@@ -96,6 +96,8 @@ func (s *Server) routes() []routeDef {
 		{"PUT", "/api/settings/callout", "device", "Set the order callout (missing keys keep their value; volume/music_dip 0-100, restore_seconds 0-10) -> the settings | 400; feed settings.changed", s.handleSetCalloutSettings},
 		{"GET", "/api/callout", "device", "Order callout: {settings, hub_connected, hub: {voices, default_voice, rendering, last, error} | null}", s.handleGetCallout},
 		{"POST", "/api/callout/test", "device", "Speak a callout on the store speaker now {number 1-9999, voice?, kind?: test|preview} -> 202 {id, hub_connected} (feed callout.test)", s.handleCalloutTest},
+		{"POST", "/api/callout/preview", "device", "PREVIEW on this tablet {number 1-9999, voice?} -> 202 {id, status: pending} (feed callout.render; the hub uploads the WAV) | 503 {code: hub_not_connected|hub_update_needed|not_installed}", s.handleCalloutPreview},
+		{"GET", "/api/callout/preview/{id}", "device", "The preview's audio (?wait=<sec <=10>) -> 200 audio/wav | 202 {status: pending} | 404 | 503 {code: render_failed|not_installed} | 504 timeout (20 s)", s.handleCalloutPreviewAudio},
 		{"GET", "/api/settings/times", "device", "Default times {default_pickup_minutes, default_delivery_minutes}", s.handleGetTimes},
 		{"PUT", "/api/settings/times", "device", "Set default times (each 1-240; missing keys keep their value) -> the times | 400", s.handleSetTimes},
 		{"GET", "/api/drivers", "device", "Driver roster in queue order (+ deliveries this batch)", s.handleListDrivers},
@@ -145,6 +147,7 @@ func (s *Server) routes() []routeDef {
 		{"POST", "/api/integration/orders/{ext_ref}/void", "integration", "A POS check voided at the terminal -> the cancelled order", s.handleIntegrationVoid},
 		{"PATCH", "/api/integration/online-orders/{order_id}", "integration", "An online order the hub inserted / refused {paid?, pos_check_number?, flag?|null} -> StoredOrder", s.handleIntegrationPatchOnline},
 		{"PUT", "/api/integration/driver-ledger", "integration", "The POS's delivery checks of the day {operation_day, generated_at, checks, unknown_pos_numbers} -> 204 (kept in memory)", s.handleIntegrationDriverLedger},
+		{"PUT", "/api/integration/callout-audio/{id}", "integration", "A callout.render's audio: body audio/wav (<= 2 MB) or JSON {error, code?: not_installed|render_failed} -> 204 | 404 unknown/expired | 400 not a WAV | 413", s.handleIntegrationCalloutAudio},
 		{"GET", "/api/integration/events", "integration", "The hub feed (?after=<seq>&wait=<sec <=25>, long-poll) -> {events:[{seq,type,at,data}], next}; kept 3 days", s.handleIntegrationEvents},
 
 		// Web-UI-only — session-gated.

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -142,7 +143,7 @@ func (s *Server) Start(ctx context.Context) {
 	// sits inside otelhttp so the span already exists when it runs.
 	// No request needs more than ~256 KB (a tablet's diagnostics report); the
 	// open routes decode JSON, so cap every body against a memory blow-up.
-	handler := otelhttp.NewHandler(http.MaxBytesHandler(traceIDHeader(mux), maxRequestBody), "agent-http",
+	handler := otelhttp.NewHandler(capBodies(traceIDHeader(mux)), "agent-http",
 		otelhttp.WithServerName("quicc-agent"),
 	)
 
@@ -517,6 +518,24 @@ func (s *Server) writeJSON(w http.ResponseWriter, status int, body any) {
 
 // maxRequestBody caps every request body (see Start).
 const maxRequestBody = 1 << 20
+
+// calloutAudioPath is the one route with a bigger body: the store hub's
+// callout preview WAV (<= orderApp.MaxPreviewAudio, its handler enforces it).
+const calloutAudioPath = "/api/integration/callout-audio/"
+
+// capBodies caps every request body at maxRequestBody (the callout preview
+// upload at MaxPreviewAudio + 1, so its handler can answer 413).
+func capBodies(h http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		limit := int64(maxRequestBody)
+		if strings.HasPrefix(r.URL.Path, calloutAudioPath) {
+			limit = orderApp.MaxPreviewAudio + 1
+		}
+		r2 := *r
+		r2.Body = http.MaxBytesReader(w, r.Body, limit)
+		h.ServeHTTP(w, &r2)
+	})
+}
 
 func (s *Server) writeError(w http.ResponseWriter, r *http.Request, status int, err error) {
 	s.logger.Warn().Ctx(r.Context()).Err(err).Int("status", status).Str("path", r.URL.Path).Msg("Request failed")
