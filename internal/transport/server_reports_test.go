@@ -22,7 +22,7 @@ import (
 	"github.com/rs/zerolog"
 )
 
-// 2.2.3: driver reports any time — the print route, the clock-out print and
+// 2.3.0: driver reports any time — the print route, the clock-out print and
 // the hub's driver-ledger PUT. Slips go to a fake raw-print printer.
 
 // fakeTCPPrinter keeps every job's bytes that contains want.
@@ -94,7 +94,7 @@ func withReportPrinting(t *testing.T, s *Server, addr string) {
 	d.Apply(ctx, []storeconfig.PrinterContext{{ID: "p-front", Name: "Front", IP: addr, IsReceipt: true}})
 	sc := storeconfig.StoreContext{Location: storeconfig.LocationContext{Name: "Lombardi's Pizza", Timezone: "America/New_York"}}
 	s.service.SetDocumentPrinting(d.PrintDocument, func(rep order.DriverReport, from string) []byte {
-		return receipt.BuildDriverReport(rep, sc, from, time.Now())
+		return receipt.BuildDriverReport(rep, sc, "", from, time.Now())
 	})
 }
 
@@ -113,10 +113,10 @@ func newDriver(t *testing.T, s *Server, name, pos string) *order.Driver {
 func TestClockOutPrintsTheDriversReport(t *testing.T) {
 	s, h, key := diagServer(t)
 
-	// No printers wired: clock-out as before, no report_print.
+	// No printers wired: clock-out as before, no report_printing.
 	sam := newDriver(t, s, "Sam", "")
 	rec := call(h, "POST", "/api/drivers/"+sam.ID+"/clock-out", key, "")
-	if rec.Code != http.StatusOK || strings.Contains(rec.Body.String(), "report_print") || !strings.Contains(rec.Body.String(), `"status":"off"`) {
+	if rec.Code != http.StatusOK || strings.Contains(rec.Body.String(), "report_printing") || !strings.Contains(rec.Body.String(), `"status":"off"`) {
 		t.Fatalf("unwired clock-out = %d %s", rec.Code, rec.Body)
 	}
 
@@ -125,43 +125,35 @@ func TestClockOutPrintsTheDriversReport(t *testing.T) {
 	juma := newDriver(t, s, "Juma", "31")
 	rec = call(h, "POST", "/api/drivers/"+juma.ID+"/clock-out", key, "")
 	var ans struct {
-		ID          string `json:"id"`
-		Status      string `json:"status"`
-		ReportPrint struct {
-			Printed    bool   `json:"printed"`
-			DriverName string `json:"driver_name"`
-			PrintedOn  string `json:"printed_on"`
-		} `json:"report_print"`
+		ID             string `json:"id"`
+		Status         string `json:"status"`
+		ReportPrinting bool   `json:"report_printing"`
 	}
-	if err := json.Unmarshal(rec.Body.Bytes(), &ans); err != nil || rec.Code != http.StatusOK {
+	if err := json.Unmarshal(rec.Body.Bytes(), &ans); err != nil || rec.Code != http.StatusOK || ans.ID != juma.ID || ans.Status != "off" || !ans.ReportPrinting {
 		t.Fatalf("clock-out = %d %s", rec.Code, rec.Body)
-	}
-	if ans.ID != juma.ID || ans.Status != "off" || !ans.ReportPrint.Printed || ans.ReportPrint.DriverName != "Juma" || ans.ReportPrint.PrintedOn != "Front" {
-		t.Fatalf("clock-out answer = %s", rec.Body)
 	}
 	slips := fp.waitJobs(t, 1)
 	if !strings.Contains(slips[0], "JUMA") || !strings.Contains(slips[0], "No deliveries this batch") {
 		t.Fatalf("slip = %q", slips[0])
 	}
+	s.service.WaitBackground()
 }
 
-func TestClockOutWhenTheReportCantPrint(t *testing.T) {
+// The answer doesn't wait for the printer: a dead receipt printer still
+// clocks the driver out at once (the slip's fate comes over SSE).
+func TestClockOutDoesNotWaitForThePrinter(t *testing.T) {
 	s, h, key := diagServer(t)
-	withReportPrinting(t, s, "") // the receipt printer is off
+	withReportPrinting(t, s, "") // nothing listens: the print fails in the background
 	juma := newDriver(t, s, "Juma", "31")
+	start := time.Now()
 	rec := call(h, "POST", "/api/drivers/"+juma.ID+"/clock-out", key, "")
-	var ans struct {
-		Status      string `json:"status"`
-		ReportPrint struct {
-			Printed bool   `json:"printed"`
-			Error   string `json:"error"`
-			Code    string `json:"code"`
-		} `json:"report_print"`
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"report_printing":true`) || !strings.Contains(rec.Body.String(), `"status":"off"`) {
+		t.Fatalf("clock-out = %d %s", rec.Code, rec.Body)
 	}
-	_ = json.Unmarshal(rec.Body.Bytes(), &ans)
-	if rec.Code != http.StatusOK || ans.Status != "off" || ans.ReportPrint.Printed || ans.ReportPrint.Code != "nothing_printed" || ans.ReportPrint.Error == "" {
-		t.Fatalf("clock-out with no printer = %d %s (the driver is clocked out either way)", rec.Code, rec.Body)
+	if time.Since(start) > time.Second {
+		t.Fatalf("clock-out waited %s", time.Since(start))
 	}
+	s.service.WaitBackground()
 }
 
 func TestDriverReportRoutes(t *testing.T) {

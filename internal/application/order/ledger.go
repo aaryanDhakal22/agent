@@ -13,7 +13,7 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 )
 
-// The POS driver ledger (2.2.3, see domain/order/ledger.go): the hub PUTs it
+// The POS driver ledger (2.3.0, see domain/order/ledger.go): the hub PUTs it
 // every ~15 s; a report about to print asks for a fresh one through the feed
 // and waits a few seconds for it. In memory only.
 
@@ -303,6 +303,48 @@ func (s *Service) PrintDriverReport(ctx context.Context, driverID, trigger strin
 	s.logger.Info().Ctx(ctx).Str("driver", rep.DriverName).Str("trigger", trigger).Str("printer", res.PrintedOn).
 		Int("deliveries", rep.Deliveries).Bool("pos_checked", rep.POS != nil && rep.POS.Checked).Msg("Driver report printed")
 	return out, nil
+}
+
+// ReportPrinted is SSE driver.report_printed: how a background driver-report
+// print (clock-out) went.
+type ReportPrinted struct {
+	DriverID     string `json:"driver_id"`
+	DriverName   string `json:"driver_name"`
+	Trigger      string `json:"trigger"` // clock_out
+	Printed      bool   `json:"printed"`
+	PrintedOn    string `json:"printed_on,omitempty"`
+	ReroutedFrom string `json:"rerouted_from,omitempty"`
+	Error        string `json:"error,omitempty"`
+	Code         string `json:"code,omitempty"` // nothing_printed | report_failed
+}
+
+// PrintDriverReportInBackground prints a driver's report without the caller
+// waiting (clock-out): the POS ledger refresh and the print run in the
+// background, and the outcome goes to the tablets as SSE
+// driver.report_printed (a slip that printed nowhere also pages the floor).
+// False when this Pi can't print documents (nothing happens).
+func (s *Service) PrintDriverReportInBackground(ctx context.Context, d order.Driver, trigger string) bool {
+	if !s.CanPrintReports() {
+		return false
+	}
+	s.background(ctx, func(ctx context.Context) {
+		ev := ReportPrinted{DriverID: d.ID, DriverName: d.Name, Trigger: trigger}
+		res, err := s.PrintDriverReport(ctx, d.ID, trigger)
+		switch {
+		case err != nil:
+			s.logger.Warn().Ctx(ctx).Err(err).Str("driver", d.Name).Msg("driver report in the background failed")
+			ev.Error, ev.Code = err.Error(), "report_failed"
+			s.alertFloor(ctx, fmt.Sprintf("Driver report NOT PRINTED for %s (%s): %v", d.Name, trigger, err))
+		case !res.Printed():
+			ev.DriverName, ev.Error, ev.Code = res.DriverName, res.Error, "nothing_printed"
+		default:
+			ev.DriverName, ev.Printed, ev.PrintedOn, ev.ReroutedFrom = res.DriverName, true, res.PrintedOn, res.ReroutedFrom
+		}
+		if s.broker != nil {
+			s.broker.Publish("driver.report_printed", ev)
+		}
+	})
+	return true
 }
 
 // ledgerNote is a short line for logs about the POS state of reports.

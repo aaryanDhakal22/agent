@@ -102,7 +102,7 @@ type IntegrationRepository interface {
 	MirrorSendOut(ctx context.Context, driverID, orderID string) (sent, readied, unpooled []StoredOrder, err error)
 	// MirrorJoinRun puts a delivery on the run of a driver already out.
 	MirrorJoinRun(ctx context.Context, driverID, orderID string) (so *StoredOrder, readied []StoredOrder, err error)
-	// AppendFeed writes a feed event that goes with no other change (2.2.3:
+	// AppendFeed writes a feed event that goes with no other change (2.3.0:
 	// driver_ledger.requested).
 	AppendFeed(ctx context.Context, typ string, at time.Time, data any) error
 	// ListFeed returns up to limit feed events after seq, and the newest seq.

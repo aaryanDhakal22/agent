@@ -276,16 +276,18 @@ func (s *Server) handleClockIn(w http.ResponseWriter, r *http.Request) {
 	s.writeJSON(w, http.StatusOK, d)
 }
 
-// POST /api/drivers/{id}/clock-out — available → off, shift closed, then
-// (2.2.3) the driver's report prints: {…Driver, report_print}.
+// POST /api/drivers/{id}/clock-out — available → off, shift closed; the
+// driver's report prints in the background: {…Driver, report_printing}.
 func (s *Server) handleClockOut(w http.ResponseWriter, r *http.Request) {
 	d, err := s.service.ClockOut(r.Context(), r.PathValue("id"))
 	if err != nil {
 		s.floorErr(w, r, err)
 		return
 	}
-	// 2.2.3: the driver's report prints right away (report_print says how).
-	s.writeJSON(w, http.StatusOK, clockOutAnswer{Driver: d, ReportPrint: s.clockOutReport(r.Context(), d)})
+	// The driver's report prints in the background; the tablets hear how it
+	// went as SSE driver.report_printed.
+	printing := s.service.PrintDriverReportInBackground(r.Context(), *d, "clock_out")
+	s.writeJSON(w, http.StatusOK, clockOutAnswer{Driver: d, ReportPrinting: printing})
 }
 
 // GET /api/drivers/shifts?days=7 — shift records (newest first).

@@ -12,7 +12,7 @@ import (
 	"quiccpos/agent/internal/domain/printer"
 )
 
-// 2.2.3: driver reports any time, merged with the hub's POS driver ledger.
+// 2.3.0: driver reports any time, merged with the hub's POS driver ledger.
 
 type docLog struct {
 	mu    sync.Mutex
@@ -223,5 +223,42 @@ func TestPrintDriverReportNoHubNoWait(t *testing.T) {
 	}
 	if _, err := svc.PrintDriverReport(ctx, "nope", "button"); err != order.ErrDriverNotFound {
 		t.Fatalf("unknown driver: %v", err)
+	}
+}
+
+// Clock-out prints in the background; the tablets hear the outcome as SSE
+// driver.report_printed.
+func TestPrintDriverReportInBackground(t *testing.T) {
+	ctx := context.Background()
+	svc, _, events, _, _ := newIntegService(t)
+	juma, _ := svc.CreateDriver(ctx, "Juma", "31")
+	if svc.PrintDriverReportInBackground(ctx, *juma, "clock_out") {
+		t.Fatal("no printing wired: nothing to start")
+	}
+	docs := &docLog{}
+	docs.wire(svc)
+	drain(events)
+	if !svc.PrintDriverReportInBackground(ctx, *juma, "clock_out") {
+		t.Fatal("printing wired: it starts")
+	}
+	svc.WaitBackground()
+	var ev ReportPrinted
+	data, ok := eventOf(events, "driver.report_printed")
+	if !ok || json.Unmarshal(data, &ev) != nil || !ev.Printed || ev.DriverID != juma.ID || ev.DriverName != "Juma" ||
+		ev.PrintedOn != "Front" || ev.Trigger != "clock_out" || ev.Code != "" {
+		t.Fatalf("event = %s", data)
+	}
+	if docs.last(t).DriverName != "Juma" {
+		t.Fatal("slip not printed")
+	}
+
+	docs.fail = true
+	drain(events)
+	svc.PrintDriverReportInBackground(ctx, *juma, "clock_out")
+	svc.WaitBackground()
+	ev = ReportPrinted{}
+	data, ok = eventOf(events, "driver.report_printed")
+	if !ok || json.Unmarshal(data, &ev) != nil || ev.Printed || ev.Code != "nothing_printed" || ev.Error != "printer offline" {
+		t.Fatalf("failed event = %s", data)
 	}
 }

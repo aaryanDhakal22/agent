@@ -242,7 +242,11 @@ func buildFull(snap order.Snapshot, sc storeconfig.StoreContext, reroutedFrom st
 	w(cmdBoldOff)
 	nl()
 
-	for _, item := range snap.Items {
+	sp := prefs.Spacing
+	for i, item := range snap.Items {
+		if i > 0 && len(snap.Items[i-1].Children) == 0 {
+			w(feedDots(sp.ItemItem)) // after an item with no modifiers
+		}
 		w(separator())
 		nl()
 		itemSum := int64(item.Quantity) * item.UnitPrice
@@ -261,7 +265,12 @@ func buildFull(snap order.Snapshot, sc storeconfig.StoreContext, reroutedFrom st
 			nl()
 		}
 
-		for _, mod := range item.Children {
+		for j, mod := range item.Children {
+			if j == 0 {
+				w(feedDots(sp.ItemMod))
+			} else {
+				w(feedDots(sp.ModMod))
+			}
 			label := mod.Name
 			if mod.Quantity > 1 {
 				label = fmt.Sprintf("(x%d) %s", mod.Quantity, label)
@@ -424,7 +433,11 @@ func buildStation(snap order.Snapshot, t printer.Ticket, prefs order.ReceiptPref
 	nl()
 
 	// --- This station's items ----------------------------------------------
-	for _, it := range t.Mine {
+	sp := prefs.Spacing
+	for i, it := range t.Mine {
+		if i > 0 && len(t.Mine[i-1].Children) == 0 {
+			w(feedDots(sp.ItemItem)) // after an item with no modifiers
+		}
 		w(cmdBoldOn)
 		w(textSize(prefs.KitchenItemSize))
 		for _, line := range wordWrap(fmt.Sprintf("%d %s", it.Quantity, itemName(it)), itemWidth(prefs.KitchenItemSize), "  ") {
@@ -439,7 +452,12 @@ func buildStation(snap order.Snapshot, t printer.Ticket, prefs order.ReceiptPref
 			w(cmdInvertOff)
 			nl()
 		}
-		for _, mod := range it.Children {
+		for j, mod := range it.Children {
+			if j == 0 {
+				w(feedDots(sp.ItemMod))
+			} else {
+				w(feedDots(sp.ModMod))
+			}
 			label := mod.Name
 			if mod.Quantity > 1 {
 				label = fmt.Sprintf("(x%d) %s", mod.Quantity, label)
@@ -660,6 +678,16 @@ func firstCardPayment(payments []order.PaymentSummary) order.PaymentSummary {
 }
 
 func separator() string { return strings.Repeat("-", lineWidth) }
+
+// feedDots is ESC J n — feed n dots of paper (the line before it has already
+// ended, so it only adds space); "" for 0, so the default spacing prints the
+// same bytes as before the setting.
+func feedDots(n int) string {
+	if n <= 0 {
+		return ""
+	}
+	return string([]byte{0x1b, 0x4a, byte(min(n, 255))})
+}
 
 func margin(s string) string {
 	return strings.Repeat(" ", marginSpaces) + s

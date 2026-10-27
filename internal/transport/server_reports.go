@@ -9,7 +9,7 @@ import (
 	"quiccpos/agent/internal/domain/order"
 )
 
-// Driver reports any time + the POS driver ledger (2.2.3).
+// Driver reports any time + the POS driver ledger (2.3.0).
 
 // GET /api/drivers/{id}/report — the driver's report for the open batch so
 // far, merged with the POS ledger as it is now.
@@ -44,37 +44,11 @@ func (s *Server) handlePrintDriverReport(w http.ResponseWriter, r *http.Request)
 	s.writeJSON(w, http.StatusOK, res)
 }
 
-// reportPrintOutcome is clock-out's report_print.
-type reportPrintOutcome struct {
-	Printed      bool   `json:"printed"`
-	DriverName   string `json:"driver_name"`
-	PrintedOn    string `json:"printed_on,omitempty"`
-	ReroutedFrom string `json:"rerouted_from,omitempty"`
-	Error        string `json:"error,omitempty"`
-	Code         string `json:"code,omitempty"`
-}
-
-// clockOutAnswer is the Driver plus what printing their report did.
+// clockOutAnswer is the Driver plus whether their report is printing in
+// the background (the outcome comes as SSE driver.report_printed).
 type clockOutAnswer struct {
 	*order.Driver
-	ReportPrint *reportPrintOutcome `json:"report_print,omitempty"`
-}
-
-// clockOutReport prints a driver's report right after clock-out (2.2.3).
-// nil when this Pi can't print documents.
-func (s *Server) clockOutReport(ctx context.Context, d *order.Driver) *reportPrintOutcome {
-	if !s.service.CanPrintReports() {
-		return nil
-	}
-	res, err := s.service.PrintDriverReport(context.WithoutCancel(ctx), d.ID, "clock-out")
-	switch {
-	case err != nil:
-		s.logger.Warn().Ctx(ctx).Err(err).Str("driver", d.Name).Msg("driver report on clock-out failed")
-		return &reportPrintOutcome{DriverName: d.Name, Error: err.Error(), Code: "report_failed"}
-	case !res.Printed():
-		return &reportPrintOutcome{DriverName: res.DriverName, Error: res.Error, Code: "nothing_printed"}
-	}
-	return &reportPrintOutcome{Printed: true, DriverName: res.DriverName, PrintedOn: res.PrintedOn, ReroutedFrom: res.ReroutedFrom}
+	ReportPrinting bool `json:"report_printing,omitempty"`
 }
 
 // PUT /api/integration/driver-ledger — the hub's POS delivery checks of the

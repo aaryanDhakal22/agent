@@ -9,7 +9,7 @@ import (
 	"unicode/utf8"
 )
 
-// The POS driver ledger (2.2.3). The store hub reads the POS's delivery
+// The POS driver ledger (2.3.0). The store hub reads the POS's delivery
 // checks of its operation day (check #, the driver on it, money, voided /
 // closed, out time — no customer data) and PUTs them here, every ~15 s and
 // right away when the feed asks for a fresh one (driver_ledger.requested).
@@ -312,7 +312,7 @@ func MergeDriverReports(in MergeInput) []DriverReport {
 			OutAt: c.OutAt, Match: MatchPOSOnly, Note: "POS only"}
 		if held {
 			x := NewDriverReportLine(so)
-			l.OrderID, l.Customer, l.Address = x.OrderID, x.Customer, x.Address
+			l.OrderID, l.Customer, l.Address, l.Street = x.OrderID, x.Customer, x.Address, x.Street
 			switch {
 			case so.Status.State == StateOnDelivery:
 				l.Match, l.Note = MatchBoth, "still out on Quibase"
@@ -352,6 +352,7 @@ func MergeDriverReports(in MergeInput) []DriverReport {
 func (l DriverReportLine) withPOSMoney(c LedgerCheck) DriverReportLine {
 	l.TotalCents = c.TotalCents
 	l.Cash, l.CashCents, l.TipCents = posMoney(c.Paid, c.CashDueCents, c.TipCents)
+	l.setSlipMoney(c.TotalCents, c.TipCents) // the POS's total has no tip in it
 	if l.OutAt == nil {
 		l.OutAt = c.OutAt
 	}

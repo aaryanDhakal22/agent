@@ -1306,6 +1306,8 @@ function agentApp() {
         kitchen_item_size: f.kitchen_item_size, kitchen_number_size: f.kitchen_number_size, footer_text: footer,
         footer_size: f.footer_size, copies: Number(f.copies) || 1,
         show_store_address: !!f.show_store_address, show_phone: !!f.show_phone, extra_paper: !!f.extra_paper,
+        // Set on the tablet (driver-report size, line spacing): kept as they are.
+        driver_report_size: f.driver_report_size, spacing: f.spacing,
       };
     },
     get rcptDirty() { return !!(this.rcpt && this.rcptForm) && prefsKey(this.buildPrefs()) !== prefsKey(this.rcpt.prefs); },

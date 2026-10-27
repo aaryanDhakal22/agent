@@ -6,7 +6,7 @@ import (
 	"time"
 )
 
-// 2.2.3: driver reports merged with the POS driver ledger.
+// 2.3.0: driver reports merged with the POS driver ledger.
 
 var (
 	mOpened = time.Date(2026, 10, 26, 14, 0, 0, 0, time.UTC)

@@ -252,7 +252,7 @@ func main() {
 	// formatted with the live store context (timezone + store name).
 	orderService.SetDocumentPrinting(dispatcher.PrintDocument, func(rep order.DriverReport, from string) []byte {
 		sc, _ := storeCtx.Load().(storeconfig.StoreContext)
-		return receipt.BuildDriverReport(rep, sc, from, time.Now())
+		return receipt.BuildDriverReport(rep, sc, orderService.PrintPrefs().DriverReportSize, from, time.Now())
 	})
 
 	orderService.LoadReceiptPrefs(ctx)

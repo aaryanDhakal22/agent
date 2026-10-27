@@ -120,7 +120,7 @@ func (s *Service) UndoReturn(ctx context.Context, driverID string) (*order.Drive
 }
 
 // DriverReports returns the finished driver reports of a batch (0 = open),
-// merged with the store hub's POS driver ledger as it is now (2.2.3).
+// merged with the store hub's POS driver ledger as it is now (2.3.0).
 func (s *Service) DriverReports(ctx context.Context, batchID int64) ([]order.DriverReport, error) {
 	return s.mergedReports(ctx, batchID, nil)
 }
@@ -140,7 +140,7 @@ func (s *Service) PrintDriverReports(ctx context.Context, batchID int64) ([]Repo
 	if !s.CanPrintReports() {
 		return nil, spanErr(span, ErrPrintingUnavailable)
 	}
-	s.RefreshLedger(ctx) // a fresh POS ledger first (2.2.3)
+	s.RefreshLedger(ctx) // a fresh POS ledger first (2.3.0)
 	reps, err := s.DriverReports(ctx, batchID)
 	if err != nil {
 		return nil, spanErr(span, err)

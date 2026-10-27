@@ -81,7 +81,7 @@ type Service struct {
 	onBatchClosed atomic.Pointer[func(ctx context.Context)]
 	// autoMu: one auto-assign at a time (autoassign.go).
 	autoMu sync.Mutex
-	// ledger: the POS driver ledger from the store hub (2.2.3, ledger.go).
+	// ledger: the POS driver ledger from the store hub (2.3.0, ledger.go).
 	ledger ledgerState
 }
 

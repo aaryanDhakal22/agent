@@ -24,6 +24,8 @@ DEFAULTS = {
     "show_store_address": True,
     "show_phone": True,
     "extra_paper": True,
+    "driver_report_size": "normal",
+    "spacing": {"item_mod": 0, "mod_mod": 0, "item_item": 0},
 }
 
 

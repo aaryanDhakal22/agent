@@ -209,7 +209,10 @@ type DriverReport struct {
 	TipTaxBps        int64              `json:"tip_tax_bps"`
 	TipAfterTaxCents int64              `json:"tip_after_tax_cents"`
 	OwedCents        int64              `json:"owed_cents"`
-	// 2.2.3: the driver's Driver # (also on a POS driver Quibase doesn't
+	// OwedRoundedCents is OwedCents rounded to whole dollars (RoundOwed) —
+	// what the slip prints.
+	OwedRoundedCents int64 `json:"owed_rounded_cents"`
+	// 2.3.0: the driver's Driver # (also on a POS driver Quibase doesn't
 	// know: DriverID ""), whether the report was checked against the POS
 	// ledger (nil = the store has no POS hub) and notes for the slip.
 	DriverPosNumber string     `json:"driver_pos_number,omitempty"`
@@ -230,13 +233,50 @@ type DriverReportLine struct {
 	CashCents     int64      `json:"cash_cents"` // collected in cash less its tip (0 for card)
 	TotalCents    int64      `json:"total_cents"`
 	DeliveredAt   *time.Time `json:"delivered_at,omitempty"`
-	// 2.2.3: the POS check (POS orders), when it went out, how it matched
+	// 2.3.0: the POS check (POS orders), when it went out, how it matched
 	// the POS ledger (MatchBoth / MatchPOSOnly / MatchQuibaseOnly; "" =
 	// online, or not checked) and a short note for the slip.
 	ExtRef string     `json:"ext_ref,omitempty"`
 	OutAt  *time.Time `json:"out_at,omitempty"`
 	Match  string     `json:"match,omitempty"`
 	Note   string     `json:"note,omitempty"`
+	// What the slip prints (no customer name on it): Street = house number
+	// + street only (no apt, city, notes); OrderTipCents = the tip on the
+	// order, cash or card; SlipTotalCents = card: the total + the tip, cash:
+	// just the total (both without the tip in the total).
+	Street         string `json:"street"`
+	OrderTipCents  int64  `json:"order_tip_cents"`
+	SlipTotalCents int64  `json:"slip_total_cents"`
+}
+
+// setSlipMoney fills the slip's Tip / Total from the order's total without
+// its tip (base) and its tip.
+func (l *DriverReportLine) setSlipMoney(base, tip int64) {
+	l.OrderTipCents = max(tip, 0)
+	l.SlipTotalCents = max(base, 0)
+	if !l.Cash {
+		l.SlipTotalCents += l.OrderTipCents
+	}
+}
+
+// StreetOnly is the house number + street of an address line: what comes
+// before the first comma, without an apartment / unit / suite part (a
+// keyword right after the house number is the street: "7 Unit Rd").
+func StreetOnly(line1 string) string {
+	s := line1
+	if i := strings.IndexByte(s, ','); i >= 0 {
+		s = s[:i]
+	}
+	words := strings.Fields(s)
+	for i, w := range words {
+		lw := strings.ToLower(strings.TrimRight(w, ".:"))
+		if i > 1 && (strings.HasPrefix(w, "#") || lw == "apt" || lw == "apartment" || lw == "unit" || lw == "suite" ||
+			lw == "ste" || lw == "bldg" || lw == "building" || lw == "fl" || lw == "floor" || lw == "rm" || lw == "room" || lw == "lot") {
+			words = words[:i]
+			break
+		}
+	}
+	return strings.Join(words, " ")
 }
 
 // NewDriverReportLine builds a report line from a delivered order. Card-paid
@@ -257,13 +297,15 @@ func NewDriverReportLine(so StoredOrder) DriverReportLine {
 		OutAt:         so.Status.OutAt,
 	}
 	if a := snap.Fulfillment.Address; a != nil {
+		l.Street = StreetOnly(a.Line1)
 		l.Address = strings.TrimSpace(a.Line1)
 		if l2 := strings.TrimSpace(a.Line2); l2 != "" {
 			l.Address += ", " + l2
 		}
 	}
-	if so.IsPOS() {
+	if so.IsPOS() { // the POS's total has no tip in it
 		l.Cash, l.CashCents, l.TipCents = posMoney(so.Status.Paid, so.Status.CashDueCents, so.Status.TipCents)
+		l.setSlipMoney(snap.Money.Total, so.Status.TipCents)
 		return l
 	}
 	if due := snap.CashDue(); due > 0 {
@@ -271,6 +313,7 @@ func NewDriverReportLine(so StoredOrder) DriverReportLine {
 	} else {
 		l.TipCents = snap.Money.Tip
 	}
+	l.setSlipMoney(snap.Money.Total-snap.Money.Tip, snap.Money.Tip) // an online total includes the tip
 	return l
 }
 
@@ -285,6 +328,22 @@ func (r *DriverReport) Finish(tipTaxBps int64) {
 	r.TipTaxBps = tipTaxBps
 	r.TipAfterTaxCents = (r.TipCents*(10000-tipTaxBps) + 5000) / 10000
 	r.OwedCents = r.CashCents - r.TipAfterTaxCents
+	r.OwedRoundedCents = RoundOwed(r.OwedCents)
+}
+
+// RoundOwed rounds a driver's owed total to whole dollars on its absolute
+// value: 50 cents or more up, 49 or less down ($32.50 → $33, $32.49 → $32,
+// -$7.50 → -$8).
+func RoundOwed(cents int64) int64 {
+	a := cents
+	if a < 0 {
+		a = -a
+	}
+	r := (a + 50) / 100 * 100
+	if cents < 0 {
+		return -r
+	}
+	return r
 }
 
 // ShortCustomerName turns "Erik Davis" into "Erik D." (a single word stays

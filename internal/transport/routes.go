@@ -97,7 +97,7 @@ func (s *Server) routes() []routeDef {
 		{"PATCH", "/api/drivers/{id}", "device", "Rename a driver / set their POS number {name?, pos_number? (\"\" clears)} (409 pos_number_taken)", s.handleRenameDriver},
 		{"DELETE", "/api/drivers/{id}", "device", "Remove a driver", s.handleRemoveDriver},
 		{"POST", "/api/drivers/{id}/clock-in", "device", "Clock a driver in: joins the back of the queue, shift opened", s.handleClockIn},
-		{"POST", "/api/drivers/{id}/clock-out", "device", "Clock a driver out: leaves the queue, shift closed (409 while out on a run); prints their report -> {...Driver, report_print}", s.handleClockOut},
+		{"POST", "/api/drivers/{id}/clock-out", "device", "Clock a driver out: leaves the queue, shift closed (409 while out on a run); prints their report in the background -> {...Driver, report_printing}; SSE driver.report_printed", s.handleClockOut},
 		{"GET", "/api/drivers/{id}/report", "device", "The driver's report for the open batch so far, merged with the POS driver ledger", s.handleDriverReport},
 		{"POST", "/api/drivers/{id}/report/print", "device", "Print the driver's report for the open batch so far (receipt printer) -> {driver_name, printed_on, report} | 502 nothing_printed", s.handlePrintDriverReport},
 		{"GET", "/api/drivers/shifts", "device", "Driver shift records (?days=7), newest first", s.handleListShifts},
