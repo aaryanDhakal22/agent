@@ -437,7 +437,8 @@ func (r *OrderRepository) UpsertGeo(ctx context.Context, g order.GeoUpdate) (so 
 		}
 		p := models.UpsertOrderGeoParams{OrderID: g.OrderID, State: g.State, Quality: g.Quality,
 			DistanceM: g.DistanceM, DurationS: g.DurationS, Polyline: g.Polyline, OutsideArea: g.OutsideArea,
-			StoreToS: nullInt(g.StoreToS), ToStoreS: nullInt(g.ToStoreS), UpdatedAt: fmtTS(now)}
+			StoreToS: nullInt(g.StoreToS), ToStoreS: nullInt(g.ToStoreS), UpdatedAt: fmtTS(now),
+			Corrected: g.Corrected, Note: g.Note}
 		if g.Lat != nil && g.Lng != nil {
 			p.Lat = sql.NullFloat64{Float64: *g.Lat, Valid: true}
 			p.Lng = sql.NullFloat64{Float64: *g.Lng, Valid: true}

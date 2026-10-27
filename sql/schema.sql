@@ -232,7 +232,10 @@ CREATE TABLE order_geo (
     updated_at   text    NOT NULL,
     -- 00014_integration: candidates (state check) + the confirmed address (JSON).
     candidates        text NOT NULL DEFAULT '',
-    confirmed_address text NOT NULL DEFAULT ''
+    confirmed_address text NOT NULL DEFAULT '',
+    -- 00018_geo_corrected: found by main's area retry + a note for staff.
+    corrected         boolean NOT NULL DEFAULT false,
+    note              text    NOT NULL DEFAULT ''
 );
 
 CREATE TABLE order_times (

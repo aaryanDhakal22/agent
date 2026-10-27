@@ -596,14 +596,14 @@ func TestGeoCheckChooseAndAddressConfirmed(t *testing.T) {
 			Lat: 39.4 + float64(i)/100, Lng: -76.6})
 	}
 	so, err := svc.OnGeo(ctx, order.GeoUpdate{OrderID: res.OrderID, State: order.GeoCheck, Candidates: cands})
-	if err != nil || so.Geo.State != order.GeoCheck || len(so.Geo.Candidates) != 3 || so.Geo.Located() {
+	if err != nil || so.Geo.State != order.GeoCheck || len(so.Geo.Candidates) != 4 || so.Geo.Located() {
 		t.Fatalf("check = %+v %v", so.Geo, err)
 	}
 	if planOrder(*so).Located {
 		t.Fatal("AUTO must treat check as not located")
 	}
-	if err := svc.ChooseCandidate(ctx, res.OrderID, 3); !errors.Is(err, ErrBadRequest) {
-		t.Fatalf("index 3 = %v", err)
+	if err := svc.ChooseCandidate(ctx, res.OrderID, 4); !errors.Is(err, ErrBadRequest) {
+		t.Fatalf("index 4 = %v", err)
 	}
 	if err := svc.ChooseCandidate(ctx, res.OrderID, 1); err != nil {
 		t.Fatal(err)

@@ -989,7 +989,7 @@ func (q *Queries) GetOrderByID(ctx context.Context, id string) (Order, error) {
 }
 
 const getOrderGeo = `-- name: GetOrderGeo :one
-SELECT order_id, state, lat, lng, quality, distance_m, duration_s, polyline, outside_area, store_to_s, to_store_s, updated_at, candidates, confirmed_address FROM order_geo WHERE order_id = ?
+SELECT order_id, state, lat, lng, quality, distance_m, duration_s, polyline, outside_area, store_to_s, to_store_s, updated_at, candidates, confirmed_address, corrected, note FROM order_geo WHERE order_id = ?
 `
 
 func (q *Queries) GetOrderGeo(ctx context.Context, orderID string) (OrderGeo, error) {
@@ -1010,6 +1010,8 @@ func (q *Queries) GetOrderGeo(ctx context.Context, orderID string) (OrderGeo, er
 		&i.UpdatedAt,
 		&i.Candidates,
 		&i.ConfirmedAddress,
+		&i.Corrected,
+		&i.Note,
 	)
 	return i, err
 }
@@ -2045,7 +2047,7 @@ func (q *Queries) ListOpenShifts(ctx context.Context) ([]DriverShift, error) {
 }
 
 const listOrderGeo = `-- name: ListOrderGeo :many
-SELECT order_id, state, lat, lng, quality, distance_m, duration_s, polyline, outside_area, store_to_s, to_store_s, updated_at, candidates, confirmed_address FROM order_geo WHERE order_id IN (/*SLICE:ids*/?)
+SELECT order_id, state, lat, lng, quality, distance_m, duration_s, polyline, outside_area, store_to_s, to_store_s, updated_at, candidates, confirmed_address, corrected, note FROM order_geo WHERE order_id IN (/*SLICE:ids*/?)
 `
 
 func (q *Queries) ListOrderGeo(ctx context.Context, ids []string) ([]OrderGeo, error) {
@@ -2082,6 +2084,8 @@ func (q *Queries) ListOrderGeo(ctx context.Context, ids []string) ([]OrderGeo, e
 			&i.UpdatedAt,
 			&i.Candidates,
 			&i.ConfirmedAddress,
+			&i.Corrected,
+			&i.Note,
 		); err != nil {
 			return nil, err
 		}
@@ -3882,14 +3886,16 @@ func (q *Queries) UpsertArrivedOrder(ctx context.Context, arg UpsertArrivedOrder
 const upsertOrderGeo = `-- name: UpsertOrderGeo :exec
 
 INSERT INTO order_geo (order_id, state, lat, lng, quality, distance_m, duration_s, polyline,
-                       outside_area, store_to_s, to_store_s, updated_at, candidates, confirmed_address)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                       outside_area, store_to_s, to_store_s, updated_at, candidates, confirmed_address,
+                       corrected, note)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT (order_id) DO UPDATE SET
     state = excluded.state, lat = excluded.lat, lng = excluded.lng, quality = excluded.quality,
     distance_m = excluded.distance_m, duration_s = excluded.duration_s, polyline = excluded.polyline,
     outside_area = excluded.outside_area, store_to_s = excluded.store_to_s,
     to_store_s = excluded.to_store_s, updated_at = excluded.updated_at,
-    candidates = excluded.candidates, confirmed_address = excluded.confirmed_address
+    candidates = excluded.candidates, confirmed_address = excluded.confirmed_address,
+    corrected = excluded.corrected, note = excluded.note
 `
 
 type UpsertOrderGeoParams struct {
@@ -3907,6 +3913,8 @@ type UpsertOrderGeoParams struct {
 	UpdatedAt        string          `json:"updated_at"`
 	Candidates       string          `json:"candidates"`
 	ConfirmedAddress string          `json:"confirmed_address"`
+	Corrected        bool            `json:"corrected"`
+	Note             string          `json:"note"`
 }
 
 // Order geo (main's order.geo) ----------------------------------------------------
@@ -3926,6 +3934,8 @@ func (q *Queries) UpsertOrderGeo(ctx context.Context, arg UpsertOrderGeoParams) 
 		arg.UpdatedAt,
 		arg.Candidates,
 		arg.ConfirmedAddress,
+		arg.Corrected,
+		arg.Note,
 	)
 	return err
 }

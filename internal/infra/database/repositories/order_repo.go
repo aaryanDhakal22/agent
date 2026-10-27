@@ -276,7 +276,7 @@ func optInt(v sql.NullInt64) *int64 {
 // geoFromRow converts an order_geo row to the wire shape.
 func geoFromRow(row models.OrderGeo) *order.OrderGeo {
 	g := &order.OrderGeo{State: row.State, Quality: row.Quality, DistanceM: row.DistanceM, DurationS: row.DurationS,
-		Polyline: row.Polyline, OutsideArea: row.OutsideArea}
+		Polyline: row.Polyline, OutsideArea: row.OutsideArea, Corrected: row.Corrected, Note: row.Note}
 	if row.Lat.Valid && row.Lng.Valid {
 		lat, lng := row.Lat.Float64, row.Lng.Float64
 		g.Lat, g.Lng = &lat, &lng

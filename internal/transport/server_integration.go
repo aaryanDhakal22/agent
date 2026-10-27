@@ -121,6 +121,23 @@ func (s *Server) handleGeoChoose(w http.ResponseWriter, r *http.Request) {
 	s.writeJSON(w, http.StatusAccepted, map[string]any{})
 }
 
+// POST /api/orders/{id}/geo/search {query} -> 202 {} (main answers with
+// order.geo: check with places near the store, or not_found with a note).
+func (s *Server) handleGeoSearch(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Query string `json:"query"`
+	}
+	if err := decodeBody(r, &req); err != nil {
+		s.floorErr(w, r, err)
+		return
+	}
+	if err := s.service.SearchAddress(r.Context(), r.PathValue("id"), req.Query); err != nil {
+		s.floorErr(w, r, err)
+		return
+	}
+	s.writeJSON(w, http.StatusAccepted, map[string]any{})
+}
+
 // --- /api/integration/* (integration key only) -------------------------------------
 
 type integrationLocation struct {

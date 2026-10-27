@@ -127,6 +127,8 @@ type OrderGeo struct {
 	UpdatedAt        string          `json:"updated_at"`
 	Candidates       string          `json:"candidates"`
 	ConfirmedAddress string          `json:"confirmed_address"`
+	Corrected        bool            `json:"corrected"`
+	Note             string          `json:"note"`
 }
 
 type OrderTime struct {
