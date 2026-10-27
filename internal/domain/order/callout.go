@@ -8,7 +8,7 @@ import (
 )
 
 // Finishing orders, terminal changes to POS checks and the store hub's order
-// callout (migration 00020). Contract: contract/agent.md §2.9.8-2.9.10.
+// callout (migration 00019). Contract: contract/agent.md §2.9.8-2.9.10.
 
 // --- finishing -----------------------------------------------------------------
 

@@ -114,7 +114,7 @@ type Status struct {
 	// on_delivery and kept once delivered.
 	RunSeq *int64 `json:"run_seq,omitempty"`
 
-	// Finishing (00020): a ready pickup / counter order that is done with
+	// Finishing (00019): a ready pickup / counter order that is done with
 	// (picked up). FinishedBy "pos" = the POS closed the check, "auto" = an
 	// online pickup sat ready for the store's finish time. A finished order
 	// no longer counts as open (a forced Pi update can run). PosClosed: the

@@ -630,7 +630,7 @@ func writeRerouted(w func(string), nl func(), from string) {
 }
 
 // writeVoid prints the inverted "VOID" banner that tops a void ticket (lines
-// voided at the POS terminal, 00020).
+// voided at the POS terminal, 00019).
 func writeVoid(w func(string), nl func()) {
 	w(cmdCenter)
 	w(cmdBoldOn)

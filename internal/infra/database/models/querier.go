@@ -222,7 +222,7 @@ type Querier interface {
 	SetLinkInfo(ctx context.Context, arg SetLinkInfoParams) error
 	SetManagerPasswordHash(ctx context.Context, uiPasswordHash string) error
 	SetMapFile(ctx context.Context, mapFile string) error
-	// Finishing orders, terminal changes (00020) -----------------------------------
+	// Finishing orders, terminal changes (00019) -----------------------------------
 	// A ready pickup / counter order is done with (picked up): the POS closed its
 	// check ('pos') or an online pickup sat ready for the store's finish time
 	// ('auto'). It stays ready; it no longer counts as open.

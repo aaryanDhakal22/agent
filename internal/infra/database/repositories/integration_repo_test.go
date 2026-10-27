@@ -503,3 +503,21 @@ func TestDeliveryRunSuggestedPOSOpaque(t *testing.T) {
 		t.Fatalf("suggested_ids = %v, want %v", run.SuggestedIDs, want)
 	}
 }
+
+func TestUpsertExternalUpdateOnly(t *testing.T) {
+	r := newFloorRepo(t)
+	ctx := context.Background()
+	meta := order.ExternalMeta{OrderID: uuid.Must(uuid.NewV7()).String(), TenantID: uuid.NewString(), LocationID: uuid.NewString(),
+		PrepMinutes: 15, Now: time.Now(), UpdateOnly: true}
+	if _, err := r.UpsertExternal(ctx, "900", posOrder("pickup", "a"), meta); !errors.Is(err, order.ErrNotFound) {
+		t.Fatalf("update-only insert = %v, want ErrNotFound", err)
+	}
+	if _, err := r.GetByID(ctx, uuid.MustParse(meta.OrderID)); !errors.Is(err, order.ErrNotFound) {
+		t.Fatalf("row created: %v", err)
+	}
+	upsertPOS(t, r, "900", posOrder("pickup", "a"))
+	res, err := r.UpsertExternal(ctx, "900", posOrder("pickup", "b"), meta)
+	if err != nil || res.Created || !res.Changed {
+		t.Fatalf("update-only of a held check = %+v, %v", res, err)
+	}
+}

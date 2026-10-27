@@ -65,7 +65,7 @@ CREATE TABLE orders (
     not_delivered_at        text,
     not_delivered_driver_id text    NOT NULL DEFAULT '',
     run_seq                 integer,
-    -- 00020_callout: finished (picked up) + by whom (pos | auto), the POS
+    -- 00019_callout: finished (picked up) + by whom (pos | auto), the POS
     -- closed the check, the unacknowledged terminal change (JSON).
     finished_at             text,
     finished_by             text    NOT NULL DEFAULT '',
@@ -204,7 +204,7 @@ CREATE TABLE settings (
     auto_update               boolean NOT NULL DEFAULT true,
     -- 00017_not_delivered: simple auto-assign to the next driver (2.2.1).
     auto_assign               boolean NOT NULL DEFAULT true,
-    -- 00020_callout: finishing orders + the order callout (JSON).
+    -- 00019_callout: finishing orders + the order callout (JSON).
     finishing                 text NOT NULL DEFAULT '{}',
     callout                   text NOT NULL DEFAULT '{}',
     CHECK (id = 1)

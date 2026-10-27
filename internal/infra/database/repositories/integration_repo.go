@@ -132,7 +132,7 @@ func (r *OrderRepository) SetIntegrationStatus(ctx context.Context, st order.Int
 
 // UpsertExternal — see order.IntegrationRepository.
 //
-// 00020: a terminal change to a check already on the tablet is diffed
+// 00019: a terminal change to a check already on the tablet is diffed
 // (lines added / removed); a kitchen line rings the tablet until OK
 // (pos_change), a ready order with a kitchen line added goes back to
 // cooking (out of its pool), lines removed stay struck through
@@ -145,6 +145,9 @@ func (r *OrderRepository) UpsertExternal(ctx context.Context, extRef string, in 
 		row, err := q.GetOrderByExtRef(ctx, models.GetOrderByExtRefParams{ExtSource: in.Source, ExtRef: extRef})
 		switch {
 		case errors.Is(err, sql.ErrNoRows):
+			if meta.UpdateOnly {
+				return order.ErrNotFound
+			}
 			return insertExternal(ctx, q, extRef, in, meta, &res)
 		case err != nil:
 			return fmt.Errorf("find pos order: %w", err)
@@ -659,7 +662,7 @@ func (r *OrderRepository) RaiseDue(ctx context.Context, now time.Time) (out []or
 	return out, err
 }
 
-// --- finishing, terminal changes, callout (00020) ---------------------------------
+// --- finishing, terminal changes, callout (00019) ---------------------------------
 
 // AckPosChange — see order.IntegrationRepository.
 func (r *OrderRepository) AckPosChange(ctx context.Context, id, changeID string) (so *order.StoredOrder, acked bool, err error) {

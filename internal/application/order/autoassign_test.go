@@ -67,12 +67,6 @@ func (f *autoFloor) pool(t *testing.T, driver string) []string {
 	return ids
 }
 
-func sorted(ids ...string) []string {
-	out := append([]string(nil), ids...)
-	slices.Sort(out)
-	return out
-}
-
 func TestAutoAssignOneOrderToTheNextDriver(t *testing.T) {
 	ctx := context.Background()
 	f := newAutoFloor(t)

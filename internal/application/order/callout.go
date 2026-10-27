@@ -16,7 +16,7 @@ import (
 )
 
 // Finishing orders, terminal changes to POS checks and the store hub's order
-// callout (00020; contract §2.9.8-2.9.10).
+// callout (00019; contract §2.9.8-2.9.10).
 //
 //   - A ready pickup / counter order is "finished" (picked up) when the POS
 //     closes its check (terminal orders) or N minutes after ready (online

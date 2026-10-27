@@ -167,7 +167,7 @@ func (r *OrderRepository) MarkReady(ctx context.Context, id string) (result *ord
 			return err
 		}
 		// A POS pickup / counter check the POS already closed is done with
-		// the moment it is ready (00020).
+		// the moment it is ready (00019).
 		if so.IsPOS() && so.Status.PosClosed && !so.IsDelivery() {
 			if _, err := q.SetOrderFinished(ctx, models.SetOrderFinishedParams{FinishedAt: nullTS(now), FinishedBy: order.FinishedByPOS, ID: id}); err != nil {
 				return err

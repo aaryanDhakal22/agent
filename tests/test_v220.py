@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import json
 import threading
-import time
 
 import requests
 
@@ -52,10 +51,12 @@ class Listener:
     def __init__(self, a, headers: dict) -> None:
         self.events: list[tuple[str, dict]] = []
         self._stop = threading.Event()
+        opened = threading.Event()
 
         def run() -> None:
             try:
                 with requests.get(f"{a.base}/api/events", headers=headers, stream=True, timeout=60) as r:
+                    opened.set()
                     ev = None
                     for line in r.iter_lines(decode_unicode=True):
                         if self._stop.is_set():
@@ -68,7 +69,11 @@ class Listener:
                 pass
 
         threading.Thread(target=run, daemon=True).start()
-        time.sleep(0.5)
+        assert opened.wait(10), "the tablet's /api/events never opened"
+        # Subscribed once the agent counts the tablet as on the stream.
+        wait_until(lambda: any(t["connected"] for t in
+                               requests.get(f"{a.base}/api/diag", headers=headers, timeout=10).json()["tablets"]),
+                   timeout=10, interval=0.05, what="the tablet on /api/events")
 
     def of(self, kind: str, oid: str) -> list[dict]:
         out = []
@@ -201,6 +206,13 @@ def test_delivery_settings_next_check_and_radius(admin, floor) -> None:  # noqa:
                timeout=10, what="store_config with the new radius")
 
 
+def _after_close_runs(a) -> int:
+    """Background after-close runs finished (the driver-report print that the
+    auto-update check follows), from the agent's log."""
+    log = (a.dir / "agent.log").read_text(errors="replace")
+    return log.count("Driver reports printed after close") + log.count("driver reports after close failed")
+
+
 def test_auto_update_after_close(main_store, spawn_agent, tmp_path, utility) -> None:  # noqa: F811
     upd = tmp_path / "upd"
     upd.mkdir()
@@ -213,9 +225,10 @@ def test_auto_update_after_close(main_store, spawn_agent, tmp_path, utility) -> 
     assert r.status_code == 200 and r.json() == {"auto_update": False}
     assert a.http.put(f"{a.base}/api/settings/auto-update", json={}, timeout=5).status_code == 400
 
-    # Off: Close batch updates nothing.
+    # Off: Close batch updates nothing. The auto-update check runs right after
+    # the background driver-report print, so wait for that line in the log.
     assert a.http.post(f"{a.base}/api/batch/close", json={}, timeout=15).status_code == 200
-    time.sleep(3)
+    wait_until(lambda: _after_close_runs(a) >= 1, timeout=15, interval=0.1, what="the after-close driver reports")
     assert not req.exists(), "auto-update ran while off"
 
     # On: right after Close batch the newer manifest (9.9.9) is requested as "auto".

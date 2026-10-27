@@ -12,7 +12,7 @@ import (
 	"github.com/google/uuid"
 )
 
-// 00020: terminal changes to POS checks, finishing orders, the update gate's
+// 00019: terminal changes to POS checks, finishing orders, the update gate's
 // open count, callout feed events.
 
 func kitchenCheck(ftype, hash string, lines ...order.ExternalItem) order.ExternalOrder {

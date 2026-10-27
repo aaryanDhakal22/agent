@@ -279,7 +279,7 @@ func TestBuildWith_PaymentWording(t *testing.T) {
 	}
 }
 
-// TestBuildStation_Void (00020): a void ticket has the VOID banner and every
+// TestBuildStation_Void (00019): a void ticket has the VOID banner and every
 // line says VOID; nothing else on it.
 func TestBuildStation_Void(t *testing.T) {
 	snap, tk := stationFixture()

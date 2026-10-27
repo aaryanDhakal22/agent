@@ -52,14 +52,14 @@ tasks:
       - go run ./cmd/main.go
 
   test:
-    desc: "Run the agent/ pytest suite (dev main must be up). Spawns its own throwaway agents (temp DB, spare port) — the roster agents are untouched."
+    desc: "Run the agent/ pytest suite (dev main must be up), 3 xdist workers. Spawns its own throwaway agents (temp DB, spare port) — the roster agents are untouched."
     cmds:
-      - DOPPLER_TOKEN=$(cat {{.DOPPLER_TOKEN_FILE}}) doppler run -- uv run --directory tests pytest -v
+      - DOPPLER_TOKEN=$(cat {{.DOPPLER_TOKEN_FILE}}) doppler run -- uv run --directory tests pytest -v -n 3 --dist loadgroup
 
   test-quick:
     desc: "agent/ pytest minus the slow tests (e.g. the ~30s revoke-detection wait)"
     cmds:
-      - DOPPLER_TOKEN=$(cat {{.DOPPLER_TOKEN_FILE}}) doppler run -- uv run --directory tests pytest -v -m "not slow"
+      - DOPPLER_TOKEN=$(cat {{.DOPPLER_TOKEN_FILE}}) doppler run -- uv run --directory tests pytest -v -n 3 --dist loadgroup -m "not slow"
 
   test-go:
     desc: "Run Go unit tests (SQLite repo round-trips, OTEL resource, transport) — no secrets needed"
@@ -80,7 +80,9 @@ tasks:
       - DOPPLER_TOKEN=$(cat {{.DOPPLER_TOKEN_FILE}}) doppler run -- uv run --directory tests pytest -v -m real_printer
 
   # ──────────────────────────────────────────────────────────────────────
-  # Versioning — see ../scripts/version.sh
+  # Versioning — read-only. A release is tagged only by the ops repo's
+  # deploy/release.sh agent, after the PR is merged (see RELEASING.md);
+  # bump VERSION by hand in the PR.
   # ──────────────────────────────────────────────────────────────────────
 
   version-current:
@@ -94,25 +96,3 @@ tasks:
     silent: true
     cmds:
       - ../scripts/version.sh describe
-
-  version-init:
-    desc: "Create initial v0.1.0 (or override): task version-init -- 0.2.0"
-    cmds:
-      - ../scripts/version.sh init {{.CLI_ARGS}}
-
-  version-bump:
-    desc: "Bump and tag: task version-bump -- patch|minor|major"
-    cmds:
-      - ../scripts/version.sh bump {{.CLI_ARGS}}
-
-  version-tag:
-    desc: "(Re-)tag the current VERSION without bumping. Pass -f to overwrite."
-    cmds:
-      - ../scripts/version.sh tag {{.CLI_ARGS}}
-
-  release:
-    desc: "Bump (default patch) and push a v* tag — CI builds an immutable arm64 release you download to the Pi. task release -- minor"
-    cmds:
-      - ../scripts/version.sh bump {{- if .CLI_ARGS }} {{.CLI_ARGS}}{{- else }} patch{{- end }}
-      - git push origin HEAD
-      - git push origin --tags

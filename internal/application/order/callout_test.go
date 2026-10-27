@@ -13,7 +13,7 @@ import (
 	"github.com/google/uuid"
 )
 
-// 00020 through the service: SSE order.changed, a check shown later as new
+// 00019 through the service: SSE order.changed, a check shown later as new
 // (with the chime), void tickets only behind the POS switch, OK, finishing,
 // TEST CALLOUT, settings validation.
 

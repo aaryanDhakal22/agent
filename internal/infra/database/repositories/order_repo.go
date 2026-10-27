@@ -262,7 +262,7 @@ func toStored(row models.Order) (order.StoredOrder, error) {
 			st.Flag = &f
 		}
 	}
-	// 00020: finishing + terminal changes.
+	// 00019: finishing + terminal changes.
 	if st.FinishedAt, err = optTS(row.FinishedAt); err != nil {
 		return order.StoredOrder{}, fmt.Errorf("parse finished_at for order %s: %w", row.ID, err)
 	}
