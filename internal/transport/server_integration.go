@@ -94,7 +94,7 @@ func (s *Server) handleGetCalloutSettings(w http.ResponseWriter, _ *http.Request
 	s.writeJSON(w, http.StatusOK, s.service.IntegrationSettings().Callout)
 }
 
-// PUT /api/settings/callout {enabled?, voice?, volume?, music_dip?, restore_seconds?, chime?}
+// PUT /api/settings/callout {enabled?, voice?, volume?, music_dip?, restore_seconds?, chime?, repeat?}
 func (s *Server) handleSetCalloutSettings(w http.ResponseWriter, r *http.Request) {
 	s.putSettings(w, r, func(set *order.IntegrationSettings) any { return &set.Callout })
 }

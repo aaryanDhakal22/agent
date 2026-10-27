@@ -60,12 +60,21 @@ type CalloutSettings struct {
 	RestoreSeconds float64 `json:"restore_seconds"`
 	// Chime: a short chime before the words.
 	Chime bool `json:"chime"`
+	// Repeat (2.3.4): how many times the phrase is said per callout, 1-3
+	// (the chime once at the start, the music down for the whole sequence).
+	Repeat int `json:"repeat"`
 }
 
+// Callout repeat bounds (CalloutSettings.Repeat).
+const (
+	MinCalloutRepeat = 1
+	MaxCalloutRepeat = 3
+)
+
 // DefaultCallout: on, the hub's default voice at 90 %, music down 70 %
-// coming back over 1.5 s, chime first.
+// coming back over 1.5 s, chime first, said once.
 func DefaultCallout() CalloutSettings {
-	return CalloutSettings{Enabled: true, Volume: 90, MusicDip: 70, RestoreSeconds: 1.5, Chime: true}
+	return CalloutSettings{Enabled: true, Volume: 90, MusicDip: 70, RestoreSeconds: 1.5, Chime: true, Repeat: 1}
 }
 
 // MaxVoiceID bounds CalloutSettings.Voice.
@@ -80,19 +89,31 @@ func (c CalloutSettings) Validate() error {
 		return fmt.Errorf("music_dip must be 0-100")
 	case c.RestoreSeconds < 0 || c.RestoreSeconds > 10:
 		return fmt.Errorf("restore_seconds must be 0-10")
-	case len(c.Voice) > MaxVoiceID || strings.ContainsAny(c.Voice, "/\\ \t\n"):
+	case c.Repeat < MinCalloutRepeat || c.Repeat > MaxCalloutRepeat:
+		return fmt.Errorf("repeat must be 1-3")
+	}
+	return ValidateVoice(c.Voice)
+}
+
+// ValidateVoice checks a voice id ("" = the hub's default).
+func ValidateVoice(voice string) error {
+	if len(voice) > MaxVoiceID || strings.ContainsAny(voice, "/\\ \t\n") {
 		return fmt.Errorf("voice must be a voice id from the hub's list")
 	}
 	return nil
 }
 
-// DecodeCallout reads stored callout settings over the defaults.
+// DecodeCallout reads stored callout settings over the defaults (settings
+// stored before 2.3.4 have no repeat: said once).
 func DecodeCallout(raw []byte) (CalloutSettings, error) {
 	c := DefaultCallout()
 	if len(raw) == 0 {
 		return c, nil
 	}
 	err := json.Unmarshal(raw, &c)
+	if c.Repeat < MinCalloutRepeat || c.Repeat > MaxCalloutRepeat {
+		c.Repeat = DefaultCallout().Repeat
+	}
 	return c, err
 }
 

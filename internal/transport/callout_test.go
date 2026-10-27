@@ -31,6 +31,21 @@ func TestCalloutRoutes(t *testing.T) {
 	if rec.Code != http.StatusOK || set["voice"] != "kokoro:bf_emma" || set["music_dip"] != 40.0 || set["enabled"] != true || set["volume"] != 90.0 {
 		t.Fatalf("hub reads callout = %d %s", rec.Code, rec.Body)
 	}
+	if set["repeat"] != 1.0 {
+		t.Fatalf("repeat defaults to 1: %s", rec.Body)
+	}
+	// 2.3.4 repeat: 1-3, else 400 and nothing changes; missing keeps it.
+	for _, bad := range []string{`{"repeat":0}`, `{"repeat":4}`, `{"repeat":-1}`, `{"repeat":1.5}`, `{"repeat":"2"}`} {
+		if rec := call(h, "PUT", "/api/settings/callout", tablet, bad); rec.Code != http.StatusBadRequest {
+			t.Fatalf("PUT %s = %d %s", bad, rec.Code, rec.Body)
+		}
+	}
+	if rec := call(h, "PUT", "/api/settings/callout", tablet, `{"repeat":3}`); rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"repeat":3`) {
+		t.Fatalf("repeat 3 = %d %s", rec.Code, rec.Body)
+	}
+	if rec := call(h, "PUT", "/api/settings/callout", tablet, `{"volume":80}`); rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"repeat":3`) {
+		t.Fatalf("missing repeat keeps it = %d %s", rec.Code, rec.Body)
+	}
 	if rec := call(h, "PUT", "/api/settings/callout", hub, `{"enabled":false}`); rec.Code != http.StatusForbidden {
 		t.Fatalf("hub may not write settings: %d", rec.Code)
 	}
@@ -67,6 +82,13 @@ func TestCalloutRoutes(t *testing.T) {
 	_ = json.Unmarshal(rec.Body.Bytes(), &cfg)
 	if cfg["callout"] == nil || cfg["finishing"] == nil {
 		t.Fatalf("config lacks callout/finishing: %s", rec.Body)
+	}
+	if co, _ := cfg["callout"].(map[string]any); co["repeat"] != 3.0 {
+		t.Fatalf("the hub reads repeat: %s", rec.Body)
+	}
+	rec = call(h, "GET", "/api/integration/events?after=0", hub, "")
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"repeat":3`) {
+		t.Fatalf("feed settings.changed carries repeat: %d %s", rec.Code, rec.Body)
 	}
 }
 
