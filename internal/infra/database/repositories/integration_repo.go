@@ -293,8 +293,8 @@ func recordPOSChange(ctx context.Context, q *models.Queries, cur order.StoredOrd
 		n.Removed = []order.ChangeLine{}
 	}
 	c := n
-	if prev := cur.Status.PosChange; prev != nil {
-		c = *prev
+	if prev := cur.Status.PosChange; prev.Pending() {
+		c = *prev // not OK'd yet: one bar for both
 		c.Merge(n)
 	}
 	c.RenderText(cur.Number())
@@ -665,8 +665,14 @@ func (r *OrderRepository) AckPosChange(ctx context.Context, id, changeID string)
 		if err != nil {
 			return err
 		}
-		if c := cur.Status.PosChange; c != nil && (changeID == "" || changeID == c.ID) {
-			if err := q.SetPosChange(ctx, models.SetPosChangeParams{PosChange: "", ID: id}); err != nil {
+		if c := cur.Status.PosChange; c.Pending() && (changeID == "" || changeID == c.ID) {
+			now := time.Now().UTC()
+			c.AckedAt = &now
+			raw, err := json.Marshal(c)
+			if err != nil {
+				return err
+			}
+			if err := q.SetPosChange(ctx, models.SetPosChangeParams{PosChange: string(raw), ID: id}); err != nil {
 				return err
 			}
 			acked = true

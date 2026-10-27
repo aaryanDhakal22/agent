@@ -123,9 +123,9 @@ type IntegrationRepository interface {
 	// arrived (rerung) and returns them.
 	RaiseDue(ctx context.Context, now time.Time) ([]StoredOrder, error)
 
-	// 00020. AckPosChange clears an order's unacknowledged terminal change
-	// (changeID "" = whatever is there; acked=false when there was none or
-	// a newer one came in).
+	// 00020. AckPosChange marks an order's terminal change OK'd (acked_at;
+	// it stops ringing, the ticket keeps CHANGED). changeID "" = whatever is
+	// pending; acked=false when nothing is pending or a newer one came in.
 	AckPosChange(ctx context.Context, id, changeID string) (so *StoredOrder, acked bool, err error)
 	// FinishDueOnlinePickups finishes online pickups / dine-in ready since
 	// before cutoff (finished_by auto) and returns them.

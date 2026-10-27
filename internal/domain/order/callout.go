@@ -144,7 +144,14 @@ type PosChange struct {
 	Added      []ChangeLine `json:"added"`
 	Removed    []ChangeLine `json:"removed"`
 	DriverName string       `json:"driver_name,omitempty"`
+	// AckedAt: someone pressed OK (the tablets stop ringing). The change is
+	// kept so the ticket shows CHANGED until it is ready (or 10 min after
+	// OK); a later change starts a new one.
+	AckedAt *time.Time `json:"acked_at,omitempty"`
 }
+
+// Pending reports whether the change still rings (nobody pressed OK).
+func (c *PosChange) Pending() bool { return c != nil && c.AckedAt == nil }
 
 // Merge folds a newer change into this one.
 func (c *PosChange) Merge(n PosChange) {

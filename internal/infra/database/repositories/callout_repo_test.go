@@ -63,7 +63,10 @@ func TestPOSChangeKitchenAddRingsAndMarksAdded(t *testing.T) {
 		t.Fatalf("stale ack = %v %v", acked, err)
 	}
 	got, acked, err := r.AckPosChange(ctx, so.Order.ID, c2.ID)
-	expect(t, err == nil && acked && got.Status.PosChange == nil, "ack = %v %v %+v", acked, err, got)
+	expect(t, err == nil && acked && got.Status.PosChange != nil && !got.Status.PosChange.Pending(), "ack = %v %v %+v", acked, err, got)
+	// A change after OK starts a new bar (not merged into the old one).
+	res = upsertPOS(t, r, "900", kitchenCheck("pickup", "h4", knots, wings))
+	expect(t, res.Change != nil && res.Change.Pending() && res.Change.Text == "#57 changed: +1 Wings", "after OK = %+v", res.Change)
 	// The marks stay after OK.
 	expect(t, got.Order.Items[0].Added && len(got.Order.RemovedItems) == 1, "marks after ack = %+v", got.Order)
 }

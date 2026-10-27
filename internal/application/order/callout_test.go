@@ -74,7 +74,7 @@ func TestTerminalChangeRingsAndVoidPrintsOnlyWithTheSwitch(t *testing.T) {
 	// OK clears it for every tablet; a second OK has nothing to clear.
 	drain(events)
 	so, err := svc.AckPosChange(ctx, res.OrderID, "")
-	if err != nil || so.Status.PosChange != nil {
+	if err != nil || so.Status.PosChange == nil || so.Status.PosChange.Pending() {
 		t.Fatalf("ack = %+v %v", so, err)
 	}
 	if _, ok := eventOf(events, "order.updated"); !ok {

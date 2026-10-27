@@ -79,8 +79,9 @@ func (s *Service) printVoid(ctx context.Context, so order.StoredOrder, items []o
 	})
 }
 
-// AckPosChange is OK on the change bar: the change is cleared (every tablet
-// stops ringing for it via order.updated). changeID "" acks whatever is
+// AckPosChange is OK on the change alert: the change is marked acked_at
+// (every tablet stops ringing for it via order.updated; the ticket keeps its
+// CHANGED tag). changeID "" acks whatever is
 // there; a newer change than the one OK'd keeps ringing (409 no_change).
 func (s *Service) AckPosChange(ctx context.Context, id, changeID string) (*order.StoredOrder, error) {
 	ctx, span := s.span(ctx, "order.ack_change", attribute.String("order.id", id))
