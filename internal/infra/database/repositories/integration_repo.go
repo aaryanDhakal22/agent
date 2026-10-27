@@ -726,3 +726,10 @@ func (r *OrderRepository) InsertCalloutTest(ctx context.Context, t order.Callout
 	defer end(&err)
 	return insertFeed(ctx, models.New(r.db), order.FeedCalloutTest, time.Now(), t)
 }
+
+// InsertCalloutRender — see order.IntegrationRepository.
+func (r *OrderRepository) InsertCalloutRender(ctx context.Context, t order.CalloutRenderData) (err error) {
+	ctx, _, end := dbSpan(ctx, "integration_events.callout_render")
+	defer end(&err)
+	return insertFeed(ctx, models.New(r.db), order.FeedCalloutRender, time.Now(), t)
+}

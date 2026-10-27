@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	orderApp "quiccpos/agent/internal/application/order"
@@ -120,6 +121,109 @@ func (s *Server) handleCalloutTest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.writeJSON(w, http.StatusAccepted, res)
+}
+
+// previewErr answers the callout preview's own errors (else floorErr).
+func (s *Server) previewErr(w http.ResponseWriter, r *http.Request, err error) {
+	var un *orderApp.PreviewUnavailable
+	switch {
+	case errors.As(err, &un):
+		s.writeJSON(w, http.StatusServiceUnavailable, errCodeMap(un.Message, un.Code))
+	case errors.Is(err, orderApp.ErrPreviewNotFound):
+		s.writeJSON(w, http.StatusNotFound, errCodeMap(err.Error(), "not_found"))
+	case errors.Is(err, orderApp.ErrPreviewTimeout):
+		s.writeJSON(w, http.StatusGatewayTimeout, errCodeMap("The store hub didn't send the voice in time - try again.", "timeout"))
+	case errors.Is(err, orderApp.ErrPreviewTooLarge):
+		s.writeJSON(w, http.StatusRequestEntityTooLarge, errCodeMap(err.Error(), "too_large"))
+	case errors.Is(err, orderApp.ErrPreviewNotWAV):
+		s.writeJSON(w, http.StatusBadRequest, errCodeMap(err.Error(), "not_wav"))
+	default:
+		s.floorErr(w, r, err)
+	}
+}
+
+// POST /api/callout/preview {number, voice?} -> 202 {id, status} | 503
+func (s *Server) handleCalloutPreview(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Number int    `json:"number"`
+		Voice  string `json:"voice"`
+	}
+	if err := decodeBody(r, &req); err != nil {
+		s.floorErr(w, r, err)
+		return
+	}
+	res, err := s.service.CalloutPreview(r.Context(), req.Number, req.Voice)
+	if err != nil {
+		s.previewErr(w, r, err)
+		return
+	}
+	s.writeJSON(w, http.StatusAccepted, res)
+}
+
+// GET /api/callout/preview/{id}?wait=<sec> -> 200 audio/wav | 202 pending | 404 | 503 | 504
+func (s *Server) handleCalloutPreviewAudio(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	wait := 0
+	if v := r.URL.Query().Get("wait"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 0 || n > orderApp.MaxPreviewWait {
+			s.writeJSON(w, http.StatusBadRequest, errCodeMap("wait must be 0-10 seconds", "bad_request"))
+			return
+		}
+		wait = n
+	}
+	wav, err := s.service.CalloutPreviewAudio(r.Context(), id, time.Duration(wait)*time.Second)
+	if err != nil {
+		s.previewErr(w, r, err)
+		return
+	}
+	if wav == nil {
+		s.writeJSON(w, http.StatusAccepted, map[string]string{"id": id, "status": "pending"})
+		return
+	}
+	w.Header().Set("Content-Type", "audio/wav")
+	w.Header().Set("Content-Length", strconv.Itoa(len(wav)))
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(wav)
+}
+
+// PUT /api/integration/callout-audio/{id}: body audio/wav, or JSON
+// {error, code?} when the hub could not render it -> 204
+func (s *Server) handleIntegrationCalloutAudio(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if strings.HasPrefix(strings.ToLower(r.Header.Get("Content-Type")), "application/json") {
+		var req struct {
+			Error string `json:"error"`
+			Code  string `json:"code"`
+		}
+		if err := decodeBody(r, &req); err != nil {
+			s.floorErr(w, r, err)
+			return
+		}
+		if err := s.service.FailCalloutPreview(r.Context(), id, req.Code, req.Error); err != nil {
+			s.previewErr(w, r, err)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	raw, err := io.ReadAll(http.MaxBytesReader(w, r.Body, orderApp.MaxPreviewAudio))
+	if err != nil {
+		var tooBig *http.MaxBytesError
+		if errors.As(err, &tooBig) {
+			err = orderApp.ErrPreviewTooLarge
+		} else {
+			err = errors.Join(orderApp.ErrBadRequest, err)
+		}
+		s.previewErr(w, r, err)
+		return
+	}
+	if err := s.service.PutCalloutAudio(r.Context(), id, raw); err != nil {
+		s.previewErr(w, r, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // POST /api/orders/{id}/change/ack {change_id?} -> StoredOrder | 409 no_change

@@ -135,6 +135,8 @@ type IntegrationRepository interface {
 	FinishDueOnlinePickups(ctx context.Context, cutoff, now time.Time) ([]StoredOrder, error)
 	// InsertCalloutTest writes the feed's callout.test.
 	InsertCalloutTest(ctx context.Context, t CalloutTestData) error
+	// InsertCalloutRender writes the feed's callout.render (2.3.2).
+	InsertCalloutRender(ctx context.Context, t CalloutRenderData) error
 }
 
 // SettingsRepository owns the singleton settings row.

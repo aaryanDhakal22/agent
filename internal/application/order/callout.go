@@ -160,6 +160,9 @@ type CalloutView struct {
 	Settings     order.CalloutSettings `json:"settings"`
 	HubConnected bool                  `json:"hub_connected"`
 	Hub          any                   `json:"hub"`
+	// Preview (2.3.2): this Pi relays a PREVIEW to the tablet's own speaker
+	// (POST /api/callout/preview). An older Pi leaves it out.
+	Preview bool `json:"preview"`
 }
 
 // Callout returns the callout settings and the hub's report.
@@ -169,5 +172,5 @@ func (s *Service) Callout(now time.Time) CalloutView {
 	if len(v.Callout) > 0 {
 		hub = v.Callout
 	}
-	return CalloutView{Settings: s.IntegrationSettings().Callout, HubConnected: v.Connected, Hub: hub}
+	return CalloutView{Settings: s.IntegrationSettings().Callout, HubConnected: v.Connected, Hub: hub, Preview: true}
 }
