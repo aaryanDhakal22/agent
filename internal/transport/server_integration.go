@@ -383,15 +383,20 @@ func (s *Server) handleIntegrationStatus(w http.ResponseWriter, r *http.Request)
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// PUT /api/integration/orders/{ext_ref} — upsert a POS check -> {order_id,
-// created, changed} | 409 pos_pull_off.
+// PUT /api/integration/orders/{ext_ref}[?if_exists=1] — upsert a POS check
+// -> {order_id, created, changed} | 409 pos_pull_off. With if_exists=1 (2.3.6)
+// a check the Pi doesn't hold is 404 not_found instead of created.
 func (s *Server) handleIntegrationUpsert(w http.ResponseWriter, r *http.Request) {
 	var in order.ExternalOrder
 	if err := decodeBody(r, &in); err != nil {
 		s.floorErr(w, r, err)
 		return
 	}
-	res, err := s.service.UpsertExternal(r.Context(), r.PathValue("ext_ref"), in)
+	upsert := s.service.UpsertExternal
+	if v := r.URL.Query().Get("if_exists"); v == "1" || v == "true" {
+		upsert = s.service.UpdateExternal
+	}
+	res, err := upsert(r.Context(), r.PathValue("ext_ref"), in)
 	if err != nil {
 		s.floorErr(w, r, err)
 		return

@@ -151,6 +151,27 @@ def test_pos_order_lifecycle_and_printing(kitchen, fakes) -> None:  # noqa: F811
     assert [e["type"] for e in events] == ["settings.changed", "order.cancelled", "settings.changed"]
 
 
+def test_update_only_put(kitchen) -> None:  # noqa: F811
+    """PUT ?if_exists=1 (2.3.6): the hub's final PUT for a check the Pi doesn't
+    hold (dropped at Close batch / retention) is 404 not_found, never created."""
+    a, ids = kitchen["agent"], kitchen["ids"]
+    hub = _hub(kitchen)
+    url = f"{a.base}/api/integration/orders/1277001"
+    r = requests.put(url, params={"if_exists": "1"}, json=_pos(ids, "pickup", paid=True), headers=hub, timeout=15)
+    assert r.status_code == 404 and r.json()["code"] == "not_found", r.text
+    held = [o for o in a.http.get(f"{a.base}/api/orders?batch=current", timeout=5).json()
+            if o["status"].get("ext_ref") == "1277001"]
+    assert held == [], "an update-only PUT created the check"
+
+    # Held: the update-only PUT updates it like a plain one.
+    first = _put(a, hub, "1277001", _pos(ids, "pickup")).json()
+    assert first["created"] is True
+    r = requests.put(url, params={"if_exists": "1"}, json=_pos(ids, "pickup", "h2", paid=True, cash_due_cents=0),
+                     headers=hub, timeout=15)
+    assert r.status_code == 200 and r.json() == {"order_id": first["order_id"], "created": False, "changed": True}, r.text
+    assert _order(a, first["order_id"])["status"]["paid"] is True
+
+
 def test_feed_long_poll(kitchen) -> None:  # noqa: F811
     a = kitchen["agent"]
     hub = _hub(kitchen)

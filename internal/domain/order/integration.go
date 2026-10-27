@@ -98,7 +98,7 @@ func (t Times) For(fulfillmentType string) int64 {
 
 // IntegrationSettings is the {features, tickets, times, finishing, callout}
 // set served in /api/floor.settings, SSE settings.updated and the feed's
-// settings.changed (finishing + callout since 00020).
+// settings.changed (finishing + callout since 00019).
 type IntegrationSettings struct {
 	Features  Features          `json:"features"`
 	Tickets   TicketToggles     `json:"tickets"`
@@ -407,7 +407,7 @@ const (
 	FeedSettingsChanged   = "settings.changed"
 	FeedBatchClosed       = "batch.closed"
 	FeedOrderNotDelivered = "order.not_delivered"
-	// FeedCalloutTest (00020): speak a callout now on the store speaker - a
+	// FeedCalloutTest (00019): speak a callout now on the store speaker - a
 	// TEST CALLOUT or a voice PREVIEW from the tablet.
 	FeedCalloutTest = "callout.test"
 	// FeedCalloutRender (2.3.2): render a callout for the tablet's PREVIEW
@@ -458,7 +458,7 @@ type RunSentData struct {
 }
 
 // OrderReadyData is an order.ready event (the hub's order callout input).
-// Paid / CashDueCents (00020): what the Pi knows of the check's money at
+// Paid / CashDueCents (00019): what the Pi knows of the check's money at
 // ready (a POS order: the hub's figures; online: paid and Snapshot.CashDue).
 type OrderReadyData struct {
 	FeedOrderRef

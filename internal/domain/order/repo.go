@@ -51,6 +51,10 @@ type ExternalMeta struct {
 	LocationID  string
 	PrepMinutes int64
 	Now         time.Time
+	// UpdateOnly (2.3.6, PUT ?if_exists=1): a check the Pi doesn't hold is
+	// not created — the upsert answers ErrNotFound (the hub's final PUT for
+	// a check the Pi already dropped must never bring it back).
+	UpdateOnly bool
 }
 
 // ExternalResult is a POS upsert's outcome. AddressChanged: an open check is
@@ -65,7 +69,7 @@ type ExternalResult struct {
 	AddressChanged bool
 	DeliveryEnded  bool
 	PrevDriverPos  string
-	// 00020: Shown = a hidden check now qualifies for Kitchen (published as
+	// 00019: Shown = a hidden check now qualifies for Kitchen (published as
 	// a new order, with the chime); Change = a terminal change to a check
 	// already on the tablet (rings until OK; nil = none or quiet);
 	// Reopened = a ready order went back to cooking (left its pool);
@@ -126,7 +130,7 @@ type IntegrationRepository interface {
 	// arrived (rerung) and returns them.
 	RaiseDue(ctx context.Context, now time.Time) ([]StoredOrder, error)
 
-	// 00020. AckPosChange marks an order's terminal change OK'd (acked_at;
+	// 00019. AckPosChange marks an order's terminal change OK'd (acked_at;
 	// it stops ringing, the ticket keeps CHANGED). changeID "" = whatever is
 	// pending; acked=false when nothing is pending or a newer one came in.
 	AckPosChange(ctx context.Context, id, changeID string) (so *StoredOrder, acked bool, err error)

@@ -10,7 +10,7 @@ import (
 	"testing"
 )
 
-// 00020 routes: finishing + callout settings, GET /api/callout with the
+// 00019 routes: finishing + callout settings, GET /api/callout with the
 // hub's report, TEST CALLOUT, change OK; the hub reads both settings.
 func TestCalloutRoutes(t *testing.T) {
 	s, h, tablet := diagServer(t)

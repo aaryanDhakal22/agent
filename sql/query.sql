@@ -757,7 +757,7 @@ SELECT integration_status FROM settings WHERE id = 1;
 -- name: SetIntegrationStatus :exec
 UPDATE settings SET integration_status = ? WHERE id = 1;
 
--- Finishing orders, terminal changes (00020) -----------------------------------
+-- Finishing orders, terminal changes (00019) -----------------------------------
 
 -- name: SetOrderFinished :execrows
 -- A ready pickup / counter order is done with (picked up): the POS closed its

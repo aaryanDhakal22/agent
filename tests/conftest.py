@@ -24,6 +24,7 @@ Env:
 from __future__ import annotations
 
 import os
+import shutil
 import secrets
 import socket
 import socketserver
@@ -37,6 +38,7 @@ from typing import Iterator
 
 import pytest
 import requests
+from filelock import FileLock
 
 AGENT_DIR = Path(__file__).resolve().parent.parent
 REPO_ROOT = AGENT_DIR.parent
@@ -164,19 +166,36 @@ def main_store(admin) -> Iterator[MainStore]:
 
 
 @pytest.fixture(scope="session")
-def agent_binary(tmp_path_factory) -> Path:
-    out = tmp_path_factory.mktemp("agent-bin") / "agent"
-    r = subprocess.run(["go", "build", "-o", str(out), "./cmd/main.go"], cwd=AGENT_DIR,
-                       env={**os.environ, "CGO_ENABLED": "0"}, capture_output=True, text=True, timeout=300)
-    if r.returncode != 0:
-        pytest.fail(f"agent build failed:\n{r.stderr}")
+def agent_binary(tmp_path_factory, worker_id) -> Path:
+    """Built once per run: under pytest-xdist every worker shares the run's
+    base temp dir, and the first one in builds behind a file lock."""
+    root = tmp_path_factory.getbasetemp()
+    if worker_id != "master":
+        root = root.parent  # shared by all workers of this run
+    out = root / "agent-bin" / "agent"
+    with FileLock(str(root / "agent-bin.lock")):
+        if not out.exists():
+            out.parent.mkdir(parents=True, exist_ok=True)
+            tmp = out.with_suffix(".tmp")
+            r = subprocess.run(["go", "build", "-o", str(tmp), "./cmd/main.go"], cwd=AGENT_DIR,
+                               env={**os.environ, "CGO_ENABLED": "0"}, capture_output=True, text=True, timeout=300)
+            if r.returncode != 0:
+                pytest.fail(f"agent build failed:\n{r.stderr}")
+            tmp.rename(out)
     return out
 
 
+@pytest.fixture(scope="session")
+def worker_id(request) -> str:
+    """pytest-xdist's worker id ("gw0" ...), "master" without xdist."""
+    wi = getattr(request.config, "workerinput", None)
+    return wi["workerid"] if wi else "master"
+
+
 class AgentProc:
+    BIND_TRIES = 4
+
     def __init__(self, binary: Path, extra_env: dict | None = None) -> None:
-        self.port = _free_port()
-        self.base = f"http://127.0.0.1:{self.port}"
         self.dir = Path(tempfile.mkdtemp(prefix="quicc-agent-test-"))
         self.log = open(self.dir / "agent.log", "wb")
         env = {
@@ -185,7 +204,6 @@ class AgentProc:
             "APP_ENV": "dev",
             "MAIN_SERVER_URL": MAIN_BASE_URL,
             "AGENT_DB_PATH": str(self.dir / "agent.db"),
-            "HTTP_PORT": str(self.port),
             "LOG_LEVEL": "debug",
             "OTEL_EXPORTER_OTLP_ENDPOINT": "",  # no-op telemetry
             # LAN discovery off unless a test asks: the roster agent (or another
@@ -194,10 +212,55 @@ class AgentProc:
             **(extra_env or {}),
         }
         self._binary, self._env = binary, env
-        self.proc = subprocess.Popen([str(binary)], cwd=self.dir, env=env, stdout=self.log, stderr=subprocess.STDOUT)
-        wait_until(lambda: requests.get(f"{self.base}/api/version", timeout=1).status_code == 200,
-                   timeout=20, what="throwaway agent to serve")
+        # The spare port is free when picked but another test (an xdist
+        # worker's agent) may take it before this agent binds: the agent then
+        # logs the bind error and keeps running without HTTP — retry on a
+        # fresh port.
+        for attempt in range(self.BIND_TRIES):
+            self.port = _free_port()
+            self.base = f"http://127.0.0.1:{self.port}"
+            env["HTTP_PORT"] = str(self.port)
+            self.proc = subprocess.Popen([str(binary)], cwd=self.dir, env=env, stdout=self.log, stderr=subprocess.STDOUT)
+            if self._serving(what="throwaway agent to serve"):
+                break
+            self._kill()
+            if attempt == self.BIND_TRIES - 1:
+                raise AssertionError(f"throwaway agent never bound a port:\n{self.log_tail()}")
         self.http = requests.Session()  # keeps the web-UI session cookie
+
+    def _bind_failed(self) -> bool:
+        try:
+            return "address already in use" in (self.dir / "agent.log").read_text(errors="replace")
+        except OSError:
+            return False
+
+    def _serving(self, *, what: str, timeout: float = 20.0) -> bool:
+        """True once THIS process answers on its port; False when its bind
+        failed (port taken). The /api/version answer only counts after the
+        agent logged its listen line, so another agent on a stolen port
+        can't pass for this one."""
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            if self._bind_failed():
+                return False
+            if self.proc.poll() is not None:
+                raise AssertionError(f"{what}: agent exited ({self.proc.returncode}):\n{self.log_tail()}")
+            try:
+                listening = "HTTP server listening" in (self.dir / "agent.log").read_text(errors="replace")
+                if listening and requests.get(f"{self.base}/api/version", timeout=1).status_code == 200:
+                    return not self._bind_failed()
+            except (OSError, requests.RequestException):
+                pass
+            time.sleep(0.1)
+        raise AssertionError(f"{what} not met within {timeout}s:\n{self.log_tail()}")
+
+    def _kill(self) -> None:
+        self.proc.kill()
+        self.proc.wait(timeout=10)
+        # A fresh log for the next try (the old bind error must not count).
+        self.log.close()
+        (self.dir / "agent.log").unlink(missing_ok=True)
+        self.log = open(self.dir / "agent.log", "wb")
 
     def restart(self) -> None:
         """Stop and start the same agent (same DB + port); the web session
@@ -227,6 +290,10 @@ class AgentProc:
         except subprocess.TimeoutExpired:
             self.proc.kill()
         self.log.close()
+        # Each spawned agent leaves ~20 MB (db, log, apk cache) in /tmp, which
+        # is RAM here; keep them only when asked (QUICC_KEEP_TEST_DIRS=1).
+        if not os.environ.get("QUICC_KEEP_TEST_DIRS"):
+            shutil.rmtree(self.dir, ignore_errors=True)
 
 
 @pytest.fixture

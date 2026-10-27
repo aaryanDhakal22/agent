@@ -11,16 +11,14 @@ from __future__ import annotations
 
 import http.server
 import json
-import os
 import stat
 import threading
 import time
-from pathlib import Path
 
 import pytest
 import requests
 
-from conftest import MAIN_BASE_URL, FakePrinter, manager_session, provision, wait_until, STORE_V1
+from conftest import FakePrinter, manager_session, provision, wait_until, STORE_V1
 
 NEW_ROUTES = {
     ("GET", "/api/update/status"): "device",

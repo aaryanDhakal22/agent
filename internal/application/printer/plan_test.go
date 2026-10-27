@@ -282,7 +282,7 @@ func TestPlanKitchen_UnroutedGoesToEveryStation(t *testing.T) {
 	}
 }
 
-// TestPlanVoid (00020): station tickets for the voided lines only, flagged
+// TestPlanVoid (00019): station tickets for the voided lines only, flagged
 // Void, no receipt, no "other printers" list.
 func TestPlanVoid(t *testing.T) {
 	snap := order.Snapshot{Source: order.SourcePOS, Fulfillment: order.Fulfillment{Type: "pickup"},

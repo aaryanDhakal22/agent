@@ -3732,7 +3732,7 @@ type SetOrderFinishedParams struct {
 	ID         string         `json:"id"`
 }
 
-// Finishing orders, terminal changes (00020) -----------------------------------
+// Finishing orders, terminal changes (00019) -----------------------------------
 // A ready pickup / counter order is done with (picked up): the POS closed its
 // check ('pos') or an online pickup sat ready for the store's finish time
 // ('auto'). It stays ready; it no longer counts as open.

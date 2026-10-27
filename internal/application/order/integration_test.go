@@ -908,3 +908,27 @@ func TestAutoAcceptSchedulesFutureOrders(t *testing.T) {
 		t.Fatalf("order.accepted events = %d", n)
 	}
 }
+
+// PUT ?if_exists=1 (2.3.6): an update-only upsert never creates a check the
+// Pi doesn't hold (ErrNotFound → 404 not_found); one it holds updates as usual.
+func TestUpdateExternalNeverCreates(t *testing.T) {
+	svc, _, events, _, _ := newIntegService(t)
+	ctx := context.Background()
+	if _, err := svc.UpdateExternal(ctx, "501", extOrder("pickup", "h1")); !errors.Is(err, order.ErrNotFound) {
+		t.Fatalf("update-only of an unknown check = %v, want ErrNotFound", err)
+	}
+	select {
+	case ev := <-events:
+		t.Fatalf("event for a check that was never created: %s", ev.Type)
+	default:
+	}
+	if res := mustUpsert(t, svc, "501", extOrder("pickup", "h1")); !res.Created {
+		t.Fatalf("the update-only PUT created the check: %+v", res)
+	}
+	e := extOrder("pickup", "h2")
+	e.Paid = true
+	res, err := svc.UpdateExternal(ctx, "501", e)
+	if err != nil || res.Created || !res.Changed {
+		t.Fatalf("update-only of a held check = %+v, %v", res, err)
+	}
+}

@@ -323,7 +323,19 @@ type UpsertResult struct {
 // re-located when the address changed; same hash → nothing. A driver number
 // newly set at the terminal is mirrored.
 func (s *Service) UpsertExternal(ctx context.Context, extRef string, in order.ExternalOrder) (*UpsertResult, error) {
-	ctx, span := s.span(ctx, "integration.upsert_order", attribute.String("order.ext_ref", extRef))
+	return s.upsertExternal(ctx, extRef, in, false)
+}
+
+// UpdateExternal is UpsertExternal for a check the Pi already holds only
+// (PUT ?if_exists=1, 2.3.6): an unknown ext_ref is order.ErrNotFound (404
+// not_found), never created — the hub's final PUT for a check the Pi
+// dropped (Close batch, retention) must not bring it back.
+func (s *Service) UpdateExternal(ctx context.Context, extRef string, in order.ExternalOrder) (*UpsertResult, error) {
+	return s.upsertExternal(ctx, extRef, in, true)
+}
+
+func (s *Service) upsertExternal(ctx context.Context, extRef string, in order.ExternalOrder, updateOnly bool) (*UpsertResult, error) {
+	ctx, span := s.span(ctx, "integration.upsert_order", attribute.String("order.ext_ref", extRef), attribute.Bool("update_only", updateOnly))
 	defer span.End()
 	set := s.IntegrationSettings()
 	if !set.Features.PosPull {
@@ -342,7 +354,7 @@ func (s *Service) UpsertExternal(ctx context.Context, extRef string, in order.Ex
 	}
 	tenant, location := s.currentStoreIDs()
 	res, err := s.repo.UpsertExternal(ctx, extRef, in, order.ExternalMeta{OrderID: id.String(), TenantID: tenant,
-		LocationID: location, PrepMinutes: set.Times.For(in.CheckType), Now: time.Now()})
+		LocationID: location, PrepMinutes: set.Times.For(in.CheckType), Now: time.Now(), UpdateOnly: updateOnly})
 	if err != nil {
 		return nil, spanErr(span, err)
 	}

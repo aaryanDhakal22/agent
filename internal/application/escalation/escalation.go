@@ -32,7 +32,7 @@ type Escalator interface {
 	// AutoAssignTick (2.2.1): the next idle driver gets ready deliveries
 	// (a cooking one crossing into soon-ready included).
 	AutoAssignTick(ctx context.Context)
-	// FinishDue (00020): online pickups ready longer than the store's
+	// FinishDue (00019): online pickups ready longer than the store's
 	// finish time are finished (no longer open).
 	FinishDue(ctx context.Context, now time.Time) (int, error)
 }

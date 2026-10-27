@@ -198,9 +198,12 @@ type Requester struct {
 
 	mu         sync.Mutex
 	job        *job
+	last       *Status // the last finished job (job is cleared once it finishes)
+	lastForce  bool    // whether that job was forced (for the report)
 	file       *Status // newest update.status read
-	notified   string  // "<id>:<state>" already paged
-	reported   string  // "<id>:<state>" main already has (this process)
+	fileReadAt time.Time
+	notified   string // "<id>:<state>" already paged
+	reported   string // "<id>:<state>" main already has (this process)
 	lastIdleAt time.Time
 	lastOK     time.Time // the last update that finished ok (zero = none known)
 }
@@ -265,8 +268,7 @@ func (r *Requester) Load(ctx context.Context) {
 			r.job = &j
 		}
 	}
-	r.readStatusLocked()
-	r.dropSupersededLocked(ctx)
+	r.refreshLocked(ctx)
 	// An update that finished before the agent kept this (or before this
 	// database): take it from update.status.
 	if r.file != nil && isUpdateOK(r.file) {
@@ -329,22 +331,24 @@ func (r *Requester) Run(ctx context.Context) {
 	}
 }
 
-// Tick is one pass of the loop (exported for tests). update.status is only
-// re-read while a request is in progress (Load reads it once at startup).
+// Tick is one pass of the loop (exported for tests). update.status is re-read
+// every pass while a request is in progress, else every 30 s (an update run
+// by hand, or one that finished while the agent was busy, shows up without a
+// restart).
 func (r *Requester) Tick(ctx context.Context) {
 	r.mu.Lock()
 	now := r.cfg.Now()
-	if r.job != nil && r.job.WrittenAt == nil {
-		r.readStatusLocked()
-		r.dropSupersededLocked(ctx)
+	if r.inProgressLocked(now) || now.Sub(r.fileReadAt) >= idleEvery {
+		r.refreshLocked(ctx)
 	}
 	if r.job != nil && r.job.WrittenAt == nil && now.Sub(r.lastIdleAt) >= idleEvery {
 		r.lastIdleAt = now
 		r.tryWriteWaitingLocked(ctx)
 	}
 	if r.inProgressLocked(now) {
-		r.readStatusLocked()
+		r.refreshLocked(ctx)
 	}
+	r.finishJobLocked(ctx, now) // the pickup timeout needs no new status
 	eff := r.effectiveLocked(now)
 	done := eff == nil || (r.reported == key(eff) &&
 		(!Terminal(eff.State) || r.notified == key(eff) || !r.recent(eff, notifyMaxAge)))
@@ -375,10 +379,10 @@ func (r *Requester) Request(ctx context.Context, action string, force bool, requ
 	}
 	r.mu.Lock()
 	now := r.cfg.Now()
-	r.readStatusLocked()
-	r.dropSupersededLocked(ctx)
-	// A retried request (same id) gets the current answer.
-	if r.job != nil && r.job.ID == id {
+	r.refreshLocked(ctx)
+	// A retried request (same id) gets the current answer — also once it
+	// finished (never a second run under the same id).
+	if r.job != nil && r.job.ID == id || r.last != nil && r.last.ID == id || r.file != nil && r.file.ID == id {
 		st := r.stateLocked(now)
 		r.mu.Unlock()
 		return Reply{Accepted: true, State: st, ID: id}
@@ -439,8 +443,7 @@ func (r *Requester) View(ctx context.Context) View {
 	v.LatestVersion, v.UpdateAvailable = r.latest.Get(ctx)
 	r.mu.Lock()
 	now := r.cfg.Now()
-	r.readStatusLocked()
-	r.dropSupersededLocked(ctx)
+	r.refreshLocked(ctx)
 	v.State = r.stateLocked(now)
 	if r.job != nil && (v.State == StateWaiting || v.State == StateRequested || v.State == StateRunning) {
 		p := r.job.Pending
@@ -480,7 +483,16 @@ func (r *Requester) Health(ctx context.Context) Health {
 
 func key(s *Status) string { return s.ID + ":" + s.State }
 
+// refreshLocked reads update.status, then forgets a superseded job and
+// retires a finished one.
+func (r *Requester) refreshLocked(ctx context.Context) {
+	r.readStatusLocked()
+	r.dropSupersededLocked(ctx)
+	r.finishJobLocked(ctx, r.cfg.Now())
+}
+
 func (r *Requester) readStatusLocked() {
+	r.fileReadAt = r.cfg.Now()
 	b, err := os.ReadFile(filepath.Join(r.cfg.Dir, StatusFile))
 	if err != nil {
 		return
@@ -492,14 +504,16 @@ func (r *Requester) readStatusLocked() {
 	r.file = &s
 }
 
-// dropSupersededLocked forgets a forced update still waiting for idle once
-// update.status shows another update that finished well (ok / up to date)
-// after the forced one was asked for — e.g. one started by hand with its own
-// id. Without this the waiting job outlived the install and kept refusing every
-// new request as "already running".
+// dropSupersededLocked forgets an update job — a forced one still waiting for
+// idle, or one already handed to the updater — once update.status shows
+// another update that finished well (ok / up to date) after ours was asked
+// for, e.g. one started by hand with its own id. Without this the waiting job
+// outlived the install and kept refusing every new request as "already
+// running", and a written one later showed as "the Pi's updater didn't pick up
+// the request".
 func (r *Requester) dropSupersededLocked(ctx context.Context) {
 	j, f := r.job, r.file
-	if j == nil || j.WrittenAt != nil || j.Action != ActionUpdate || f == nil || f.ID == j.ID {
+	if j == nil || j.Action != ActionUpdate || f == nil || f.ID == j.ID {
 		return
 	}
 	if f.Action != ActionUpdate && f.Action != "" || f.State != StateOK && f.State != StateUpToDate {
@@ -513,8 +527,29 @@ func (r *Requester) dropSupersededLocked(ctx context.Context) {
 	if err := r.store.SetUpdateJob(ctx, ""); err != nil {
 		r.logger.Warn().Ctx(ctx).Err(err).Msg("update job not cleared")
 	}
-	r.logger.Info().Ctx(ctx).Str("id", j.ID).Str("by", f.ID).Msg("waiting forced update dropped — another update already finished")
-	r.event("info", fmt.Sprintf("waiting update %s dropped: %s already finished (%s)", j.ID, f.ID, f.State))
+	r.logger.Info().Ctx(ctx).Str("id", j.ID).Str("by", f.ID).Msg("pending update dropped — another update already finished")
+	r.event("info", fmt.Sprintf("pending update %s dropped: %s already finished (%s)", j.ID, f.ID, f.State))
+}
+
+// finishJobLocked retires the job once its status is final (update.status
+// says so, the updater died while running, or it never picked the request
+// up): the final status is kept as last (reporting, the headline, Last) and
+// the persisted job is cleared, so a finished job can never describe a later
+// update (it used to stay until the next request and, once update.status
+// moved on to another id, showed as a fresh pickup failure).
+func (r *Requester) finishJobLocked(ctx context.Context, now time.Time) {
+	j := r.job
+	if j == nil {
+		return
+	}
+	eff := r.effectiveLocked(now)
+	if eff == nil || eff.ID != j.ID || !Terminal(eff.State) {
+		return
+	}
+	r.last, r.lastForce, r.job = eff, j.Force, nil
+	if err := r.store.SetUpdateJob(ctx, ""); err != nil {
+		r.logger.Warn().Ctx(ctx).Err(err).Msg("update job not cleared")
+	}
 }
 
 // statusTime is when update.status finished (else started); ok=false when it
@@ -533,6 +568,10 @@ func statusTime(s *Status) (time.Time, bool) {
 // the agent makes up for the part before the root updater starts.
 func (r *Requester) effectiveLocked(now time.Time) *Status {
 	j := r.job
+	if j == nil && r.last != nil && !r.fileSupersedesLastLocked() {
+		s := *r.last
+		return &s
+	}
 	if j == nil || (r.file != nil && r.file.ID == j.ID) {
 		if r.file == nil {
 			return nil
@@ -544,8 +583,13 @@ func (r *Requester) effectiveLocked(now time.Time) *Status {
 				s.FinishedAt = at.Add(runningStale).UTC().Format(time.RFC3339)
 			}
 		}
-		if (s.RequestedBy == "" || s.RequestedBy == "unknown") && j != nil && j.ID == s.ID {
-			s.RequestedBy = j.RequestedBy
+		if s.RequestedBy == "" || s.RequestedBy == "unknown" {
+			switch {
+			case j != nil && j.ID == s.ID:
+				s.RequestedBy = j.RequestedBy
+			case r.last != nil && r.last.ID == s.ID && r.last.RequestedBy != "":
+				s.RequestedBy = r.last.RequestedBy
+			}
 		}
 		return &s
 	}
@@ -561,6 +605,24 @@ func (r *Requester) effectiveLocked(now time.Time) *Status {
 		s.FinishedAt = j.WrittenAt.Add(pickupTimeout).UTC().Format(time.RFC3339)
 	}
 	return s
+}
+
+// fileSupersedesLastLocked: update.status describes the last finished job
+// itself (it may have moved on, e.g. a late pickup), or a newer run.
+func (r *Requester) fileSupersedesLastLocked() bool {
+	f, l := r.file, r.last
+	if f == nil {
+		return false
+	}
+	if l == nil || f.ID == l.ID {
+		return true
+	}
+	fa, ok := statusTime(f)
+	if !ok {
+		return false
+	}
+	la, ok := statusTime(l)
+	return !ok || fa.After(la)
 }
 
 func (r *Requester) stateLocked(now time.Time) string {
@@ -580,6 +642,10 @@ func (r *Requester) stateLocked(now time.Time) string {
 func (r *Requester) lastLocked(now time.Time) *Status {
 	if eff := r.effectiveLocked(now); eff != nil && Terminal(eff.State) {
 		return eff
+	}
+	if r.last != nil && (r.file == nil || !Terminal(r.file.State) || !r.fileSupersedesLastLocked()) {
+		s := *r.last
+		return &s
 	}
 	if r.file != nil && Terminal(r.file.State) {
 		s := *r.file
@@ -644,7 +710,8 @@ func (r *Requester) reportAndNotify(ctx context.Context, eff *Status) {
 	k := key(eff)
 	r.mu.Lock()
 	needReport := r.reported != k
-	force := r.job != nil && r.job.ID == eff.ID && r.job.Force
+	force := r.job != nil && r.job.ID == eff.ID && r.job.Force ||
+		r.job == nil && r.last != nil && r.last.ID == eff.ID && r.lastForce
 	needNotify := Terminal(eff.State) && r.notified != k && r.recent(eff, notifyMaxAge)
 	if needNotify {
 		r.notified = k // claim it before the send: one page, even if the send fails

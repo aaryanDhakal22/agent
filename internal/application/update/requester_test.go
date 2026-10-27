@@ -513,3 +513,140 @@ func TestNewRequestReplacesWaitingJob(t *testing.T) {
 		t.Fatalf("while requested %+v", rep)
 	}
 }
+
+// A finished job is retired: the persisted job is cleared, the final status
+// stays the headline/Last, and a later update run by hand with its own id is
+// shown as itself — never as "the Pi's updater didn't pick up the request"
+// for the old job (2.3.6).
+func TestFinishedJobClearedLaterUpdateShown(t *testing.T) {
+	g := newRig(t)
+	ctx := context.Background()
+	r := g.requester(true)
+	if rep := r.Request(ctx, ActionUpdate, false, "pi-web", "j1"); !rep.Accepted {
+		t.Fatalf("got %+v", rep)
+	}
+	g.writeStatus(Status{ID: "j1", Action: "update", State: StateOK, FromVersion: "2.0.5", ToVersion: "2.0.6",
+		StartedAt: g.now.Format(time.RFC3339), FinishedAt: g.now.Add(time.Minute).Format(time.RFC3339)})
+	g.now = g.now.Add(2 * time.Minute)
+	r.Tick(ctx)
+	if g.store.job != "" {
+		t.Fatalf("finished job still persisted: %s", g.store.job)
+	}
+	if v := r.View(ctx); v.State != StateOK || v.Last == nil || v.Last.ID != "j1" || v.Last.RequestedBy != "pi-web" || v.Pending != nil {
+		t.Fatalf("view %+v", v)
+	}
+	// Hours later an update is run by hand: the loop sees it without a restart.
+	g.now = g.now.Add(3 * time.Hour)
+	g.writeStatus(Status{ID: "manual-1", Action: "update", RequestedBy: "console", State: StateOK, FromVersion: "2.0.6", ToVersion: "2.0.7",
+		StartedAt: g.now.Add(-2 * time.Minute).Format(time.RFC3339), FinishedAt: g.now.Add(-time.Minute).Format(time.RFC3339)})
+	g.now = g.now.Add(31 * time.Second)
+	r.Tick(ctx)
+	if last := g.reports[len(g.reports)-1]; last["id"] != "manual-1" || last["state"] != StateOK {
+		t.Fatalf("reports %v", g.reports)
+	}
+	v := r.View(ctx)
+	if v.State != StateOK || v.Last == nil || v.Last.ID != "manual-1" || !v.CanUpdateNow {
+		t.Fatalf("view %+v", v)
+	}
+	for _, p := range g.pages {
+		if strings.Contains(p, "FAILED") {
+			t.Fatalf("stale failure paged: %v", g.pages)
+		}
+	}
+	// A retried request with the finished id is answered, never run again.
+	_ = os.Remove(filepath.Join(g.dir, RequestFile))
+	if rep := r.Request(ctx, ActionUpdate, false, "pi-web", "j1"); !rep.Accepted || g.request() != nil {
+		t.Fatalf("retry of a finished id %+v request %v", rep, g.request())
+	}
+}
+
+// A request the updater never picked up fails once, is retired, and a later
+// update replaces the failure (it used to stay the headline until restart).
+func TestPickupTimeoutRetiresJob(t *testing.T) {
+	g := newRig(t)
+	ctx := context.Background()
+	r := g.requester(true)
+	r.Request(ctx, ActionUpdate, false, "pi-web", "p1")
+	g.now = g.now.Add(11 * time.Minute)
+	r.Tick(ctx)
+	if g.store.job != "" {
+		t.Fatalf("timed-out job still persisted: %s", g.store.job)
+	}
+	if v := r.View(ctx); v.State != StateFailed || v.Last == nil || v.Last.ID != "p1" || !v.CanUpdateNow {
+		t.Fatalf("view %+v", v)
+	}
+	// The failure survives later ticks until something newer shows.
+	g.now = g.now.Add(time.Minute)
+	r.Tick(ctx)
+	if v := r.View(ctx); v.Last == nil || v.Last.ID != "p1" {
+		t.Fatalf("last %+v", v.Last)
+	}
+	// A new request is taken and runs.
+	if rep := r.Request(ctx, ActionUpdate, false, "admin", "p2"); !rep.Accepted || rep.State != StateRequested {
+		t.Fatalf("new request %+v", rep)
+	}
+	g.writeStatus(Status{ID: "p2", Action: "update", State: StateUpToDate, FromVersion: "2.0.5",
+		StartedAt: g.now.Format(time.RFC3339), FinishedAt: g.now.Add(time.Minute).Format(time.RFC3339)})
+	g.now = g.now.Add(2 * time.Minute)
+	r.Tick(ctx)
+	if v := r.View(ctx); v.State != StateUpToDate || v.Last == nil || v.Last.ID != "p2" || v.Last.RequestedBy != "admin" {
+		t.Fatalf("view %+v", v)
+	}
+	if len(g.pages) != 2 {
+		t.Fatalf("pages %v", g.pages)
+	}
+}
+
+// A request already handed to the updater is dropped when another update
+// finishes after it was asked for (its request file was replaced) — no
+// pickup failure is reported or paged for it later.
+func TestWrittenJobSupersededByOtherUpdate(t *testing.T) {
+	g := newRig(t)
+	ctx := context.Background()
+	r := g.requester(true)
+	if rep := r.Request(ctx, ActionUpdate, false, "pi-web", "w1"); rep.State != StateRequested {
+		t.Fatalf("got %+v", rep)
+	}
+	g.now = g.now.Add(3 * time.Minute)
+	g.writeStatus(Status{ID: "manual-2", Action: "update", RequestedBy: "console", State: StateOK, FromVersion: "2.0.5", ToVersion: "2.0.6",
+		StartedAt: g.now.Add(-2 * time.Minute).Format(time.RFC3339), FinishedAt: g.now.Format(time.RFC3339)})
+	r.Tick(ctx)
+	if g.store.job != "" {
+		t.Fatalf("superseded job still persisted: %s", g.store.job)
+	}
+	g.now = g.now.Add(15 * time.Minute)
+	r.Tick(ctx)
+	v := r.View(ctx)
+	if v.Last == nil || v.Last.ID != "manual-2" || v.Pending != nil || !v.CanUpdateNow {
+		t.Fatalf("view %+v", v)
+	}
+	for _, rep := range g.reports {
+		if rep["id"] == "w1" && rep["state"] == StateFailed {
+			t.Fatalf("pickup failure reported: %v", g.reports)
+		}
+	}
+	for _, p := range g.pages {
+		if strings.Contains(p, "FAILED") {
+			t.Fatalf("pickup failure paged: %v", g.pages)
+		}
+	}
+}
+
+// A forced job's final report still says force:true after the job is retired.
+func TestForcedFinishReportKeepsForce(t *testing.T) {
+	g := newRig(t)
+	ctx := context.Background()
+	r := g.requester(true)
+	g.total = 2
+	if rep := r.Request(ctx, ActionUpdate, true, "admin", "f1"); rep.State != StateRequested {
+		t.Fatalf("got %+v", rep)
+	}
+	g.writeStatus(Status{ID: "f1", Action: "update", State: StateOK, FromVersion: "2.0.5", ToVersion: "2.0.6",
+		StartedAt: g.now.Format(time.RFC3339), FinishedAt: g.now.Add(time.Minute).Format(time.RFC3339)})
+	g.now = g.now.Add(2 * time.Minute)
+	r.Tick(ctx)
+	last := g.reports[len(g.reports)-1]
+	if last["id"] != "f1" || last["state"] != StateOK || last["force"] != true || last["requested_by"] != "admin" {
+		t.Fatalf("reports %v", g.reports)
+	}
+}

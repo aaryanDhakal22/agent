@@ -4,23 +4,20 @@ The agent ships as a single static **`linux/arm64`** binary (no Docker). CI
 (`.github/workflows/build.yml`) builds it and publishes GitHub Releases; a Pi
 gets it through the **signed manifest + verified bootstrap** (`deploy/pi/` in
 the ops repo at the root, runbook `deploy/pi/RECOVERY.md`) — never by hand.
-There are exactly two tracks — read this before you touch `git tag` by hand.
 
-> **Interactive path:** the console `Ship` flow (`console/`, key `c`) now does
-> add → commit → push → version-bump+tag natively and guardrailed, so you rarely
-> hand-run `task release` anymore (it stays valid). The staging Pi runs the same
-> Pi layout as a restaurant Pi since 2026-10-16 (see `../STAGING.md`).
+**There is one way to tag a release: `deploy/release.sh agent` (ops repo
+root), after the owner merged the PR into `master`.** Never `git tag vX.Y.Z`
+by hand, and never tag a `staging` commit — the tag must sit on the merge
+commit `origin/master` points at.
 
 ## TL;DR — what triggers what
 
 | You do | CI does | Result |
 |---|---|---|
-| `git push` to the **`staging` branch** | `verify` (go vet + test) → build arm64 → update the **rolling `staging-latest` prerelease** | Latest staging binary at the `staging-latest` release, overwritten each push |
-| `git push` to **any other branch** | `verify` + build only (artifact kept 7 days) | — |
-| **`task release -- patch\|minor\|major`** (from `agent/`) | bump `VERSION`, commit, tag `vX.Y.Z`, push → `verify` → build → cut an **immutable release** for `vX.Y.Z` | A permanent, addressable prod binary at release `vX.Y.Z` |
-
-**Never `git tag vX.Y.Z` by hand.** Always use `task release`, so `VERSION` and
-the tag stay in lockstep and CI stamps the binary with the matching version.
+| `git push` to the **`staging` branch** | verify (go vet + test) → build arm64 → update the **rolling `staging-latest` prerelease** | The latest staging binary at `staging-latest`, overwritten each push |
+| `git push` to **any other branch** | verify + build only (artifact kept 7 days) | — |
+| PR `staging` → `master`, merged by the owner (merge commit) | verify + build on `master` | — |
+| **`deploy/release.sh agent`** (ops repo root) | tags `origin/master` `vX.Y.Z` from its `VERSION` → the tag's CI re-labels the tested build of the same tree + VERSION as the **immutable release** `vX.Y.Z` | A permanent prod binary at release `vX.Y.Z`, published to the prod Pi manifest |
 
 ## Staging — nothing to do
 
@@ -41,51 +38,30 @@ installs and keeps the previous release.
 
 ## Production — cut a version
 
-From the **`agent/`** directory, one command:
+1. **Bump `VERSION` in the work itself** (on `staging`, e.g. `2.3.5` →
+   `2.3.6`, plain `X.Y.Z`, no `v`) and describe the release in the commit. CI
+   stamps the binary with this VERSION.
+2. **PR `staging` → `master`.** The owner reviews and merges it (merge commit).
+3. **From the ops repo root:**
 
-```bash
-task release -- patch     # 0.1.0 -> 0.1.1   (bug fix)
-task release -- minor     # 0.1.0 -> 0.2.0   (feature)
-task release -- major     # 0.1.0 -> 1.0.0   (breaking)
-# `task release` with no arg defaults to patch.
-```
+   ```bash
+   deploy/release.sh agent          # asks before tagging; --yes skips the question
+   ```
 
-What it does (via `../scripts/version.sh bump`), in order:
-
-1. Refuses if the working tree is dirty (anything other than `VERSION`) — commit
-   or stash first.
-2. Bumps `agent/VERSION`, commits `chore(release): vX.Y.Z`, creates the annotated
-   tag `vX.Y.Z`.
-3. `git push origin HEAD` + `git push origin --tags`.
-4. CI's production job (`refs/tags/v*`) runs verify → builds the arm64 binary
-   with `-X main.version=X.Y.Z` → creates the **immutable** GitHub Release
-   `vX.Y.Z` with `agent-linux-arm64` + `.sha256`.
-
-Then publish the prod manifest for that tag (prod accepts only immutable
-`v*` releases):
-
-```bash
-deploy/pi/publish.sh --env prod --agent vX.Y.Z --main-url https://main.quiccpos.com
-```
-
-and update each Pi from the admin site or its web UI (right after Close batch;
-§2.8 of `contract/agent.md` has the gates). New / swapped SD cards install the
-published release on first boot.
+   It reads `VERSION` on `origin/master`, refuses if `vX.Y.Z` already exists
+   on another commit (bump the version instead — never move a released tag),
+   tags `origin/master` and pushes the tag, waits for the tag's CI run, then
+   publishes the signed **prod** Pi manifest for `vX.Y.Z`
+   (`deploy/pi/publish.sh --env prod --agent vX.Y.Z …`). Run it again after
+   an interruption: a tag already on `origin/master` is resumed, not re-made.
+4. The prod Pi installs it by itself right after the next Close batch
+   (auto-update, §2.8 of `contract/agent.md`), or from the admin site / its web
+   UI. New or swapped SD cards install the published release on first boot.
 
 Confirm what's running: `curl -s localhost:8080/api/version` →
 `{service, version, commit}` (or `GET /api/update/status` →
-`current_version`, `latest_version`, `update_available`).
-
-## Guardrails (why `version.sh` may refuse)
-
-- **Dirty tree** → "commit or stash them before bumping." Only `VERSION` may be
-  uncommitted.
-- **Tag already exists** (`vX.Y.Z`) → pick a different bump, or delete the tag
-  first. Don't force-retag a released version.
-- **No upstream branch** → it won't push a tag pointing at a commit no one else
-  has. Set the branch's upstream first.
-- Tags are **annotated** (`git describe` / Go `runtime/debug` see them as real
-  releases). Don't create lightweight tags by hand.
+`current_version`, `latest_version`, `update_available`); fleet-wide:
+the console's `--do fleet prd`.
 
 ## Rollback
 
@@ -106,4 +82,6 @@ and version-addressable (`gh release list`).
   from main at the manager-login link) and a writable dir for its SQLite file —
   no runtime assets.
 - `task version-current` / `task version-describe` show the current version +
-  `git describe` diagnostics without changing anything.
+  `git describe` diagnostics without changing anything. This repo has no
+  tagging tasks any more (`task release`, `version-bump`, `version-tag` and
+  `version-init` were removed in 2.3.6).

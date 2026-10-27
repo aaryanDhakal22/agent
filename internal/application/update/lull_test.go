@@ -17,7 +17,7 @@ import (
 	"github.com/rs/zerolog"
 )
 
-// TestForcedUpdateRunsInALull (00020): mid-shift the open batch keeps ready
+// TestForcedUpdateRunsInALull (00019): mid-shift the open batch keeps ready
 // pickups and POS checks. Once the online pickup is finished (N minutes
 // after ready) and the POS closed its check, the gate's open count is 0 and
 // a forced update is handed to the updater - no hand-written request.

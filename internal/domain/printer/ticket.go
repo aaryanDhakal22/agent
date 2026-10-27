@@ -31,7 +31,7 @@ const (
 	// ModeKitchen is "Resend to kitchen": only the station tickets accept
 	// would print, ignoring the pickup-cash rule.
 	ModeKitchen Mode = "kitchen"
-	// ModeVoid (00020): lines voided at the POS terminal on a POS order, as
+	// ModeVoid (00019): lines voided at the POS terminal on a POS order, as
 	// station tickets under a VOID banner (only where the POS ticket switch
 	// for the order's type is on - the service checks it).
 	ModeVoid Mode = "void"
