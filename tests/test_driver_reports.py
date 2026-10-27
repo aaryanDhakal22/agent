@@ -50,7 +50,7 @@ def run(a, driver_id: str, *orders: str) -> None:
 
 def test_driver_reports_print_on_close(floor, fakes) -> None:
     a = floor
-    abdul, carlos, deep = driver(a, "Abdul"), driver(a, "Carlos"), driver(a, "Deep")
+    abdul, carlos, _deep = driver(a, "Abdul"), driver(a, "Carlos"), driver(a, "Deep")  # Deep drives nothing: an empty report
     run(a, abdul, deliver_order(a, "Erik Davis", 200, 2249, True), deliver_order(a, "Ana Perez", 300, 1850, True))
     run(a, abdul, deliver_order(a, "Lee Min", 400, 3000, False))
     run(a, carlos, deliver_order(a, "Sam Tan", 1000, 2500, False))
