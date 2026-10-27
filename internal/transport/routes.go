@@ -75,6 +75,7 @@ func (s *Server) routes() []routeDef {
 		{"GET", "/api/drivers/{id}/pool/trip", "device", "The pool (or ?order_ids=a,b) in fastest driving order + route via main geo.trip (approximate local order when main is unreachable)", s.handlePoolTrip},
 		{"POST", "/api/orders/{id}/pin", "device", "Drop a pin for a delivery address {lat, lng} -> RPC geo.pin -> 202 {} | 503 main_offline", s.handlePinOrder},
 		{"POST", "/api/orders/{id}/geo/choose", "device", "Pick a candidate for an ambiguous address (geo state check) {index} -> RPC geo.choose -> 202 {} | 409 invalid_state | 503 main_offline", s.handleGeoChoose},
+		{"POST", "/api/orders/{id}/geo/search", "device", "Search an address for a delivery {query 1-200 chars} -> RPC geo.search -> 202 {} (main pushes order.geo check with up to 5 places near the store, or not_found + note) | 400 bad_query | 404 | 429 too_soon | 503 main_offline | 501 main_unsupported", s.handleGeoSearch},
 		{"POST", "/api/orders/{id}/schedule", "device", "Future order: first confirm / edit the lead {lead_minutes 1-240} -> scheduled (rings again at promised_at - lead) | 409 not_future", s.handleSchedule},
 		{"GET", "/api/deliveries/next-check", "device", "Nearby rule: is an unassigned delivery near the next (or ?driver_id=) driver's run? -> {driver_id, rule, nearby_order_ids, reason}", s.handleNextCheck},
 		{"GET", "/api/settings/deliveries", "device", "Delivery settings {soon_ready_minutes, delivery_target_minutes, nearby_rule, nearby_detour_minutes, nearby_distance_mi, delivery_radius_m}", s.handleGetDeliveryPrefs},

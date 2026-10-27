@@ -51,10 +51,17 @@ type OrderGeo struct {
 	Polyline    string    `json:"polyline"`
 	OutsideArea bool      `json:"outside_area"`
 	UpdatedAt   time.Time `json:"updated_at,omitzero"` // absent on an agent-made state
-	// Candidates (state check, up to 3) and the address staff confirmed by
-	// choosing one (2.1.0).
+	// Candidates (state check, up to MaxGeoCandidates) and the address staff
+	// confirmed by choosing one (2.1.0).
 	Candidates       []GeoCandidate    `json:"candidates,omitempty"`
 	ConfirmedAddress *ConfirmedAddress `json:"confirmed_address,omitempty"`
+	// Corrected (2.2.2, located only): main found the address only after
+	// dropping its notes / the POS default town + zip, inside the store's
+	// map box. The tablet tags it "address corrected".
+	Corrected bool `json:"corrected,omitempty"`
+	// Note (2.2.2): a short line for staff from main, e.g. "no match for
+	// that search" on the not_found answer to an address search.
+	Note string `json:"note,omitempty"`
 	// Drive seconds store -> address and back (AUTO; not on the wire).
 	StoreToS *int64 `json:"-"`
 	ToStoreS *int64 `json:"-"`
@@ -124,7 +131,17 @@ type GeoUpdate struct {
 	// Confirmed: this push is main's direct answer to a staff action
 	// (geo.choose or geo.pin). Only then does the hub get address.confirmed.
 	Confirmed bool `json:"confirmed"`
+	// 2.2.2: located by main's area retry; a staff-facing note.
+	Corrected bool   `json:"corrected"`
+	Note      string `json:"note"`
 }
+
+// MaxGeoCandidates: a check carries up to 3 candidates from a locate and up
+// to 5 from a staff address search (geo.search, 2.2.2).
+const MaxGeoCandidates = 5
+
+// MaxGeoSearchQuery is the longest address search (characters).
+const MaxGeoSearchQuery = 200
 
 // GeoTime is the drive time between this order and another open delivery:
 // ToS = this -> other, FromS = other -> this (seconds; nil = unknown).

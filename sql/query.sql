@@ -571,14 +571,16 @@ ORDER BY arrival_date ASC;
 
 -- name: UpsertOrderGeo :exec
 INSERT INTO order_geo (order_id, state, lat, lng, quality, distance_m, duration_s, polyline,
-                       outside_area, store_to_s, to_store_s, updated_at, candidates, confirmed_address)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                       outside_area, store_to_s, to_store_s, updated_at, candidates, confirmed_address,
+                       corrected, note)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT (order_id) DO UPDATE SET
     state = excluded.state, lat = excluded.lat, lng = excluded.lng, quality = excluded.quality,
     distance_m = excluded.distance_m, duration_s = excluded.duration_s, polyline = excluded.polyline,
     outside_area = excluded.outside_area, store_to_s = excluded.store_to_s,
     to_store_s = excluded.to_store_s, updated_at = excluded.updated_at,
-    candidates = excluded.candidates, confirmed_address = excluded.confirmed_address;
+    candidates = excluded.candidates, confirmed_address = excluded.confirmed_address,
+    corrected = excluded.corrected, note = excluded.note;
 
 -- name: DeleteOrderGeo :exec
 DELETE FROM order_geo WHERE order_id = ?;

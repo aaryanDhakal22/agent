@@ -46,6 +46,10 @@ func (s *Server) floorErr(w http.ResponseWriter, r *http.Request, err error) {
 		s.writeJSON(w, http.StatusConflict, errCodeMap(err.Error(), "not_future"))
 	case errors.Is(err, order.ErrPosNumberTaken):
 		s.writeJSON(w, http.StatusConflict, errCodeMap(err.Error(), "pos_number_taken"))
+	case errors.Is(err, orderApp.ErrBadQuery):
+		s.writeJSON(w, http.StatusBadRequest, errCodeMap("bad_query", "bad_query"))
+	case errors.Is(err, orderApp.ErrTooSoon):
+		s.writeJSON(w, http.StatusTooManyRequests, errCodeMap(err.Error(), "too_soon"))
 	case errors.Is(err, orderApp.ErrMainOffline):
 		s.writeJSON(w, http.StatusServiceUnavailable, errCodeMap("Can't reach the server — try again.", "main_offline"))
 	case errors.Is(err, orderApp.ErrMainUnsupported):

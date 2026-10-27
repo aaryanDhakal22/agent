@@ -429,8 +429,14 @@ func (s *Service) OnGeo(ctx context.Context, g order.GeoUpdate) (*order.StoredOr
 	}
 	if g.State != order.GeoCheck {
 		g.Candidates = nil
-	} else if len(g.Candidates) > 3 {
-		g.Candidates = g.Candidates[:3]
+	} else if len(g.Candidates) > order.MaxGeoCandidates {
+		g.Candidates = g.Candidates[:order.MaxGeoCandidates]
+	}
+	if g.State != order.GeoLocated {
+		g.Corrected = false
+	}
+	if len(g.Note) > 200 {
+		g.Note = g.Note[:200]
 	}
 	so, err := s.repo.UpsertGeo(ctx, g)
 	if err != nil {
