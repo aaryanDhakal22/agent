@@ -190,7 +190,7 @@ func (c *PosChange) RenderText(number *int64) {
 // when both sides carry it, else by name + size occurrence. A quantity
 // change on the same line counts as added / removed by the difference.
 func POSDiff(before, after []LineItem) (added, removed []ChangeLine, addedRefs map[string]bool, removedItems []LineItem) {
-	bk, ak := POSLineKeys(before), POSLineKeys(after)
+	bk, ak := POSLineKeyPair(before, after)
 	old := map[string]LineItem{}
 	for i, it := range before {
 		old[bk[i]] = it
@@ -221,11 +221,32 @@ func POSDiff(before, after []LineItem) (added, removed []ChangeLine, addedRefs m
 
 // POSLineKeys are the keys POSDiff matches lines by (pos_ref, else name +
 // size + occurrence).
-func POSLineKeys(items []LineItem) []string {
+func POSLineKeys(items []LineItem) []string { return posLineKeys(items, true) }
+
+// POSLineKeyPair keys both sides of a comparison the same way: by pos_ref
+// only when every line on BOTH sides has one, else both by name + size. A
+// check stored before its lines carried pos_ref (hub < 0.2.0) compared with
+// the same check pulled again with them must not read as every line removed
+// and added again (store, 2026-10-26, #314).
+func POSLineKeyPair(before, after []LineItem) (b, a []string) {
+	refs := allRefs(before) && allRefs(after)
+	return posLineKeys(before, refs), posLineKeys(after, refs)
+}
+
+func allRefs(items []LineItem) bool {
+	for _, it := range items {
+		if it.PosRef == "" {
+			return false
+		}
+	}
+	return true
+}
+
+func posLineKeys(items []LineItem, useRefs bool) []string {
 	seen := map[string]int{}
 	out := make([]string, len(items))
 	for i, it := range items {
-		if it.PosRef != "" {
+		if useRefs && it.PosRef != "" {
 			out[i] = "ref:" + it.PosRef
 			continue
 		}

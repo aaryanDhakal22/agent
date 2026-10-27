@@ -255,14 +255,13 @@ func (r *OrderRepository) UpsertExternal(ctx context.Context, extRef string, in 
 // new since the check was on the tablet) and keeps the removed lines struck
 // through.
 func markPOSLines(snap *order.Snapshot, before order.Snapshot, removedItems []order.LineItem) {
-	oldKeys := order.POSLineKeys(before.Items)
+	oldKeys, newKeys := order.POSLineKeyPair(before.Items, snap.Items)
 	wasAdded := map[string]bool{}
 	seen := map[string]bool{}
 	for i, it := range before.Items {
 		seen[oldKeys[i]] = true
 		wasAdded[oldKeys[i]] = it.Added
 	}
-	newKeys := order.POSLineKeys(snap.Items)
 	for i := range snap.Items {
 		k := newKeys[i]
 		snap.Items[i].Added = !seen[k] || wasAdded[k]
