@@ -24,6 +24,7 @@ Env:
 from __future__ import annotations
 
 import os
+import shutil
 import secrets
 import socket
 import socketserver
@@ -289,6 +290,10 @@ class AgentProc:
         except subprocess.TimeoutExpired:
             self.proc.kill()
         self.log.close()
+        # Each spawned agent leaves ~20 MB (db, log, apk cache) in /tmp, which
+        # is RAM here; keep them only when asked (QUICC_KEEP_TEST_DIRS=1).
+        if not os.environ.get("QUICC_KEEP_TEST_DIRS"):
+            shutil.rmtree(self.dir, ignore_errors=True)
 
 
 @pytest.fixture
