@@ -110,6 +110,10 @@ type Order struct {
 	NotDeliveredAt       sql.NullString `json:"not_delivered_at"`
 	NotDeliveredDriverID string         `json:"not_delivered_driver_id"`
 	RunSeq               sql.NullInt64  `json:"run_seq"`
+	FinishedAt           sql.NullString `json:"finished_at"`
+	FinishedBy           string         `json:"finished_by"`
+	PosClosed            bool           `json:"pos_closed"`
+	PosChange            string         `json:"pos_change"`
 }
 
 type OrderGeo struct {
@@ -200,6 +204,8 @@ type Setting struct {
 	NearbyDistanceMi       float64 `json:"nearby_distance_mi"`
 	AutoUpdate             bool    `json:"auto_update"`
 	AutoAssign             bool    `json:"auto_assign"`
+	Finishing              string  `json:"finishing"`
+	Callout                string  `json:"callout"`
 }
 
 type StoreConfig struct {

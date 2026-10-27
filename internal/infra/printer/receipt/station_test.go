@@ -278,3 +278,20 @@ func TestBuildWith_PaymentWording(t *testing.T) {
 		}
 	}
 }
+
+// TestBuildStation_Void (00020): a void ticket has the VOID banner and every
+// line says VOID; nothing else on it.
+func TestBuildStation_Void(t *testing.T) {
+	snap, tk := stationFixture()
+	tk.Void, tk.Others, tk.ReroutedFrom = true, nil, ""
+	tk.Mine = tk.Mine[:1]
+	out := string(BuildStation(snap, tk))
+	for _, want := range []string{" VOID - REMOVED ", "VOID 2 Pepperoni Pizza"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("void ticket lacks %q:\n%q", want, out)
+		}
+	}
+	if strings.Contains(out, "ITEMS TO OTHER PRINTERS") {
+		t.Fatal("void ticket lists other items")
+	}
+}

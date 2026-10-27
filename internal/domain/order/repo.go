@@ -65,6 +65,17 @@ type ExternalResult struct {
 	AddressChanged bool
 	DeliveryEnded  bool
 	PrevDriverPos  string
+	// 00020: Shown = a hidden check now qualifies for Kitchen (published as
+	// a new order, with the chime); Change = a terminal change to a check
+	// already on the tablet (rings until OK; nil = none or quiet);
+	// Reopened = a ready order went back to cooking (left its pool);
+	// Finished = the POS closed it and it is done with; VoidPrint = the
+	// kitchen lines removed (for a void ticket where the POS switch prints).
+	Shown     bool
+	Change    *PosChange
+	Reopened  bool
+	Finished  bool
+	VoidPrint []LineItem
 }
 
 // OnlinePatch is PATCH /api/integration/online-orders/{id}. SetFlag with a
@@ -102,6 +113,9 @@ type IntegrationRepository interface {
 	MirrorSendOut(ctx context.Context, driverID, orderID string) (sent, readied, unpooled []StoredOrder, err error)
 	// MirrorJoinRun puts a delivery on the run of a driver already out.
 	MirrorJoinRun(ctx context.Context, driverID, orderID string) (so *StoredOrder, readied []StoredOrder, err error)
+	// AppendFeed writes a feed event that goes with no other change (2.3.0:
+	// driver_ledger.requested).
+	AppendFeed(ctx context.Context, typ string, at time.Time, data any) error
 	// ListFeed returns up to limit feed events after seq, and the newest seq.
 	ListFeed(ctx context.Context, after int64, limit int) ([]FeedEvent, int64, error)
 
@@ -111,6 +125,16 @@ type IntegrationRepository interface {
 	// RaiseDue puts every scheduled order whose ring time passed back to
 	// arrived (rerung) and returns them.
 	RaiseDue(ctx context.Context, now time.Time) ([]StoredOrder, error)
+
+	// 00020. AckPosChange marks an order's terminal change OK'd (acked_at;
+	// it stops ringing, the ticket keeps CHANGED). changeID "" = whatever is
+	// pending; acked=false when nothing is pending or a newer one came in.
+	AckPosChange(ctx context.Context, id, changeID string) (so *StoredOrder, acked bool, err error)
+	// FinishDueOnlinePickups finishes online pickups / dine-in ready since
+	// before cutoff (finished_by auto) and returns them.
+	FinishDueOnlinePickups(ctx context.Context, cutoff, now time.Time) ([]StoredOrder, error)
+	// InsertCalloutTest writes the feed's callout.test.
+	InsertCalloutTest(ctx context.Context, t CalloutTestData) error
 }
 
 // SettingsRepository owns the singleton settings row.

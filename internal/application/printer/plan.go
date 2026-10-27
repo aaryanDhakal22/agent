@@ -101,6 +101,12 @@ func PlanWith(snap order.Snapshot, roster []RosterEntry, mode printer.Mode, rule
 		return []printer.Ticket{receiptTicket}, nil
 	case printer.ModeKitchen:
 		return stationTickets(snap, roster, receipt)
+	case printer.ModeVoid:
+		tickets, unrouted = stationTickets(snap, roster, receipt)
+		for i := range tickets {
+			tickets[i].Void, tickets[i].Others = true, nil
+		}
+		return tickets, unrouted
 	}
 
 	if isPOS(snap) {

@@ -42,6 +42,8 @@ func (s *Server) floorErr(w http.ResponseWriter, r *http.Request, err error) {
 		s.writeJSON(w, http.StatusConflict, errCodeMap(err.Error(), "no_drivers"))
 	case errors.Is(err, orderApp.ErrPosPullOff):
 		s.writeJSON(w, http.StatusConflict, errCodeMap(err.Error(), "pos_pull_off"))
+	case errors.Is(err, orderApp.ErrNoChange):
+		s.writeJSON(w, http.StatusConflict, errCodeMap(err.Error(), "no_change"))
 	case errors.Is(err, orderApp.ErrNotFuture):
 		s.writeJSON(w, http.StatusConflict, errCodeMap(err.Error(), "not_future"))
 	case errors.Is(err, order.ErrPosNumberTaken):
@@ -276,14 +278,18 @@ func (s *Server) handleClockIn(w http.ResponseWriter, r *http.Request) {
 	s.writeJSON(w, http.StatusOK, d)
 }
 
-// POST /api/drivers/{id}/clock-out — available → off, shift closed.
+// POST /api/drivers/{id}/clock-out — available → off, shift closed; the
+// driver's report prints in the background: {…Driver, report_printing}.
 func (s *Server) handleClockOut(w http.ResponseWriter, r *http.Request) {
 	d, err := s.service.ClockOut(r.Context(), r.PathValue("id"))
 	if err != nil {
 		s.floorErr(w, r, err)
 		return
 	}
-	s.writeJSON(w, http.StatusOK, d)
+	// The driver's report prints in the background; the tablets hear how it
+	// went as SSE driver.report_printed.
+	printing := s.service.PrintDriverReportInBackground(r.Context(), *d, "clock_out")
+	s.writeJSON(w, http.StatusOK, clockOutAnswer{Driver: d, ReportPrinting: printing})
 }
 
 // GET /api/drivers/shifts?days=7 — shift records (newest first).

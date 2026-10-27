@@ -281,3 +281,19 @@ func TestPlanKitchen_UnroutedGoesToEveryStation(t *testing.T) {
 		t.Fatalf("legacy kitchen: %v", kinds(tk))
 	}
 }
+
+// TestPlanVoid (00020): station tickets for the voided lines only, flagged
+// Void, no receipt, no "other printers" list.
+func TestPlanVoid(t *testing.T) {
+	snap := order.Snapshot{Source: order.SourcePOS, Fulfillment: order.Fulfillment{Type: "pickup"},
+		Items: []order.LineItem{item("Garlic Knots", order.RoutingMatched, "p-pizza"), item("Wings", order.RoutingMatched, "p-wings")}}
+	tickets, _ := PlanWith(snap, []RosterEntry{front, pizza, wings}, printer.ModeVoid, DefaultRules())
+	if len(tickets) != 2 {
+		t.Fatalf("tickets = %+v", tickets)
+	}
+	for _, tk := range tickets {
+		if !tk.Void || tk.Kind != printer.TicketStation || len(tk.Others) != 0 || len(tk.Mine) != 1 {
+			t.Fatalf("ticket = %+v", tk)
+		}
+	}
+}

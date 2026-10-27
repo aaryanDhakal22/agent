@@ -113,7 +113,25 @@ type Status struct {
 	// run's stop order; a stop joining the run goes last). Set while
 	// on_delivery and kept once delivered.
 	RunSeq *int64 `json:"run_seq,omitempty"`
+
+	// Finishing (00020): a ready pickup / counter order that is done with
+	// (picked up). FinishedBy "pos" = the POS closed the check, "auto" = an
+	// online pickup sat ready for the store's finish time. A finished order
+	// no longer counts as open (a forced Pi update can run). PosClosed: the
+	// POS closed the check (one still cooking finishes when marked ready).
+	FinishedAt *time.Time `json:"finished_at,omitempty"`
+	FinishedBy string     `json:"finished_by,omitempty"`
+	PosClosed  bool       `json:"pos_closed,omitempty"`
+	// PosChange: the terminal changed a check already on the tablet and
+	// nobody pressed OK yet (the tablet rings until they do).
+	PosChange *PosChange `json:"pos_change,omitempty"`
 }
+
+// Finished-by values (Status.FinishedBy).
+const (
+	FinishedByPOS  = "pos"
+	FinishedByAuto = "auto"
+)
 
 // Not-delivered actions (POST /api/orders/{id}/not-delivered).
 const (

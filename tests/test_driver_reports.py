@@ -64,7 +64,9 @@ def test_driver_reports_print_on_close(floor, fakes) -> None:
     assert (ab["deliveries"], ab["cash_cents"], ab["tip_cents"], ab["tip_after_tax_cents"], ab["owed_cents"]) == (3, 3599, 400, 376, 3223)
     assert ab["lines"][0]["customer"] == "Erik D." and ab["lines"][2]["cash"] is False
     assert (ab["lines"][0]["cash_cents"], ab["lines"][0]["tip_cents"]) == (2049, 0)
+    assert ab["owed_rounded_cents"] == 3200  # whole dollars: 23 cents round down
     assert by["Carlos"]["owed_cents"] == -940  # card only: the store owes the tip
+    assert by["Carlos"]["owed_rounded_cents"] == -900
     assert by["Deep"]["deliveries"] == 0
 
     before = len(fakes["Front"].jobs)
@@ -74,9 +76,11 @@ def test_driver_reports_print_on_close(floor, fakes) -> None:
     wait_until(lambda: len(fakes["Front"].jobs) >= before + 3, timeout=20, what="3 driver reports printed after close")
     slips = [j.decode("latin-1") if isinstance(j, bytes) else j for j in fakes["Front"].jobs[before:before + 3]]
     abdul_slip = next(s for s in slips if "ABDUL" in s)
-    for want in ["DRIVER REPORT", "#11", "Erik D.", "CASH $20.49", "CARD", "Total cash owed", "$35.99", "$3.76", "OWED TO STORE", "$32.23", "Tip $4.00"]:
+    for want in ["DRIVER REPORT", "CASH ORDERS (2)", "CARD ORDERS (1)", "Total: $20.49", "Total cash owed", "$35.99", "$3.76",
+                 "OWED TO STORE", "$32.00", "exact $32.23", "Tip: $4.00", "Total: $30.00"]:
         assert want in abdul_slip, want
-    assert "Tip $2.00" not in abdul_slip, "a cash order's tip is not listed"
+    for not_there in ["Erik", "Ana P", "Lee M"]:
+        assert not_there not in abdul_slip, f"no customer names on the driver report: {not_there}"
     assert "STORE OWES DRIVER" in next(s for s in slips if "CARLOS" in s)
     assert "No deliveries this batch" in next(s for s in slips if "DEEP" in s)
 

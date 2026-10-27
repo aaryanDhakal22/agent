@@ -96,17 +96,21 @@ func (t Times) For(fulfillmentType string) int64 {
 	return t.DefaultPickupMinutes
 }
 
-// IntegrationSettings is the {features, tickets, times} triple served in
-// /api/floor.settings, SSE settings.updated and the feed's settings.changed.
+// IntegrationSettings is the {features, tickets, times, finishing, callout}
+// set served in /api/floor.settings, SSE settings.updated and the feed's
+// settings.changed (finishing + callout since 00020).
 type IntegrationSettings struct {
-	Features Features      `json:"features"`
-	Tickets  TicketToggles `json:"tickets"`
-	Times    Times         `json:"times"`
+	Features  Features          `json:"features"`
+	Tickets   TicketToggles     `json:"tickets"`
+	Times     Times             `json:"times"`
+	Finishing FinishingSettings `json:"finishing"`
+	Callout   CalloutSettings   `json:"callout"`
 }
 
 // DefaultIntegrationSettings are the migration defaults.
 func DefaultIntegrationSettings() IntegrationSettings {
-	return IntegrationSettings{Features: DefaultFeatures(), Tickets: DefaultTicketToggles(), Times: DefaultTimes}
+	return IntegrationSettings{Features: DefaultFeatures(), Tickets: DefaultTicketToggles(), Times: DefaultTimes,
+		Finishing: DefaultFinishing(), Callout: DefaultCallout()}
 }
 
 // DecodeFeatures reads stored features over the defaults (missing keys keep
@@ -184,7 +188,10 @@ type IntegrationStatus struct {
 	OperationDay *string   `json:"operation_day"`
 	Problems     []Problem `json:"problems"`
 	Version      string    `json:"version"`
-	SeenAt       time.Time `json:"seen_at"`
+	// Callout (hub 0.2.0): the order callout's voices + state as the hub
+	// reports them (passed through to the tablet as is).
+	Callout json.RawMessage `json:"callout,omitempty"`
+	SeenAt  time.Time       `json:"seen_at"`
 }
 
 // IntegrationView is /api/floor.integration and SSE integration.status.
@@ -197,6 +204,9 @@ type IntegrationView struct {
 	LastSeenAt   *time.Time `json:"last_seen_at"`
 	OperationDay *string    `json:"operation_day,omitempty"`
 	Version      string     `json:"version,omitempty"`
+	// Callout: the hub's callout report (voices, rendering, last spoken);
+	// null before a hub that has the callout reported.
+	Callout json.RawMessage `json:"callout,omitempty"`
 }
 
 // ProblemLinkDown is added when the hub went quiet.
@@ -207,7 +217,7 @@ var ProblemLinkDown = Problem{Code: "pos_link_down", Text: "POS link down", Seve
 // a hub was ever seen); insert_live = features.order_insert && mode live &&
 // connected.
 func (st IntegrationStatus) View(now time.Time, f Features) IntegrationView {
-	v := IntegrationView{InsertMode: st.InsertMode, Problems: []Problem{}, Version: st.Version, OperationDay: st.OperationDay}
+	v := IntegrationView{InsertMode: st.InsertMode, Problems: []Problem{}, Version: st.Version, OperationDay: st.OperationDay, Callout: st.Callout}
 	if v.InsertMode == "" {
 		v.InsertMode = InsertOff
 	}
@@ -248,6 +258,9 @@ type ExternalOrder struct {
 	TipCents        int64            `json:"tip_cents"`
 	BoardHidden     bool             `json:"board_hidden"`
 	DriverPosNumber *string          `json:"driver_pos_number"`
+	// Closed (hub 0.2.0): the POS closed (settled) the check. A ready
+	// pickup / counter order is then finished.
+	Closed bool `json:"closed"`
 }
 
 type ExternalCustomer struct {
@@ -264,6 +277,11 @@ type ExternalItem struct {
 	Notes          string         `json:"notes"`
 	PrinterID      string         `json:"printer_id"`
 	Children       []ExternalItem `json:"children"`
+	// Ref (hub 0.2.0): the POS line's id, stable across edits (terminal
+	// changes are found by it). Kitchen: the POS sends the line to a kitchen
+	// station (a change to one rings the tablet).
+	Ref     string `json:"ref,omitempty"`
+	Kitchen bool   `json:"kitchen,omitempty"`
 }
 
 type ExternalMoney struct {
@@ -339,7 +357,12 @@ func (e ExternalOrder) Snapshot(id, tenantID, locationID, extRef string, now tim
 	}
 	s.Items = make([]LineItem, 0, len(e.Items))
 	for i, it := range e.Items {
-		li := externalLine(it, extRef, fmt.Sprint(i), i)
+		path := fmt.Sprint(i)
+		if ref := strings.TrimSpace(it.Ref); ref != "" {
+			path = "ref:" + ref
+		}
+		li := externalLine(it, extRef, path, i)
+		li.PosRef, li.Kitchen = strings.TrimSpace(it.Ref), it.Kitchen
 		li.PrinterID = strings.TrimSpace(it.PrinterID)
 		li.Routing = RoutingUnassigned
 		if li.PrinterID != "" {
@@ -384,6 +407,9 @@ const (
 	FeedSettingsChanged   = "settings.changed"
 	FeedBatchClosed       = "batch.closed"
 	FeedOrderNotDelivered = "order.not_delivered"
+	// FeedCalloutTest (00020): speak a callout now on the store speaker - a
+	// TEST CALLOUT or a voice PREVIEW from the tablet.
+	FeedCalloutTest = "callout.test"
 )
 
 // FeedRetention is how long feed events are kept.
@@ -428,11 +454,15 @@ type RunSentData struct {
 	Orders []FeedOrderRef `json:"orders"`
 }
 
-// OrderReadyData is an order.ready event (the future TV callout's input).
+// OrderReadyData is an order.ready event (the hub's order callout input).
+// Paid / CashDueCents (00020): what the Pi knows of the check's money at
+// ready (a POS order: the hub's figures; online: paid and Snapshot.CashDue).
 type OrderReadyData struct {
 	FeedOrderRef
 	Number          *int64 `json:"number"`
 	FulfillmentType string `json:"fulfillment_type"`
+	Paid            bool   `json:"paid"`
+	CashDueCents    int64  `json:"cash_due_cents"`
 }
 
 // AddressConfirmedData is an address.confirmed event (address null for a pin).

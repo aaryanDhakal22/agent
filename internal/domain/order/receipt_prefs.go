@@ -9,6 +9,7 @@ import (
 // Text sizes of the receipt settings, smallest first. Not every setting takes
 // every size (see ReceiptPrefs).
 const (
+	SizeSmall  = "small" // the driver report only (font B)
 	SizeNormal = "normal"
 	SizeLarge  = "large"
 	SizeXLarge = "xlarge"
@@ -43,7 +44,26 @@ type ReceiptPrefs struct {
 	// ExtraPaper: feed past the footer and cut twice (today's ending); off =
 	// a short feed and one cut.
 	ExtraPaper bool `json:"extra_paper"`
+	// DriverReportSize: the driver-report slip's one text size — small (font
+	// B) | normal (font A, the default) | large (font A double height, the
+	// size before this setting).
+	DriverReportSize string `json:"driver_report_size"`
+	// Spacing: extra paper (printer dots) on kitchen tickets and customer
+	// receipts between an item and its first modifier, between modifiers,
+	// and after an item with no modifiers before the next item. 0 = none
+	// (the look before this setting).
+	Spacing LineSpacing `json:"spacing"`
 }
+
+// LineSpacing is ReceiptPrefs.Spacing, in printer dots (0..MaxSpacingDots).
+type LineSpacing struct {
+	ItemMod  int `json:"item_mod"`
+	ModMod   int `json:"mod_mod"`
+	ItemItem int `json:"item_item"`
+}
+
+// MaxSpacingDots caps each line spacing (48 dots = 6 mm at 203 dpi).
+const MaxSpacingDots = 48
 
 // DefaultReceiptPrefs are the settings that print like the agent always did.
 func DefaultReceiptPrefs() ReceiptPrefs {
@@ -55,6 +75,7 @@ func DefaultReceiptPrefs() ReceiptPrefs {
 		ShowStoreAddress:  true,
 		ShowPhone:         true,
 		ExtraPaper:        true,
+		DriverReportSize:  SizeNormal,
 	}
 }
 
@@ -89,6 +110,9 @@ func (p ReceiptPrefs) Normalize() ReceiptPrefs {
 	if p.Copies == 0 {
 		p.Copies = d.Copies
 	}
+	if p.DriverReportSize == "" {
+		p.DriverReportSize = d.DriverReportSize
+	}
 	return p
 }
 
@@ -105,6 +129,14 @@ func (p ReceiptPrefs) Validate() error {
 	}
 	if p.Copies < 1 || p.Copies > 2 {
 		return fmt.Errorf("copies must be 1 or 2")
+	}
+	if !oneOf(p.DriverReportSize, SizeSmall, SizeNormal, SizeLarge) {
+		return fmt.Errorf("driver_report_size must be small, normal or large")
+	}
+	for _, v := range []int{p.Spacing.ItemMod, p.Spacing.ModMod, p.Spacing.ItemItem} {
+		if v < 0 || v > MaxSpacingDots {
+			return fmt.Errorf("spacing must be 0-%d dots", MaxSpacingDots)
+		}
 	}
 	if f := p.FooterText; f != nil {
 		if len(*f) > MaxFooterLen {
