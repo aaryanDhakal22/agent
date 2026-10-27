@@ -283,7 +283,7 @@ func TestCalloutAndFinishingSettingsRoundTrip(t *testing.T) {
 	set, err := r.IntegrationSettings(ctx)
 	expect(t, err == nil && set.Finishing.OnlinePickupMinutes == 30 && set.Callout == order.DefaultCallout(), "defaults = %+v %v", set, err)
 	set.Finishing.OnlinePickupMinutes = 45
-	set.Callout.Voice, set.Callout.MusicDip, set.Callout.Enabled = "kokoro:bf_emma", 50, false
+	set.Callout.Voice, set.Callout.MusicDip, set.Callout.Enabled, set.Callout.Repeat = "kokoro:bf_emma", 50, false, 3
 	if err := r.SetIntegrationSettings(ctx, set); err != nil {
 		t.Fatal(err)
 	}
@@ -292,5 +292,6 @@ func TestCalloutAndFinishingSettingsRoundTrip(t *testing.T) {
 	evs, _, _ := r.ListFeed(ctx, 0, 10)
 	last := evs[len(evs)-1]
 	expect(t, last.Type == order.FeedSettingsChanged && strings.Contains(string(last.Data), `"callout":{"enabled":false,"voice":"kokoro:bf_emma"`) &&
+		strings.Contains(string(last.Data), `"repeat":3}`) &&
 		strings.Contains(string(last.Data), `"finishing":{"online_pickup_minutes":45}`), "settings.changed = %s", last.Data)
 }

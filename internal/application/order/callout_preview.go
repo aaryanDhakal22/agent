@@ -169,7 +169,7 @@ func (s *Service) CalloutPreview(ctx context.Context, number int, voice string) 
 		return nil, spanErr(span, fmt.Errorf("%w: number must be 1-%d", ErrBadRequest, order.MaxCalloutNumber))
 	}
 	voice = strings.TrimSpace(voice)
-	if err := (order.CalloutSettings{Voice: voice}).Validate(); err != nil {
+	if err := order.ValidateVoice(voice); err != nil {
 		return nil, spanErr(span, fmt.Errorf("%w: %w", ErrBadRequest, err))
 	}
 	v := s.IntegrationView(time.Now())
