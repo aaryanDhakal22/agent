@@ -84,10 +84,10 @@ type previewEntry struct {
 
 // previewState is the in-memory preview store.
 type previewState struct {
-	mu   sync.Mutex
-	m    map[string]*previewEntry
-	ids  []string // oldest first
-	now  func() time.Time
+	mu  sync.Mutex
+	m   map[string]*previewEntry
+	ids []string // oldest first
+	now func() time.Time
 }
 
 func (p *previewState) clock() time.Time {

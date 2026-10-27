@@ -444,3 +444,72 @@ func TestLatest(t *testing.T) {
 		t.Fatal("supported")
 	}
 }
+
+// A forced update still waiting for idle is dropped once update.status shows
+// an update that finished after it was asked for (one run by hand with its own
+// id) — and never blocks a new request while it waits (prod 2026-10-27).
+func TestWaitingForcedJobSupersededByManualUpdate(t *testing.T) {
+	g := newRig(t)
+	r := g.requester(true)
+	g.total, g.active = 5, 2
+	if rep := r.Request(context.Background(), ActionUpdate, true, "console", "f1"); rep.State != StateWaiting {
+		t.Fatalf("got %+v", rep)
+	}
+	// An older finished update doesn't drop it.
+	g.writeStatus(Status{ID: "old", Action: "update", State: StateOK, FromVersion: "2.0.4", ToVersion: "2.0.5",
+		StartedAt: g.now.Add(-time.Hour).Format(time.RFC3339), FinishedAt: g.now.Add(-59 * time.Minute).Format(time.RFC3339)})
+	r.Tick(context.Background())
+	if v := r.View(context.Background()); v.State != StateWaiting {
+		t.Fatalf("state %s", v.State)
+	}
+	// A manual update with another id finishes, the agent restarts on it.
+	g.now = g.now.Add(20 * time.Minute)
+	g.writeStatus(Status{ID: "manual-2-3-4", Action: "update", RequestedBy: "console", State: StateOK, FromVersion: "2.0.5", ToVersion: "2.0.6",
+		StartedAt: g.now.Add(-2 * time.Minute).Format(time.RFC3339), FinishedAt: g.now.Add(-time.Minute).Format(time.RFC3339)})
+	r2 := g.requester(true)
+	if g.store.job != "" {
+		t.Fatalf("job still persisted: %s", g.store.job)
+	}
+	v := r2.View(context.Background())
+	if v.State != StateOK || v.Pending != nil || v.BlockedReason == CodeInProgress {
+		t.Fatalf("after the manual update %+v", v)
+	}
+	// A new forced request is taken, not refused as already running.
+	if rep := r2.Request(context.Background(), ActionUpdate, true, "console", "f2"); !rep.Accepted || rep.State != StateWaiting {
+		t.Fatalf("new forced request %+v", rep)
+	}
+}
+
+func TestNewRequestReplacesWaitingJob(t *testing.T) {
+	g := newRig(t)
+	r := g.requester(true)
+	g.total, g.active = 5, 2
+	r.Request(context.Background(), ActionUpdate, true, "console", "f1")
+	if v := r.View(context.Background()); v.BlockedReason == CodeInProgress {
+		t.Fatalf("a waiting job must not block: %+v", v)
+	}
+	// A plain update still needs Close batch: refused, the waiting job stays.
+	if rep := r.Request(context.Background(), ActionUpdate, false, "pi-web", "p1"); rep.Code != CodeNotAfterClose {
+		t.Fatalf("plain %+v", rep)
+	}
+	if v := r.View(context.Background()); v.Pending == nil || v.Pending.ID != "f1" {
+		t.Fatalf("pending %+v", v.Pending)
+	}
+	// Another forced request replaces it.
+	if rep := r.Request(context.Background(), ActionUpdate, true, "admin", "f2"); !rep.Accepted || rep.State != StateWaiting {
+		t.Fatalf("replace %+v", rep)
+	}
+	if v := r.View(context.Background()); v.Pending == nil || v.Pending.ID != "f2" || v.Pending.RequestedBy != "admin" {
+		t.Fatalf("pending %+v", v.Pending)
+	}
+	// Once written, the next request is refused while it runs.
+	g.active = 0
+	g.now = g.now.Add(31 * time.Second)
+	r.Tick(context.Background())
+	if req := g.request(); req == nil || req["id"] != "f2" {
+		t.Fatalf("request %v", req)
+	}
+	if rep := r.Request(context.Background(), ActionUpdate, true, "admin", "f3"); rep.Code != CodeInProgress {
+		t.Fatalf("while requested %+v", rep)
+	}
+}

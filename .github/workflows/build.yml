@@ -1,18 +1,25 @@
 name: Build and Release arm64 binary
 
 # ─────────────────────────────────────────────────────────────────────────
-# Agent CI. The agent no longer ships as a Docker image — it runs as a bare
-# static linux/arm64 binary on the restaurant/staging Raspberry Pi.
+# Agent CI. The agent runs as a bare static linux/arm64 binary on the
+# restaurant/staging Raspberry Pi (no Docker).
 #
 #   * Staging track — a push to the `staging` branch publishes the binary to a
 #     single ROLLING prerelease (tag `staging-latest`; not `staging`, which would
 #     clash with the branch name). The staging Pi downloads it from there.
 #
-#   * Production track — a semver tag push (v1.2.3) builds the binary and cuts
-#     an IMMUTABLE release for that tag, so fleet CD can pin/roll to an exact
-#     version.
+#   * Production track — a semver tag push (v1.2.3) cuts an IMMUTABLE release
+#     for that tag, so fleet CD can pin/roll to an exact version. When a branch
+#     run already built and tested the exact same tree with the same VERSION
+#     (the master merge the tag points at), the tag reuses that binary instead
+#     of rebuilding it; otherwise it runs the full verify + build.
 #
 #   * Any other branch — verify + build only (the artifact is kept 7 days).
+#
+# verify and build run side by side; a release needs both green. Each job
+# keeps its own Go build cache (the arm64 build never shares the test job's
+# amd64 cache), saved fresh every run. Docs-only pushes don't run CI, and a
+# newer push to the same branch cancels the older run (never for tags).
 #
 # Each release carries agent-linux-arm64 + agent-linux-arm64.sha256.
 # ─────────────────────────────────────────────────────────────────────────
@@ -21,48 +28,100 @@ on:
   push:
     branches: ["**"]
     tags: ["v*"]
+    paths-ignore: ["**.md", "docs/**"] # not applied to tag pushes
 
 permissions:
   contents: write # create releases + upload assets
+  actions: read   # find the branch run a tag can reuse
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref_type == 'branch' }}
 
 jobs:
   # ──────────────────────────────────────────────────────────────────────
-  # Verify — go vet + go test before building anything.
+  # Reuse — a tag whose tree + VERSION a branch run already built and
+  # tested picks up that run's binary (seconds instead of a rebuild).
+  # ──────────────────────────────────────────────────────────────────────
+  reuse:
+    name: Reuse a tested build
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    outputs:
+      run: ${{ steps.find.outputs.run }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 50
+      - name: Find a green branch run of the same tree
+        id: find
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          [ "$(tr -d '[:space:]' < VERSION)" = "${GITHUB_REF_NAME#v}" ] || { echo "VERSION != tag: full build"; exit 0; }
+          tree=$(git rev-parse "HEAD^{tree}")
+          for row in $(gh run list -R "$GITHUB_REPOSITORY" -w "${{ github.workflow }}" -e push -s success -L 40 \
+              --json databaseId,headSha,headBranch --jq '.[] | select(.headBranch | startswith("v") | not) | "\(.databaseId):\(.headSha)"'); do
+            run=${row%%:*} sha=${row#*:}
+            git cat-file -e "$sha^{commit}" 2>/dev/null || git fetch -q --depth=1 origin "$sha" || continue
+            if [ "$(git rev-parse "$sha^{tree}")" = "$tree" ] &&
+               [ "$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run/artifacts" --jq '[.artifacts[] | select(.name == "agent-linux-arm64" and (.expired | not))] | length')" = 1 ]; then
+              echo "run=$run" >> "$GITHUB_OUTPUT"
+              echo "reusing run $run (commit $sha, same tree)"
+              exit 0
+            fi
+          done
+          echo "no tested build of this tree: full build"
+
+  # ──────────────────────────────────────────────────────────────────────
+  # Verify — go vet + go test.
   # ──────────────────────────────────────────────────────────────────────
   verify:
     name: Verify (go vet + go test)
+    needs: reuse
+    if: ${{ !cancelled() && needs.reuse.outputs.run == '' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-          cache-dependency-path: go.sum
+          cache: false
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: go-test-${{ hashFiles('go.sum') }}-${{ github.sha }}
+          restore-keys: |
+            go-test-${{ hashFiles('go.sum') }}-
+            go-test-
       - run: go vet ./...
       - run: go test ./...
 
   # ──────────────────────────────────────────────────────────────────────
-  # Build the static arm64 binary once; both tracks reuse it.
+  # Build the static arm64 binary (beside verify, not after it).
   # ──────────────────────────────────────────────────────────────────────
   build:
     name: Build linux/arm64
-    needs: verify
+    needs: reuse
+    if: ${{ !cancelled() && needs.reuse.outputs.run == '' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-          cache-dependency-path: go.sum
-
-      - name: Resolve version + commit
-        id: meta
-        run: |
-          if [ "${{ github.ref_type }}" = "tag" ]; then
-            echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
-          else
-            echo "version=$(cat VERSION | tr -d '[:space:]')" >> "$GITHUB_OUTPUT"
-          fi
+          cache: false
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: go-arm64-${{ hashFiles('go.sum') }}-${{ github.sha }}
+          restore-keys: |
+            go-arm64-${{ hashFiles('go.sum') }}-
+            go-arm64-
 
       - name: Build static arm64 binary
         env:
@@ -70,8 +129,12 @@ jobs:
           GOOS: linux
           GOARCH: arm64
         run: |
+          # A branch build stamps VERSION, a tag build the tag: the same value
+          # when they match, which is what lets a tag reuse a branch build.
+          version=$(tr -d '[:space:]' < VERSION)
+          [ "$GITHUB_REF_TYPE" = tag ] && version=${GITHUB_REF_NAME#v}
           go build -trimpath \
-            -ldflags "-w -s -X main.version=${{ steps.meta.outputs.version }} -X main.commit=${GITHUB_SHA}" \
+            -ldflags "-w -s -X main.version=$version -X main.commit=${GITHUB_SHA}" \
             -o agent-linux-arm64 ./cmd/main.go
           sha256sum agent-linux-arm64 > agent-linux-arm64.sha256
 
@@ -84,12 +147,12 @@ jobs:
           retention-days: 7
 
   # ──────────────────────────────────────────────────────────────────────
-  # Staging — rolling `staging` prerelease, overwritten on every branch push.
+  # Staging — rolling `staging-latest` prerelease, overwritten on every push.
   # ──────────────────────────────────────────────────────────────────────
   release-staging:
     name: Publish rolling staging release
-    needs: build
-    if: github.ref == 'refs/heads/staging'
+    needs: [verify, build]
+    if: ${{ !cancelled() && github.ref == 'refs/heads/staging' && needs.verify.result == 'success' && needs.build.result == 'success' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
@@ -101,25 +164,38 @@ jobs:
           tag_name: staging-latest
           name: "staging (latest)"
           prerelease: true
-          # Move the `staging` tag to this commit each push so the release
-          # always reflects the newest branch build.
+          # Move the tag to this commit each push so the release always
+          # reflects the newest branch build.
           target_commitish: ${{ github.sha }}
           files: |
             agent-linux-arm64
             agent-linux-arm64.sha256
 
   # ──────────────────────────────────────────────────────────────────────
-  # Production — immutable release per semver tag.
+  # Production — immutable release per semver tag (reused or freshly built).
   # ──────────────────────────────────────────────────────────────────────
   release-production:
     name: Publish production release
-    needs: build
-    if: github.ref_type == 'tag' && startsWith(github.ref, 'refs/tags/v')
+    needs: [reuse, verify, build]
+    if: >-
+      !cancelled() && github.ref_type == 'tag' && startsWith(github.ref, 'refs/tags/v') &&
+      needs.reuse.result == 'success' &&
+      (needs.reuse.outputs.run != '' || (needs.verify.result == 'success' && needs.build.result == 'success'))
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/download-artifact@v4
+      - name: Binary from the reused run
+        if: needs.reuse.outputs.run != ''
+        uses: actions/download-artifact@v4
         with:
           name: agent-linux-arm64
+          run-id: ${{ needs.reuse.outputs.run }}
+          github-token: ${{ github.token }}
+      - name: Binary from this run
+        if: needs.reuse.outputs.run == ''
+        uses: actions/download-artifact@v4
+        with:
+          name: agent-linux-arm64
+      - run: sha256sum -c agent-linux-arm64.sha256
       - name: Publish tagged release
         uses: softprops/action-gh-release@v2
         with:
