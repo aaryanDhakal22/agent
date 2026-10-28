@@ -112,6 +112,31 @@ func (s *Service) Ready(ctx context.Context, id string) (*order.StoredOrder, err
 	return so, nil
 }
 
+// UndoReadyWindow: how long after READY the tablet's UNDO still works (the
+// pill shows 10 s; the Pi allows a little more for a slow network).
+const UndoReadyWindow = 2 * time.Minute
+
+// ErrUndoExpired: the order isn't ready any more, or it was marked ready
+// longer ago than UndoReadyWindow.
+var ErrUndoExpired = errors.New("too late to undo: the order moved on")
+
+// UndoReady puts an order marked READY by mistake back to cooking (2.3.8).
+func (s *Service) UndoReady(ctx context.Context, id string) (*order.StoredOrder, error) {
+	ctx, span := s.span(ctx, "order.undo_ready", attribute.String("order.id", id))
+	defer span.End()
+	so, err := s.repo.UndoReady(ctx, id, time.Now().Add(-UndoReadyWindow))
+	if errors.Is(err, order.ErrInvalidState) {
+		err = ErrUndoExpired
+	}
+	if err != nil {
+		return nil, spanErr(span, err)
+	}
+	s.floorChanged()
+	s.publishUpdated(*so)
+	s.devEvent(devlog.Info, devlog.KindOrder, "%s back to cooking (READY undone)", label(*so))
+	return so, nil
+}
+
 // AssignDriver sends ready delivery orders out with a driver.
 func (s *Service) AssignDriver(ctx context.Context, driverID string, orderIDs []string) ([]order.StoredOrder, error) {
 	ctx, span := s.span(ctx, "delivery.assign", attribute.String("driver.id", driverID), attribute.Int("orders", len(orderIDs)))

@@ -62,6 +62,7 @@ func (s *Server) routes() []routeDef {
 		{"GET", "/api/orders/{id}", "device", "One local order by canonical UUID", s.handleGetOrder},
 		{"POST", "/api/orders/{id}/accept", "device", "Accept {prep_minutes?}: kitchen #, print tickets (reverted if nothing printed)", s.handleAccept},
 		{"POST", "/api/orders/{id}/ready", "device", "Mark an accepted order ready", s.handleReady},
+		{"POST", "/api/orders/{id}/undo-ready", "device", "Undo a READY tapped by mistake (within 2 min, still ready): back to cooking, not finished; nothing sent to main or the hub -> StoredOrder | 404 | 409 undo_expired", s.handleUndoReady},
 		{"POST", "/api/orders/{id}/reprint", "device", "Reprint the customer receipt only (no state change)", s.handleReprint},
 		{"POST", "/api/orders/{id}/kitchen", "device", "Resend to kitchen: the station tickets only (no receipt, ignores pickup-cash) -> 200 {order, printed, failed, rerouted} | 409 not_accepted / nothing_for_kitchen | 502 print_failed | 404", s.handleResendKitchen},
 		{"POST", "/api/orders/{id}/not-delivered", "device", "Not delivered {action: retry|cancel}: a delivery (on_delivery|delivered, open batch) leaves the driver's run -> retry = ready, no driver, came_back | cancel = cancelled -> StoredOrder | 400 bad_action | 404 | 409 not_out_or_delivered", s.handleNotDelivered},

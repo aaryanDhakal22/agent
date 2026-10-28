@@ -261,3 +261,17 @@ def test_live_events_for_a_paired_tablet(floor) -> None:
     assert flash["driver"]["name"] == "Zed" and [o["order"]["id"] for o in flash["orders"]] == [did]
     upd = next(d for e, d in events if e == "order.updated")
     assert upd["order"]["id"] == oid and upd["status"]["kitchen_number"] == 1100
+
+
+def test_undo_ready(floor) -> None:
+    """2.3.8: READY tapped by mistake goes back to cooking; a second undo is too late."""
+    a = floor
+    oid = arrive(a)
+    assert post(a, f"/api/orders/{oid}/accept").status_code == 200
+    assert post(a, f"/api/orders/{oid}/ready").status_code == 200
+    r = post(a, f"/api/orders/{oid}/undo-ready")
+    assert r.status_code == 200, r.text
+    assert r.json()["status"]["state"] == "accepted" and "ready_at" not in r.json()["status"]
+    r = post(a, f"/api/orders/{oid}/undo-ready")
+    assert r.status_code == 409 and r.json()["code"] == "undo_expired"
+    assert post(a, f"/api/orders/{oid}/ready").status_code == 200

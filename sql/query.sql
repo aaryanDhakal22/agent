@@ -64,6 +64,12 @@ SELECT id FROM orders WHERE state = 'accepted' AND accept_pending = 1;
 UPDATE orders SET state = 'ready', ready_at = ?
 WHERE id = ? AND state = 'accepted';
 
+-- name: UndoReady :execrows
+-- 2.3.8: a READY tapped by mistake, undone soon after (ready_at >= since):
+-- back to cooking, not finished. Pools stay (a cooking order may be pooled).
+UPDATE orders SET state = 'accepted', ready_at = NULL, finished_at = NULL, finished_by = ''
+WHERE id = sqlc.arg(id) AND state = 'ready' AND NOT came_back AND ready_at >= sqlc.arg(since);
+
 -- name: MarkOnDelivery :execrows
 -- Leaving with a driver empties the order's pool slot (and ends a came-back
 -- hold: only the POS mirror sends a came-back order out).
