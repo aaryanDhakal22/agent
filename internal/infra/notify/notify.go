@@ -181,13 +181,22 @@ func (n *Notifier) floorMessages(message, sound string) []Message {
 	return msgs
 }
 
-// SendRoute sends a driver their route: high priority (skips the phone's
-// quiet hours), the link opens the map. Unlike Send it reports why it
+// Route alert (2.3.9, owner): emergency priority — the phone alerts again
+// every RouteRetry until the driver taps Acknowledge, for at most
+// RouteExpire — with the long "persistent" sound.
+const (
+	RouteRetry  = 30 * time.Second // Pushover's minimum
+	RouteExpire = 10 * time.Minute
+	RouteSound  = "persistent"
+)
+
+// SendRoute sends a driver their route as an emergency alert (repeats until
+// acknowledged, skips the phone's quiet hours); the link opens the map. Unlike Send it reports why it
 // couldn't: ErrNotConfigured, an *APIError, or a network error.
 func (n *Notifier) SendRoute(ctx context.Context, device, title, text, link string) error {
 	n.mu.RLock()
 	m := Message{User: n.userKey, Devices: []string{device}, Title: title, Text: text,
-		Priority: 1, URL: link, URLTitle: "Open route"}
+		Priority: 2, Retry: RouteRetry, Expire: RouteExpire, Sound: RouteSound, URL: link, URLTitle: "Open route"}
 	n.mu.RUnlock()
 	if m.User == "" {
 		return ErrNotConfigured
@@ -203,6 +212,10 @@ type Message struct {
 	Text     string
 	Sound    string // empty = the phone's own sound
 	Priority int
+	// Retry / Expire: an emergency (priority 2) alert repeats every Retry
+	// (>= 30 s) until acknowledged or Expire (<= 3 h) has passed.
+	Retry    time.Duration
+	Expire   time.Duration
 	URL      string
 	URLTitle string
 }
@@ -245,6 +258,10 @@ func (n *Notifier) post(ctx context.Context, m Message) error {
 	}
 	if m.Priority != 0 {
 		form.Set("priority", fmt.Sprint(m.Priority))
+	}
+	if m.Priority == 2 {
+		form.Set("retry", fmt.Sprint(int(m.Retry.Seconds())))
+		form.Set("expire", fmt.Sprint(int(m.Expire.Seconds())))
 	}
 	if m.URL != "" {
 		form.Set("url", m.URL)
