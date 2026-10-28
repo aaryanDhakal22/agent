@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -169,9 +170,13 @@ func TestCalloutTestAndSettingsValidation(t *testing.T) {
 		func(s *order.IntegrationSettings) { s.Callout.MusicDip = -1 },
 		func(s *order.IntegrationSettings) { s.Callout.RestoreSeconds = 11 },
 		func(s *order.IntegrationSettings) { s.Finishing.OnlinePickupMinutes = 241 },
-		func(s *order.IntegrationSettings) { s.Callout.FunChance = 101 },
-		func(s *order.IntegrationSettings) { s.Callout.FunLines = strings.Repeat("Order {n} is up!\n", 11) },
-		func(s *order.IntegrationSettings) { s.Callout.FunLines = strings.Repeat("x", 121) },
+		func(s *order.IntegrationSettings) {
+			s.Callout.VoiceLines = map[string]string{"kokoro:am_onyx": strings.Repeat("x", 161)}
+		},
+		func(s *order.IntegrationSettings) {
+			s.Callout.VoiceLines = map[string]string{"kokoro:am_onyx": "two\nlines"}
+		},
+		func(s *order.IntegrationSettings) { s.Callout.VoiceLines = map[string]string{"bad voice": "hi <x>"} },
 		func(s *order.IntegrationSettings) { s.Callout.GuestChance = 51 },
 		func(s *order.IntegrationSettings) { s.Callout.GuestVoices = "a,b,c,d,e,f,g,h,i,j,k" },
 		func(s *order.IntegrationSettings) { s.Callout.GuestVoices = "eleven labs:x" },
@@ -180,35 +185,27 @@ func TestCalloutTestAndSettingsValidation(t *testing.T) {
 			t.Fatalf("bad settings saved: %v", err)
 		}
 	}
-	if got := svc.IntegrationSettings().Callout; got != order.DefaultCallout() {
+	if got := svc.IntegrationSettings().Callout; !reflect.DeepEqual(got, order.DefaultCallout()) {
 		t.Fatalf("callout changed by a refused save: %+v", got)
 	}
 }
 
-func TestCalloutFunAndGuestSettings(t *testing.T) {
+func TestCalloutVoiceLinesAndGuestSettings(t *testing.T) {
 	ctx := context.Background()
 	svc, _, _, _, _ := newIntegService(t)
-	if got := svc.IntegrationSettings().Callout; got.FunChance != 10 || got.GuestChance != 0 {
+	if got := svc.IntegrationSettings().Callout; len(got.VoiceLines) != 0 || got.GuestChance != 0 {
 		t.Fatalf("defaults: %+v", got)
 	}
+	lines := map[string]string{"elevenlabs:abc123": "This is Narrator and order number <x> is ready", "kokoro:am_onyx": "Hot and fresh!"}
 	_, err := svc.UpdateIntegrationSettings(ctx, func(s *order.IntegrationSettings) error {
-		s.Callout.FunChance, s.Callout.FunLines = 25, "Alright alright alright, order for {n} is ready at the counter.\nDing ding ding!"
+		s.Callout.VoiceLines = lines
 		s.Callout.GuestChance, s.Callout.GuestVoices = 50, "elevenlabs:abc123,kokoro:am_onyx"
 		return nil
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := svc.IntegrationSettings().Callout; got.FunChance != 25 || got.GuestChance != 50 || got.GuestVoices != "elevenlabs:abc123,kokoro:am_onyx" {
+	if got := svc.IntegrationSettings().Callout; !reflect.DeepEqual(got.VoiceLines, lines) || got.GuestChance != 50 {
 		t.Fatalf("saved: %+v", got)
-	}
-	if _, err := svc.CalloutTest(ctx, order.CalloutFun, 290, ""); err != nil {
-		t.Fatalf("fun test: %v", err)
-	}
-	evs := feedOf(t, svc)
-	var d order.CalloutTestData
-	_ = json.Unmarshal(evs[len(evs)-1].Data, &d)
-	if d.Kind != order.CalloutFun || d.Number != 290 {
-		t.Fatalf("feed: %+v", d)
 	}
 }

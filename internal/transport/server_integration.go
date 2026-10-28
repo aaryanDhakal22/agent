@@ -96,7 +96,29 @@ func (s *Server) handleGetCalloutSettings(w http.ResponseWriter, _ *http.Request
 
 // PUT /api/settings/callout {enabled?, voice?, volume?, music_dip?, restore_seconds?, chime?, repeat?}
 func (s *Server) handleSetCalloutSettings(w http.ResponseWriter, r *http.Request) {
-	s.putSettings(w, r, func(set *order.IntegrationSettings) any { return &set.Callout })
+	s.putSettings(w, r, func(set *order.IntegrationSettings) any { return &calloutPut{&set.Callout} })
+}
+
+// calloutPut is a callout PUT: missing keys keep their value, but a
+// voice_lines that is there replaces the whole map (2.3.8: a voice whose
+// line was cleared is left out, so merging would keep it).
+type calloutPut struct{ *order.CalloutSettings }
+
+func (c *calloutPut) UnmarshalJSON(b []byte) error {
+	var keys map[string]json.RawMessage
+	if err := json.Unmarshal(b, &keys); err != nil {
+		return err
+	}
+	if _, ok := keys["voice_lines"]; ok {
+		c.VoiceLines = nil
+	}
+	if err := json.Unmarshal(b, c.CalloutSettings); err != nil {
+		return err
+	}
+	if c.VoiceLines == nil {
+		c.VoiceLines = map[string]string{}
+	}
+	return nil
 }
 
 // GET /api/callout -> {settings, hub_connected, hub}

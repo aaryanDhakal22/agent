@@ -133,9 +133,9 @@ func (s *Service) CalloutTest(ctx context.Context, kind string, number int, voic
 	switch kind {
 	case "":
 		kind = order.CalloutTest
-	case order.CalloutTest, order.CalloutPreview, order.CalloutFun:
+	case order.CalloutTest, order.CalloutPreview:
 	default:
-		return nil, spanErr(span, fmt.Errorf("%w: kind must be test, preview or fun", ErrBadRequest))
+		return nil, spanErr(span, fmt.Errorf("%w: kind must be test or preview", ErrBadRequest))
 	}
 	if number < 1 || number > order.MaxCalloutNumber {
 		return nil, spanErr(span, fmt.Errorf("%w: number must be 1-%d", ErrBadRequest, order.MaxCalloutNumber))
