@@ -149,12 +149,16 @@ func mergeOrder(first, then, all []string) []string {
 
 // --- the link ------------------------------------------------------------------
 
-// RouteStop is one stop of a route link.
+// RouteStop is one stop of a route: where it is (the link) and its block
+// in the message (2.3.10).
 type RouteStop struct {
 	Label string // "#1104"
 	Lat   *float64
 	Lng   *float64
 	Addr  *order.Address
+	Head  string   // "#323 4108 Old Court Rd Apt 2B · CASH $38.40"
+	Note  string   // the customer's notes ("" = none)
+	Grab  []string // drinks and desserts, one per line
 }
 
 func (st RouteStop) place(short bool) string {
@@ -232,28 +236,13 @@ func RouteLink(store *FloorStore, stops []RouteStop) (string, int) {
 	return link, len(places)
 }
 
-// routeText is the message: the stops in order, and what didn't fit.
-func routeText(stops []RouteStop, carried int) (title, text string) {
-	labels := make([]string, 0, len(stops))
-	for _, st := range stops {
-		labels = append(labels, st.Label)
-	}
-	n := len(stops)
-	title = fmt.Sprintf("Route · %d stop", n)
-	if n != 1 {
-		title += "s"
-	}
-	text = strings.Join(labels, " → ")
-	if carried < n {
-		text += fmt.Sprintf(" (+%d more on the ticket)", n-carried)
-	}
-	if text == "" {
-		text = "Route"
-	}
-	return title, text
-}
+// testStop is Send test's one stop (owner, 2026-10-27): store → 5601 Loch
+// Raven Blvd → store, with a drink to show the layout.
+var testStop = RouteStop{Label: "#TEST",
+	Addr: &order.Address{Line1: "5601 Loch Raven Blvd", City: "Baltimore", State: "MD", PostalCode: "21239"},
+	Head: "#TEST 5601 Loch Raven Blvd · PAID", Grab: []string{"1× 2 Liter Coke"}}
 
-func routeStops(sent []order.StoredOrder) []RouteStop {
+func routeStops(sent []order.StoredOrder, rp ReceiptPrinter) []RouteStop {
 	run := append([]order.StoredOrder(nil), sent...)
 	sort.SliceStable(run, func(i, j int) bool {
 		a, b := run[i].Status.RunSeq, run[j].Status.RunSeq
@@ -261,7 +250,8 @@ func routeStops(sent []order.StoredOrder) []RouteStop {
 	})
 	stops := make([]RouteStop, 0, len(run))
 	for _, so := range run {
-		st := RouteStop{Label: label(so), Addr: so.Order.Fulfillment.Address}
+		st := RouteStop{Label: label(so), Addr: so.Order.Fulfillment.Address,
+			Head: stopHead(so), Note: stopNote(so), Grab: stopGrab(so, rp)}
 		if so.Geo.Located() {
 			st.Lat, st.Lng = so.Geo.Lat, so.Geo.Lng
 		}
@@ -296,7 +286,7 @@ func (s *Service) sendRoute(ctx context.Context, driverID string, sent []order.S
 		s.devEvent(devlog.Warn, devlog.KindOrder, "No admin Pushover device set — alerts reach the drivers' phones too")
 	}
 	store, _ := s.floorGeo()
-	stops := routeStops(sent)
+	stops := routeStops(sent, s.geoDeps().ReceiptPrinter)
 	s.background(ctx, func(ctx context.Context) {
 		ctx, span := s.span(ctx, "delivery.route_notify", attribute.String("driver.id", driverID),
 			attribute.Int("stops", len(stops)))
@@ -320,7 +310,7 @@ func (s *Service) sendRoute(ctx context.Context, driverID string, sent []order.S
 // pushRoute sends one route, retrying once after 5 s on a network error.
 func (s *Service) pushRoute(ctx context.Context, device string, store *FloorStore, stops []RouteStop) error {
 	link, carried := RouteLink(store, stops)
-	title, text := routeText(stops, carried)
+	title, text := routeMessage(stops, carried)
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	err := s.notifier.SendRoute(ctx, device, title, text, link)
@@ -347,8 +337,9 @@ func (s *Service) TestRoute(ctx context.Context, driverID string) error {
 		return &RouteError{Code: "not_configured", Err: notify.ErrNotConfigured}
 	}
 	store, _ := s.floorGeo()
-	link, _ := RouteLink(store, nil)
-	err = s.notifier.SendRoute(ctx, d.PushoverDevice, "Test route", "Your routes from the store will arrive like this.", link)
+	link, _ := RouteLink(store, []RouteStop{testStop})
+	_, text := routeMessage([]RouteStop{testStop}, 1)
+	err = s.notifier.SendRoute(ctx, d.PushoverDevice, "Test route", text, link)
 	if err != nil {
 		return &RouteError{Code: routeCode(err), Err: err}
 	}

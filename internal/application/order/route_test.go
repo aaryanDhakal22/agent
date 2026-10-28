@@ -13,6 +13,7 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 	"github.com/rs/zerolog"
@@ -136,7 +137,7 @@ func TestSendOutPushesTheRouteInAutoOrder(t *testing.T) {
 		t.Fatalf("posts = %d", len(posts))
 	}
 	f := posts[0]
-	if f.Get("device") != "ann_phone" || f.Get("priority") != "2" || f.Get("retry") != "30" || f.Get("expire") != "600" ||
+	if f.Get("device") != "ann_phone" || f.Get("priority") != "1" || f.Has("retry") ||
 		f.Get("sound") != "persistent" || f.Get("title") != "Route · 2 stops" {
 		t.Fatalf("form = %v", f)
 	}
@@ -258,8 +259,8 @@ func TestRouteLink(t *testing.T) {
 	if n != 9 || len(link) > 512 {
 		t.Fatalf("9 stops: n=%d len=%d", n, len(link))
 	}
-	_, text := routeText(many, n)
-	if !strings.HasSuffix(text, "(+3 more on the ticket)") {
+	_, text := routeMessage(many, n)
+	if !strings.HasSuffix(text, "Map: the first 9 stops") {
 		t.Fatalf("text = %q", text)
 	}
 	// Long addresses shrink, then drop, to stay within 512.
@@ -272,7 +273,7 @@ func TestRouteLink(t *testing.T) {
 	if len(link) > 512 || n == 0 || n > 9 {
 		t.Fatalf("long: n=%d len=%d", n, len(link))
 	}
-	if title, _ := routeText([]RouteStop{pin}, 1); title != "Route · 1 stop" {
+	if title, _ := routeMessage([]RouteStop{pin}, 1); title != "Route · 1 stop" {
 		t.Fatalf("title = %q", title)
 	}
 }
@@ -281,5 +282,78 @@ func TestMergeOrder(t *testing.T) {
 	got := mergeOrder([]string{"b", "x"}, []string{"a", "b", "c"}, []string{"a", "b", "c", "d"})
 	if fmt.Sprint(got) != "[b a c d]" {
 		t.Fatalf("got %v", got)
+	}
+}
+
+func TestRouteMessageLayoutAndGrabItems(t *testing.T) {
+	rp := ReceiptPrinter(func() (string, int) { return "p-receipt", 5 })
+	online := order.StoredOrder{
+		Order: order.Snapshot{ID: "o1", Source: "online", Notes: "Leave at door",
+			Fulfillment: order.Fulfillment{Type: "delivery", Address: &order.Address{Line1: "4108 Old Court Rd", Line2: "Apt 2B", Notes: "Gate code 1234"}},
+			Money:       order.Money{Total: 3840},
+			Items: []order.LineItem{
+				{Name: "Pepperoni Pizza", Size: "Large", Quantity: 1, PrinterID: "p-pizza"},
+				{Name: "Coke", Size: "2 Liter", Quantity: 1, PrinterID: "p-receipt", Children: []order.LineItem{{Name: "Diet", Quantity: 1}}},
+				{Name: "Coke", Size: "2 Liter", Quantity: 1, PrinterID: "p-receipt", Children: []order.LineItem{{Name: "Diet", Quantity: 1}}},
+				{Name: "Cannoli", Quantity: 2, PrinterID: "p-pizza"},        // by name
+				{Name: "Crab Cake", Quantity: 1, PrinterID: "p-receipt"},    // kitchen food, not a dessert
+				{Name: "Delivery Fee", Quantity: 1, PrinterID: "p-receipt"}, // never
+			}},
+		Status: order.Status{KitchenNumber: ptr[int64](323)},
+	}
+	pos := order.StoredOrder{
+		Order: order.Snapshot{ID: "o2", Source: order.SourcePOS,
+			Fulfillment: order.Fulfillment{Type: "delivery", Address: &order.Address{Line1: "12 Main St"}},
+			Items: []order.LineItem{
+				{Name: "Cheesesteak", Quantity: 1, Kitchen: true},
+				{Name: "Snapple Peach", Quantity: 1},       // no kitchen station
+				{Name: "Card Processing Fee", Quantity: 1}, // never
+			}},
+		Status: order.Status{DisplayNumber: ptr[int64](223), ExtSource: order.ExtSourceSoftTouch, Paid: true},
+	}
+	stops := routeStops([]order.StoredOrder{online, pos}, rp)
+	_, text := routeMessage(stops, 2)
+	want := "#323 4108 Old Court Rd Apt 2B · CASH $38.40\n" +
+		"  Note: Gate code 1234 / Leave at door\n" +
+		"  2× 2 Liter Coke · Diet\n" +
+		"  2× Cannoli\n" +
+		"#223 12 Main St · PAID\n" +
+		"  1× Snapple Peach"
+	if text != want {
+		t.Fatalf("text =\n%s\nwant\n%s", text, want)
+	}
+	// One printer (it is the kitchen too): only names count.
+	solo := ReceiptPrinter(func() (string, int) { return "p-receipt", 1 })
+	if g := stopGrab(order.StoredOrder{Order: order.Snapshot{Items: []order.LineItem{{Name: "Garlic Knots", Quantity: 1, PrinterID: "p-receipt"}}}}, solo); len(g) != 0 {
+		t.Fatalf("sole printer: %v", g)
+	}
+}
+
+func TestRouteMessageTooLong(t *testing.T) {
+	var stops []RouteStop
+	for i := 0; i < 6; i++ {
+		st := RouteStop{Head: fmt.Sprintf("#%d %d Long Street Name Avenue Apt 12 · CASH $45.00", 300+i, 1000+i),
+			Note: strings.Repeat("Please ring the bell twice and wait ", 3)}
+		for j := 0; j < 4; j++ {
+			st.Grab = append(st.Grab, fmt.Sprintf("1× 2 Liter Soda Flavor %d · Diet · Note: extra cold", j))
+		}
+		stops = append(stops, st)
+	}
+	_, text := routeMessage(stops, 6)
+	if utf8.RuneCountInString(text) > routeMsgMax || !strings.HasSuffix(text, "+ more on the receipts") {
+		t.Fatalf("len %d, ends %q", utf8.RuneCountInString(text), text[len(text)-40:])
+	}
+	if strings.Contains(text, strings.Repeat("Please ring the bell twice and wait ", 2)) {
+		t.Fatal("notes were not shortened first")
+	}
+}
+
+func TestSendTestRouteIsLochRaven(t *testing.T) {
+	if !strings.Contains(testStop.Addr.Line1, "5601 Loch Raven Blvd") {
+		t.Fatal(testStop.Addr.Line1)
+	}
+	link, n := RouteLink(&FloorStore{Lat: 39.4, Lng: -76.6}, []RouteStop{testStop})
+	if n != 1 || !strings.Contains(link, "waypoints=5601+Loch+Raven+Blvd+Baltimore+MD+21239") || !strings.Contains(link, "destination=39.40000%2C-76.60000") {
+		t.Fatalf("link = %s", link)
 	}
 }
