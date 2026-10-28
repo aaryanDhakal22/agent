@@ -44,7 +44,7 @@ class FakePushover:
         threading.Thread(target=self.srv.serve_forever, daemon=True).start()
 
     def routes(self) -> list[dict[str, str]]:
-        return [f for f in self.forms if f.get("priority") == "2"]
+        return [f for f in self.forms if f.get("priority") == "1"]
 
     def close(self) -> None:
         self.srv.shutdown()

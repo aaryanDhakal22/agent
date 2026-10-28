@@ -347,6 +347,15 @@ func main() {
 			sc.Location.DeliveryRadiusM = m
 			storeCtx.Store(sc)
 		},
+		ReceiptPrinter: func() (string, int) {
+			sc, _ := storeCtx.Load().(storeconfig.StoreContext)
+			for _, p := range sc.Printers {
+				if p.IsReceipt {
+					return p.ID, len(sc.Printers)
+				}
+			}
+			return "", len(sc.Printers)
+		},
 	})
 	mapFile.OnChange(broker.PublishFloorChanged)
 	go mapFile.Run(ctx)

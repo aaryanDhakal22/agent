@@ -181,22 +181,18 @@ func (n *Notifier) floorMessages(message, sound string) []Message {
 	return msgs
 }
 
-// Route alert (2.3.9, owner): emergency priority — the phone alerts again
-// every RouteRetry until the driver taps Acknowledge, for at most
-// RouteExpire — with the long "persistent" sound.
-const (
-	RouteRetry  = 30 * time.Second // Pushover's minimum
-	RouteExpire = 10 * time.Minute
-	RouteSound  = "persistent"
-)
+// RouteSound: a route plays the long "persistent" sound once (2.3.10,
+// owner: the notification itself is enough — 2.3.9 repeated it every 30 s
+// until Acknowledge).
+const RouteSound = "persistent"
 
-// SendRoute sends a driver their route as an emergency alert (repeats until
-// acknowledged, skips the phone's quiet hours); the link opens the map. Unlike Send it reports why it
+// SendRoute sends a driver their route: high priority (skips the phone's
+// quiet hours), the long sound once; the link opens the map. Unlike Send it reports why it
 // couldn't: ErrNotConfigured, an *APIError, or a network error.
 func (n *Notifier) SendRoute(ctx context.Context, device, title, text, link string) error {
 	n.mu.RLock()
 	m := Message{User: n.userKey, Devices: []string{device}, Title: title, Text: text,
-		Priority: 2, Retry: RouteRetry, Expire: RouteExpire, Sound: RouteSound, URL: link, URLTitle: "Open route"}
+		Priority: 1, Sound: RouteSound, URL: link, URLTitle: "Open route"}
 	n.mu.RUnlock()
 	if m.User == "" {
 		return ErrNotConfigured

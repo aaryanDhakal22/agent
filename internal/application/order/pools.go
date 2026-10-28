@@ -65,6 +65,9 @@ type GeoDeps struct {
 	// after main took a new one (its store_config push follows).
 	Radius    func() (int64, bool)
 	SetRadius func(int64)
+	// ReceiptPrinter (2.3.10): the receipt printer's id and the printer
+	// count, for the drinks and desserts on a route.
+	ReceiptPrinter ReceiptPrinter
 }
 
 // SetGeo wires the store pin / map / main RPC hooks.
