@@ -292,6 +292,6 @@ func TestCalloutAndFinishingSettingsRoundTrip(t *testing.T) {
 	evs, _, _ := r.ListFeed(ctx, 0, 10)
 	last := evs[len(evs)-1]
 	expect(t, last.Type == order.FeedSettingsChanged && strings.Contains(string(last.Data), `"callout":{"enabled":false,"voice":"kokoro:bf_emma"`) &&
-		strings.Contains(string(last.Data), `"repeat":3}`) &&
+		strings.Contains(string(last.Data), `"repeat":3,"fun_chance":10,"fun_lines":"","guest_chance":0,"guest_voices":""}`) &&
 		strings.Contains(string(last.Data), `"finishing":{"online_pickup_minutes":45}`), "settings.changed = %s", last.Data)
 }

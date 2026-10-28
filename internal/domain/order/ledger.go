@@ -314,6 +314,10 @@ func MergeDriverReports(in MergeInput) []DriverReport {
 			x := NewDriverReportLine(so)
 			l.OrderID, l.Customer, l.Address, l.Street = x.OrderID, x.Customer, x.Address, x.Street
 			switch {
+			case so.Status.State == StateOnDelivery && c.Closed:
+				// Sent out from the terminal and back there (closed): the
+				// return is the POS's, Quibase just never heard it.
+				l.Match, l.Note = MatchBoth, ""
 			case so.Status.State == StateOnDelivery:
 				l.Match, l.Note = MatchBoth, "still out on Quibase"
 			case so.Status.CameBack || so.Status.NotDelivered != nil:

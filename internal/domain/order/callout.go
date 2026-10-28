@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 // Finishing orders, terminal changes to POS checks and the store hub's order
@@ -63,7 +64,32 @@ type CalloutSettings struct {
 	// Repeat (2.3.4): how many times the phrase is said per callout, 1-3
 	// (the chime once at the start, the music down for the whole sequence).
 	Repeat int `json:"repeat"`
+	// FunChance (2.3.8): percent of READY callouts said with a fun line
+	// instead of the normal phrase, 0-100 (0 = never).
+	FunChance int `json:"fun_chance"`
+	// FunLines (2.3.8): the store's own fun lines, one per line ("" = the
+	// hub's built-in ones). {n} is the spoken ticket number; a line without
+	// it is said before the normal phrase.
+	FunLines string `json:"fun_lines"`
+	// GuestChance (2.3.8): percent of READY callouts spoken by a random
+	// guest voice instead of Voice, 0-50 (0 = never).
+	GuestChance int `json:"guest_chance"`
+	// GuestVoices (2.3.8): the guest voice ids, comma separated ("" = every
+	// online voice the hub has).
+	GuestVoices string `json:"guest_voices"`
 }
+
+// MaxGuestChance / MaxGuestVoices bound the guest voices.
+const (
+	MaxGuestChance = 50
+	MaxGuestVoices = 10
+)
+
+// Fun line bounds (CalloutSettings.FunLines).
+const (
+	MaxFunLines   = 10
+	MaxFunLineLen = 120
+)
 
 // Callout repeat bounds (CalloutSettings.Repeat).
 const (
@@ -72,9 +98,9 @@ const (
 )
 
 // DefaultCallout: on, the hub's default voice at 90 %, music down 70 %
-// coming back over 1.5 s, chime first, said once.
+// coming back over 1.5 s, chime first, said once, a fun line one time in ten.
 func DefaultCallout() CalloutSettings {
-	return CalloutSettings{Enabled: true, Volume: 90, MusicDip: 70, RestoreSeconds: 1.5, Chime: true, Repeat: 1}
+	return CalloutSettings{Enabled: true, Volume: 90, MusicDip: 70, RestoreSeconds: 1.5, Chime: true, Repeat: 1, FunChance: 10}
 }
 
 // MaxVoiceID bounds CalloutSettings.Voice.
@@ -91,8 +117,56 @@ func (c CalloutSettings) Validate() error {
 		return fmt.Errorf("restore_seconds must be 0-10")
 	case c.Repeat < MinCalloutRepeat || c.Repeat > MaxCalloutRepeat:
 		return fmt.Errorf("repeat must be 1-3")
+	case c.FunChance < 0 || c.FunChance > 100:
+		return fmt.Errorf("fun_chance must be 0-100")
+	case c.GuestChance < 0 || c.GuestChance > MaxGuestChance:
+		return fmt.Errorf("guest_chance must be 0-%d", MaxGuestChance)
+	}
+	if err := ValidateGuestVoices(c.GuestVoices); err != nil {
+		return err
+	}
+	if err := ValidateFunLines(c.FunLines); err != nil {
+		return err
 	}
 	return ValidateVoice(c.Voice)
+}
+
+// ValidateGuestVoices checks the guest voice list: at most MaxGuestVoices
+// voice ids, comma separated.
+func ValidateGuestVoices(s string) error {
+	n := 0
+	for _, v := range strings.Split(s, ",") {
+		v = strings.TrimSpace(v)
+		if v == "" {
+			continue
+		}
+		if n++; n > MaxGuestVoices {
+			return fmt.Errorf("guest_voices: at most %d voices", MaxGuestVoices)
+		}
+		if err := ValidateVoice(v); err != nil {
+			return fmt.Errorf("guest_voices: %w", err)
+		}
+	}
+	return nil
+}
+
+// ValidateFunLines checks the store's fun lines: at most MaxFunLines
+// non-empty lines of at most MaxFunLineLen characters.
+func ValidateFunLines(s string) error {
+	n := 0
+	for _, l := range strings.Split(s, "\n") {
+		l = strings.TrimSpace(l)
+		if l == "" {
+			continue
+		}
+		if n++; n > MaxFunLines {
+			return fmt.Errorf("fun_lines: at most %d lines", MaxFunLines)
+		}
+		if utf8.RuneCountInString(l) > MaxFunLineLen {
+			return fmt.Errorf("fun_lines: a line is at most %d characters", MaxFunLineLen)
+		}
+	}
+	return nil
 }
 
 // ValidateVoice checks a voice id ("" = the hub's default).
@@ -121,6 +195,7 @@ func DecodeCallout(raw []byte) (CalloutSettings, error) {
 const (
 	CalloutTest    = "test"    // TEST CALLOUT with a number
 	CalloutPreview = "preview" // PREVIEW a voice
+	CalloutFun     = "fun"     // TRY A FUN LINE (2.3.8)
 )
 
 // CalloutTestData is a callout.test feed event: speak "Order ready for
