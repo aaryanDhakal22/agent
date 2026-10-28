@@ -367,6 +367,9 @@ func ShortCustomerName(display string) string {
 // matching floor event(s) in the same transaction.
 type FloorRepository interface {
 	MarkReady(ctx context.Context, id string) (*StoredOrder, error)
+	// UndoReady puts an order marked ready at or after since back to
+	// cooking (2.3.8); ErrInvalidState when it isn't (any more).
+	UndoReady(ctx context.Context, id string, since time.Time) (*StoredOrder, error)
 	AssignDriver(ctx context.Context, driverID string, orderIDs []string) ([]StoredOrder, error)
 	DriverReturned(ctx context.Context, driverID string) ([]StoredOrder, error)
 	// CloseBatch closes the open batch and opens the next. Without force it

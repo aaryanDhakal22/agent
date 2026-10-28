@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 // Finishing orders, terminal changes to POS checks and the store hub's order
@@ -63,7 +64,29 @@ type CalloutSettings struct {
 	// Repeat (2.3.4): how many times the phrase is said per callout, 1-3
 	// (the chime once at the start, the music down for the whole sequence).
 	Repeat int `json:"repeat"`
+	// VoiceLines (2.3.8): a voice's own line, said instead of the normal
+	// phrase whenever that voice speaks (chosen or guest). <x> (or {n}) is
+	// the spoken ticket number; a line without it goes before the phrase.
+	VoiceLines map[string]string `json:"voice_lines"`
+	// GuestChance (2.3.8): percent of READY callouts spoken by a random
+	// guest voice instead of Voice, 0-50 (0 = never).
+	GuestChance int `json:"guest_chance"`
+	// GuestVoices (2.3.8): the guest voice ids, comma separated ("" = every
+	// online voice the hub has).
+	GuestVoices string `json:"guest_voices"`
 }
+
+// MaxGuestChance / MaxGuestVoices bound the guest voices.
+const (
+	MaxGuestChance = 50
+	MaxGuestVoices = 10
+)
+
+// Voice line bounds (CalloutSettings.VoiceLines).
+const (
+	MaxVoiceLines   = 60
+	MaxVoiceLineLen = 160
+)
 
 // Callout repeat bounds (CalloutSettings.Repeat).
 const (
@@ -72,9 +95,9 @@ const (
 )
 
 // DefaultCallout: on, the hub's default voice at 90 %, music down 70 %
-// coming back over 1.5 s, chime first, said once.
+// coming back over 1.5 s, chime first, said once, no voice lines.
 func DefaultCallout() CalloutSettings {
-	return CalloutSettings{Enabled: true, Volume: 90, MusicDip: 70, RestoreSeconds: 1.5, Chime: true, Repeat: 1}
+	return CalloutSettings{Enabled: true, Volume: 90, MusicDip: 70, RestoreSeconds: 1.5, Chime: true, Repeat: 1, VoiceLines: map[string]string{}}
 }
 
 // MaxVoiceID bounds CalloutSettings.Voice.
@@ -91,8 +114,42 @@ func (c CalloutSettings) Validate() error {
 		return fmt.Errorf("restore_seconds must be 0-10")
 	case c.Repeat < MinCalloutRepeat || c.Repeat > MaxCalloutRepeat:
 		return fmt.Errorf("repeat must be 1-3")
+	case len(c.VoiceLines) > MaxVoiceLines:
+		return fmt.Errorf("voice_lines: at most %d voices", MaxVoiceLines)
+	case c.GuestChance < 0 || c.GuestChance > MaxGuestChance:
+		return fmt.Errorf("guest_chance must be 0-%d", MaxGuestChance)
+	}
+	if err := ValidateGuestVoices(c.GuestVoices); err != nil {
+		return err
+	}
+	for v, line := range c.VoiceLines {
+		if err := ValidateVoice(v); err != nil || v == "" {
+			return fmt.Errorf("voice_lines: %q is not a voice id", v)
+		}
+		if n := utf8.RuneCountInString(line); n == 0 || n > MaxVoiceLineLen || strings.ContainsAny(line, "\n\r") {
+			return fmt.Errorf("voice_lines: a line is 1-%d characters on one line (leave a voice out for the normal phrase)", MaxVoiceLineLen)
+		}
 	}
 	return ValidateVoice(c.Voice)
+}
+
+// ValidateGuestVoices checks the guest voice list: at most MaxGuestVoices
+// voice ids, comma separated.
+func ValidateGuestVoices(s string) error {
+	n := 0
+	for _, v := range strings.Split(s, ",") {
+		v = strings.TrimSpace(v)
+		if v == "" {
+			continue
+		}
+		if n++; n > MaxGuestVoices {
+			return fmt.Errorf("guest_voices: at most %d voices", MaxGuestVoices)
+		}
+		if err := ValidateVoice(v); err != nil {
+			return fmt.Errorf("guest_voices: %w", err)
+		}
+	}
+	return nil
 }
 
 // ValidateVoice checks a voice id ("" = the hub's default).
@@ -111,6 +168,9 @@ func DecodeCallout(raw []byte) (CalloutSettings, error) {
 		return c, nil
 	}
 	err := json.Unmarshal(raw, &c)
+	if c.VoiceLines == nil {
+		c.VoiceLines = map[string]string{}
+	}
 	if c.Repeat < MinCalloutRepeat || c.Repeat > MaxCalloutRepeat {
 		c.Repeat = DefaultCallout().Repeat
 	}

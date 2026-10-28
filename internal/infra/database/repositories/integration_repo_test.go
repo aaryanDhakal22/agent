@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -368,7 +369,7 @@ func TestMigrationTo00014KeepsOrders(t *testing.T) {
 	if so.Status.State != order.StateReady || so.Status.PoolSeq == nil || *so.Status.PoolSeq != 2 || so.Status.LocalOnly {
 		t.Fatalf("migrated = %+v", so.Status)
 	}
-	if set, err := r.IntegrationSettings(ctx); err != nil || set != order.DefaultIntegrationSettings() {
+	if set, err := r.IntegrationSettings(ctx); err != nil || !reflect.DeepEqual(set, order.DefaultIntegrationSettings()) {
 		t.Fatalf("settings = %+v %v", set, err)
 	}
 }

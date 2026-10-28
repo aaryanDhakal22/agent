@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -168,12 +170,42 @@ func TestCalloutTestAndSettingsValidation(t *testing.T) {
 		func(s *order.IntegrationSettings) { s.Callout.MusicDip = -1 },
 		func(s *order.IntegrationSettings) { s.Callout.RestoreSeconds = 11 },
 		func(s *order.IntegrationSettings) { s.Finishing.OnlinePickupMinutes = 241 },
+		func(s *order.IntegrationSettings) {
+			s.Callout.VoiceLines = map[string]string{"kokoro:am_onyx": strings.Repeat("x", 161)}
+		},
+		func(s *order.IntegrationSettings) {
+			s.Callout.VoiceLines = map[string]string{"kokoro:am_onyx": "two\nlines"}
+		},
+		func(s *order.IntegrationSettings) { s.Callout.VoiceLines = map[string]string{"bad voice": "hi <x>"} },
+		func(s *order.IntegrationSettings) { s.Callout.GuestChance = 51 },
+		func(s *order.IntegrationSettings) { s.Callout.GuestVoices = "a,b,c,d,e,f,g,h,i,j,k" },
+		func(s *order.IntegrationSettings) { s.Callout.GuestVoices = "eleven labs:x" },
 	} {
 		if _, err := svc.UpdateIntegrationSettings(ctx, func(s *order.IntegrationSettings) error { change(s); return nil }); !errors.Is(err, ErrBadRequest) {
 			t.Fatalf("bad settings saved: %v", err)
 		}
 	}
-	if got := svc.IntegrationSettings().Callout; got != order.DefaultCallout() {
+	if got := svc.IntegrationSettings().Callout; !reflect.DeepEqual(got, order.DefaultCallout()) {
 		t.Fatalf("callout changed by a refused save: %+v", got)
+	}
+}
+
+func TestCalloutVoiceLinesAndGuestSettings(t *testing.T) {
+	ctx := context.Background()
+	svc, _, _, _, _ := newIntegService(t)
+	if got := svc.IntegrationSettings().Callout; len(got.VoiceLines) != 0 || got.GuestChance != 0 {
+		t.Fatalf("defaults: %+v", got)
+	}
+	lines := map[string]string{"elevenlabs:abc123": "This is Narrator and order number <x> is ready", "kokoro:am_onyx": "Hot and fresh!"}
+	_, err := svc.UpdateIntegrationSettings(ctx, func(s *order.IntegrationSettings) error {
+		s.Callout.VoiceLines = lines
+		s.Callout.GuestChance, s.Callout.GuestVoices = 50, "elevenlabs:abc123,kokoro:am_onyx"
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := svc.IntegrationSettings().Callout; !reflect.DeepEqual(got.VoiceLines, lines) || got.GuestChance != 50 {
+		t.Fatalf("saved: %+v", got)
 	}
 }

@@ -197,14 +197,20 @@ func TestMergeWindowAndHeldOrders(t *testing.T) {
 	before := ledgerCheck("8000", 10, "31", -120) // yesterday's batch, not on the Pi
 	before.CheckAt = mOpened.Add(-3 * time.Hour)
 	out := ledgerCheck("9010", 66, "31", 60) // Quibase has it out with Juma (not back yet)
+	out.Closed = false
 	back := ledgerCheck("9011", 67, "31", 70)
+	// Sent out at the terminal and closed there: Quibase never heard the return.
+	posBack := ledgerCheck("9012", 68, "31", 80)
+	posBack.Closed = true
 	pos := map[string]StoredOrder{
 		"9010": {Order: Snapshot{ID: "p10", Source: SourcePOS}, Status: Status{State: StateOnDelivery, ExtSource: ExtSourceSoftTouch, ExtRef: "9010"}},
 		"9011": {Order: Snapshot{ID: "p11", Source: SourcePOS}, Status: Status{State: StateReady, CameBack: true, ExtSource: ExtSourceSoftTouch, ExtRef: "9011"}},
+		"9012": {Order: Snapshot{ID: "p12", Source: SourcePOS}, Status: Status{State: StateOnDelivery, ExtSource: ExtSourceSoftTouch, ExtRef: "9012"}},
 	}
-	r := byName(t, merge([]DriverReport{report(juma)}, pos, before, out, back), "Juma")
-	if len(r.Lines) != 2 || r.Lines[0].OrderID != "p10" || r.Lines[0].Note != "still out on Quibase" || r.Lines[0].Match != MatchBoth ||
-		r.Lines[1].Note != "came back on Quibase" || r.Lines[1].Match != MatchPOSOnly {
+	r := byName(t, merge([]DriverReport{report(juma)}, pos, before, out, back, posBack), "Juma")
+	if len(r.Lines) != 3 || r.Lines[0].OrderID != "p10" || r.Lines[0].Note != "still out on Quibase" || r.Lines[0].Match != MatchBoth ||
+		r.Lines[1].Note != "came back on Quibase" || r.Lines[1].Match != MatchPOSOnly ||
+		r.Lines[2].OrderID != "p12" || r.Lines[2].Note != "" || r.Lines[2].Match != MatchBoth {
 		t.Fatalf("lines = %+v", r.Lines)
 	}
 }

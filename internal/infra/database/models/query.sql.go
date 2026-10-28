@@ -4072,6 +4072,26 @@ func (q *Queries) TouchPairedDevice(ctx context.Context, arg TouchPairedDevicePa
 	return err
 }
 
+const undoReady = `-- name: UndoReady :execrows
+UPDATE orders SET state = 'accepted', ready_at = NULL, finished_at = NULL, finished_by = ''
+WHERE id = ?1 AND state = 'ready' AND NOT came_back AND ready_at >= ?2
+`
+
+type UndoReadyParams struct {
+	ID    string         `json:"id"`
+	Since sql.NullString `json:"since"`
+}
+
+// 2.3.8: a READY tapped by mistake, undone soon after (ready_at >= since):
+// back to cooking, not finished. Pools stay (a cooking order may be pooled).
+func (q *Queries) UndoReady(ctx context.Context, arg UndoReadyParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, undoReady, arg.ID, arg.Since)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const updateExternalOrder = `-- name: UpdateExternalOrder :exec
 UPDATE orders
 SET snapshot = ?, ext_hash = ?, display_number = ?, paid = ?, cash_due_cents = ?, tip_cents = ?, board_hidden = ?

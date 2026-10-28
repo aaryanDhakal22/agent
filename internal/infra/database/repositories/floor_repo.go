@@ -183,6 +183,32 @@ func (r *OrderRepository) MarkReady(ctx context.Context, id string) (result *ord
 	return &so, nil
 }
 
+// UndoReady — see order.FloorRepository. Nothing is written for main or the
+// hub: main's read model only moves forward (a later READY is the same
+// state again) and the callout has already spoken.
+func (r *OrderRepository) UndoReady(ctx context.Context, id string, since time.Time) (result *order.StoredOrder, err error) {
+	ctx, _, end := dbSpan(ctx, "floor.undo_ready")
+	defer end(&err)
+	var so order.StoredOrder
+	err = r.withTx(ctx, func(q *models.Queries) error {
+		n, err := q.UndoReady(ctx, models.UndoReadyParams{ID: id, Since: nullTS(since)})
+		if err != nil {
+			return fmt.Errorf("undo ready: %w", err)
+		}
+		if so, err = loadOrder(ctx, q, id); err != nil {
+			return err
+		}
+		if n == 0 {
+			return order.ErrInvalidState
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &so, nil
+}
+
 // AssignDriver sends ready delivery orders out with a driver (all or nothing).
 // The sent orders leave any pool they were in (the old Quibase path).
 func (r *OrderRepository) AssignDriver(ctx context.Context, driverID string, orderIDs []string) (out []order.StoredOrder, err error) {

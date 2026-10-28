@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -726,7 +727,7 @@ func TestSettingsChangedEverywhere(t *testing.T) {
 		t.Fatalf("settings.updated = %s", data)
 	}
 	f, err := svc.Floor(ctx)
-	if err != nil || f.Settings != set {
+	if err != nil || !reflect.DeepEqual(f.Settings, set) {
 		t.Fatalf("floor settings = %+v %v", f.Settings, err)
 	}
 	feed := feedOf(t, svc)
@@ -736,7 +737,7 @@ func TestSettingsChangedEverywhere(t *testing.T) {
 	if _, err := svc.UpdateIntegrationSettings(ctx, func(s *order.IntegrationSettings) error { s.Times.DefaultDeliveryMinutes = 0; return nil }); !errors.Is(err, ErrBadRequest) {
 		t.Fatalf("bad time = %v", err)
 	}
-	if svc.IntegrationSettings() != set {
+	if !reflect.DeepEqual(svc.IntegrationSettings(), set) {
 		t.Fatal("a refused change leaked into the settings")
 	}
 }

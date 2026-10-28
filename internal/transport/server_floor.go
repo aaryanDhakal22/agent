@@ -35,6 +35,8 @@ func (s *Server) floorErr(w http.ResponseWriter, r *http.Request, err error) {
 			status = http.StatusServiceUnavailable
 		}
 		s.writeJSON(w, status, errCodeMap(routeErrText(re.Code), re.Code))
+	case errors.Is(err, orderApp.ErrUndoExpired):
+		s.writeJSON(w, http.StatusConflict, errCodeMap(err.Error(), "undo_expired"))
 	case errors.Is(err, orderApp.ErrBadDevice):
 		s.writeJSON(w, http.StatusBadRequest, errCodeMap(err.Error(), "bad_device"))
 	case errors.Is(err, orderApp.ErrNoDevice):
@@ -113,6 +115,21 @@ func (s *Server) handleReady(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	so, err := s.service.Ready(r.Context(), id.String())
+	if err != nil {
+		s.floorErr(w, r, err)
+		return
+	}
+	s.writeJSON(w, http.StatusOK, so)
+}
+
+// POST /api/orders/{id}/undo-ready (2.3.8): READY tapped by mistake.
+func (s *Server) handleUndoReady(w http.ResponseWriter, r *http.Request) {
+	id, err := parseID(r)
+	if err != nil {
+		s.writeError(w, r, http.StatusBadRequest, err)
+		return
+	}
+	so, err := s.service.UndoReady(r.Context(), id.String())
 	if err != nil {
 		s.floorErr(w, r, err)
 		return

@@ -255,6 +255,9 @@ type Querier interface {
 	// A hidden POS check that now qualifies for Kitchen: shown as if new.
 	ShowPosOrder(ctx context.Context, arg ShowPosOrderParams) error
 	TouchPairedDevice(ctx context.Context, arg TouchPairedDeviceParams) error
+	// 2.3.8: a READY tapped by mistake, undone soon after (ready_at >= since):
+	// back to cooking, not finished. Pools stay (a cooking order may be pooled).
+	UndoReady(ctx context.Context, arg UndoReadyParams) (int64, error)
 	// A changed POS check: the new snapshot (items, money, notes, address) and
 	// the paid / cash / tip / hidden figures. No state change.
 	UpdateExternalOrder(ctx context.Context, arg UpdateExternalOrderParams) error
