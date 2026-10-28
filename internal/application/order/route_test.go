@@ -136,7 +136,8 @@ func TestSendOutPushesTheRouteInAutoOrder(t *testing.T) {
 		t.Fatalf("posts = %d", len(posts))
 	}
 	f := posts[0]
-	if f.Get("device") != "ann_phone" || f.Get("priority") != "1" || f.Get("title") != "Route · 2 stops" {
+	if f.Get("device") != "ann_phone" || f.Get("priority") != "2" || f.Get("retry") != "30" || f.Get("expire") != "600" ||
+		f.Get("sound") != "persistent" || f.Get("title") != "Route · 2 stops" {
 		t.Fatalf("form = %v", f)
 	}
 	link := f.Get("url")

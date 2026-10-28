@@ -116,8 +116,8 @@ func TestSendRoute(t *testing.T) {
 		t.Fatal(err)
 	}
 	f := (*got)[0]
-	if f.Get("device") != "abdul" || f.Get("priority") != "1" || f.Get("url") != link ||
-		f.Get("url_title") != "Open route" || f.Get("title") != "Route · 2 stops" || f.Has("sound") {
+	if f.Get("device") != "abdul" || f.Get("priority") != "2" || f.Get("retry") != "30" || f.Get("expire") != "600" ||
+		f.Get("sound") != "persistent" || f.Get("url") != link || f.Get("url_title") != "Open route" || f.Get("title") != "Route · 2 stops" {
 		t.Fatalf("route = %v", f)
 	}
 }
