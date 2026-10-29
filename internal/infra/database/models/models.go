@@ -210,6 +210,16 @@ type Setting struct {
 	Callout                    string  `json:"callout"`
 }
 
+type SettingsLog struct {
+	ID       int64  `json:"id"`
+	At       string `json:"at"`
+	Section  string `json:"section"`
+	ByKind   string `json:"by_kind"`
+	ByName   string `json:"by_name"`
+	DeviceID string `json:"device_id"`
+	Changes  string `json:"changes"`
+}
+
 type StoreConfig struct {
 	ID        int64  `json:"id"`
 	Context   string `json:"context"`

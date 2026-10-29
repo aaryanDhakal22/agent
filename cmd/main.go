@@ -598,6 +598,7 @@ func main() {
 	httpServer := transport.NewServer(orderService, broker, printerRegistry, settingsRepo, sseCtrl, mainClient, session, deviceRepo, cfg.HTTPPort, version, commit, logger)
 	httpServer.SetAltPort(cfg.HTTPAltPort)
 	httpServer.SetDevLog(devRing)
+	httpServer.SetSettingsLog(repositories.NewSettingsLogRepository(db))
 	httpRef.Store(httpServer)
 	httpServer.SetAppUpdater(appUpdater)
 	httpServer.SetMap(mapFile)

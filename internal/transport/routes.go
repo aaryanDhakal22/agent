@@ -2,6 +2,8 @@ package transport
 
 import (
 	"net/http"
+
+	"quiccpos/agent/internal/domain/order"
 )
 
 // routeDef is one HTTP route. It is the single source of truth: Start() builds
@@ -81,26 +83,27 @@ func (s *Server) routes() []routeDef {
 		{"POST", "/api/orders/{id}/schedule", "device", "Future order: first confirm / edit the lead {lead_minutes 1-240} -> scheduled (rings again at promised_at - lead) | 409 not_future", s.handleSchedule},
 		{"GET", "/api/deliveries/next-check", "device", "Nearby rule: is an unassigned delivery near the next (or ?driver_id=) driver's run? -> {driver_id, rule, nearby_order_ids, reason}", s.handleNextCheck},
 		{"GET", "/api/settings/deliveries", "device", "Delivery settings {soon_ready_minutes, delivery_target_minutes, nearby_rule, nearby_detour_minutes, nearby_distance_mi, delivery_radius_m}", s.handleGetDeliveryPrefs},
-		{"PUT", "/api/settings/deliveries", "device", "Delivery settings, any subset {soon_ready_minutes 0-30, delivery_target_minutes 15-120, nearby_rule detour|distance|bundle|off, nearby_detour_minutes 1-30, nearby_distance_mi 0.1-10, delivery_radius_m 500-80467 (-> main location.radius)} -> 200 all | 400 | 503 main_offline | 501 main_unsupported", s.handleSetDeliveryPrefs},
+		{"PUT", "/api/settings/deliveries", "device", "Delivery settings, any subset {soon_ready_minutes 0-30, delivery_target_minutes 15-120, nearby_rule detour|distance|bundle|off, nearby_detour_minutes 1-30, nearby_distance_mi 0.1-10, delivery_radius_m 500-80467 (-> main location.radius)} -> 200 all | 400 | 503 main_offline | 501 main_unsupported", s.audited("deliveries", s.readDeliveries, s.handleSetDeliveryPrefs)},
 		{"GET", "/api/settings/auto-accept", "device", "Read the auto-accept toggle {auto_accept}", s.handleGetAutoAccept},
-		{"PUT", "/api/settings/auto-accept", "device", "Write the auto-accept toggle {auto_accept}", s.handleSetAutoAccept},
+		{"PUT", "/api/settings/auto-accept", "device", "Write the auto-accept toggle {auto_accept}", s.audited("auto-accept", s.readAutoAccept, s.handleSetAutoAccept)},
 		{"GET", "/api/settings/auto-update", "device", "Read the Pi auto-update toggle {auto_update} (update right after Close batch)", s.handleGetAutoUpdate},
-		{"PUT", "/api/settings/auto-update", "device", "Write the Pi auto-update toggle {auto_update}", s.handleSetAutoUpdate},
+		{"PUT", "/api/settings/auto-update", "device", "Write the Pi auto-update toggle {auto_update}", s.audited("auto-update", s.readAutoUpdate, s.handleSetAutoUpdate)},
 		{"GET", "/api/dev/events", "device", "Developer mode: the Pi's recent events ?since=<seq> -> {events:[{seq, at, level, kind, text}], last_seq} (<=200, oldest first, no PII)", s.handleDevEvents},
 		{"GET", "/api/settings/features", "device", "Feature toggles {pos_pull, order_insert, driver_writeback, address_heal, future_orders, paid_wave}", s.handleGetFeatures},
-		{"PUT", "/api/settings/features", "device", "Set feature toggles (missing keys keep their value) -> the toggles; SSE settings.updated", s.handleSetFeatures},
+		{"PUT", "/api/settings/features", "device", "Set feature toggles (missing keys keep their value) -> the toggles; SSE settings.updated", s.audited("features", s.readIntegration(func(v order.IntegrationSettings) any { return v.Features }), s.handleSetFeatures)},
 		{"GET", "/api/settings/tickets", "device", "Kitchen-ticket switches {pos_delivery, pos_takeout, pos_counter, online_cash_pickup, online_cash_delivery, online_card}", s.handleGetTickets},
-		{"PUT", "/api/settings/tickets", "device", "Set kitchen-ticket switches (missing keys keep their value) -> the switches; SSE settings.updated", s.handleSetTickets},
+		{"PUT", "/api/settings/tickets", "device", "Set kitchen-ticket switches (missing keys keep their value) -> the switches; SSE settings.updated", s.audited("tickets", s.readIntegration(func(v order.IntegrationSettings) any { return v.Tickets }), s.handleSetTickets)},
 		{"GET", "/api/settings/finishing", "device", "Finishing orders {online_pickup_minutes 0-240 (0 = never)}: an online pickup is finished this long after ready; terminal checks finish when the POS closes them", s.handleGetFinishing},
-		{"PUT", "/api/settings/finishing", "device", "Set finishing {online_pickup_minutes} -> the settings | 400", s.handleSetFinishing},
+		{"PUT", "/api/settings/finishing", "device", "Set finishing {online_pickup_minutes} -> the settings | 400", s.audited("finishing", s.readIntegration(func(v order.IntegrationSettings) any { return v.Finishing }), s.handleSetFinishing)},
 		{"GET", "/api/settings/callout", "device", "Order callout settings {enabled, voice, volume, music_dip, restore_seconds, chime, repeat, voice_lines, guest_chance, guest_voices}", s.handleGetCalloutSettings},
-		{"PUT", "/api/settings/callout", "device", "Set the order callout (missing keys keep their value, voice_lines replaces the whole map; volume/music_dip 0-100, restore_seconds 0-10, repeat 1-3, guest_chance 0-50) -> the settings | 400; feed settings.changed", s.handleSetCalloutSettings},
+		{"PUT", "/api/settings/callout", "device", "Set the order callout (missing keys keep their value, voice_lines replaces the whole map; volume/music_dip 0-100, restore_seconds 0-10, repeat 1-3, guest_chance 0-50) -> the settings | 400; feed settings.changed", s.audited("callout", s.readIntegration(func(v order.IntegrationSettings) any { return v.Callout }), s.handleSetCalloutSettings)},
 		{"GET", "/api/callout", "device", "Order callout: {settings, hub_connected, hub: {voices, default_voice, rendering, last, error} | null}", s.handleGetCallout},
 		{"POST", "/api/callout/test", "device", "Speak a callout on the store speaker now {number 1-9999, voice?, kind?: test|preview} -> 202 {id, hub_connected} (feed callout.test)", s.handleCalloutTest},
 		{"POST", "/api/callout/preview", "device", "PREVIEW on this tablet {number 1-9999, voice?} -> 202 {id, status: pending} (feed callout.render; the hub uploads the WAV) | 503 {code: hub_not_connected|hub_update_needed|not_installed}", s.handleCalloutPreview},
 		{"GET", "/api/callout/preview/{id}", "device", "The preview's audio (?wait=<sec <=10>) -> 200 audio/wav | 202 {status: pending} | 404 | 503 {code: render_failed|not_installed} | 504 timeout (20 s)", s.handleCalloutPreviewAudio},
+		{"GET", "/api/settings/changes", "device", "Settings history, newest first ?limit=N (default 100, max 500) -> {changes:[{id, at, section, by:{kind tablet|web, name, device_id?}, changes:[{key, from, to}]}], keep_days} (kept 90 days)", s.handleSettingsChanges},
 		{"GET", "/api/settings/times", "device", "Default times {default_pickup_minutes, default_delivery_minutes}", s.handleGetTimes},
-		{"PUT", "/api/settings/times", "device", "Set default times (each 1-240; missing keys keep their value) -> the times | 400", s.handleSetTimes},
+		{"PUT", "/api/settings/times", "device", "Set default times (each 1-240; missing keys keep their value) -> the times | 400", s.audited("times", s.readIntegration(func(v order.IntegrationSettings) any { return v.Times }), s.handleSetTimes)},
 		{"GET", "/api/drivers", "device", "Driver roster in queue order (+ deliveries this batch)", s.handleListDrivers},
 		{"POST", "/api/drivers", "device", "Add a driver {name, pos_number?, pushover_device?} (409 pos_number_taken, 400 bad_device)", s.handleCreateDriver},
 		{"POST", "/api/drivers/reorder", "device", "Set the queue order {ids}", s.handleReorderDrivers},
@@ -139,7 +142,7 @@ func (s *Server) routes() []routeDef {
 
 		// Receipt settings (Quibase Settings -> Receipts) — paired tablet (or web-UI session).
 		{"GET", "/api/settings/receipt", "device", "Receipt settings {prefs, defaults, footer_effective, footer_store_default, location_footer}", s.handleGetReceiptPrefs},
-		{"PUT", "/api/settings/receipt", "device", "Save the receipt settings (full prefs; missing keys = defaults) -> {prefs, footer_effective, footer_store_default, location_footer}", s.handleSetReceiptPrefs},
+		{"PUT", "/api/settings/receipt", "device", "Save the receipt settings (full prefs; missing keys = defaults) -> {prefs, footer_effective, footer_store_default, location_footer}", s.audited("receipt", s.readReceipt, s.handleSetReceiptPrefs)},
 		{"POST", "/api/printers/sample", "device", "Print a sample receipt + kitchen ticket with the current settings {printer_id?} (default the receipt printer), never fails over (409 while a test runs)", s.handlePrinterSample},
 
 		// The store hub — its integration key only (tablet keys / sessions get 403).
@@ -160,8 +163,8 @@ func (s *Server) routes() []routeDef {
 		{"POST", "/api/print", "session", "Print a fetched snapshot's customer receipt (no persist / fan-out)", s.handlePrint},
 		{"POST", "/api/resend", "session", "Full arrival pipeline for a fetched snapshot", s.handleResend},
 		{"GET", "/api/store-config", "session", "Current store config, proxied from main/", s.handleGetStoreConfig},
-		{"PUT", "/api/settings/floor", "session", "Set {green_till_minutes, tip_tax_percent}", s.handleSetFloorPrefs},
-		{"PUT", "/api/settings/driver-reset", "session", "Set the daily driver clock-out time {time: HH:MM}", s.handleSetDriverReset},
+		{"PUT", "/api/settings/floor", "session", "Set {green_till_minutes, tip_tax_percent}", s.audited("floor", s.readFloorPrefs, s.handleSetFloorPrefs)},
+		{"PUT", "/api/settings/driver-reset", "session", "Set the daily driver clock-out time {time: HH:MM}", s.audited("driver-reset", s.readDriverReset, s.handleSetDriverReset)},
 		{"POST", "/api/settings/password", "session", "Change the local UI password (current + new + hint)", s.handleChangePassword},
 		{"POST", "/api/update", "session", "Update this Pi now (right after Close batch only) -> 202 {id, state} | 409 {code} | 501 not_supported", s.handleUpdate},
 		{"POST", "/api/update/rollback", "session", "Roll this Pi back to the previous release (no open orders) -> 202 | 409 | 501", s.handleRollback},
