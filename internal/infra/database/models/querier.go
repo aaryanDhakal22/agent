@@ -107,6 +107,7 @@ type Querier interface {
 	InsertFloorEvent(ctx context.Context, arg InsertFloorEventParams) error
 	// Integration feed (2.1.0) -----------------------------------------------------
 	InsertIntegrationEvent(ctx context.Context, arg InsertIntegrationEventParams) error
+	InsertSettingsChange(ctx context.Context, arg InsertSettingsChangeParams) error
 	// Drivers -------------------------------------------------------------------
 	ListActiveDrivers(ctx context.Context) ([]Driver, error)
 	ListArrivedOrders(ctx context.Context) ([]Order, error)
@@ -142,6 +143,8 @@ type Querier interface {
 	ListPrinterMACs(ctx context.Context) ([]PrinterMac, error)
 	// Every driver's run that is out, stops in run order.
 	ListRunStops(ctx context.Context) ([]ListRunStopsRow, error)
+	// Newest first, since a time (the keep window), at most lim rows.
+	ListSettingsLog(ctx context.Context, arg ListSettingsLogParams) ([]SettingsLog, error)
 	// Driver report: shifts that overlap a batch window (opened_at .. closed_at).
 	ListShiftsOverlapping(ctx context.Context, arg ListShiftsOverlappingParams) ([]DriverShift, error)
 	ListShiftsSince(ctx context.Context, clockIn string) ([]DriverShift, error)
@@ -173,6 +176,7 @@ type Querier interface {
 	OpenBatch(ctx context.Context, openedAt string) (Batch, error)
 	// Driver shifts ----------------------------------------------------------------
 	OpenShift(ctx context.Context, arg OpenShiftParams) error
+	PruneSettingsLog(ctx context.Context, before string) error
 	// ring_at passed: it rings again like a new order. last_alert_at starts the
 	// 2-minute escalation from now, not from the first arrival.
 	RaiseScheduled(ctx context.Context, arg RaiseScheduledParams) (int64, error)

@@ -1309,6 +1309,32 @@ func (q *Queries) InsertIntegrationEvent(ctx context.Context, arg InsertIntegrat
 	return err
 }
 
+const insertSettingsChange = `-- name: InsertSettingsChange :exec
+INSERT INTO settings_log (at, section, by_kind, by_name, device_id, changes)
+VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+`
+
+type InsertSettingsChangeParams struct {
+	At       string `json:"at"`
+	Section  string `json:"section"`
+	ByKind   string `json:"by_kind"`
+	ByName   string `json:"by_name"`
+	DeviceID string `json:"device_id"`
+	Changes  string `json:"changes"`
+}
+
+func (q *Queries) InsertSettingsChange(ctx context.Context, arg InsertSettingsChangeParams) error {
+	_, err := q.db.ExecContext(ctx, insertSettingsChange,
+		arg.At,
+		arg.Section,
+		arg.ByKind,
+		arg.ByName,
+		arg.DeviceID,
+		arg.Changes,
+	)
+	return err
+}
+
 const listActiveDrivers = `-- name: ListActiveDrivers :many
 
 SELECT id, name, active, position, status, last_returned_at, created_at, pos_number, pushover_device FROM drivers WHERE active ORDER BY position ASC, created_at ASC
@@ -2705,6 +2731,47 @@ func (q *Queries) ListRunStops(ctx context.Context) ([]ListRunStopsRow, error) {
 	return items, nil
 }
 
+const listSettingsLog = `-- name: ListSettingsLog :many
+SELECT id, at, section, by_kind, by_name, device_id, changes FROM settings_log WHERE at >= ?1 ORDER BY id DESC LIMIT ?2
+`
+
+type ListSettingsLogParams struct {
+	Since string `json:"since"`
+	Lim   int64  `json:"lim"`
+}
+
+// Newest first, since a time (the keep window), at most lim rows.
+func (q *Queries) ListSettingsLog(ctx context.Context, arg ListSettingsLogParams) ([]SettingsLog, error) {
+	rows, err := q.db.QueryContext(ctx, listSettingsLog, arg.Since, arg.Lim)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []SettingsLog
+	for rows.Next() {
+		var i SettingsLog
+		if err := rows.Scan(
+			&i.ID,
+			&i.At,
+			&i.Section,
+			&i.ByKind,
+			&i.ByName,
+			&i.DeviceID,
+			&i.Changes,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listShiftsOverlapping = `-- name: ListShiftsOverlapping :many
 SELECT id, driver_id, driver_name, batch_id, clock_in, clock_out, auto_out FROM driver_shifts
 WHERE clock_in <= ?1 AND (clock_out IS NULL OR clock_out >= ?2)
@@ -3079,6 +3146,15 @@ func (q *Queries) OpenShift(ctx context.Context, arg OpenShiftParams) error {
 		arg.BatchID,
 		arg.ClockIn,
 	)
+	return err
+}
+
+const pruneSettingsLog = `-- name: PruneSettingsLog :exec
+DELETE FROM settings_log WHERE at < ?1
+`
+
+func (q *Queries) PruneSettingsLog(ctx context.Context, before string) error {
+	_, err := q.db.ExecContext(ctx, pruneSettingsLog, before)
 	return err
 }
 

@@ -22,6 +22,7 @@ import (
 	"quiccpos/agent/internal/application/update"
 	"quiccpos/agent/internal/domain/device"
 	"quiccpos/agent/internal/domain/order"
+	"quiccpos/agent/internal/domain/settingslog"
 	"quiccpos/agent/internal/infra/mainclient"
 	"quiccpos/agent/internal/infra/ssebroker"
 
@@ -78,6 +79,10 @@ type Server struct {
 	appVersions map[string]appVersionSeen
 	// devLog: the developer-mode event ring (GET /api/dev/events).
 	devLog *devlog.Ring
+	// settingsLog: the settings history (2.3.11); auditMu serialises the
+	// audited settings PUTs (settings_audit.go).
+	settingsLog settingslog.Repository
+	auditMu     sync.Mutex
 }
 
 // SetAppUpdater wires the tablet-app release cache (/api/app/*).
@@ -369,7 +374,6 @@ func (s *Server) handleSetAutoAccept(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, r, http.StatusInternalServerError, err)
 		return
 	}
-	s.devLog.Add(devlog.Info, devlog.KindOrder, "Auto-accept turned "+onOff(body.AutoAccept)+" ("+caller(r)+")")
 	s.writeJSON(w, http.StatusOK, body)
 }
 

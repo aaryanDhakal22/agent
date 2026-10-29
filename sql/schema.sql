@@ -264,3 +264,15 @@ CREATE TABLE auto_plans (
     plan_json    text NOT NULL,
     confirmed_at text
 );
+
+-- 00021_settings_log: settings history (who changed what, kept 90 days).
+CREATE TABLE settings_log (
+    id         integer PRIMARY KEY AUTOINCREMENT,
+    at         text    NOT NULL,
+    section    text    NOT NULL,
+    by_kind    text    NOT NULL,
+    by_name    text    NOT NULL DEFAULT '',
+    device_id  text    NOT NULL DEFAULT '',
+    changes    text    NOT NULL
+);
+CREATE INDEX settings_log_at ON settings_log(at);

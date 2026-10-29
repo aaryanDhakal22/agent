@@ -27,14 +27,15 @@ const (
 
 // Kinds.
 const (
-	KindOrder   = "order"
-	KindPrint   = "print"
-	KindPrinter = "printer"
-	KindSSE     = "sse"
-	KindSync    = "sync"
-	KindHub     = "hub"
-	KindUpdate  = "update"
-	KindSystem  = "system"
+	KindOrder    = "order"
+	KindPrint    = "print"
+	KindPrinter  = "printer"
+	KindSSE      = "sse"
+	KindSync     = "sync"
+	KindHub      = "hub"
+	KindUpdate   = "update"
+	KindSettings = "settings" // 2.3.11: a setting changed (who, old → new)
+	KindSystem   = "system"
 )
 
 const (

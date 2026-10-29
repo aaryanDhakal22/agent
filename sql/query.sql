@@ -815,3 +815,14 @@ WHERE id = sqlc.arg(id) AND state = 'ready' AND NOT came_back;
 -- A hidden POS check that now qualifies for Kitchen: shown as if new.
 UPDATE orders SET board_hidden = false, accepted_at = sqlc.arg(at), estimated_ready_at = sqlc.arg(estimated_ready_at)
 WHERE id = sqlc.arg(id);
+
+-- name: InsertSettingsChange :exec
+INSERT INTO settings_log (at, section, by_kind, by_name, device_id, changes)
+VALUES (sqlc.arg(at), sqlc.arg(section), sqlc.arg(by_kind), sqlc.arg(by_name), sqlc.arg(device_id), sqlc.arg(changes));
+
+-- name: PruneSettingsLog :exec
+DELETE FROM settings_log WHERE at < sqlc.arg(before);
+
+-- name: ListSettingsLog :many
+-- Newest first, since a time (the keep window), at most lim rows.
+SELECT * FROM settings_log WHERE at >= sqlc.arg(since) ORDER BY id DESC LIMIT sqlc.arg(lim);
