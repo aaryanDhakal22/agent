@@ -91,7 +91,8 @@ func TestBuild_KitchenNumberSize(t *testing.T) {
 	snap := previewDelivery()
 	for size, cmd := range map[string]string{order.SizeLarge: cmdDoubleSz, order.SizeXLarge: cmdQuadSz, order.SizeHuge: cmdHugeSz} {
 		got := Build(snap, previewStore(), stationTicket(), prefsWith(func(p *order.ReceiptPrefs) { p.KitchenNumberSize = size }))
-		if !bytes.Contains(got, []byte(cmdBoldOn+cmd+"#1123\n")) {
+		// 2.4.0: the order type prints on top, then the number at its size.
+		if !bytes.Contains(got, []byte(cmdBoldOn+cmdDoubleSz+"DELIVERY\n"+cmd+"#1123\n")) {
 			t.Errorf("%s: kitchen number should print with %q: %q", size, cmd, got)
 		}
 	}

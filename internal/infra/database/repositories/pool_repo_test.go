@@ -97,7 +97,7 @@ func TestPoolMoveUnassignAndDriverToDriver(t *testing.T) {
 		t.Fatalf("unassign event still names a pool: %v", ev)
 	}
 	// Ready orders pool too.
-	if _, err := r.MarkReady(ctx, os[2].Order.ID); err != nil {
+	if _, err := r.MarkReady(ctx, os[2].Order.ID, true); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := r.PoolOrders(ctx, ids(os[2]), a.ID); err != nil {
@@ -125,7 +125,7 @@ func TestPoolRules(t *testing.T) {
 	}
 	// Out driver.
 	ready := accept(t, r, arrive(t, r, "delivery"))
-	r.MarkReady(ctx, ready.Order.ID)
+	r.MarkReady(ctx, ready.Order.ID, true)
 	if _, err := r.AssignDriver(ctx, b.ID, ids(ready)); err != nil {
 		t.Fatal(err)
 	}
@@ -148,7 +148,7 @@ func TestPoolRules(t *testing.T) {
 func TestSendOutNotReadyVsMarkReady(t *testing.T) {
 	ctx := context.Background()
 	r, a, _, os := poolSetup(t, 2)
-	if _, err := r.MarkReady(ctx, os[0].Order.ID); err != nil {
+	if _, err := r.MarkReady(ctx, os[0].Order.ID, true); err != nil {
 		t.Fatal(err)
 	}
 	if _, _, err := r.SendOut(ctx, a.ID, nil, false, order.RunMeta{}); !errors.Is(err, order.ErrNoOrders) {
@@ -204,7 +204,7 @@ func TestSendOutIncludeAndRules(t *testing.T) {
 	ctx := context.Background()
 	r, a, b, os := poolSetup(t, 3)
 	for _, so := range os {
-		r.MarkReady(ctx, so.Order.ID)
+		r.MarkReady(ctx, so.Order.ID, true)
 	}
 	if _, err := r.PoolOrders(ctx, ids(os[0]), a.ID); err != nil {
 		t.Fatal(err)
@@ -285,7 +285,7 @@ func TestPoolClearedOnClockOutRemoveResetCloseAndAssign(t *testing.T) {
 	})
 	t.Run("old assign", func(t *testing.T) {
 		r, a, b, os := poolSetup(t, 1)
-		r.MarkReady(ctx, os[0].Order.ID)
+		r.MarkReady(ctx, os[0].Order.ID, true)
 		r.PoolOrders(ctx, ids(os...), a.ID)
 		sent, err := r.AssignDriver(ctx, b.ID, ids(os...))
 		if err != nil || sent[0].Status.PoolDriverID != "" || sent[0].Status.DriverID != b.ID {
@@ -417,7 +417,7 @@ func TestAutoPlanStoreAndConfirm(t *testing.T) {
 	}
 	// os[1] got pooled to b meanwhile; os[3] was sent; b's run is fine.
 	r.PoolOrders(ctx, ids(os[1]), b.ID)
-	r.MarkReady(ctx, os[3].Order.ID)
+	r.MarkReady(ctx, os[3].Order.ID, true)
 	r.AssignDriver(ctx, b.ID, ids(os[3])) // b is out now
 	applied, skipped, err := r.ConfirmAutoPlan(ctx, "plan-1", []order.PlanRun{
 		{DriverID: a.ID, SuggestedIDs: ids(os[0], os[1], os[3])},

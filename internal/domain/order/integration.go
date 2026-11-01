@@ -47,6 +47,11 @@ type TicketToggles struct {
 	OnlineCashPickup   bool `json:"online_cash_pickup"`
 	OnlineCashDelivery bool `json:"online_cash_delivery"`
 	OnlineCard         bool `json:"online_card"`
+	// 2.4.0: a future order's first ACCEPT prints, as an early warning, its
+	// kitchen tickets (DO NOT MAKE + when it is due) / its customer receipt
+	// (a FUTURE bar on top). Off by default.
+	FutureKitchen bool `json:"future_kitchen"`
+	FutureReceipt bool `json:"future_receipt"`
 }
 
 // DefaultTicketToggles: the POS prints its own orders' tickets; online
@@ -413,6 +418,9 @@ const (
 	// FeedCalloutRender (2.3.2): render a callout for the tablet's PREVIEW
 	// "on this tablet" and upload the WAV to the Pi (nothing plays).
 	FeedCalloutRender = "callout.render"
+	// FeedOrderDriverChanged (2.4.0): a POS delivery delivered or out moved
+	// to another driver on the Drivers tab (from / to null = Unassigned).
+	FeedOrderDriverChanged = "order.driver_changed"
 )
 
 // FeedRetention is how long feed events are kept.
@@ -466,6 +474,9 @@ type OrderReadyData struct {
 	FulfillmentType string `json:"fulfillment_type"`
 	Paid            bool   `json:"paid"`
 	CashDueCents    int64  `json:"cash_due_cents"`
+	// Callout false (2.4.0): READY was held on the tablet - not called out.
+	// Absent (an older Pi) = true.
+	Callout *bool `json:"callout,omitempty"`
 }
 
 // AddressConfirmedData is an address.confirmed event (address null for a pin).
@@ -488,6 +499,18 @@ type OrderNotDeliveredData struct {
 	DriverID        string  `json:"driver_id"`
 	DriverName      string  `json:"driver_name"`
 	DriverPosNumber *string `json:"driver_pos_number"`
+}
+
+// OrderDriverChangedData is an order.driver_changed event (2.4.0). The hub
+// takes From off the POS check only while the check still shows them (a
+// driver a cashier set at the terminal wins), then writes To (null =
+// Unassigned: none); OutAt is when the order went out (null when it never
+// went out with a driver).
+type OrderDriverChangedData struct {
+	FeedOrderRef
+	From  *FeedDriver `json:"from"`
+	To    *FeedDriver `json:"to"`
+	OutAt *time.Time  `json:"out_at"`
 }
 
 // CameBackMark prefixes a came-back POS order's remembered driver number

@@ -66,6 +66,8 @@ type Service struct {
 	// Driver-report printing (SetDocumentPrinting).
 	printDoc    DocPrinter
 	buildReport ReportBuilder
+	// The UNASSIGNED slip after the driver reports (2.4.0).
+	buildUnassigned UnassignedBuilder
 	// receiptPrefs is the in-memory copy of the receipt settings the
 	// printing path reads (LoadReceiptPrefs / SetReceiptPrefs keep it).
 	receiptPrefs atomic.Pointer[order.ReceiptPrefs]
@@ -172,7 +174,7 @@ func (s *Service) OnArrival(ctx context.Context, snap order.Snapshot) error {
 		// time for its type as the lead, and auto-accepted when it rings
 		// again at ring_at (RaiseDue) — that accept prints.
 		if cur, gerr := s.repo.GetByID(ctx, id); gerr == nil && cur.Status.Future && cur.Status.State == order.StateArrived {
-			lead := int(s.IntegrationSettings().Times.For(cur.Order.Fulfillment.Type))
+			lead := s.FutureLead(ctx, *cur)
 			span.SetAttributes(attribute.Bool("order.future", true))
 			_, err := s.Schedule(ctx, id.String(), lead)
 			if err == nil {
@@ -272,7 +274,14 @@ func (s *Service) accept(ctx context.Context, id uuid.UUID, prepMinutes *int, au
 	// cancelled (Wi-Fi blip, app killed) — otherwise the remaining stations
 	// and failovers are skipped mid-job. The dispatcher caps a job at 25 s.
 	printStart := time.Now()
-	out, err := s.print(context.WithoutCancel(ctx), printable(*so), printer.ModeAccept)
+	mode := printer.ModeAccept
+	if so.Status.EarlyReceipt {
+		mode = printer.ModeAcceptKitchen // a future order's receipt printed at its first ACCEPT (2.4.0)
+	}
+	out, err := s.print(context.WithoutCancel(ctx), printable(*so), mode)
+	if mode == printer.ModeAcceptKitchen && errors.Is(err, printer.ErrNoTickets) {
+		err = nil // nothing for the kitchen, and the receipt is out already
+	}
 	s.recordPrintTime(ctx, *so, printStart, out, err)
 	if err != nil {
 		// Revert even if the request was cancelled mid-print.

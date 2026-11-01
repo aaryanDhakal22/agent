@@ -101,6 +101,33 @@ func PlanWith(snap order.Snapshot, roster []RosterEntry, mode printer.Mode, rule
 		return []printer.Ticket{receiptTicket}, nil
 	case printer.ModeKitchen:
 		return stationTickets(snap, roster, receipt)
+	case printer.ModeFutureEarly:
+		if rules.Tickets.FutureKitchen {
+			if !isRouted(snap) && !isPOS(snap) {
+				tickets = []printer.Ticket{{Kind: printer.TicketStation, TargetID: receipt.ID, Station: receipt.Name, Mine: snap.Items}}
+			} else {
+				tickets, unrouted = stationTickets(snap, roster, receipt)
+			}
+		}
+		if rules.Tickets.FutureReceipt {
+			if isRouted(snap) {
+				tickets = append(tickets, receiptTicket)
+			} else {
+				tickets = append(tickets, fullTicket)
+			}
+		}
+		for i := range tickets {
+			tickets[i].Future = true
+		}
+		return tickets, unrouted
+	case printer.ModeAcceptKitchen:
+		all, un := PlanWith(snap, roster, printer.ModeAccept, rules)
+		for _, t := range all {
+			if t.Kind == printer.TicketStation {
+				tickets = append(tickets, t)
+			}
+		}
+		return tickets, un
 	case printer.ModeVoid:
 		tickets, unrouted = stationTickets(snap, roster, receipt)
 		for i := range tickets {
@@ -161,6 +188,18 @@ func stationTickets(snap order.Snapshot, roster []RosterEntry, receipt RosterEnt
 	// Station tickets in roster order. The receipt printer gets one only when
 	// it is also the sole station; otherwise its items ride on the receipt.
 	receiptIsStation := len(stations) == 1 && stations[0].ID == receipt.ID
+	// 2.4.0: "items to other printers" lists only food some kitchen station
+	// makes - never what goes to the receipt printer alone (drinks,
+	// desserts, chips) or a POS line no Pi printer gets.
+	kitchen := map[int]bool{}
+	for id, idx := range assigned {
+		if id == receipt.ID && !receiptIsStation {
+			continue
+		}
+		for _, i := range idx {
+			kitchen[i] = true
+		}
+	}
 	for _, p := range roster {
 		idx := assigned[p.ID]
 		if len(idx) == 0 || (p.ID == receipt.ID && !receiptIsStation) {
@@ -174,7 +213,7 @@ func stationTickets(snap order.Snapshot, roster []RosterEntry, receipt RosterEnt
 		}
 		others := make([]order.LineItem, 0, len(snap.Items)-len(idx))
 		for i, it := range snap.Items {
-			if !in[i] {
+			if !in[i] && kitchen[i] {
 				others = append(others, it)
 			}
 		}

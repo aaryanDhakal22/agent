@@ -112,7 +112,7 @@ func TestPrinterSampleNoPrinterOrBusy(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	s.SetDiag(DiagDeps{Dispatcher: printerApp.NewDispatcher(ctx, nil, s.printers, nil, time.Hour, nil, zerolog.Nop(), meters)})
-	s.SetReceiptSample(func(order.ReceiptPrefs) []byte { return []byte("sample") })
+	s.SetReceiptSample(func(order.ReceiptPrefs, string) []byte { return []byte("sample") })
 	for _, body := range []string{"", `{"printer_id":"nope"}`} {
 		if rec := call(h, "POST", "/api/printers/sample", key, body); rec.Code != http.StatusNotFound || code(rec) != "not_configured" {
 			t.Errorf("%q: %d %s", body, rec.Code, rec.Body)

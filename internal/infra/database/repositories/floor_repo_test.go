@@ -178,14 +178,14 @@ func TestPickupLifecycleAndEvents(t *testing.T) {
 	ctx := context.Background()
 	so := accept(t, r, arrive(t, r, "pickup"))
 
-	if _, err := r.MarkReady(ctx, uuid.NewString()); !errors.Is(err, order.ErrNotFound) {
+	if _, err := r.MarkReady(ctx, uuid.NewString(), true); !errors.Is(err, order.ErrNotFound) {
 		t.Fatalf("ready on missing order: %v", err)
 	}
-	ready, err := r.MarkReady(ctx, so.Order.ID)
+	ready, err := r.MarkReady(ctx, so.Order.ID, true)
 	if err != nil || ready.Status.State != order.StateReady || ready.Status.ReadyAt == nil {
 		t.Fatalf("ready: %v %+v", err, ready)
 	}
-	if _, err := r.MarkReady(ctx, so.Order.ID); !errors.Is(err, order.ErrInvalidState) {
+	if _, err := r.MarkReady(ctx, so.Order.ID, true); !errors.Is(err, order.ErrInvalidState) {
 		t.Fatalf("second ready: %v", err)
 	}
 	evs := eventsOf(t, r)
@@ -218,7 +218,7 @@ func TestDeliveryFlow(t *testing.T) {
 		t.Fatalf("assign before ready: %v", err)
 	}
 	for _, so := range []order.StoredOrder{del1, del2, pick} {
-		if _, err := r.MarkReady(ctx, so.Order.ID); err != nil {
+		if _, err := r.MarkReady(ctx, so.Order.ID, true); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -302,11 +302,11 @@ func TestCloseBatch(t *testing.T) {
 	d, _ := r.CreateDriver(ctx, "Sam", "")
 	clockIn(t, r, d.ID)
 	done := accept(t, r, arrive(t, r, "pickup"))
-	r.MarkReady(ctx, done.Order.ID)
+	r.MarkReady(ctx, done.Order.ID, true)
 	waiting := arrive(t, r, "pickup")                 // never accepted → cancelled
 	cooking := accept(t, r, arrive(t, r, "delivery")) // accepted, not ready
 	out := accept(t, r, arrive(t, r, "delivery"))
-	r.MarkReady(ctx, out.Order.ID)
+	r.MarkReady(ctx, out.Order.ID, true)
 	if _, err := r.AssignDriver(ctx, d.ID, []string{out.Order.ID}); err != nil {
 		t.Fatal(err)
 	}
@@ -471,7 +471,7 @@ func TestClockInOutAndShifts(t *testing.T) {
 
 	// Out on a run → can't clock out.
 	so := accept(t, r, arrive(t, r, "delivery"))
-	r.MarkReady(ctx, so.Order.ID)
+	r.MarkReady(ctx, so.Order.ID, true)
 	if _, err := r.AssignDriver(ctx, b.ID, []string{so.Order.ID}); err != nil {
 		t.Fatal(err)
 	}
@@ -513,7 +513,7 @@ func TestAutoClockOut(t *testing.T) {
 	b, _ := r.CreateDriver(ctx, "Juma", "")
 	clockIn(t, r, a.ID, b.ID)
 	so := accept(t, r, arrive(t, r, "delivery"))
-	r.MarkReady(ctx, so.Order.ID)
+	r.MarkReady(ctx, so.Order.ID, true)
 	if _, err := r.AssignDriver(ctx, b.ID, []string{so.Order.ID}); err != nil {
 		t.Fatal(err)
 	}
@@ -598,7 +598,7 @@ func TestDriverGuards(t *testing.T) {
 	in, _ := r.CreateDriver(ctx, "In", "")
 	clockIn(t, r, out.ID, in.ID)
 	so := accept(t, r, arrive(t, r, "delivery"))
-	r.MarkReady(ctx, so.Order.ID)
+	r.MarkReady(ctx, so.Order.ID, true)
 	// Duplicate ids in one assignment are fine.
 	if _, err := r.AssignDriver(ctx, out.ID, []string{so.Order.ID, so.Order.ID}); err != nil {
 		t.Fatalf("assign with a duplicated id: %v", err)
@@ -629,7 +629,7 @@ func TestCloseBatchClocksOutDriversWhoWereOutDuringTheReset(t *testing.T) {
 	d, _ := r.CreateDriver(ctx, "Sam", "")
 	clockIn(t, r, d.ID)
 	so := accept(t, r, arrive(t, r, "delivery"))
-	r.MarkReady(ctx, so.Order.ID)
+	r.MarkReady(ctx, so.Order.ID, true)
 	r.AssignDriver(ctx, d.ID, []string{so.Order.ID})
 	time.Sleep(2 * time.Millisecond)
 	r.AutoClockOut(ctx, time.Now()) // Sam is out: skipped

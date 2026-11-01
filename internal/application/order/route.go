@@ -156,9 +156,7 @@ type RouteStop struct {
 	Lat   *float64
 	Lng   *float64
 	Addr  *order.Address
-	Head  string   // "#323 4108 Old Court Rd Apt 2B · CASH $38.40"
-	Note  string   // the customer's notes ("" = none)
-	Grab  []string // drinks and desserts, one per line
+	Head  string // "#323 4108 Old Court Rd Apt 2B"
 }
 
 func (st RouteStop) place(short bool) string {
@@ -237,12 +235,12 @@ func RouteLink(store *FloorStore, stops []RouteStop) (string, int) {
 }
 
 // testStop is Send test's one stop (owner, 2026-10-27): store → 5601 Loch
-// Raven Blvd → store, with a drink to show the layout.
+// Raven Blvd → store.
 var testStop = RouteStop{Label: "#TEST",
 	Addr: &order.Address{Line1: "5601 Loch Raven Blvd", City: "Baltimore", State: "MD", PostalCode: "21239"},
-	Head: "#TEST 5601 Loch Raven Blvd · PAID", Grab: []string{"1× 2 Liter Coke"}}
+	Head: "#TEST 5601 Loch Raven Blvd"}
 
-func routeStops(sent []order.StoredOrder, rp ReceiptPrinter) []RouteStop {
+func routeStops(sent []order.StoredOrder) []RouteStop {
 	run := append([]order.StoredOrder(nil), sent...)
 	sort.SliceStable(run, func(i, j int) bool {
 		a, b := run[i].Status.RunSeq, run[j].Status.RunSeq
@@ -251,7 +249,7 @@ func routeStops(sent []order.StoredOrder, rp ReceiptPrinter) []RouteStop {
 	stops := make([]RouteStop, 0, len(run))
 	for _, so := range run {
 		st := RouteStop{Label: label(so), Addr: so.Order.Fulfillment.Address,
-			Head: stopHead(so), Note: stopNote(so), Grab: stopGrab(so, rp)}
+			Head: stopHead(so)}
 		if so.Geo.Located() {
 			st.Lat, st.Lng = so.Geo.Lat, so.Geo.Lng
 		}
@@ -286,7 +284,7 @@ func (s *Service) sendRoute(ctx context.Context, driverID string, sent []order.S
 		s.devEvent(devlog.Warn, devlog.KindOrder, "No admin Pushover device set — alerts reach the drivers' phones too")
 	}
 	store, _ := s.floorGeo()
-	stops := routeStops(sent, s.geoDeps().ReceiptPrinter)
+	stops := routeStops(sent)
 	s.background(ctx, func(ctx context.Context) {
 		ctx, span := s.span(ctx, "delivery.route_notify", attribute.String("driver.id", driverID),
 			attribute.Int("stops", len(stops)))

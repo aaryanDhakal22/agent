@@ -130,7 +130,7 @@ func TestSettingsRoutes(t *testing.T) {
 		t.Fatalf("bad type = %d", rec.Code)
 	}
 	if rec = call(h, "GET", "/api/settings/tickets", tablet, ""); rec.Code != 200 ||
-		rec.Body.String() != `{"pos_delivery":false,"pos_takeout":false,"pos_counter":false,"online_cash_pickup":true,"online_cash_delivery":true,"online_card":true}`+"\n" {
+		rec.Body.String() != `{"pos_delivery":false,"pos_takeout":false,"pos_counter":false,"online_cash_pickup":true,"online_cash_delivery":true,"online_card":true,"future_kitchen":false,"future_receipt":false}`+"\n" {
 		t.Fatalf("tickets = %d %s", rec.Code, rec.Body)
 	}
 	if rec = call(h, "PUT", "/api/settings/times", tablet, `{"default_pickup_minutes":0}`); rec.Code != 400 {

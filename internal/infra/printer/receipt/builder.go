@@ -49,6 +49,9 @@ func Build(snap order.Snapshot, sc storeconfig.StoreContext, t printer.Ticket, p
 		return buildStation(snap, t, prefs)
 	}
 	out := buildFull(snap, sc, t.ReroutedFrom, prefs)
+	if t.Future { // a future order's receipt printed early (2.4.0)
+		out = futureReceiptTop(out)
+	}
 	if prefs.Copies > 1 {
 		return bytes.Repeat(out, prefs.Copies)
 	}
@@ -100,17 +103,9 @@ func buildFull(snap order.Snapshot, sc storeconfig.StoreContext, reroutedFrom st
 		writeRerouted(w, nl, reroutedFrom)
 	}
 
-	// --- Header: order id + service type + store identity --------------
+	// --- Header (2.4.0, owner): the store's name + address, then the
+	// order number, then the order type (same sizes as before) ------------
 	w(cmdCenter)
-	w(cmdBoldOn)
-	w(cmdQuadSz)
-	writeOrderNumbers(w, nl, snap)
-	w(cmdDoubleSz)
-	w(formatServiceType(snap.Fulfillment.Type))
-	nl()
-	w(cmdBoldOff)
-	w(cmdBaseSz)
-
 	if prefs.ShowStoreAddress {
 		if sc.Location.Name != "" {
 			w(sc.Location.Name)
@@ -125,6 +120,16 @@ func buildFull(snap order.Snapshot, sc storeconfig.StoreContext, reroutedFrom st
 			nl()
 		}
 	}
+	w(cmdBoldOn)
+	w(cmdQuadSz)
+	writeOrderNumbers(w, nl, snap)
+	if t := orderTypeLine(snap); t != "" {
+		w(cmdDoubleSz)
+		w(t)
+		nl()
+	}
+	w(cmdBoldOff)
+	w(cmdBaseSz)
 
 	// --- Promised-for-later flag ---------------------------------------
 	if snap.Fulfillment.PromisedAt != nil && !snap.Fulfillment.PromisedAt.IsZero() {
@@ -243,7 +248,13 @@ func buildFull(snap order.Snapshot, sc storeconfig.StoreContext, reroutedFrom st
 	nl()
 
 	sp := prefs.Spacing
+	if prefs.Format == order.FormatCondensed {
+		writeCondensedItems(w, nl, snap.Items, sp)
+	}
 	for i, item := range snap.Items {
+		if prefs.Format == order.FormatCondensed {
+			break
+		}
 		if i > 0 {
 			w(feedDots(sp.ItemItem)) // between items, with or without modifiers
 		}
@@ -412,10 +423,19 @@ func buildStation(snap order.Snapshot, t printer.Ticket, prefs order.ReceiptPref
 	if t.Void {
 		writeVoid(w, nl)
 	}
+	if t.Future { // 2.4.0: printed early for a future order
+		writeDoNotMake(w, nl)
+		writeFutureWhen(w, nl, snap)
+	}
 
-	// --- Ticket number, customer ---------------------------------------------
+	// --- Order type, ticket number, customer (2.4.0: the type on top) -------
 	w(cmdCenter)
 	w(cmdBoldOn)
+	if t := orderTypeLine(snap); t != "" {
+		w(cmdDoubleSz)
+		w(t)
+		nl()
+	}
 	w(textSize(prefs.KitchenNumberSize))
 	writeOrderNumbers(w, nl, snap)
 	if name := strings.TrimSpace(snap.Customer.DisplayName); name != "" {
@@ -424,7 +444,7 @@ func buildStation(snap order.Snapshot, t printer.Ticket, prefs order.ReceiptPref
 		nl()
 	}
 	w(cmdBaseSz)
-	if snap.Fulfillment.PromisedAt != nil && !snap.Fulfillment.PromisedAt.IsZero() {
+	if snap.Fulfillment.PromisedAt != nil && !snap.Fulfillment.PromisedAt.IsZero() && !t.Future {
 		w(cmdInvertOn)
 		w(" FUTURE " + snap.Fulfillment.PromisedAt.Format("Jan 2  3:04 PM") + " ")
 		w(cmdInvertOff)
@@ -499,12 +519,69 @@ func buildStation(snap order.Snapshot, t printer.Ticket, prefs order.ReceiptPref
 		}
 		w(cmdBaseSz)
 	}
+	if t.Future {
+		w(cmdCenter)
+		writeDoNotMake(w, nl)
+		w(cmdLeft)
+	}
 
 	for i := 0; i < 4; i++ {
 		nl()
 	}
 	w(cmdCut)
 	return buf.Bytes()
+}
+
+// writeDoNotMake prints the inverted "--- DO NOT MAKE ---" bar a future
+// order's early kitchen ticket has on top and at the bottom (2.4.0).
+func writeDoNotMake(w func(string), nl func()) {
+	w(cmdCenter)
+	w(cmdBoldOn)
+	w(cmdDoubleSz)
+	w(cmdInvertOn)
+	w(" --- DO NOT MAKE --- ")
+	w(cmdInvertOff)
+	w(cmdBaseSz)
+	w(cmdBoldOff)
+	nl()
+}
+
+// writeFutureWhen prints when a future order is due under the DO NOT MAKE
+// bar: "PICKUP AT 7:30 PM" / "DELIVERY AT 7:30 PM", and the day under it
+// when it isn't the day it was placed.
+func writeFutureWhen(w func(string), nl func(), snap order.Snapshot) {
+	p := snap.Fulfillment.PromisedAt
+	if p == nil || p.IsZero() {
+		return
+	}
+	kind := "PICKUP"
+	if strings.EqualFold(strings.TrimSpace(snap.Fulfillment.Type), "delivery") {
+		kind = "DELIVERY"
+	}
+	w(cmdCenter)
+	w(cmdBoldOn)
+	w(cmdDoubleSz)
+	w(kind + " AT " + p.Format("3:04 PM"))
+	nl()
+	if pl := snap.PlacedAt; !pl.IsZero() && (pl.YearDay() != p.YearDay() || pl.Year() != p.Year()) {
+		w(strings.ToUpper(p.Format("Mon Jan 2")))
+		nl()
+	}
+	w(cmdBaseSz)
+	w(cmdBoldOff)
+	nl()
+}
+
+// futureReceiptTop puts an inverted FUTURE bar at the very top of a
+// customer receipt printed early for a future order (2.4.0), right after
+// the printer reset that starts it.
+func futureReceiptTop(out []byte) []byte {
+	bar := cmdCenter + cmdBoldOn + cmdDoubleSz + cmdInvertOn + "   FUTURE   " + cmdInvertOff + cmdBaseSz + cmdBoldOff + cmdFeed + cmdFeed
+	head := cmdInit + cmdBaseSz
+	if !bytes.HasPrefix(out, []byte(head)) {
+		return append([]byte(bar), out...)
+	}
+	return append(append([]byte(head), bar...), out[len(head):]...)
 }
 
 // The kitchen ticket uses the full 80 mm line: 48 characters in the base font,
@@ -771,20 +848,59 @@ func truncRunes(s string, n int) string {
 	return string(r[:n])
 }
 
-func formatServiceType(t string) string {
-	switch strings.ToLower(t) {
-	case "delivery":
-		return "Delivery"
-	case "pickup":
-		return "Pickup"
-	case "dine_in":
-		return "Dine In"
-	default:
-		if t != "" {
-			return strings.ToUpper(t)
+// writeCondensedItems is the condensed receipt's item list (2.4.0): per
+// item one line "<qty> <size> <name>" priced with all its modifiers (so the
+// lines add up to the subtotal), then only its first modifier (vendors and
+// the POS list the main choice first - the soda flavour, the pizza's
+// topping) without a price, then its note.
+func writeCondensedItems(w func(string), nl func(), items []order.LineItem, sp order.LineSpacing) {
+	for i, item := range items {
+		if i > 0 {
+			w(feedDots(sp.ItemItem))
 		}
-		return "Online Order"
+		sum := int64(item.Quantity) * item.UnitPrice
+		for _, mod := range item.Children {
+			sum += mod.UnitPrice * int64(max(mod.Quantity, 1))
+		}
+		name := strings.TrimSpace(strings.TrimSpace(item.Size) + " " + strings.TrimSpace(item.Name))
+		w(cmdBoldOn)
+		w(itemLine(item.Quantity, name, sum))
+		w(cmdBoldOff)
+		nl()
+		if len(item.Children) > 0 {
+			w(feedDots(sp.ItemMod))
+			mod := item.Children[0]
+			label := mod.Name
+			if mod.Quantity > 1 {
+				label = fmt.Sprintf("(x%d) %s", mod.Quantity, label)
+			}
+			w(cmdLeft)
+			w("    - " + truncRunes(label, lineWidth-6))
+			nl()
+		}
+		if strings.TrimSpace(item.Notes) != "" {
+			w("    Note: " + item.Notes)
+			nl()
+		}
 	}
+}
+
+// orderTypeLine is the line over the number on the receipt and the kitchen
+// ticket (2.4.0): PICKUP, DELIVERY, COUNTER (a POS dine-in check), DINE IN
+// (online), nothing when the type is unknown.
+func orderTypeLine(snap order.Snapshot) string {
+	switch strings.ToLower(strings.TrimSpace(snap.Fulfillment.Type)) {
+	case "delivery":
+		return "DELIVERY"
+	case "pickup":
+		return "PICKUP"
+	case "dine_in":
+		if snap.Source == order.SourcePOS {
+			return "COUNTER"
+		}
+		return "DINE IN"
+	}
+	return ""
 }
 
 func formatPhone(p string) string {

@@ -136,7 +136,7 @@ def test_tablet_auto_accept_marks_orders(floor, fakes) -> None:  # noqa: F811
     assert all(set(e) == {"seq", "at", "level", "kind", "text"} for e in body["events"])
     assert [e["seq"] for e in body["events"]] == sorted(e["seq"] for e in body["events"])
     assert any("auto-accepted" in t for t in texts), texts
-    assert any("Auto-accept turned on (tablet Counter)" == t for t in texts), texts
+    assert any("Auto-accept: off → on (tablet Counter)" == t for t in texts), texts
     assert any(t.startswith("Order ") and "arrived (delivery)" in t for t in texts), texts
     assert any("printed on Front" in t for t in texts), texts
     assert not any("Pytest Floor" in t for t in texts), "a customer name in the dev events"

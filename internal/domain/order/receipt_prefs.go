@@ -16,6 +16,14 @@ const (
 	SizeHuge   = "huge"
 )
 
+// Customer receipt formats (2.4.0): expanded = every modifier with its
+// price and a Sum per item (the receipt as it always was); condensed = one
+// line per item priced with all its modifiers, and only its first modifier.
+const (
+	FormatExpanded  = "expanded"
+	FormatCondensed = "condensed"
+)
+
 // MaxFooterLen is the longest receipt footer (one line at the base font).
 const MaxFooterLen = 32
 
@@ -53,6 +61,9 @@ type ReceiptPrefs struct {
 	// and between one item (with or without modifiers) and the next. 0 = none
 	// (the look before this setting).
 	Spacing LineSpacing `json:"spacing"`
+	// Format (2.4.0): the customer receipt's item list - expanded |
+	// condensed (reprints too; kitchen tickets never change).
+	Format string `json:"format"`
 }
 
 // LineSpacing is ReceiptPrefs.Spacing, in printer dots (0..MaxSpacingDots).
@@ -76,6 +87,7 @@ func DefaultReceiptPrefs() ReceiptPrefs {
 		ShowPhone:         true,
 		ExtraPaper:        true,
 		DriverReportSize:  SizeNormal,
+		Format:            FormatExpanded,
 	}
 }
 
@@ -113,6 +125,9 @@ func (p ReceiptPrefs) Normalize() ReceiptPrefs {
 	if p.DriverReportSize == "" {
 		p.DriverReportSize = d.DriverReportSize
 	}
+	if p.Format == "" {
+		p.Format = d.Format
+	}
 	return p
 }
 
@@ -132,6 +147,9 @@ func (p ReceiptPrefs) Validate() error {
 	}
 	if !oneOf(p.DriverReportSize, SizeSmall, SizeNormal, SizeLarge) {
 		return fmt.Errorf("driver_report_size must be small, normal or large")
+	}
+	if !oneOf(p.Format, FormatExpanded, FormatCondensed) {
+		return fmt.Errorf("format must be expanded or condensed")
 	}
 	for _, v := range []int{p.Spacing.ItemMod, p.Spacing.ModMod, p.Spacing.ItemItem} {
 		if v < 0 || v > MaxSpacingDots {

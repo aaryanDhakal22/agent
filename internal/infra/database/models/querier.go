@@ -107,6 +107,7 @@ type Querier interface {
 	InsertFloorEvent(ctx context.Context, arg InsertFloorEventParams) error
 	// Integration feed (2.1.0) -----------------------------------------------------
 	InsertIntegrationEvent(ctx context.Context, arg InsertIntegrationEventParams) error
+	InsertSettingsChange(ctx context.Context, arg InsertSettingsChangeParams) error
 	// Drivers -------------------------------------------------------------------
 	ListActiveDrivers(ctx context.Context) ([]Driver, error)
 	ListArrivedOrders(ctx context.Context) ([]Order, error)
@@ -117,6 +118,8 @@ type Querier interface {
 	// or ready for a non-delivery order. Scheduled (future) orders move on to
 	// the next batch instead.
 	ListBatchLeftovers(ctx context.Context, batchID int64) ([]Order, error)
+	// 2.4.0: a batch's deliveries delivered with no driver (the UNASSIGNED report).
+	ListBatchUnassigned(ctx context.Context, batchID int64) ([]Order, error)
 	ListBatches(ctx context.Context, limit int64) ([]ListBatchesRow, error)
 	// Online pickups / dine-in ready since before the cutoff and not finished yet.
 	ListDueOnlinePickups(ctx context.Context, cutoff sql.NullString) ([]string, error)
@@ -142,12 +145,18 @@ type Querier interface {
 	ListPrinterMACs(ctx context.Context) ([]PrinterMac, error)
 	// Every driver's run that is out, stops in run order.
 	ListRunStops(ctx context.Context) ([]ListRunStopsRow, error)
+	// Newest first, since a time (the keep window), at most lim rows.
+	ListSettingsLog(ctx context.Context, arg ListSettingsLogParams) ([]SettingsLog, error)
 	// Driver report: shifts that overlap a batch window (opened_at .. closed_at).
 	ListShiftsOverlapping(ctx context.Context, arg ListShiftsOverlappingParams) ([]DriverShift, error)
 	ListShiftsSince(ctx context.Context, clockIn string) ([]DriverShift, error)
 	ListUnsyncedFloorEvents(ctx context.Context, limit int64) ([]FloorEvent, error)
 	MarkAlerted(ctx context.Context, arg MarkAlertedParams) error
 	MarkDelivered(ctx context.Context, arg MarkDeliveredParams) (int64, error)
+	// 2.4.0 MARK DELIVERED: an open delivery (cooking or ready, pooled or not,
+	// held as came back) is delivered with no driver - Unassigned on the Drivers
+	// tab. marked = the MarkedDelivered JSON.
+	MarkDeliveredNoDriver(ctx context.Context, arg MarkDeliveredNoDriverParams) (int64, error)
 	MarkFloorEventFailed(ctx context.Context, arg MarkFloorEventFailedParams) error
 	MarkFloorEventSynced(ctx context.Context, arg MarkFloorEventSyncedParams) error
 	// 2.2.1: a delivery that came back with its driver leaves the run. retry =
@@ -173,6 +182,7 @@ type Querier interface {
 	OpenBatch(ctx context.Context, openedAt string) (Batch, error)
 	// Driver shifts ----------------------------------------------------------------
 	OpenShift(ctx context.Context, arg OpenShiftParams) error
+	PruneSettingsLog(ctx context.Context, before string) error
 	// ring_at passed: it rings again like a new order. last_alert_at starts the
 	// 2-minute escalation from now, not from the first arrival.
 	RaiseScheduled(ctx context.Context, arg RaiseScheduledParams) (int64, error)
@@ -210,6 +220,8 @@ type Querier interface {
 	// Back from a run: available again, at the back of the queue.
 	SetDriverReturned(ctx context.Context, arg SetDriverReturnedParams) error
 	SetDriverStatus(ctx context.Context, arg SetDriverStatusParams) (int64, error)
+	// 2.4.0: a future order's early tickets printed (kitchen / receipt).
+	SetEarlyPrinted(ctx context.Context, arg SetEarlyPrintedParams) error
 	SetExtDriverPos(ctx context.Context, arg SetExtDriverPosParams) error
 	SetFloorPrefs(ctx context.Context, arg SetFloorPrefsParams) error
 	SetIntegrationSettings(ctx context.Context, arg SetIntegrationSettingsParams) error
@@ -223,12 +235,18 @@ type Querier interface {
 	SetLinkInfo(ctx context.Context, arg SetLinkInfoParams) error
 	SetManagerPasswordHash(ctx context.Context, uiPasswordHash string) error
 	SetMapFile(ctx context.Context, mapFile string) error
+	// 2.4.0 Drivers tab: a delivered or out delivery moves to another driver
+	// (driver_id NULL = Unassigned) with its run stop number and the
+	// MarkedDelivered record.
+	SetOrderDriver(ctx context.Context, arg SetOrderDriverParams) (int64, error)
 	// Finishing orders, terminal changes (00019) -----------------------------------
 	// A ready pickup / counter order is done with (picked up): the POS closed its
 	// check ('pos') or an online pickup sat ready for the store's finish time
 	// ('auto'). It stays ready; it no longer counts as open.
 	SetOrderFinished(ctx context.Context, arg SetOrderFinishedParams) (int64, error)
 	SetOrderFlag(ctx context.Context, arg SetOrderFlagParams) error
+	// An online order the hub inserted into the POS was paid there (paid_at as
+	// on a POS check, 2.4.0).
 	SetOrderPaid(ctx context.Context, arg SetOrderPaidParams) error
 	// Driver pools (2.0.9) ----------------------------------------------------------
 	// Puts a delivery order (accepted or ready) into a driver's pool, or back to
@@ -255,11 +273,15 @@ type Querier interface {
 	// A hidden POS check that now qualifies for Kitchen: shown as if new.
 	ShowPosOrder(ctx context.Context, arg ShowPosOrderParams) error
 	TouchPairedDevice(ctx context.Context, arg TouchPairedDeviceParams) error
+	// 2.4.0 Back to deliveries: an Unassigned delivery goes back to the state it
+	// was in (cooking or ready), no longer delivered.
+	UndeliverOrder(ctx context.Context, arg UndeliverOrderParams) (int64, error)
 	// 2.3.8: a READY tapped by mistake, undone soon after (ready_at >= since):
 	// back to cooking, not finished. Pools stay (a cooking order may be pooled).
 	UndoReady(ctx context.Context, arg UndoReadyParams) (int64, error)
 	// A changed POS check: the new snapshot (items, money, notes, address) and
-	// the paid / cash / tip / hidden figures. No state change.
+	// the paid / cash / tip / hidden figures. No state change. paid_at (2.4.0)
+	// moves when the check goes from a balance due to paid.
 	UpdateExternalOrder(ctx context.Context, arg UpdateExternalOrderParams) error
 	// Orders -------------------------------------------------------------------
 	// Idempotent: SSE redelivery (or a reconnect-backlog replay) for the same

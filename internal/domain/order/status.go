@@ -125,6 +125,47 @@ type Status struct {
 	// PosChange: the terminal changed a check already on the tablet and
 	// nobody pressed OK yet (the tablet rings until they do).
 	PosChange *PosChange `json:"pos_change,omitempty"`
+
+	// MarkedDelivered (2.4.0): the delivery was marked delivered with no
+	// driver (MARK DELIVERED on the tablet) or moved to Unassigned on the
+	// Drivers tab. It stays once a driver is assigned (how it got there);
+	// IsUnassigned tells whether it is still without a driver.
+	MarkedDelivered *MarkedDelivered `json:"marked_delivered,omitempty"`
+	// PaidAt (2.4.0): when a POS check last went from a balance due to paid
+	// ($0) - a paid takeout's customer has been waiting since then.
+	PaidAt *time.Time `json:"paid_at,omitempty"`
+	// EarlyKitchen / EarlyReceipt (2.4.0): a future order's kitchen
+	// tickets / customer receipt printed at its first ACCEPT.
+	EarlyKitchen bool `json:"early_kitchen,omitempty"`
+	EarlyReceipt bool `json:"early_receipt,omitempty"`
+}
+
+// MarkedBy is who did something on the floor: a paired tablet (kind
+// "tablet", its name and device id) or the Pi web page (kind "web").
+type MarkedBy struct {
+	Kind     string `json:"kind"`
+	Name     string `json:"name"`
+	DeviceID string `json:"device_id,omitempty"`
+}
+
+// Who did it (MarkedBy.Kind): a tablet, the Pi web page, or the POS (a
+// driver a cashier set at the terminal, mirrored by the hub).
+const (
+	ByTablet = "tablet"
+	ByWeb    = "web"
+	ByPOS    = "pos"
+)
+
+// MarkedDelivered records a delivery that went to Unassigned: when, who,
+// the state it was in before (cooking / ready, for Back to deliveries), the
+// driver it was taken from (moved to Unassigned on the Drivers tab) and the
+// drivers available at that moment (to work out who took it).
+type MarkedDelivered struct {
+	At         time.Time `json:"at"`
+	By         MarkedBy  `json:"by"`
+	PrevState  State     `json:"prev_state,omitempty"`
+	FromDriver string    `json:"from_driver,omitempty"`
+	Available  []string  `json:"available"`
 }
 
 // Finished-by values (Status.FinishedBy).
@@ -183,6 +224,10 @@ var (
 // driver assigned to a non-delivery order).
 var ErrInvalidState = fmt.Errorf("order is not in a state that allows this")
 
+// ErrNotUnassigned (2.4.0): Back to deliveries on an order that isn't
+// delivered without a driver (any more).
+var ErrNotUnassigned = fmt.Errorf("order is not delivered without a driver")
+
 // IsPOS reports whether the order was pulled from the store's POS.
 func (so StoredOrder) IsPOS() bool { return so.Status.ExtSource != "" }
 
@@ -197,6 +242,12 @@ func (so StoredOrder) Number() *int64 {
 
 // IsDelivery reports whether the order is a delivery (driver flow applies).
 func (so StoredOrder) IsDelivery() bool { return so.Order.Fulfillment.Type == "delivery" }
+
+// IsUnassigned reports whether the order is a delivery delivered with no
+// driver (2.4.0): it waits on the Drivers tab's Unassigned for a driver.
+func (so StoredOrder) IsUnassigned() bool {
+	return so.Status.State == StateDelivered && so.Status.DriverID == "" && so.Status.MarkedDelivered != nil
+}
 
 // IsFinished reports whether the order is done on the floor: delivered,
 // cancelled, or ready for a non-delivery order.

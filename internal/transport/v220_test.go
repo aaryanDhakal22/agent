@@ -98,7 +98,7 @@ func TestV220DeviceRoutes(t *testing.T) {
 		LastSeq int64          `json:"last_seq"`
 	}
 	_ = json.Unmarshal(rec.Body.Bytes(), &ev)
-	if rec.Code != 200 || ev.LastSeq != 1 || len(ev.Events) != 1 || ev.Events[0].Text != "Auto-accept turned on (tablet Counter)" {
+	if rec.Code != 200 || ev.LastSeq != 1 || len(ev.Events) != 1 || ev.Events[0].Text != "Auto-accept: off → on (tablet Counter)" {
 		t.Fatalf("dev events: %d %s", rec.Code, rec.Body)
 	}
 	if rec = call(h, "GET", "/api/dev/events?since=1", key, ""); !strings.Contains(rec.Body.String(), `"events":[]`) {

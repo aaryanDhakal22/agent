@@ -97,15 +97,25 @@ func (s *Service) Floor(ctx context.Context) (*Floor, error) {
 
 // Ready marks an accepted order ready (terminal for pickup / dine-in).
 func (s *Service) Ready(ctx context.Context, id string) (*order.StoredOrder, error) {
-	ctx, span := s.span(ctx, "order.ready", attribute.String("order.id", id))
+	return s.ReadyWith(ctx, id, true)
+}
+
+// ReadyWith is Ready; callout false (2.4.0, READY held on the tablet) tells
+// the store hub not to call the order out.
+func (s *Service) ReadyWith(ctx context.Context, id string, callout bool) (*order.StoredOrder, error) {
+	ctx, span := s.span(ctx, "order.ready", attribute.String("order.id", id), attribute.Bool("callout", callout))
 	defer span.End()
-	so, err := s.repo.MarkReady(ctx, id)
+	so, err := s.repo.MarkReady(ctx, id, callout)
 	if err != nil {
 		return nil, spanErr(span, err)
 	}
 	s.floorChanged()
 	s.publishUpdated(*so)
-	s.devEvent(devlog.Info, devlog.KindOrder, "%s ready", label(*so))
+	if callout {
+		s.devEvent(devlog.Info, devlog.KindOrder, "%s ready", label(*so))
+	} else {
+		s.devEvent(devlog.Info, devlog.KindOrder, "%s ready (no callout)", label(*so))
+	}
 	if so.IsDelivery() {
 		s.autoAssignBG(ctx, "ready")
 	}

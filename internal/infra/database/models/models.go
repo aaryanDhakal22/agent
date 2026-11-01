@@ -115,6 +115,10 @@ type Order struct {
 	FinishedBy           string         `json:"finished_by"`
 	PosClosed            bool           `json:"pos_closed"`
 	PosChange            string         `json:"pos_change"`
+	MarkedDelivered      string         `json:"marked_delivered"`
+	PaidAt               sql.NullString `json:"paid_at"`
+	EarlyKitchen         bool           `json:"early_kitchen"`
+	EarlyReceipt         bool           `json:"early_receipt"`
 }
 
 type OrderGeo struct {
@@ -208,6 +212,16 @@ type Setting struct {
 	AutoAssign                 bool    `json:"auto_assign"`
 	Finishing                  string  `json:"finishing"`
 	Callout                    string  `json:"callout"`
+}
+
+type SettingsLog struct {
+	ID       int64  `json:"id"`
+	At       string `json:"at"`
+	Section  string `json:"section"`
+	ByKind   string `json:"by_kind"`
+	ByName   string `json:"by_name"`
+	DeviceID string `json:"device_id"`
+	Changes  string `json:"changes"`
 }
 
 type StoreConfig struct {

@@ -62,23 +62,7 @@ func (s *Server) handleSetAutoUpdate(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, r, http.StatusInternalServerError, err)
 		return
 	}
-	s.devLog.Add(devlog.Info, devlog.KindUpdate, "Auto-update after Close batch turned "+onOff(*body.AutoUpdate)+" ("+caller(r)+")")
 	s.writeJSON(w, http.StatusOK, map[string]bool{"auto_update": *body.AutoUpdate})
-}
-
-func onOff(v bool) string {
-	if v {
-		return "on"
-	}
-	return "off"
-}
-
-// caller names who made a request in events: the tablet's name, else "web UI".
-func caller(r *http.Request) string {
-	if d := requestDevice(r); d != nil {
-		return "tablet " + d.Name
-	}
-	return "web UI"
 }
 
 // --- GET /api/dev/events -----------------------------------------------------

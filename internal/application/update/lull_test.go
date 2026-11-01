@@ -47,7 +47,7 @@ func TestForcedUpdateRunsInALull(t *testing.T) {
 	if err := repo.RecordAccepted(ctx, *got, false); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := repo.MarkReady(ctx, snap.ID); err != nil {
+	if _, err := repo.MarkReady(ctx, snap.ID, true); err != nil {
 		t.Fatal(err)
 	}
 	// A terminal takeout, ready, still open at the POS.
@@ -59,7 +59,7 @@ func TestForcedUpdateRunsInALull(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := repo.MarkReady(ctx, res.Order.Order.ID); err != nil {
+	if _, err := repo.MarkReady(ctx, res.Order.Order.ID, true); err != nil {
 		t.Fatal(err)
 	}
 

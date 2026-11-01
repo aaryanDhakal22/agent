@@ -50,3 +50,19 @@ func SampleOrder(at time.Time) order.Snapshot {
 		Payments: []order.PaymentSummary{{Method: "card", AmountCents: 6248, Last4: "4242", AuthCode: "SAMPLE"}},
 	}
 }
+
+// BuildFutureSample is the TEST PRINT of a future-order switch (2.4.0): the
+// sample delivery due an hour from now, as its early kitchen ticket
+// (kitchen, DO NOT MAKE) or its early customer receipt (FUTURE on top).
+func BuildFutureSample(sc storeconfig.StoreContext, prefs order.ReceiptPrefs, at time.Time, kitchen bool) []byte {
+	snap := SampleOrder(at)
+	due := at.Add(time.Hour)
+	snap.Fulfillment.PromisedAt = &due
+	if kitchen {
+		return Build(snap, sc, printer.Ticket{
+			Kind: printer.TicketStation, TargetID: samplePrinter, Station: "Sample",
+			Mine: snap.Items[:2], Others: snap.Items[2:], Future: true,
+		}, prefs)
+	}
+	return Build(snap, sc, printer.Ticket{Kind: printer.TicketReceipt, Future: true}, prefs)
+}

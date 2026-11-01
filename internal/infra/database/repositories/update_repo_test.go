@@ -58,7 +58,7 @@ func TestCountOpenFloor(t *testing.T) {
 	arrive(t, r, "pickup")
 	accept(t, r, arrive(t, r, "delivery"))
 	ready := accept(t, r, arrive(t, r, "pickup"))
-	if _, err := r.MarkReady(ctx, ready.Order.ID); err != nil {
+	if _, err := r.MarkReady(ctx, ready.Order.ID, true); err != nil {
 		t.Fatal(err)
 	}
 	future := arrive(t, r, "pickup")

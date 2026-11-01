@@ -276,6 +276,17 @@ func toStored(row models.Order) (order.StoredOrder, error) {
 			st.PosChange = &c
 		}
 	}
+	// 00022: delivered with no driver, when the check was last paid.
+	if row.MarkedDelivered != "" {
+		var md order.MarkedDelivered
+		if json.Unmarshal([]byte(row.MarkedDelivered), &md) == nil {
+			st.MarkedDelivered = &md
+		}
+	}
+	st.EarlyKitchen, st.EarlyReceipt = row.EarlyKitchen, row.EarlyReceipt
+	if st.PaidAt, err = optTS(row.PaidAt); err != nil {
+		return order.StoredOrder{}, fmt.Errorf("parse paid_at for order %s: %w", row.ID, err)
+	}
 	return order.StoredOrder{Order: s, Status: st}, nil
 }
 

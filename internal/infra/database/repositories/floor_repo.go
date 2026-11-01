@@ -143,8 +143,8 @@ func (r *OrderRepository) ListInterruptedAccepts(ctx context.Context) (ids []str
 	return models.New(r.db).ListInterruptedAccepts(ctx)
 }
 
-// MarkReady: accepted → ready.
-func (r *OrderRepository) MarkReady(ctx context.Context, id string) (result *order.StoredOrder, err error) {
+// MarkReady: accepted → ready (callout false: the hub stays quiet, 2.4.0).
+func (r *OrderRepository) MarkReady(ctx context.Context, id string, callout bool) (result *order.StoredOrder, err error) {
 	ctx, _, end := dbSpan(ctx, "floor.mark_ready")
 	defer end(&err)
 	now := time.Now()
@@ -163,7 +163,7 @@ func (r *OrderRepository) MarkReady(ctx context.Context, id string) (result *ord
 		if err := recordOrderStatus(ctx, q, so, false, now); err != nil {
 			return err
 		}
-		if err := feedReady(ctx, q, so, now); err != nil {
+		if err := feedReady(ctx, q, so, now, callout); err != nil {
 			return err
 		}
 		// A POS pickup / counter check the POS already closed is done with

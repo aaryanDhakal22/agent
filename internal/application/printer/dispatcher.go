@@ -223,7 +223,7 @@ func (d *Dispatcher) ExecuteMode(ctx context.Context, snap order.Snapshot, mode 
 
 	tickets, unrouted := PlanWith(snap, entries, mode, rules)
 	out := printer.Outcome{Unrouted: unrouted}
-	insertRule := mode == printer.ModeAccept && InsertsLive(snap, rules)
+	insertRule := (mode == printer.ModeAccept || mode == printer.ModeAcceptKitchen) && InsertsLive(snap, rules)
 	if len(tickets) == 0 {
 		return out, printer.ErrNoTickets
 	}

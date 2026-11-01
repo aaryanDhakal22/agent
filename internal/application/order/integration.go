@@ -443,6 +443,16 @@ func (s *Service) mirrorDriver(ctx context.Context, so order.StoredOrder, pos st
 	defer span.End()
 	note := ""
 	switch d, err := s.repo.DriverByPosNumber(ctx, pos); {
+	case so.IsDelivery() && so.Status.State == order.StateDelivered && err == nil && d.ID != so.Status.DriverID:
+		// 2.4.0: the POS is the source of truth for who delivered it - an
+		// Unassigned delivery, or one a cashier moved at the terminal,
+		// follows the POS (open batch only; nothing is written back).
+		moved, err := s.ReassignDeliveries(ctx, []string{so.Order.ID}, d.ID, order.MarkedBy{Kind: order.ByPOS, Name: "POS"})
+		if err != nil {
+			s.logger.Warn().Ctx(ctx).Err(err).Str("order_id", so.Order.ID).Msg("POS driver on a delivered order not mirrored")
+		} else if len(moved) > 0 {
+			s.logger.Info().Ctx(ctx).Str("order_id", so.Order.ID).Str("driver", d.Name).Msg("POS driver mirrored: delivered by")
+		}
 	case !so.IsDelivery() || so.IsFinished() || so.Status.State == order.StateOnDelivery:
 		// Nothing to mirror (not a delivery, or already gone).
 	case err != nil:
@@ -733,6 +743,7 @@ func (s *Service) Schedule(ctx context.Context, id string, leadMinutes int) (*or
 	if !so.Status.Future || so.Order.Fulfillment.PromisedAt == nil {
 		return nil, spanErr(span, ErrNotFuture)
 	}
+	first := so.Status.State == order.StateArrived
 	ringAt := so.Order.Fulfillment.PromisedAt.Add(-time.Duration(leadMinutes) * time.Minute)
 	out, err := s.repo.Schedule(ctx, uid.String(), int64(leadMinutes), ringAt)
 	if err != nil {
@@ -741,7 +752,60 @@ func (s *Service) Schedule(ctx context.Context, id string, leadMinutes int) (*or
 	s.floorChanged()
 	s.publishUpdated(*out)
 	s.logger.Info().Ctx(ctx).Str("order_id", id).Int("lead_minutes", leadMinutes).Time("ring_at", ringAt).Msg("Future order scheduled")
+	if first {
+		s.printEarly(ctx, *out)
+	}
 	return out, nil
+}
+
+// FutureLead is a future order's default lead (2.4.0): a delivery starts
+// the store's delivery target before it is due (AUTO's placed-to-door
+// minutes: due 6:40 with a 40-min target rings at 6:00), anything else its
+// default time.
+func (s *Service) FutureLead(ctx context.Context, so order.StoredOrder) int {
+	if so.IsDelivery() {
+		if t := s.DeliveryPrefs(ctx).DeliveryTargetMinutes; t > 0 {
+			return int(t)
+		}
+	}
+	return int(s.IntegrationSettings().Times.For(so.Order.Fulfillment.Type))
+}
+
+// printEarly prints a future order's early tickets on its first ACCEPT
+// (2.4.0), in the background: with the store's future switches on, the
+// kitchen tickets (DO NOT MAKE, when it is due) and / or the customer
+// receipt (FUTURE on top). What printed is recorded - the CONFIRM at its
+// time then skips the receipt.
+func (s *Service) printEarly(ctx context.Context, so order.StoredOrder) {
+	t := s.IntegrationSettings().Tickets
+	if !t.FutureKitchen && !t.FutureReceipt {
+		return
+	}
+	s.background(ctx, func(ctx context.Context) {
+		out, err := s.print(ctx, printable(so), printer.ModeFutureEarly)
+		if errors.Is(err, printer.ErrNoTickets) {
+			return
+		}
+		kitchen, receipt := false, false
+		for _, r := range out.Printed {
+			switch r.Kind {
+			case printer.TicketStation:
+				kitchen = true
+			case printer.TicketReceipt, printer.TicketFull:
+				receipt = true
+			}
+		}
+		if kitchen || receipt {
+			if err := s.repo.SetEarlyPrinted(ctx, so.Order.ID, kitchen, receipt); err != nil {
+				s.logger.Warn().Ctx(ctx).Err(err).Str("order_id", so.Order.ID).Msg("record early future tickets failed")
+			}
+			s.printEvents(label(so)+" (future, early)", out)
+		}
+		s.alertPrintIssues(ctx, so, out, false)
+		if err != nil {
+			s.logger.Warn().Ctx(ctx).Err(err).Str("order_id", so.Order.ID).Msg("Future order: early tickets not printed")
+		}
+	})
 }
 
 // RaiseDue puts scheduled orders whose ring time came back to arrived

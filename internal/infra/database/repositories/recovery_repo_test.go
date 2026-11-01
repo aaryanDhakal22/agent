@@ -19,11 +19,11 @@ func TestSwapRestoresIdenticalFloor(t *testing.T) {
 	a := newFloorRepo(t)
 
 	pickup := accept(t, a, arrive(t, a, "pickup"))
-	if _, err := a.MarkReady(ctx, pickup.Order.ID); err != nil {
+	if _, err := a.MarkReady(ctx, pickup.Order.ID, true); err != nil {
 		t.Fatal(err)
 	}
 	del := accept(t, a, arrive(t, a, "delivery"))
-	if _, err := a.MarkReady(ctx, del.Order.ID); err != nil {
+	if _, err := a.MarkReady(ctx, del.Order.ID, true); err != nil {
 		t.Fatal(err)
 	}
 	waiting := arrive(t, a, "pickup")
@@ -43,7 +43,7 @@ func TestSwapRestoresIdenticalFloor(t *testing.T) {
 	}
 	// 2.2.1: a delivery that came back with Juma waits in the came-back list.
 	back := accept(t, a, arrive(t, a, "delivery"))
-	if _, err := a.MarkReady(ctx, back.Order.ID); err != nil {
+	if _, err := a.MarkReady(ctx, back.Order.ID, true); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := a.AssignDriver(ctx, d2.ID, []string{back.Order.ID}); err != nil {

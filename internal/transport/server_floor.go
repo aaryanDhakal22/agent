@@ -47,6 +47,8 @@ func (s *Server) floorErr(w http.ResponseWriter, r *http.Request, err error) {
 		s.writeJSON(w, http.StatusBadRequest, errCodeMap("bad_action", "bad_action"))
 	case errors.Is(err, order.ErrNotOutOrDelivered):
 		s.writeJSON(w, http.StatusConflict, errCodeMap("not_out_or_delivered", "not_out_or_delivered"))
+	case errors.Is(err, order.ErrNotUnassigned):
+		s.writeJSON(w, http.StatusConflict, errCodeMap("not_unassigned", "not_unassigned"))
 	case errors.Is(err, order.ErrNotCameBack):
 		s.writeJSON(w, http.StatusConflict, errCodeMap("not_came_back", "not_came_back"))
 	case errors.Is(err, order.ErrCameBack):
@@ -114,12 +116,96 @@ func (s *Server) handleReady(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, r, http.StatusBadRequest, err)
 		return
 	}
-	so, err := s.service.Ready(r.Context(), id.String())
+	var req struct {
+		Callout *bool `json:"callout"`
+	}
+	if err := decodeBody(r, &req); err != nil {
+		s.floorErr(w, r, err)
+		return
+	}
+	so, err := s.service.ReadyWith(r.Context(), id.String(), req.Callout == nil || *req.Callout)
 	if err != nil {
 		s.floorErr(w, r, err)
 		return
 	}
 	s.writeJSON(w, http.StatusOK, so)
+}
+
+// markedBy is who is asking: the paired tablet, else the Pi web page.
+func markedBy(r *http.Request) order.MarkedBy {
+	b := settingsBy(r)
+	return order.MarkedBy{Kind: b.Kind, Name: b.Name, DeviceID: b.DeviceID}
+}
+
+// POST /api/orders/{id}/delivered (2.4.0) — MARK DELIVERED, no driver.
+func (s *Server) handleMarkDelivered(w http.ResponseWriter, r *http.Request) {
+	id, err := parseID(r)
+	if err != nil {
+		s.writeError(w, r, http.StatusBadRequest, err)
+		return
+	}
+	so, err := s.service.MarkDeliveredNoDriver(r.Context(), id.String(), markedBy(r))
+	if err != nil {
+		s.floorErr(w, r, err)
+		return
+	}
+	s.writeJSON(w, http.StatusOK, so)
+}
+
+// POST /api/orders/{id}/undeliver (2.4.0) — Back to deliveries.
+func (s *Server) handleUndeliver(w http.ResponseWriter, r *http.Request) {
+	id, err := parseID(r)
+	if err != nil {
+		s.writeError(w, r, http.StatusBadRequest, err)
+		return
+	}
+	so, err := s.service.Undeliver(r.Context(), id.String())
+	if err != nil {
+		s.floorErr(w, r, err)
+		return
+	}
+	s.writeJSON(w, http.StatusOK, so)
+}
+
+// POST /api/deliveries/reassign {order_ids, driver_id} (2.4.0).
+func (s *Server) handleReassign(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		OrderIDs []string `json:"order_ids"`
+		DriverID string   `json:"driver_id"`
+	}
+	if err := decodeBody(r, &req); err != nil {
+		s.floorErr(w, r, err)
+		return
+	}
+	moved, err := s.service.ReassignDeliveries(r.Context(), req.OrderIDs, req.DriverID, markedBy(r))
+	if err != nil {
+		s.floorErr(w, r, err)
+		return
+	}
+	if moved == nil {
+		moved = []order.StoredOrder{}
+	}
+	s.writeJSON(w, http.StatusOK, moved)
+}
+
+// POST /api/drivers/{id}/pool/order {order_ids} (2.4.0).
+func (s *Server) handlePoolOrder(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		OrderIDs []string `json:"order_ids"`
+	}
+	if err := decodeBody(r, &req); err != nil {
+		s.floorErr(w, r, err)
+		return
+	}
+	changed, err := s.service.SetPoolOrder(r.Context(), r.PathValue("id"), req.OrderIDs)
+	if err != nil {
+		s.floorErr(w, r, err)
+		return
+	}
+	if changed == nil {
+		changed = []order.StoredOrder{}
+	}
+	s.writeJSON(w, http.StatusOK, changed)
 }
 
 // POST /api/orders/{id}/undo-ready (2.3.8): READY tapped by mistake.

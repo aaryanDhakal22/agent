@@ -71,6 +71,13 @@ CREATE TABLE orders (
     finished_by             text    NOT NULL DEFAULT '',
     pos_closed              boolean NOT NULL DEFAULT false,
     pos_change              text    NOT NULL DEFAULT '',
+    -- 00022_floor_24: delivered with no driver (Unassigned; JSON) and when
+    -- a POS check was last paid.
+    marked_delivered        text    NOT NULL DEFAULT '',
+    paid_at                 text,
+    -- 00022: a future order's tickets printed early (first ACCEPT).
+    early_kitchen           boolean NOT NULL DEFAULT false,
+    early_receipt           boolean NOT NULL DEFAULT false,
     CHECK (state IN ('arrived', 'scheduled', 'accepted', 'ready', 'on_delivery', 'delivered', 'cancelled'))
 );
 CREATE INDEX idx_orders_arrival_date ON orders (arrival_date DESC);
@@ -264,3 +271,15 @@ CREATE TABLE auto_plans (
     plan_json    text NOT NULL,
     confirmed_at text
 );
+
+-- 00021_settings_log: settings history (who changed what, kept 90 days).
+CREATE TABLE settings_log (
+    id         integer PRIMARY KEY AUTOINCREMENT,
+    at         text    NOT NULL,
+    section    text    NOT NULL,
+    by_kind    text    NOT NULL,
+    by_name    text    NOT NULL DEFAULT '',
+    device_id  text    NOT NULL DEFAULT '',
+    changes    text    NOT NULL
+);
+CREATE INDEX settings_log_at ON settings_log(at);

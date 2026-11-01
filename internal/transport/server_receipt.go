@@ -1,6 +1,7 @@
 package transport
 
 import (
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -20,7 +21,9 @@ const maxReceiptPrefsBody = 8 << 10
 // SetReceiptSample wires PRINT SAMPLE: build renders the sample customer
 // receipt + kitchen ticket with the given settings (receipt.BuildSample with
 // the live store context).
-func (s *Server) SetReceiptSample(build func(order.ReceiptPrefs) []byte) { s.receiptSample = build }
+func (s *Server) SetReceiptSample(build func(prefs order.ReceiptPrefs, kind string) []byte) {
+	s.receiptSample = build
+}
 
 // receiptPrefsBody is the answer of both receipt-settings routes.
 func (s *Server) receiptPrefsBody(p order.ReceiptPrefs) map[string]any {
@@ -61,6 +64,13 @@ func (s *Server) handleSetReceiptPrefs(w http.ResponseWriter, r *http.Request) {
 		s.writeJSON(w, http.StatusBadRequest, errCodeMap("invalid body: "+err.Error(), "bad_request"))
 		return
 	}
+	// 2.4.0: a tablet that doesn't know the format yet keeps the store's.
+	var keys map[string]json.RawMessage
+	if json.Unmarshal(raw, &keys) == nil {
+		if _, ok := keys["format"]; !ok {
+			p.Format = s.service.ReceiptPrefs(r.Context()).Format
+		}
+	}
 	saved, err := s.service.SetReceiptPrefs(r.Context(), p)
 	if errors.Is(err, orderApp.ErrBadRequest) {
 		s.writeJSON(w, http.StatusBadRequest, errCodeMap(err.Error(), "bad_request"))
@@ -83,6 +93,10 @@ func (s *Server) handleSetReceiptPrefs(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handlePrinterSample(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		PrinterID string `json:"printer_id"`
+		// Kind (2.4.0): "" = the receipt + kitchen sample; future_kitchen /
+		// future_receipt = a future order's early ticket (the switches'
+		// TEST PRINT).
+		Kind string `json:"kind"`
 	}
 	if err := decodeBody(r, &req); err != nil {
 		s.writeJSON(w, http.StatusBadRequest, errCodeMap("invalid body", "bad_request"))
@@ -107,7 +121,11 @@ func (s *Server) handlePrinterSample(w http.ResponseWriter, r *http.Request) {
 	}
 	defer s.testMu.Unlock()
 
-	sample := s.receiptSample(s.service.PrintPrefs())
+	if req.Kind != "" && req.Kind != "future_kitchen" && req.Kind != "future_receipt" {
+		s.writeJSON(w, http.StatusBadRequest, errCodeMap("kind must be future_kitchen or future_receipt", "bad_request"))
+		return
+	}
+	sample := s.receiptSample(s.service.PrintPrefs(), req.Kind)
 	results := s.diag.Dispatcher.PrintTest(r.Context(), id, func(printerApp.RosterEntry) []byte { return sample })
 	if results == nil {
 		results = []printerApp.TestResult{}

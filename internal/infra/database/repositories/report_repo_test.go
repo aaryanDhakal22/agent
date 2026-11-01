@@ -42,7 +42,7 @@ func deliver(t *testing.T, r *OrderRepository, driverID string, orders ...order.
 	ids := []string{}
 	for _, so := range orders {
 		accept(t, r, so)
-		if _, err := r.MarkReady(ctx, so.Order.ID); err != nil {
+		if _, err := r.MarkReady(ctx, so.Order.ID, true); err != nil {
 			t.Fatal(err)
 		}
 		ids = append(ids, so.Order.ID)

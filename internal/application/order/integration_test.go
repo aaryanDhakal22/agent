@@ -105,8 +105,11 @@ func newIntegService(t *testing.T) (*Service, *repositories.OrderRepository, cha
 			n = *snap.KitchenNumber
 		}
 		log.calls = append(log.calls, printCall{OrderID: snap.ID, Mode: mode, Number: n})
-		return printer.Outcome{Printed: []printer.TicketResult{{Kind: printer.TicketStation}},
-			InsertExpected: log.insert && mode == printer.ModeAccept}, nil
+		printed := []printer.TicketResult{{Kind: printer.TicketStation}}
+		if mode == printer.ModeFutureEarly { // 2.4.0: the switches' early tickets
+			printed = append(printed, printer.TicketResult{Kind: printer.TicketReceipt})
+		}
+		return printer.Outcome{Printed: printed, InsertExpected: log.insert && mode == printer.ModeAccept}, nil
 	}
 	svc := NewService(repo, repositories.NewSettingsRepository(db, zerolog.Nop()), print, nil, broker, zerolog.Nop(), meters)
 	noAutoAssign(t, repo)
@@ -847,8 +850,9 @@ func TestPOSTypeChangeLocatesAndForgets(t *testing.T) {
 	}
 }
 
-// Auto-accept on: a future order is scheduled on arrival with the default
-// time for its type (nothing prints), and auto-accepted when it rings again.
+// Auto-accept on: a future order is scheduled on arrival with its default
+// lead (a delivery: the delivery target; nothing prints), and auto-accepted
+// when it rings again.
 func TestAutoAcceptSchedulesFutureOrders(t *testing.T) {
 	ctx := context.Background()
 	svc, _, events, prints, _ := newIntegService(t)
@@ -863,8 +867,9 @@ func TestAutoAcceptSchedulesFutureOrders(t *testing.T) {
 		t.Fatal(err)
 	}
 	so := storedOf(t, svc, s.ID)
-	if so.Status.State != order.StateScheduled || so.Status.ScheduledLeadMinutes == nil || *so.Status.ScheduledLeadMinutes != 35 ||
-		!so.Status.RingAt.Equal(promised.Add(-35*time.Minute).Truncate(time.Millisecond)) {
+	// 2.4.0: a future delivery's lead is the store's delivery target (45).
+	if so.Status.State != order.StateScheduled || so.Status.ScheduledLeadMinutes == nil || *so.Status.ScheduledLeadMinutes != 45 ||
+		!so.Status.RingAt.Equal(promised.Add(-45*time.Minute).Truncate(time.Millisecond)) {
 		t.Fatalf("auto-scheduled = %+v", so.Status)
 	}
 	if len(prints.all()) != 0 {
@@ -888,11 +893,11 @@ func TestAutoAcceptSchedulesFutureOrders(t *testing.T) {
 		t.Fatalf("asap = %s auto %v", got.Status.State, got.Status.AutoAccepted)
 	}
 	// At ring_at it is accepted (prep = its lead) and printed.
-	if n, err := svc.RaiseDue(ctx, promised.Add(-35*time.Minute).Add(time.Second)); n != 1 || err != nil {
+	if n, err := svc.RaiseDue(ctx, promised.Add(-45*time.Minute).Add(time.Second)); n != 1 || err != nil {
 		t.Fatalf("raise = %d %v", n, err)
 	}
 	got := storedOf(t, svc, s.ID)
-	if got.Status.State != order.StateAccepted || *got.Status.PrepMinutes != 35 || got.Status.KitchenNumber == nil ||
+	if got.Status.State != order.StateAccepted || *got.Status.PrepMinutes != 45 || got.Status.KitchenNumber == nil ||
 		!got.Status.AutoAccepted {
 		t.Fatalf("at ring = %+v", got.Status)
 	}
@@ -931,5 +936,68 @@ func TestUpdateExternalNeverCreates(t *testing.T) {
 	res, err := svc.UpdateExternal(ctx, "501", e)
 	if err != nil || res.Created || !res.Changed {
 		t.Fatalf("update-only of a held check = %+v, %v", res, err)
+	}
+}
+
+// 2.4.0 (owner): with the future switches on, a future order's first ACCEPT
+// prints its early tickets (once - a time change doesn't reprint); its
+// CONFIRM then prints the kitchen tickets only (the receipt is out). A
+// future delivery's default lead is the store's delivery target.
+func TestFutureOrderEarlyTickets(t *testing.T) {
+	ctx := context.Background()
+	svc, _, _, prints, _ := newIntegService(t)
+	svc.UpdateIntegrationSettings(ctx, func(x *order.IntegrationSettings) error {
+		x.Tickets.FutureKitchen, x.Tickets.FutureReceipt = true, true
+		return nil
+	})
+	promised := time.Now().Add(2 * time.Hour).UTC()
+	s := order.Snapshot{ID: uuid.NewString(), TenantID: uuid.NewString(), LocationID: uuid.NewString(), Source: "online",
+		SourceEventID: "19", Fulfillment: order.Fulfillment{Type: "delivery", PromisedAt: &promised, Address: &order.Address{Line1: "1 Main"}}}
+	if err := svc.OnArrival(ctx, s); err != nil {
+		t.Fatal(err)
+	}
+	if lead := svc.FutureLead(ctx, storedOf(t, svc, s.ID)); lead != int(order.DefaultDeliveryPrefs.DeliveryTargetMinutes) {
+		t.Fatalf("delivery lead = %d", lead)
+	}
+	if _, err := svc.Schedule(ctx, s.ID, 45); err != nil {
+		t.Fatal(err)
+	}
+	svc.WaitBackground()
+	if _, err := svc.Schedule(ctx, s.ID, 60); err != nil { // a new time: nothing reprints
+		t.Fatal(err)
+	}
+	svc.WaitBackground()
+	p := prints.all()
+	if len(p) != 1 || p[0].Mode != printer.ModeFutureEarly {
+		t.Fatalf("prints = %+v", p)
+	}
+	so := storedOf(t, svc, s.ID)
+	if !so.Status.EarlyKitchen || !so.Status.EarlyReceipt {
+		t.Fatalf("early flags = %+v", so.Status)
+	}
+	if _, err := svc.RaiseDue(ctx, promised.Add(-59*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.Accept(ctx, uuid.MustParse(s.ID), nil); err != nil {
+		t.Fatal(err)
+	}
+	if p := prints.all(); len(p) != 2 || p[1].Mode != printer.ModeAcceptKitchen {
+		t.Fatalf("confirm prints = %+v", p)
+	}
+
+	// Switches off: nothing early.
+	svc.UpdateIntegrationSettings(ctx, func(x *order.IntegrationSettings) error {
+		x.Tickets.FutureKitchen, x.Tickets.FutureReceipt = false, false
+		return nil
+	})
+	s2 := s
+	s2.ID = uuid.NewString()
+	svc.OnArrival(ctx, s2)
+	if _, err := svc.Schedule(ctx, s2.ID, 30); err != nil {
+		t.Fatal(err)
+	}
+	svc.WaitBackground()
+	if p := prints.all(); len(p) != 2 {
+		t.Fatalf("switches off printed: %+v", p)
 	}
 }

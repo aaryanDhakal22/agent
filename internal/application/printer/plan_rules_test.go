@@ -117,7 +117,8 @@ func TestPlanWith_POSLinesWithoutPrinter(t *testing.T) {
 	if !reflect.DeepEqual(kinds(tk), []string{"station:p-pizza"}) || un != nil {
 		t.Fatalf("got %v unrouted=%v", kinds(tk), un)
 	}
-	if !reflect.DeepEqual(names(tk[0].Mine), []string{"Pizza"}) || !reflect.DeepEqual(names(tk[0].Others), []string{"Coke"}) {
+	// 2.4.0: a line no kitchen station makes isn't listed under other printers.
+	if !reflect.DeepEqual(names(tk[0].Mine), []string{"Pizza"}) || len(tk[0].Others) != 0 {
 		t.Fatalf("pizza ticket = %+v", tk[0])
 	}
 	snap.Items = []order.LineItem{item("Coke", order.RoutingUnassigned, "")}

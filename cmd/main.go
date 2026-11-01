@@ -256,6 +256,10 @@ func main() {
 		sc, _ := storeCtx.Load().(storeconfig.StoreContext)
 		return receipt.BuildDriverReport(rep, sc, orderService.PrintPrefs().DriverReportSize, from, time.Now())
 	})
+	orderService.SetUnassignedReport(func(rep order.UnassignedReport, from string) []byte {
+		sc, _ := storeCtx.Load().(storeconfig.StoreContext)
+		return receipt.BuildUnassignedReport(rep, sc, orderService.PrintPrefs().DriverReportSize, from, time.Now())
+	})
 
 	orderService.LoadReceiptPrefs(ctx)
 	receiptPrefs = orderService.PrintPrefs
@@ -346,15 +350,6 @@ func main() {
 			sc, _ := storeCtx.Load().(storeconfig.StoreContext)
 			sc.Location.DeliveryRadiusM = m
 			storeCtx.Store(sc)
-		},
-		ReceiptPrinter: func() (string, int) {
-			sc, _ := storeCtx.Load().(storeconfig.StoreContext)
-			for _, p := range sc.Printers {
-				if p.IsReceipt {
-					return p.ID, len(sc.Printers)
-				}
-			}
-			return "", len(sc.Printers)
 		},
 	})
 	mapFile.OnChange(broker.PublishFloorChanged)
@@ -598,6 +593,7 @@ func main() {
 	httpServer := transport.NewServer(orderService, broker, printerRegistry, settingsRepo, sseCtrl, mainClient, session, deviceRepo, cfg.HTTPPort, version, commit, logger)
 	httpServer.SetAltPort(cfg.HTTPAltPort)
 	httpServer.SetDevLog(devRing)
+	httpServer.SetSettingsLog(repositories.NewSettingsLogRepository(db))
 	httpRef.Store(httpServer)
 	httpServer.SetAppUpdater(appUpdater)
 	httpServer.SetMap(mapFile)
@@ -614,8 +610,12 @@ func main() {
 		},
 	})
 	// Receipt settings (tablet Settings -> Receipts) + PRINT SAMPLE.
-	httpServer.SetReceiptSample(func(p order.ReceiptPrefs) []byte {
+	httpServer.SetReceiptSample(func(p order.ReceiptPrefs, kind string) []byte {
 		sc, _ := storeCtx.Load().(storeconfig.StoreContext)
+		switch kind {
+		case "future_kitchen", "future_receipt":
+			return receipt.BuildFutureSample(sc, p, time.Now(), kind == "future_kitchen")
+		}
 		return receipt.BuildSample(sc, p, time.Now())
 	})
 
