@@ -64,7 +64,7 @@ type Server struct {
 	linkMu        sync.Mutex
 	diag          DiagDeps
 	testMu        sync.Mutex // one printer test (or sample) at a time
-	receiptSample func(order.ReceiptPrefs) []byte
+	receiptSample func(prefs order.ReceiptPrefs, kind string) []byte
 	mainReach     mainProbe
 	started       time.Time
 	updates       *update.Requester

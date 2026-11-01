@@ -217,7 +217,7 @@ func TestCloseBatchPOSAndScheduled(t *testing.T) {
 	ctx := context.Background()
 	cooking := upsertPOS(t, r, "1", posOrder("delivery", "a")).Order
 	done := upsertPOS(t, r, "2", posOrder("pickup", "b")).Order
-	if _, err := r.MarkReady(ctx, done.Order.ID); err != nil {
+	if _, err := r.MarkReady(ctx, done.Order.ID, true); err != nil {
 		t.Fatal(err)
 	}
 	future := arrive(t, r, "pickup")
@@ -301,7 +301,7 @@ func TestDeliveryRunAnonymousPOSStops(t *testing.T) {
 	clockIn(t, r, d.ID)
 	pos := upsertPOS(t, r, "777", posOrder("delivery", "a")).Order
 	online := accept(t, r, arriveDelivery(t, r, "Erik Davis", 0, 2000, true))
-	if _, err := r.MarkReady(ctx, online.Order.ID); err != nil {
+	if _, err := r.MarkReady(ctx, online.Order.ID, true); err != nil {
 		t.Fatal(err)
 	}
 	if _, _, err := r.SendOut(ctx, d.ID, []string{pos.Order.ID, online.Order.ID}, true, order.RunMeta{SuggestedIDs: []string{pos.Order.ID}}); err != nil {
@@ -482,7 +482,7 @@ func TestDeliveryRunSuggestedPOSOpaque(t *testing.T) {
 	sent := upsertPOS(t, r, "801", posOrder("delivery", "a")).Order
 	left := upsertPOS(t, r, "802", posOrder("delivery", "b")).Order // suggested, not sent
 	online := accept(t, r, arriveDelivery(t, r, "Erik Davis", 0, 2000, true))
-	if _, err := r.MarkReady(ctx, online.Order.ID); err != nil {
+	if _, err := r.MarkReady(ctx, online.Order.ID, true); err != nil {
 		t.Fatal(err)
 	}
 	suggested := []string{sent.Order.ID, left.Order.ID, online.Order.ID, uuid.NewString()}

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"quiccpos/agent/internal/domain/order"
@@ -33,9 +34,13 @@ func insertFeed(ctx context.Context, q *models.Queries, typ string, at time.Time
 // feedReady appends order.ready for an order that just became ready (with
 // the money the hub's order callout needs: a terminal takeout is called out
 // only once it is paid).
-func feedReady(ctx context.Context, q *models.Queries, so order.StoredOrder, at time.Time) error {
-	return insertFeed(ctx, q, order.FeedOrderReady, at, order.OrderReadyData{FeedOrderRef: order.RefOf(so),
-		Number: so.Number(), FulfillmentType: so.Order.Fulfillment.Type, Paid: so.Status.Paid, CashDueCents: so.Status.CashDueCents})
+func feedReady(ctx context.Context, q *models.Queries, so order.StoredOrder, at time.Time, callout bool) error {
+	d := order.OrderReadyData{FeedOrderRef: order.RefOf(so),
+		Number: so.Number(), FulfillmentType: so.Order.Fulfillment.Type, Paid: so.Status.Paid, CashDueCents: so.Status.CashDueCents}
+	if !callout {
+		d.Callout = &callout
+	}
+	return insertFeed(ctx, q, order.FeedOrderReady, at, d)
 }
 
 // feedCancelled appends order.cancelled.
@@ -167,7 +172,13 @@ func (r *OrderRepository) UpsertExternal(ctx context.Context, extRef string, in 
 		done := state == order.StateDelivered || state == order.StateCancelled
 		wasShown := !row.BoardHidden
 		added, removed, _, removedItems := order.POSDiff(cur.Order.Items, snap.Items)
-		reopen := !done && state == order.StateReady && wasShown && order.AnyKitchen(added) && !cur.Status.CameBack
+		// 2.4.0: a takeout reopens only for an added kitchen item worth over
+		// $5 (order.ReopenMinCents); a delivery for any kitchen item.
+		kitchenAdd := order.AnyKitchen(added)
+		if strings.EqualFold(snap.Fulfillment.Type, "pickup") {
+			kitchenAdd = order.AnyKitchenOver(added, order.ReopenMinCents)
+		}
+		reopen := !done && state == order.StateReady && wasShown && kitchenAdd && !cur.Status.CameBack
 		frozen := done || (cur.Status.FinishedAt != nil && !reopen)
 		hidden := in.BoardHidden && !wasShown // once on Kitchen, it stays
 		if frozen {
@@ -186,7 +197,7 @@ func (r *OrderRepository) UpsertExternal(ctx context.Context, extRef string, in 
 		if err := q.UpdateExternalOrder(ctx, models.UpdateExternalOrderParams{Snapshot: string(raw), ExtHash: in.Hash,
 			DisplayNumber: sql.NullInt64{Int64: in.DisplayNumber, Valid: in.DisplayNumber > 0}, Paid: in.Paid,
 			CashDueCents: sql.NullInt64{Int64: in.CashDueCents, Valid: true}, TipCents: sql.NullInt64{Int64: in.TipCents, Valid: true},
-			BoardHidden: hidden, ID: row.ID}); err != nil {
+			BoardHidden: hidden, Now: nullTS(meta.Now), ID: row.ID}); err != nil {
 			return fmt.Errorf("update pos order: %w", err)
 		}
 		if in.Closed != row.PosClosed {
@@ -226,9 +237,17 @@ func (r *OrderRepository) UpsertExternal(ctx context.Context, extRef string, in 
 				}
 				res.Reopened = n > 0
 			}
-			if wasShown && !done && (len(added) > 0 || len(removed) > 0) {
-				if order.AnyKitchen(added) || order.AnyKitchen(removed) {
-					if err := recordPOSChange(ctx, q, cur, added, removed, res.Reopened, meta.Now, &res); err != nil {
+			// 2.4.0: on a delivery every change rings - a bag of chips, a
+			// soda, the total or the payment - not only kitchen items.
+			lines := len(added) > 0 || len(removed) > 0
+			var money *order.MoneyChange
+			if isDelivery && (cur.Order.Money.Total != snap.Money.Total || cur.Status.Paid != in.Paid) {
+				money = &order.MoneyChange{FromTotalCents: cur.Order.Money.Total, ToTotalCents: snap.Money.Total,
+					FromPaid: cur.Status.Paid, ToPaid: in.Paid, FromCashCents: cur.Status.CashDueCents, ToCashCents: in.CashDueCents}
+			}
+			if wasShown && !done && (lines || money != nil) {
+				if order.AnyKitchen(added) || order.AnyKitchen(removed) || (isDelivery && (lines || money != nil)) {
+					if err := recordPOSChange(ctx, q, cur, added, removed, money, res.Reopened, meta.Now, &res); err != nil {
 						return err
 					}
 				}
@@ -274,7 +293,7 @@ func markPOSLines(snap *order.Snapshot, before order.Snapshot, removedItems []or
 
 // recordPOSChange stores (or merges into the unacknowledged one) a terminal
 // change that rings the tablet.
-func recordPOSChange(ctx context.Context, q *models.Queries, cur order.StoredOrder, added, removed []order.ChangeLine, reopened bool, now time.Time, res *order.ExternalResult) error {
+func recordPOSChange(ctx context.Context, q *models.Queries, cur order.StoredOrder, added, removed []order.ChangeLine, money *order.MoneyChange, reopened bool, now time.Time, res *order.ExternalResult) error {
 	kind := order.ChangeCooking
 	switch {
 	case reopened:
@@ -284,7 +303,7 @@ func recordPOSChange(ctx context.Context, q *models.Queries, cur order.StoredOrd
 	case cur.Status.State == order.StateReady:
 		kind = order.ChangeReady
 	}
-	n := order.PosChange{ID: uuid.NewString(), At: now.UTC(), Kind: kind, Added: added, Removed: removed}
+	n := order.PosChange{ID: uuid.NewString(), At: now.UTC(), Kind: kind, Added: added, Removed: removed, Money: money}
 	if kind == order.ChangeOut {
 		n.DriverName = cur.Status.DriverName
 	}
@@ -333,7 +352,7 @@ func insertExternal(ctx context.Context, q *models.Queries, extRef string, in or
 	if in.SentAt != nil {
 		sent = *in.SentAt
 	}
-	if err := q.InsertExternalOrder(ctx, models.InsertExternalOrderParams{
+	ins := models.InsertExternalOrderParams{
 		ID: meta.OrderID, TenantID: meta.TenantID, LocationID: meta.LocationID, Source: snap.Source,
 		SourceEventID: snap.SourceEventID, Snapshot: string(raw), ArrivalDate: fmtTS(meta.Now),
 		PrepMinutes:      sql.NullInt64{Int64: meta.PrepMinutes, Valid: true},
@@ -342,7 +361,11 @@ func insertExternal(ctx context.Context, q *models.Queries, extRef string, in or
 		DisplayNumber: sql.NullInt64{Int64: in.DisplayNumber, Valid: in.DisplayNumber > 0}, Paid: in.Paid,
 		CashDueCents: sql.NullInt64{Int64: in.CashDueCents, Valid: true}, TipCents: sql.NullInt64{Int64: in.TipCents, Valid: true},
 		BoardHidden: in.BoardHidden, SentAt: nullTS(sent),
-	}); err != nil {
+	}
+	if in.Paid {
+		ins.PaidAt = nullTS(meta.Now)
+	}
+	if err := q.InsertExternalOrder(ctx, ins); err != nil {
 		return fmt.Errorf("insert pos order: %w", err)
 	}
 	if in.Closed {
@@ -433,7 +456,7 @@ func (r *OrderRepository) PatchOnline(ctx context.Context, id string, p order.On
 			return fmt.Errorf("a POS order: %w", order.ErrInvalidState)
 		}
 		if p.Paid != nil {
-			if err := q.SetOrderPaid(ctx, models.SetOrderPaidParams{Paid: *p.Paid, ID: id}); err != nil {
+			if err := q.SetOrderPaid(ctx, models.SetOrderPaidParams{Paid: *p.Paid, Now: nullTS(time.Now()), ID: id}); err != nil {
 				return err
 			}
 		}
@@ -569,7 +592,7 @@ func readyForRun(ctx context.Context, q *models.Queries, id string, now time.Tim
 	if err := recordOrderStatus(ctx, q, so, false, now); err != nil {
 		return nil, err
 	}
-	return []order.StoredOrder{so}, feedReady(ctx, q, so, now)
+	return []order.StoredOrder{so}, feedReady(ctx, q, so, now, true)
 }
 
 // --- the feed ------------------------------------------------------------------

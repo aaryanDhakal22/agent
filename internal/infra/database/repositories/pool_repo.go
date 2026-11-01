@@ -219,7 +219,7 @@ func (r *OrderRepository) SendOut(ctx context.Context, driverID string, include 
 			if err := recordOrderStatus(ctx, q, so, false, now); err != nil {
 				return err
 			}
-			if err := feedReady(ctx, q, so, now); err != nil {
+			if err := feedReady(ctx, q, so, now, true); err != nil {
 				return err
 			}
 			readied = append(readied, so)

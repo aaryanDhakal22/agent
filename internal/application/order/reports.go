@@ -26,6 +26,45 @@ func (s *Service) SetDocumentPrinting(print DocPrinter, build ReportBuilder) {
 	s.printDoc, s.buildReport = print, build
 }
 
+// UnassignedBuilder renders the UNASSIGNED slip (receipt.BuildUnassignedReport
+// with the live store context).
+type UnassignedBuilder = func(rep order.UnassignedReport, reroutedFrom string) []byte
+
+// SetUnassignedReport wires the UNASSIGNED slip (2.4.0, cmd/main.go).
+func (s *Service) SetUnassignedReport(build UnassignedBuilder) { s.buildUnassigned = build }
+
+// UnassignedReport is a batch's (0 = open) UNASSIGNED report; nil when no
+// delivery of it is left without a driver.
+func (s *Service) UnassignedReport(ctx context.Context, batchID int64) (*order.UnassignedReport, error) {
+	var b *order.Batch
+	if batchID == 0 {
+		ob, err := s.repo.OpenBatch(ctx)
+		if err != nil {
+			return nil, err
+		}
+		b = ob
+	} else {
+		bs, err := s.repo.ListBatches(ctx, 50)
+		if err != nil {
+			return nil, err
+		}
+		for i := range bs {
+			if bs[i].ID == batchID {
+				b = &bs[i]
+			}
+		}
+		if b == nil {
+			return nil, order.ErrNotFound
+		}
+	}
+	orders, err := s.repo.ListUnassigned(ctx, b.ID)
+	if err != nil || len(orders) == 0 {
+		return nil, err
+	}
+	rep := order.NewUnassignedReport(*b, orders)
+	return &rep, nil
+}
+
 // FloorPrefs returns the store's floor settings (defaults on a read error).
 func (s *Service) FloorPrefs(ctx context.Context) order.FloorPrefs {
 	p, err := s.repo.FloorPrefs(ctx)
@@ -157,6 +196,19 @@ func (s *Service) PrintDriverReports(ctx context.Context, batchID int64) ([]Repo
 			failed = append(failed, rep.DriverName)
 		}
 		out = append(out, ReportPrint{DriverName: rep.DriverName, TicketResult: res})
+	}
+	// 2.4.0: deliveries left with no driver print last, on their own slip.
+	if s.buildUnassigned != nil {
+		switch un, err := s.UnassignedReport(ctx, batchID); {
+		case err != nil:
+			s.logger.Warn().Ctx(ctx).Err(err).Int64("batch", batchID).Msg("UNASSIGNED report not built")
+		case un != nil:
+			res, err := s.printDoc(ctx, "unassigned-report", func(from string) []byte { return s.buildUnassigned(*un, from) })
+			if err != nil {
+				failed = append(failed, "UNASSIGNED")
+			}
+			out = append(out, ReportPrint{DriverName: "Unassigned", TicketResult: res})
+		}
 	}
 	span.SetAttributes(attribute.Int("reports", len(reps)), attribute.Int("failed", len(failed)))
 	if len(failed) > 0 {

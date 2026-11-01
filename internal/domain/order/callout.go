@@ -214,6 +214,73 @@ type ChangeLine struct {
 	Name     string `json:"name"`
 	Quantity int    `json:"quantity"`
 	Kitchen  bool   `json:"kitchen"`
+	// PriceCents (2.4.0): what the changed quantity is worth, the item with
+	// its modifiers (the $5 reopen rule).
+	PriceCents int64 `json:"price_cents,omitempty"`
+}
+
+// ReopenMinCents (2.4.0, owner): a READY or picked-up takeout goes back to
+// Kitchen only for an added kitchen item worth more than this (a dressing
+// or a side doesn't reopen it; deliveries reopen on any kitchen item).
+const ReopenMinCents = 500
+
+// AnyKitchenOver reports whether a line goes to the kitchen and is worth
+// more than cents.
+func AnyKitchenOver(lines []ChangeLine, cents int64) bool {
+	for _, l := range lines {
+		if l.Kitchen && l.PriceCents > cents {
+			return true
+		}
+	}
+	return false
+}
+
+// unitValue is one of the line with its modifiers (the POS line total over
+// its quantity when no unit prices came).
+func unitValue(it LineItem) int64 {
+	v := it.UnitPrice
+	for _, c := range it.Children {
+		v += unitValue(c) * int64(max(c.Quantity, 1))
+	}
+	if v == 0 && it.LineTotal > 0 {
+		v = it.LineTotal / int64(max(it.Quantity, 1))
+	}
+	return v
+}
+
+// MoneyChange (2.4.0) is a delivery's total or payment changed at the POS:
+// before and after (paid = nothing left to collect).
+type MoneyChange struct {
+	FromTotalCents int64 `json:"from_total_cents"`
+	ToTotalCents   int64 `json:"to_total_cents"`
+	FromPaid       bool  `json:"from_paid"`
+	ToPaid         bool  `json:"to_paid"`
+	// What is left to collect in cash, before and after.
+	FromCashCents int64 `json:"from_cash_cents"`
+	ToCashCents   int64 `json:"to_cash_cents"`
+}
+
+// Text is "CASH $38.40 → PAID", "PAID → CASH $4.00" or "total $38.40 →
+// $42.10".
+func (m MoneyChange) Text() string {
+	pay := func(paid bool, cash int64) string {
+		if paid || cash <= 0 {
+			return "PAID"
+		}
+		return "CASH " + cents(cash)
+	}
+	if m.FromPaid != m.ToPaid {
+		return pay(m.FromPaid, m.FromCashCents) + " → " + pay(m.ToPaid, m.ToCashCents)
+	}
+	return "total " + cents(m.FromTotalCents) + " → " + cents(m.ToTotalCents)
+}
+
+func cents(c int64) string {
+	sign := ""
+	if c < 0 {
+		sign, c = "-", -c
+	}
+	return fmt.Sprintf("%s$%d.%02d", sign, c/100, c%100)
 }
 
 // Kinds of a terminal change (PosChange.Kind) by what the order was doing.
@@ -235,6 +302,8 @@ type PosChange struct {
 	Added      []ChangeLine `json:"added"`
 	Removed    []ChangeLine `json:"removed"`
 	DriverName string       `json:"driver_name,omitempty"`
+	// Money (2.4.0): a delivery's total or payment changed (nil = no).
+	Money *MoneyChange `json:"money,omitempty"`
 	// AckedAt: someone pressed OK (the tablets stop ringing). The change is
 	// kept so the ticket shows CHANGED until it is ready (or 10 min after
 	// OK); a later change starts a new one.
@@ -249,6 +318,15 @@ func (c *PosChange) Merge(n PosChange) {
 	c.ID, c.At, c.Kind, c.DriverName = n.ID, n.At, n.Kind, n.DriverName
 	c.Added = append(c.Added, n.Added...)
 	c.Removed = append(c.Removed, n.Removed...)
+	switch {
+	case n.Money == nil:
+	case c.Money == nil:
+		c.Money = n.Money
+	default: // from the first change to the latest
+		m := *c.Money
+		m.ToTotalCents, m.ToPaid, m.ToCashCents = n.Money.ToTotalCents, n.Money.ToPaid, n.Money.ToCashCents
+		c.Money = &m
+	}
 }
 
 // RenderText builds the bar's line: "#158 changed: +1 Garlic Knots, -1 Coke"
@@ -264,6 +342,9 @@ func (c *PosChange) RenderText(number *int64) {
 	}
 	for _, l := range c.Removed {
 		parts = append(parts, fmt.Sprintf("−%d %s", max(l.Quantity, 1), l.Name))
+	}
+	if c.Money != nil {
+		parts = append(parts, c.Money.Text())
 	}
 	what := strings.Join(parts, ", ")
 	switch {
@@ -293,10 +374,12 @@ func POSDiff(before, after []LineItem) (added, removed []ChangeLine, addedRefs m
 		prev, ok := old[ak[i]]
 		switch {
 		case !ok:
-			added = append(added, ChangeLine{Name: itemLabel(it), Quantity: max(it.Quantity, 1), Kitchen: it.Kitchen})
+			added = append(added, ChangeLine{Name: itemLabel(it), Quantity: max(it.Quantity, 1), Kitchen: it.Kitchen,
+				PriceCents: unitValue(it) * int64(max(it.Quantity, 1))})
 			addedRefs[ak[i]] = true
 		case it.Quantity > prev.Quantity:
-			added = append(added, ChangeLine{Name: itemLabel(it), Quantity: it.Quantity - prev.Quantity, Kitchen: it.Kitchen || prev.Kitchen})
+			added = append(added, ChangeLine{Name: itemLabel(it), Quantity: it.Quantity - prev.Quantity, Kitchen: it.Kitchen || prev.Kitchen,
+				PriceCents: unitValue(it) * int64(it.Quantity-prev.Quantity)})
 		case it.Quantity < prev.Quantity:
 			removed = append(removed, ChangeLine{Name: itemLabel(it), Quantity: prev.Quantity - it.Quantity, Kitchen: it.Kitchen || prev.Kitchen})
 		}

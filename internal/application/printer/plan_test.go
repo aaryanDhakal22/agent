@@ -117,7 +117,7 @@ func TestPlan_ItemRoutedToReceiptPrinterIsReceiptOnly(t *testing.T) {
 	}
 	if tk[0].Kind != printer.TicketStation || tk[0].TargetID != pizza.ID ||
 		!reflect.DeepEqual(names(tk[0].Mine), []string{"Pepperoni"}) ||
-		!reflect.DeepEqual(names(tk[0].Others), []string{"Soda"}) {
+		len(tk[0].Others) != 0 { // 2.4.0: the soda isn't listed for the cooks
 		t.Fatalf("pizza ticket = %+v", tk[0])
 	}
 	if tk[1].Kind != printer.TicketReceipt || tk[1].TargetID != front.ID {
@@ -242,7 +242,7 @@ func TestPlanKitchen_ReceiptOnlyItemsExcluded(t *testing.T) {
 	}}
 	tk, _ := PlanFor(snap, roster, printer.ModeKitchen)
 	if !reflect.DeepEqual(kinds(tk), []string{"station:p-pizza"}) ||
-		!reflect.DeepEqual(names(tk[0].Mine), []string{"Pepperoni"}) || !reflect.DeepEqual(names(tk[0].Others), []string{"Soda"}) {
+		!reflect.DeepEqual(names(tk[0].Mine), []string{"Pepperoni"}) || len(tk[0].Others) != 0 {
 		t.Fatalf("kitchen: %+v", tk)
 	}
 	// Only receipt-only items: nothing for the kitchen.
@@ -295,5 +295,53 @@ func TestPlanVoid(t *testing.T) {
 		if !tk.Void || tk.Kind != printer.TicketStation || len(tk.Others) != 0 || len(tk.Mine) != 1 {
 			t.Fatalf("ticket = %+v", tk)
 		}
+	}
+}
+
+// 2.4.0 (owner): "items to other printers" lists only food another kitchen
+// station makes - the cans, desserts and chips that go to the receipt
+// printer alone are left off; an unrouted item (sent to every station)
+// still shows on the others.
+func TestPlan_OthersListOnlyKitchenFood(t *testing.T) {
+	roster := []RosterEntry{front, pizza, wings}
+	snap := order.Snapshot{Items: []order.LineItem{
+		item("Pepperoni", order.RoutingMatched, pizza.ID),
+		item("Buffalo Wings", order.RoutingMatched, wings.ID),
+		item("Can Coke", order.RoutingMatched, front.ID),
+		item("Cannoli", order.RoutingMatched, front.ID),
+	}}
+	tk, _ := PlanFor(snap, roster, printer.ModeKitchen)
+	if !reflect.DeepEqual(kinds(tk), []string{"station:p-pizza", "station:p-wings"}) {
+		t.Fatalf("got %v", kinds(tk))
+	}
+	if !reflect.DeepEqual(names(tk[0].Others), []string{"Buffalo Wings"}) || !reflect.DeepEqual(names(tk[1].Others), []string{"Pepperoni"}) {
+		t.Fatalf("others = %v / %v", names(tk[0].Others), names(tk[1].Others))
+	}
+	snap.Items = append(snap.Items, item("Mystery", order.RoutingUnmatched, ""))
+	tk, _ = PlanFor(snap, roster, printer.ModeKitchen)
+	if !reflect.DeepEqual(names(tk[0].Others), []string{"Buffalo Wings"}) || !reflect.DeepEqual(names(tk[0].Mine), []string{"Pepperoni", "Mystery"}) {
+		t.Fatalf("unrouted: mine %v others %v", names(tk[0].Mine), names(tk[0].Others))
+	}
+}
+
+// 2.4.0: a future order's early tickets follow the two switches, every one
+// marked Future; the CONFIRM after an early receipt prints kitchen only.
+func TestPlan_FutureEarlyAndAcceptKitchen(t *testing.T) {
+	roster := []RosterEntry{front, pizza}
+	snap := order.Snapshot{Items: []order.LineItem{item("Pepperoni", order.RoutingMatched, pizza.ID), item("Soda", order.RoutingMatched, front.ID)}}
+	if tk, _ := PlanWith(snap, roster, printer.ModeFutureEarly, Rules{}); len(tk) != 0 {
+		t.Fatalf("switches off: %v", kinds(tk))
+	}
+	tk, _ := PlanWith(snap, roster, printer.ModeFutureEarly, Rules{Tickets: order.TicketToggles{FutureKitchen: true, FutureReceipt: true}})
+	if !reflect.DeepEqual(kinds(tk), []string{"station:p-pizza", "receipt:p-front"}) || !tk[0].Future || !tk[1].Future {
+		t.Fatalf("both: %+v", tk)
+	}
+	tk, _ = PlanWith(snap, roster, printer.ModeFutureEarly, Rules{Tickets: order.TicketToggles{FutureReceipt: true}})
+	if !reflect.DeepEqual(kinds(tk), []string{"receipt:p-front"}) {
+		t.Fatalf("receipt only: %v", kinds(tk))
+	}
+	tk, _ = PlanWith(snap, roster, printer.ModeAcceptKitchen, Rules{Tickets: order.DefaultTicketToggles()})
+	if !reflect.DeepEqual(kinds(tk), []string{"station:p-pizza"}) {
+		t.Fatalf("accept kitchen: %v", kinds(tk))
 	}
 }

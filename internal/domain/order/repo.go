@@ -129,6 +129,8 @@ type IntegrationRepository interface {
 	// RaiseDue puts every scheduled order whose ring time passed back to
 	// arrived (rerung) and returns them.
 	RaiseDue(ctx context.Context, now time.Time) ([]StoredOrder, error)
+	// SetEarlyPrinted records a future order's early tickets (2.4.0).
+	SetEarlyPrinted(ctx context.Context, id string, kitchen, receipt bool) error
 
 	// 00019. AckPosChange marks an order's terminal change OK'd (acked_at;
 	// it stops ringing, the ticket keeps CHANGED). changeID "" = whatever is

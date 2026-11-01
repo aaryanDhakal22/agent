@@ -128,6 +128,45 @@ SELECT id, driver_id FROM orders
 WHERE state = 'on_delivery' AND driver_id IS NOT NULL
 ORDER BY driver_id, run_seq IS NULL, run_seq ASC, out_at ASC, arrival_date ASC;
 
+-- name: MarkDeliveredNoDriver :execrows
+-- 2.4.0 MARK DELIVERED: an open delivery (cooking or ready, pooled or not,
+-- held as came back) is delivered with no driver - Unassigned on the Drivers
+-- tab. marked = the MarkedDelivered JSON.
+UPDATE orders
+SET state = 'delivered', delivered_at = sqlc.arg(at), marked_delivered = sqlc.arg(marked),
+    driver_id = NULL, driver_name = '', run_seq = NULL, came_back = false,
+    pool_driver_id = NULL, pooled_at = NULL, pool_seq = NULL, pool_plan_id = NULL
+WHERE id = sqlc.arg(id) AND state IN ('accepted', 'ready')
+  AND json_extract(snapshot, '$.fulfillment.type') = 'delivery';
+
+-- name: UndeliverOrder :execrows
+-- 2.4.0 Back to deliveries: an Unassigned delivery goes back to the state it
+-- was in (cooking or ready), no longer delivered.
+UPDATE orders
+SET state = sqlc.arg(state), delivered_at = NULL, marked_delivered = ''
+WHERE id = sqlc.arg(id) AND state = 'delivered' AND driver_id IS NULL AND marked_delivered <> '';
+
+-- name: SetOrderDriver :execrows
+-- 2.4.0 Drivers tab: a delivered or out delivery moves to another driver
+-- (driver_id NULL = Unassigned) with its run stop number and the
+-- MarkedDelivered record.
+UPDATE orders
+SET driver_id = sqlc.narg(driver_id), driver_name = sqlc.arg(driver_name), run_seq = sqlc.narg(run_seq),
+    marked_delivered = sqlc.arg(marked_delivered)
+WHERE id = sqlc.arg(id) AND state IN ('delivered', 'on_delivery');
+
+-- name: SetEarlyPrinted :exec
+-- 2.4.0: a future order's early tickets printed (kitchen / receipt).
+UPDATE orders
+SET early_kitchen = early_kitchen OR sqlc.arg(kitchen), early_receipt = early_receipt OR sqlc.arg(receipt)
+WHERE id = sqlc.arg(id);
+
+-- name: ListBatchUnassigned :many
+-- 2.4.0: a batch's deliveries delivered with no driver (the UNASSIGNED report).
+SELECT * FROM orders
+WHERE batch_id = ? AND state = 'delivered' AND driver_id IS NULL AND marked_delivered <> ''
+ORDER BY delivered_at ASC;
+
 -- name: CountOnDeliveryByDriver :one
 SELECT CAST(count(*) AS INTEGER) FROM orders WHERE state = 'on_delivery' AND driver_id = ?;
 
@@ -674,14 +713,14 @@ UPDATE settings SET map_file = ? WHERE id = 1;
 INSERT INTO orders (id, tenant_id, location_id, source, source_event_id, snapshot, state, arrival_date,
                     batch_id, prep_minutes, estimated_ready_at, accepted_at,
                     ext_source, ext_ref, ext_hash, ext_driver_pos, display_number, paid, cash_due_cents,
-                    tip_cents, board_hidden, sent_at, local_only)
+                    tip_cents, board_hidden, sent_at, local_only, paid_at)
 VALUES (sqlc.arg(id), sqlc.arg(tenant_id), sqlc.arg(location_id), sqlc.arg(source), sqlc.arg(source_event_id),
         sqlc.arg(snapshot), 'accepted', sqlc.arg(arrival_date),
         (SELECT id FROM batches WHERE closed_at IS NULL ORDER BY id DESC LIMIT 1),
         sqlc.arg(prep_minutes), sqlc.arg(estimated_ready_at), sqlc.arg(accepted_at),
         sqlc.arg(ext_source), sqlc.arg(ext_ref), sqlc.arg(ext_hash), '', sqlc.arg(display_number),
         sqlc.arg(paid), sqlc.arg(cash_due_cents), sqlc.arg(tip_cents), sqlc.arg(board_hidden),
-        sqlc.arg(sent_at), true);
+        sqlc.arg(sent_at), true, sqlc.narg(paid_at));
 
 -- name: GetOrderByExtRef :one
 -- The newest order for a POS check (a check number is never reused by the POS).
@@ -690,10 +729,14 @@ ORDER BY arrival_date DESC LIMIT 1;
 
 -- name: UpdateExternalOrder :exec
 -- A changed POS check: the new snapshot (items, money, notes, address) and
--- the paid / cash / tip / hidden figures. No state change.
+-- the paid / cash / tip / hidden figures. No state change. paid_at (2.4.0)
+-- moves when the check goes from a balance due to paid.
 UPDATE orders
-SET snapshot = ?, ext_hash = ?, display_number = ?, paid = ?, cash_due_cents = ?, tip_cents = ?, board_hidden = ?
-WHERE id = ?;
+SET snapshot = sqlc.arg(snapshot), ext_hash = sqlc.arg(ext_hash), display_number = sqlc.arg(display_number),
+    paid = sqlc.arg(paid), cash_due_cents = sqlc.arg(cash_due_cents), tip_cents = sqlc.arg(tip_cents),
+    board_hidden = sqlc.arg(board_hidden),
+    paid_at = CASE WHEN sqlc.arg(paid) AND NOT paid THEN sqlc.arg(now) ELSE paid_at END
+WHERE id = sqlc.arg(id);
 
 -- name: SetExtDriverPos :exec
 UPDATE orders SET ext_driver_pos = ?, pos_driver_note = ? WHERE id = ?;
@@ -713,7 +756,11 @@ UPDATE orders SET snapshot = ? WHERE id = ?;
 SELECT * FROM orders WHERE batch_id = ? AND local_only ORDER BY arrival_date ASC;
 
 -- name: SetOrderPaid :exec
-UPDATE orders SET paid = ? WHERE id = ?;
+-- An online order the hub inserted into the POS was paid there (paid_at as
+-- on a POS check, 2.4.0).
+UPDATE orders
+SET paid = sqlc.arg(paid), paid_at = CASE WHEN sqlc.arg(paid) AND NOT paid THEN sqlc.arg(now) ELSE paid_at END
+WHERE id = sqlc.arg(id);
 
 -- name: SetPosCheckNumber :exec
 UPDATE orders SET pos_check_number = ? WHERE id = ?;

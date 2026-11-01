@@ -115,6 +115,10 @@ type Order struct {
 	FinishedBy           string         `json:"finished_by"`
 	PosClosed            bool           `json:"pos_closed"`
 	PosChange            string         `json:"pos_change"`
+	MarkedDelivered      string         `json:"marked_delivered"`
+	PaidAt               sql.NullString `json:"paid_at"`
+	EarlyKitchen         bool           `json:"early_kitchen"`
+	EarlyReceipt         bool           `json:"early_receipt"`
 }
 
 type OrderGeo struct {

@@ -285,66 +285,42 @@ func TestMergeOrder(t *testing.T) {
 	}
 }
 
-func TestRouteMessageLayoutAndGrabItems(t *testing.T) {
-	rp := ReceiptPrinter(func() (string, int) { return "p-receipt", 5 })
+// 2.4.0 (owner): one line per stop, number + street + apt; no money,
+// notes or items to grab.
+func TestRouteMessageLayout(t *testing.T) {
 	online := order.StoredOrder{
 		Order: order.Snapshot{ID: "o1", Source: "online", Notes: "Leave at door",
 			Fulfillment: order.Fulfillment{Type: "delivery", Address: &order.Address{Line1: "4108 Old Court Rd", Line2: "Apt 2B", Notes: "Gate code 1234"}},
 			Money:       order.Money{Total: 3840},
-			Items: []order.LineItem{
-				{Name: "Pepperoni Pizza", Size: "Large", Quantity: 1, PrinterID: "p-pizza"},
-				{Name: "Coke", Size: "2 Liter", Quantity: 1, PrinterID: "p-receipt", Children: []order.LineItem{{Name: "Diet", Quantity: 1}}},
-				{Name: "Coke", Size: "2 Liter", Quantity: 1, PrinterID: "p-receipt", Children: []order.LineItem{{Name: "Diet", Quantity: 1}}},
-				{Name: "Cannoli", Quantity: 2, PrinterID: "p-pizza"},        // by name
-				{Name: "Crab Cake", Quantity: 1, PrinterID: "p-receipt"},    // kitchen food, not a dessert
-				{Name: "Delivery Fee", Quantity: 1, PrinterID: "p-receipt"}, // never
-			}},
-		Status: order.Status{KitchenNumber: ptr[int64](323)},
+			Items:       []order.LineItem{{Name: "Coke", Size: "2 Liter", Quantity: 1, PrinterID: "p-receipt"}}},
+		Status: order.Status{KitchenNumber: ptr[int64](323), RunSeq: ptr[int64](2)},
 	}
 	pos := order.StoredOrder{
 		Order: order.Snapshot{ID: "o2", Source: order.SourcePOS,
 			Fulfillment: order.Fulfillment{Type: "delivery", Address: &order.Address{Line1: "12 Main St"}},
-			Items: []order.LineItem{
-				{Name: "Cheesesteak", Quantity: 1, Kitchen: true},
-				{Name: "Snapple Peach", Quantity: 1},       // no kitchen station
-				{Name: "Card Processing Fee", Quantity: 1}, // never
-			}},
-		Status: order.Status{DisplayNumber: ptr[int64](223), ExtSource: order.ExtSourceSoftTouch, Paid: true},
+			Items:       []order.LineItem{{Name: "Snapple Peach", Quantity: 1}}},
+		Status: order.Status{DisplayNumber: ptr[int64](223), ExtSource: order.ExtSourceSoftTouch, Paid: true, RunSeq: ptr[int64](1)},
 	}
-	stops := routeStops([]order.StoredOrder{online, pos}, rp)
-	_, text := routeMessage(stops, 2)
-	want := "#323 4108 Old Court Rd Apt 2B · CASH $38.40\n" +
-		"  Note: Gate code 1234 / Leave at door\n" +
-		"  2× 2 Liter Coke · Diet\n" +
-		"  2× Cannoli\n" +
-		"#223 12 Main St · PAID\n" +
-		"  1× Snapple Peach"
-	if text != want {
-		t.Fatalf("text =\n%s\nwant\n%s", text, want)
+	title, text := routeMessage(routeStops([]order.StoredOrder{online, pos}), 2)
+	if want := "#223 12 Main St\n#323 4108 Old Court Rd Apt 2B"; text != want || title != "Route · 2 stops" {
+		t.Fatalf("title %q text =\n%s\nwant\n%s", title, text, want)
 	}
-	// One printer (it is the kitchen too): only names count.
-	solo := ReceiptPrinter(func() (string, int) { return "p-receipt", 1 })
-	if g := stopGrab(order.StoredOrder{Order: order.Snapshot{Items: []order.LineItem{{Name: "Garlic Knots", Quantity: 1, PrinterID: "p-receipt"}}}}, solo); len(g) != 0 {
-		t.Fatalf("sole printer: %v", g)
+	if _, text := routeMessage(routeStops([]order.StoredOrder{online, pos}), 1); !strings.HasSuffix(text, "Map: the first 1 stops") {
+		t.Fatalf("carried: %q", text)
+	}
+	if _, text := routeMessage([]RouteStop{testStop}, 1); text != "#TEST 5601 Loch Raven Blvd" {
+		t.Fatalf("test route text = %q", text)
 	}
 }
 
 func TestRouteMessageTooLong(t *testing.T) {
 	var stops []RouteStop
-	for i := 0; i < 6; i++ {
-		st := RouteStop{Head: fmt.Sprintf("#%d %d Long Street Name Avenue Apt 12 · CASH $45.00", 300+i, 1000+i),
-			Note: strings.Repeat("Please ring the bell twice and wait ", 3)}
-		for j := 0; j < 4; j++ {
-			st.Grab = append(st.Grab, fmt.Sprintf("1× 2 Liter Soda Flavor %d · Diet · Note: extra cold", j))
-		}
-		stops = append(stops, st)
+	for i := 0; i < 40; i++ {
+		stops = append(stops, RouteStop{Head: fmt.Sprintf("#%d %d Long Street Name Avenue Apartment 12", 300+i, 1000+i)})
 	}
-	_, text := routeMessage(stops, 6)
+	_, text := routeMessage(stops, 9)
 	if utf8.RuneCountInString(text) > routeMsgMax || !strings.HasSuffix(text, "+ more on the receipts") {
 		t.Fatalf("len %d, ends %q", utf8.RuneCountInString(text), text[len(text)-40:])
-	}
-	if strings.Contains(text, strings.Repeat("Please ring the bell twice and wait ", 2)) {
-		t.Fatal("notes were not shortened first")
 	}
 }
 

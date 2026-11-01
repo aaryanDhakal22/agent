@@ -35,6 +35,14 @@ const (
 	// station tickets under a VOID banner (only where the POS ticket switch
 	// for the order's type is on - the service checks it).
 	ModeVoid Mode = "void"
+	// ModeFutureEarly (2.4.0): a future order's first ACCEPT with the
+	// store's future switches on - the station tickets as an early warning
+	// (DO NOT MAKE, when it is due) and / or the customer receipt with a
+	// FUTURE bar, per the switches. Every ticket has Future set.
+	ModeFutureEarly Mode = "future_early"
+	// ModeAcceptKitchen (2.4.0): the accept print without the customer
+	// receipt - a future order whose receipt already printed early.
+	ModeAcceptKitchen Mode = "accept_kitchen"
 )
 
 // Ticket is one thing to print for an order. A planned order is a set of
@@ -55,6 +63,10 @@ type Ticket struct {
 	ReroutedFrom string
 	// Void: a VOID ticket (ModeVoid) - the items are what was voided.
 	Void bool
+	// Future (ModeFutureEarly): printed early for a future order - a
+	// kitchen ticket says DO NOT MAKE and when it is due, a receipt has a
+	// FUTURE bar on top.
+	Future bool
 }
 
 // TicketResult records where one ticket printed (or why it didn't).

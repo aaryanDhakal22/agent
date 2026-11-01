@@ -366,7 +366,9 @@ func ShortCustomerName(display string) string {
 // FloorRepository persists floor transitions. Every mutating method writes the
 // matching floor event(s) in the same transaction.
 type FloorRepository interface {
-	MarkReady(ctx context.Context, id string) (*StoredOrder, error)
+	// MarkReady: accepted -> ready; callout false (2.4.0, READY held on the
+	// tablet) tells the hub not to call the order out.
+	MarkReady(ctx context.Context, id string, callout bool) (*StoredOrder, error)
 	// UndoReady puts an order marked ready at or after since back to
 	// cooking (2.3.8); ErrInvalidState when it isn't (any more).
 	UndoReady(ctx context.Context, id string, since time.Time) (*StoredOrder, error)
@@ -440,6 +442,20 @@ type FloorRepository interface {
 	// ReleaseCameBack ends a came-back hold (ErrNotCameBack when not held).
 	ReleaseCameBack(ctx context.Context, id string) (*StoredOrder, error)
 
+	// 2.4.0 Unassigned. MarkDeliveredNoDriver delivers an open delivery of
+	// the open batch (cooking or ready, out of its pool) with no driver
+	// (ErrInvalidState otherwise). Undeliver puts an Unassigned delivery
+	// back the way it was (ErrNotUnassigned). ReassignDeliveries moves
+	// delivered / out deliveries of the open batch to a clocked-in driver,
+	// or delivered ones to Unassigned (driverID ""), all or nothing; a
+	// driver whose last out stop moved is back in the queue, one who got an
+	// out stop while available is out (driversChanged). ListUnassigned is a
+	// batch's (0 = open) Unassigned deliveries.
+	MarkDeliveredNoDriver(ctx context.Context, id string, by MarkedBy) (*StoredOrder, error)
+	Undeliver(ctx context.Context, id string) (*StoredOrder, error)
+	ReassignDeliveries(ctx context.Context, ids []string, driverID string, by MarkedBy) (moved []StoredOrder, driversChanged bool, err error)
+	ListUnassigned(ctx context.Context, batchID int64) ([]StoredOrder, error)
+
 	// RecordAccepted writes the order.status=accepted floor event (after the
 	// tickets printed — a reverted claim never reaches main) and, for an
 	// online order, the hub's order.accepted with insertExpected.
@@ -457,4 +473,54 @@ type FloorRepository interface {
 	// Retention: keep the open batch + the newest keepClosed closed batches;
 	// drop synced floor events older than syncedBefore.
 	TrimBatches(ctx context.Context, keepClosed int, syncedBefore time.Time) (int64, error)
+}
+
+// UnassignedReport (2.4.0) is the slip Close batch prints after the driver
+// reports when deliveries were left delivered with no driver: everything
+// known about each, so staff can work out who took it.
+type UnassignedReport struct {
+	BatchID       int64            `json:"batch_id"`
+	BatchOpenedAt time.Time        `json:"batch_opened_at"`
+	BatchClosedAt *time.Time       `json:"batch_closed_at,omitempty"`
+	Lines         []UnassignedLine `json:"lines"`
+	CashCents     int64            `json:"cash_cents"`
+	TipCents      int64            `json:"tip_cents"`
+}
+
+// UnassignedLine is one Unassigned delivery on the report: its number,
+// street + apt, money (as a driver report line counts it), the times it
+// was placed / accepted / ready, who marked it delivered and when, the
+// driver it was taken from (if any) and the drivers available then.
+type UnassignedLine struct {
+	DriverReportLine
+	PlacedAt   *time.Time `json:"placed_at,omitempty"`
+	AcceptedAt *time.Time `json:"accepted_at,omitempty"`
+	ReadyAt    *time.Time `json:"ready_at,omitempty"`
+	MarkedAt   time.Time  `json:"marked_at"`
+	MarkedBy   MarkedBy   `json:"marked_by"`
+	FromDriver string     `json:"from_driver,omitempty"`
+	Available  []string   `json:"available"`
+}
+
+// NewUnassignedReport builds the report of a batch's Unassigned orders.
+func NewUnassignedReport(b Batch, orders []StoredOrder) UnassignedReport {
+	rep := UnassignedReport{BatchID: b.ID, BatchOpenedAt: b.OpenedAt, BatchClosedAt: b.ClosedAt, Lines: []UnassignedLine{}}
+	for _, so := range orders {
+		l := UnassignedLine{DriverReportLine: NewDriverReportLine(so), AcceptedAt: so.Status.AcceptedAt, ReadyAt: so.Status.ReadyAt}
+		if a := so.Order.Fulfillment.Address; a != nil {
+			l.Street = strings.TrimSpace(StreetOnly(a.Line1) + " " + strings.TrimSpace(a.Line2))
+		}
+		if p := so.Order.PlacedAt; !p.IsZero() {
+			l.PlacedAt = &p
+		}
+		if md := so.Status.MarkedDelivered; md != nil {
+			l.MarkedAt, l.MarkedBy, l.FromDriver, l.Available = md.At, md.By, md.FromDriver, md.Available
+		}
+		if l.Cash {
+			rep.CashCents += l.CashCents
+		}
+		rep.TipCents += l.OrderTipCents
+		rep.Lines = append(rep.Lines, l)
+	}
+	return rep
 }
