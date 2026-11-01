@@ -243,6 +243,7 @@ def test_resend_to_kitchen_prints_only_the_stations(kitchen, fakes) -> None:
     r = a.http.post(f"{a.base}/api/orders/{snap['id']}/kitchen", timeout=30)
     assert r.status_code == 200, r.text
     assert r.json()["rerouted"] == [{"station": "Wings", "printed_on": "Front"}], r.text
+    _wait_jobs(fakes["Front"], 1)
     assert "REROUTED from WINGS" in fakes["Front"].text() and "Total:" not in fakes["Front"].text()
 
 
