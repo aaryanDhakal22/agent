@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"time"
 
 	"quiccpos/agent/internal/domain/order"
@@ -653,4 +654,101 @@ func (r *OrderRepository) GetMapFile(ctx context.Context) (string, error) {
 
 func (r *OrderRepository) SetMapFile(ctx context.Context, raw string) error {
 	return models.New(r.db).SetMapFile(ctx, raw)
+}
+
+// RecallDriver — see order.PoolRepository (2.4.1). One tx: the driver's
+// undelivered orders go back to his pool (ready, in run order), he is
+// available at the front of the queue. Each order's change is an
+// order.status floor event (main's mirror is forward-only and keeps
+// on_delivery until the next run); a POS check in the run also gets the
+// hub's order.not_delivered feed event (action recall), which un-dispatches
+// it in SoftTouch until it is sent out again.
+func (r *OrderRepository) RecallDriver(ctx context.Context, driverID string) (recalled []order.StoredOrder, err error) {
+	ctx, _, end := dbSpan(ctx, "floor.recall_driver")
+	defer end(&err)
+	now := time.Now()
+	err = r.withTx(ctx, func(q *models.Queries) error {
+		d, err := q.GetDriver(ctx, driverID)
+		if errors.Is(err, sql.ErrNoRows) {
+			return order.ErrDriverNotFound
+		}
+		if err != nil {
+			return err
+		}
+		if !d.Active || d.Status != order.DriverOut {
+			return order.ErrDriverNotOut
+		}
+		rows, err := q.ListOnDeliveryByDriver(ctx, sql.NullString{String: d.ID, Valid: true})
+		if err != nil {
+			return err
+		}
+		run, err := mapRowsBare(rows)
+		if err != nil {
+			return err
+		}
+		sort.SliceStable(run, func(i, j int) bool { return runSeqLess(run[i], run[j]) })
+		for i, so := range run {
+			n, err := q.RecallOrder(ctx, models.RecallOrderParams{
+				PoolDriverID: sql.NullString{String: d.ID, Valid: true}, PooledAt: nullTS(now),
+				PoolSeq: sql.NullInt64{Int64: int64(i + 1), Valid: true}, ID: so.Order.ID,
+			})
+			if err != nil {
+				return fmt.Errorf("recall order: %w", err)
+			}
+			if n == 0 {
+				return fmt.Errorf("order %s: %w", so.Order.ID, order.ErrInvalidState)
+			}
+			posNum, err := markCameBackPOS(ctx, q, so, d.PosNumber)
+			if err != nil {
+				return err
+			}
+			fresh, err := loadOrder(ctx, q, so.Order.ID)
+			if err != nil {
+				return err
+			}
+			if err := recordOrderStatus(ctx, q, fresh, false, now); err != nil {
+				return err
+			}
+			if fresh.IsPOS() {
+				if err := insertFeed(ctx, q, order.FeedOrderNotDelivered, now, order.OrderNotDeliveredData{
+					FeedOrderRef: order.RefOf(fresh), Action: order.NotDeliveredRecall,
+					DriverID: d.ID, DriverName: d.Name, DriverPosNumber: posNum}); err != nil {
+					return err
+				}
+			}
+			recalled = append(recalled, fresh)
+		}
+		front, err := q.FrontDriverPosition(ctx)
+		if err != nil {
+			return err
+		}
+		n, err := q.SetDriverStatus(ctx, models.SetDriverStatusParams{
+			NewStatus: string(order.DriverAvailable), Position: front, ID: d.ID, OldStatus: string(order.DriverOut)})
+		if err != nil {
+			return err
+		}
+		if n == 0 {
+			return order.ErrDriverNotOut
+		}
+		return recordRoster(ctx, q, now)
+	})
+	if err != nil {
+		return nil, err
+	}
+	return recalled, nil
+}
+
+// runSeqLess orders a run by its stop numbers (unnumbered last, then by the
+// time they went out).
+func runSeqLess(a, b order.StoredOrder) bool {
+	as, bs := a.Status.RunSeq, b.Status.RunSeq
+	switch {
+	case as != nil && bs != nil && *as != *bs:
+		return *as < *bs
+	case as != nil && bs == nil:
+		return true
+	case as == nil && bs != nil:
+		return false
+	}
+	return false
 }

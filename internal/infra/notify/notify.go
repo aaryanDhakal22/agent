@@ -35,8 +35,12 @@ type Notifier struct {
 	bossKey      string
 	adminDevices []string
 	ownerDevices []string
-	pushoverURL  string
-	httpClient   *http.Client
+	// strictScope (2.4.1, every APP_ENV but prod): with no admin devices,
+	// Send and SendFloor don't send at all — drivers' phones are devices on
+	// the same account, and a dev or staging agent must never page them.
+	strictScope bool
+	pushoverURL string
+	httpClient  *http.Client
 }
 
 type NotifierError struct {
@@ -143,13 +147,24 @@ func (n *Notifier) Configured() bool {
 	return n.appToken != "" && n.userKey != ""
 }
 
+// SetStrictScope: no admin devices → no Send / SendFloor (outside prod).
+func (n *Notifier) SetStrictScope(strict bool) {
+	n.mu.Lock()
+	n.strictScope = strict
+	n.mu.Unlock()
+}
+
 // Send notifies the owner only — system events (agent started, sync trouble).
 // The ctx controls cancellation and provides the parent span for the
 // outgoing HTTP call; otelhttp creates a child HTTP-client span.
 func (n *Notifier) Send(ctx context.Context, message, sound string) error {
 	n.mu.RLock()
 	m := Message{User: n.userKey, Devices: n.adminDevices, Text: message, Sound: sound}
+	skip := n.strictScope && len(n.adminDevices) == 0
 	n.mu.RUnlock()
+	if skip {
+		return nil
+	}
 	return n.post(ctx, m)
 }
 
@@ -173,6 +188,8 @@ func (n *Notifier) floorMessages(message, sound string) []Message {
 	var devices []string
 	if len(n.adminDevices) > 0 { // unscoped otherwise: the whole account
 		devices = append(append(devices, n.adminDevices...), n.ownerDevices...)
+	} else if n.strictScope {
+		return nil // never the whole account outside prod (2.4.1)
 	}
 	msgs := []Message{{User: n.userKey, Devices: dedupe(devices), Text: message, Sound: sound}}
 	if n.bossKey != "" && n.bossKey != n.userKey {
@@ -193,6 +210,19 @@ func (n *Notifier) SendRoute(ctx context.Context, device, title, text, link stri
 	n.mu.RLock()
 	m := Message{User: n.userKey, Devices: []string{device}, Title: title, Text: text,
 		Priority: 1, Sound: RouteSound, URL: link, URLTitle: "Open route"}
+	n.mu.RUnlock()
+	if m.User == "" {
+		return ErrNotConfigured
+	}
+	return n.post(ctx, m)
+}
+
+// SendDriver sends one driver a plain message on his own device (2.4.1:
+// "come back, run on hold"): high priority, the phone's own sound. Like
+// SendRoute it reports why it couldn't.
+func (n *Notifier) SendDriver(ctx context.Context, device, title, text string) error {
+	n.mu.RLock()
+	m := Message{User: n.userKey, Devices: []string{device}, Title: title, Text: text, Priority: 1}
 	n.mu.RUnlock()
 	if m.User == "" {
 		return ErrNotConfigured

@@ -173,6 +173,9 @@ func main() {
 	// --- Notifier ---------------------------------------------------------
 	notifier := notify.NewNotifier(cfg.PushoverAppToken, cfg.PushoverUserKey, cfg.PushoverBossKey)
 	notifier.SetAdminDevices(notify.ParseDevices(cfg.PushoverAdminDevices))
+	// Outside prod, no admin device = no system/floor alerts at all: drivers'
+	// phones share the account (2.4.1).
+	notifier.SetStrictScope(cfg.AppEnv != "prod")
 	if err := notifier.Send(ctx, "Agent started", "classical"); err != nil {
 		logger.Warn().Err(err).Msg("Startup notification failed — continuing")
 	}

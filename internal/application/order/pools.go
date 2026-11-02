@@ -325,6 +325,45 @@ func (s *Service) SendOut(ctx context.Context, driverID string, req SendOutReque
 	return sent, nil
 }
 
+// RecallDriver brings a driver who is out back to the store with his run
+// (2.4.1, the tablet's ↺ beside "I have returned"): the undelivered orders go
+// back to his pool, ready, so more can be added; he is next in the queue. His
+// phone is told the run is on hold; the next SEND OUT sends a fresh route.
+func (s *Service) RecallDriver(ctx context.Context, driverID string) ([]order.StoredOrder, error) {
+	ctx, span := s.span(ctx, "delivery.recall", attribute.String("driver.id", driverID))
+	defer span.End()
+	recalled, err := s.repo.RecallDriver(ctx, driverID)
+	if err != nil {
+		return nil, spanErr(span, err)
+	}
+	span.SetAttributes(attribute.Int("orders", len(recalled)))
+	s.floorChanged()
+	for _, so := range recalled {
+		s.publishUpdated(so)
+	}
+	s.publishDrivers(ctx)
+	d, derr := s.driverByID(ctx, driverID)
+	name := driverID
+	if derr == nil {
+		name = d.Name
+	}
+	s.devEvent(devlog.Info, devlog.KindOrder, "%s brought back with the run: %s", name, labels(recalled))
+	s.logger.Info().Ctx(ctx).Str("driver_id", driverID).Int("orders", len(recalled)).Msg("Driver recalled with the run")
+	if derr == nil && d.PushoverDevice != "" && s.notifier != nil {
+		device, dname := d.PushoverDevice, d.Name
+		s.background(ctx, func(ctx context.Context) {
+			ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+			defer cancel()
+			if err := s.notifier.SendDriver(ctx, device, "Come back to the store",
+				"Your run is on hold. A new route comes when you're sent out again."); err != nil {
+				s.logger.Warn().Ctx(ctx).Err(err).Str("driver", dname).Msg("recall message not sent")
+				s.devEvent(devlog.Warn, devlog.KindOrder, "Recall message to %s not sent", dname)
+			}
+		})
+	}
+	return recalled, nil
+}
+
 func (s *Service) publishDispatched(ctx context.Context, driverID string, sent []order.StoredOrder) {
 	if s.broker == nil {
 		return

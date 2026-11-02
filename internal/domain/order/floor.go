@@ -166,7 +166,9 @@ var (
 	// ErrDriverNotAvailable: the driver isn't clocked in and in the queue
 	// (off, or already out on a run).
 	ErrDriverNotAvailable = fmt.Errorf("driver is not clocked in and available")
-	ErrNoOrders           = fmt.Errorf("no orders given")
+	// ErrDriverNotOut: recall needs a driver out on a run (2.4.1).
+	ErrDriverNotOut = fmt.Errorf("driver is not out on a run")
+	ErrNoOrders     = fmt.Errorf("no orders given")
 	// ErrPosNumberTaken: another active driver has that POS number.
 	ErrPosNumberTaken = fmt.Errorf("another driver has that driver number")
 )
