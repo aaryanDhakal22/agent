@@ -67,7 +67,7 @@ def _feed(a, hub: dict, after: int = 0, wait: int = 0) -> dict:
 
 def _reset(fakes) -> None:
     for f in fakes.values():
-        f.jobs.clear()
+        f.clear()
 
 
 def test_integration_key_guarding(kitchen) -> None:  # noqa: F811

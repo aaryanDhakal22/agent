@@ -349,10 +349,13 @@ def agent_ready(http: requests.Session, agent_base_url: str) -> None:
 
 
 class FakePrinter:
-    """A raw-print (port-9100-style) listener that keeps each job's bytes."""
+    """A raw-print (port-9100-style) listener that keeps each job's bytes, in
+    the order the connections were accepted (each is read on its own thread,
+    so finishing order can differ from the order the agent printed in)."""
 
     def __init__(self) -> None:
-        self.jobs: list[bytes] = []
+        self._jobs: list[tuple[int, bytes]] = []
+        self._lock = threading.Lock()
         outer = self
 
         class Handler(socketserver.BaseRequestHandler):
@@ -364,14 +367,36 @@ class FakePrinter:
                         chunks.append(data)
                 except (socket.timeout, OSError):
                     pass
+                seq = self.server.seq_of.pop(self.request.fileno(), 0)
                 if chunks:  # detect probes connect + close with no payload
-                    outer.jobs.append(b"".join(chunks))
+                    with outer._lock:
+                        outer._jobs.append((seq, b"".join(chunks)))
+                        outer._jobs.sort(key=lambda j: j[0])
 
-        socketserver.ThreadingTCPServer.allow_reuse_address = True
-        self.server = socketserver.ThreadingTCPServer(("127.0.0.1", 0), Handler)
-        self.server.daemon_threads = True
+        class Server(socketserver.ThreadingTCPServer):
+            allow_reuse_address = True
+            daemon_threads = True
+            seq = 0
+            seq_of: dict[int, int] = {}
+
+            def process_request(self, request, client_address):  # the accept loop: sequential
+                Server.seq += 1
+                self.seq_of[request.fileno()] = Server.seq
+                super().process_request(request, client_address)
+
+        self.server = Server(("127.0.0.1", 0), Handler)
+        self.server.seq_of = {}
         self.addr = f"127.0.0.1:{self.server.server_address[1]}"
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
+
+    @property
+    def jobs(self) -> list[bytes]:
+        with self._lock:
+            return [b for _, b in self._jobs]
+
+    def clear(self) -> None:
+        with self._lock:
+            self._jobs.clear()
 
     def text(self) -> str:
         return b"\n----JOB----\n".join(self.jobs).decode("latin-1")
