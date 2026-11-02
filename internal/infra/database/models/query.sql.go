@@ -546,6 +546,18 @@ func (q *Queries) FinishOrder(ctx context.Context, arg FinishOrderParams) error 
 	return err
 }
 
+const frontDriverPosition = `-- name: FrontDriverPosition :one
+SELECT CAST(COALESCE(MIN(position), 1) - 1 AS INTEGER) AS front_position FROM drivers
+`
+
+// 2.4.1: a recalled driver is next in the queue.
+func (q *Queries) FrontDriverPosition(ctx context.Context) (int64, error) {
+	row := q.db.QueryRowContext(ctx, frontDriverPosition)
+	var front_position int64
+	err := row.Scan(&front_position)
+	return front_position, err
+}
+
 const getActiveDriverByPosNumber = `-- name: GetActiveDriverByPosNumber :one
 SELECT id, name, active, position, status, last_returned_at, created_at, pos_number, pushover_device FROM drivers WHERE pos_number = ? AND pos_number <> '' AND active
 `
@@ -3340,6 +3352,36 @@ type RaiseScheduledParams struct {
 // 2-minute escalation from now, not from the first arrival.
 func (q *Queries) RaiseScheduled(ctx context.Context, arg RaiseScheduledParams) (int64, error) {
 	result, err := q.db.ExecContext(ctx, raiseScheduled, arg.LastAlertAt, arg.ID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const recallOrder = `-- name: RecallOrder :execrows
+UPDATE orders
+SET state = 'ready', out_at = NULL, driver_id = NULL, driver_name = '',
+    pool_driver_id = ?1, pooled_at = ?2,
+    pool_seq = ?3, pool_plan_id = NULL
+WHERE id = ?4 AND state = 'on_delivery'
+`
+
+type RecallOrderParams struct {
+	PoolDriverID sql.NullString `json:"pool_driver_id"`
+	PooledAt     sql.NullString `json:"pooled_at"`
+	PoolSeq      sql.NullInt64  `json:"pool_seq"`
+	ID           string         `json:"id"`
+}
+
+// 2.4.1: an undelivered order of a recalled run goes back to its driver's
+// pool, ready, keeping its stop number (run_seq is rewritten on the next run).
+func (q *Queries) RecallOrder(ctx context.Context, arg RecallOrderParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, recallOrder,
+		arg.PoolDriverID,
+		arg.PooledAt,
+		arg.PoolSeq,
+		arg.ID,
+	)
 	if err != nil {
 		return 0, err
 	}

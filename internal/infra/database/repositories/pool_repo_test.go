@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"quiccpos/agent/internal/domain/order"
+	"quiccpos/agent/internal/infra/database/models"
 
 	"github.com/google/uuid"
 )
@@ -512,5 +513,131 @@ func TestSetPoolSeqEventsAndClearing(t *testing.T) {
 	r.PoolOrders(ctx, ids(os[0]), "")
 	if got := get(t, r, os[0].Order.ID); got.Status.PoolSeq != nil || got.Status.PoolPlanID != "" {
 		t.Fatalf("unassigned: %+v", got.Status)
+	}
+}
+
+// TestRecallDriver (2.4.1): a driver out on a run comes back with it — the
+// orders still out go back to his pool (ready, in run order), he is next in
+// the queue, and he can be sent out again with more stops.
+func TestRecallDriver(t *testing.T) {
+	ctx := context.Background()
+	r, a, b, os := poolSetup(t, 4)
+	for _, so := range os {
+		r.MarkReady(ctx, so.Order.ID, true)
+	}
+	if _, err := r.RecallDriver(ctx, a.ID); !errors.Is(err, order.ErrDriverNotOut) {
+		t.Fatalf("available driver: %v", err)
+	}
+	if _, err := r.PoolOrders(ctx, ids(os[0], os[1], os[2]), a.ID); err != nil {
+		t.Fatal(err)
+	}
+	sent, _, err := r.SendOut(ctx, a.ID, nil, false, order.RunMeta{StopOrder: ids(os[2], os[0], os[1])})
+	if err != nil || len(sent) != 3 {
+		t.Fatalf("send out: %v %d", err, len(sent))
+	}
+	// One stop came back on its own (not delivered, retry): it leaves the run.
+	if _, _, err := r.NotDelivered(ctx, os[1].Order.ID, order.NotDeliveredRetry); err != nil {
+		t.Fatal(err)
+	}
+
+	recalled, err := r.RecallDriver(ctx, a.ID)
+	if err != nil || len(recalled) != 2 {
+		t.Fatalf("recall: %v %d", err, len(recalled))
+	}
+	wantSeq := map[string]int64{}
+	for i, so := range recalled {
+		wantSeq[so.Order.ID] = int64(i + 1)
+	}
+	for _, id := range ids(os[0], os[2]) {
+		got := get(t, r, id)
+		st := got.Status
+		if st.State != order.StateReady || st.PoolDriverID != a.ID || st.DriverID != "" || st.OutAt != nil ||
+			st.PoolSeq == nil || *st.PoolSeq != wantSeq[id] {
+			t.Fatalf("recalled %s: %+v", id, st)
+		}
+	}
+	if recalled[0].Order.ID != os[2].Order.ID {
+		t.Fatalf("run order kept: first back is %s", recalled[0].Order.ID)
+	}
+	if got := get(t, r, os[1].Order.ID); got.Status.PoolDriverID != "" || !got.Status.CameBack {
+		t.Fatalf("the came-back stop stays where it was: %+v", got.Status)
+	}
+	ds, _ := r.ListDrivers(ctx)
+	pos := map[string]order.Driver{}
+	for _, d := range ds {
+		pos[d.ID] = d
+	}
+	if pos[a.ID].Status != order.DriverAvailable || pos[a.ID].Position >= pos[b.ID].Position {
+		t.Fatalf("recalled driver must be available at the front: a=%+v b=%+v", pos[a.ID], pos[b.ID])
+	}
+	if _, err := r.RecallDriver(ctx, a.ID); !errors.Is(err, order.ErrDriverNotOut) {
+		t.Fatalf("second recall: %v", err)
+	}
+	if st := lastStatusEvent(t, r, os[0].Order.ID); st["status"] != "ready" {
+		t.Fatalf("floor event after recall: %v", st)
+	}
+
+	// More stops, then out again with all of them.
+	if _, err := r.PoolOrders(ctx, ids(os[3]), a.ID); err != nil {
+		t.Fatal(err)
+	}
+	again, _, err := r.SendOut(ctx, a.ID, nil, false, order.RunMeta{})
+	if err != nil || len(again) != 3 {
+		t.Fatalf("send out again: %v %d", err, len(again))
+	}
+	// Recalled orders can also move to another driver.
+	if _, err := r.RecallDriver(ctx, a.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.PoolOrders(ctx, ids(os[0]), b.ID); err != nil {
+		t.Fatalf("re-pool a recalled order to another driver: %v", err)
+	}
+}
+
+// TestRecallDriverPOS (2.4.1): a POS check in a recalled run tells the hub
+// (order.not_delivered, action recall: un-dispatched in SoftTouch) and keeps
+// the came-back mark so the next POS pull doesn't mirror it out again.
+func TestRecallDriverPOS(t *testing.T) {
+	ctx := context.Background()
+	r := newFloorRepo(t)
+	a, _ := r.CreateDriver(ctx, "Ann", "")
+	clockIn(t, r, a.ID)
+	if err := r.SetDriverPosNumber(ctx, a.ID, "12"); err != nil {
+		t.Fatal(err)
+	}
+	res := upsertPOS(t, r, "5001", posOrder("delivery", "h1"))
+	id := res.Order.Order.ID
+	if _, err := r.MarkReady(ctx, id, true); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.PoolOrders(ctx, []string{id}, a.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := r.SendOut(ctx, a.ID, nil, false, order.RunMeta{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.RecallDriver(ctx, a.ID); err != nil {
+		t.Fatal(err)
+	}
+	evs, _, err := r.ListFeed(ctx, 0, 1000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var nd *order.OrderNotDeliveredData
+	for _, e := range evs {
+		if e.Type == order.FeedOrderNotDelivered {
+			var d order.OrderNotDeliveredData
+			if err := json.Unmarshal(e.Data, &d); err != nil {
+				t.Fatal(err)
+			}
+			nd = &d
+		}
+	}
+	if nd == nil || nd.Action != order.NotDeliveredRecall || nd.DriverPosNumber == nil || *nd.DriverPosNumber != "12" {
+		t.Fatalf("hub feed: %+v", nd)
+	}
+	row, err := models.New(r.db).GetOrderByID(ctx, id)
+	if err != nil || row.ExtDriverPos != order.CameBackMark+"12" {
+		t.Fatalf("came-back mark: %q %v", row.ExtDriverPos, err)
 	}
 }

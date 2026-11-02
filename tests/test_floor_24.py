@@ -70,7 +70,9 @@ def test_unassigned_flow_and_report(floor, fakes) -> None:  # noqa: F811
     assert post(a, "/api/batch/close", {"force": True}).status_code == 200
     wait_until(lambda: any("UNASSIGNED" in j for j in _texts(fakes["Front"].jobs[before:])), timeout=20,
                what="the UNASSIGNED slip after the driver reports")
-    slips = _texts(fakes["Front"].jobs[before:])
+    # Gone's clock-out report (the open batch, "- open") prints asynchronously
+    # and can land after `before` under load: only the Close batch slips count.
+    slips = [s for s in _texts(fakes["Front"].jobs[before:]) if " - open\n" not in s]
     un = next(s for s in slips if "UNASSIGNED" in s)
     for want in ["DELIVERED - NO DRIVER", "12 Main St", "CASH", "Marked by tablet Counter", "In store then: Abdul", "WHO TOOK THESE?"]:
         assert want in un, want

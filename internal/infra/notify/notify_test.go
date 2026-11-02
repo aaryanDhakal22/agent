@@ -147,3 +147,27 @@ func TestParseDevices(t *testing.T) {
 		t.Fatal("ValidDevice")
 	}
 }
+
+// 2.4.1: outside prod, no admin devices = nothing sent (never the drivers'
+// phones); a driver message still goes to its one device.
+func TestStrictScope(t *testing.T) {
+	n, got := forms(t, 200, `{"status":1}`)
+	n.SetStrictScope(true)
+	n.Send(context.Background(), "Agent started", "classical")
+	n.SendFloor(context.Background(), "NOT ACCEPTED", "siren")
+	if len(*got) != 0 {
+		t.Fatalf("strict scope with no admin devices sent %v", *got)
+	}
+	n.SetAdminDevices([]string{"AaryanPhone"})
+	n.Send(context.Background(), "Agent started", "classical")
+	if len(*got) != 1 || (*got)[0].Get("device") != "AaryanPhone" {
+		t.Fatalf("scoped send: %v", *got)
+	}
+	if err := n.SendDriver(context.Background(), "abdul", "Come back to the store", "Your run is on hold."); err != nil {
+		t.Fatal(err)
+	}
+	d := (*got)[len(*got)-1]
+	if d.Get("device") != "abdul" || d.Get("priority") != "1" || d.Get("title") != "Come back to the store" || d.Has("sound") {
+		t.Fatalf("driver message = %v", d)
+	}
+}

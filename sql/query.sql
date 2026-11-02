@@ -79,6 +79,19 @@ SET state = 'on_delivery', out_at = ?, driver_id = ?, driver_name = ?,
 WHERE id = ? AND state = 'ready'
   AND json_extract(snapshot, '$.fulfillment.type') = 'delivery';
 
+-- name: RecallOrder :execrows
+-- 2.4.1: an undelivered order of a recalled run goes back to its driver's
+-- pool, ready, keeping its stop number (run_seq is rewritten on the next run).
+UPDATE orders
+SET state = 'ready', out_at = NULL, driver_id = NULL, driver_name = '',
+    pool_driver_id = sqlc.arg(pool_driver_id), pooled_at = sqlc.arg(pooled_at),
+    pool_seq = sqlc.arg(pool_seq), pool_plan_id = NULL
+WHERE id = sqlc.arg(id) AND state = 'on_delivery';
+
+-- name: FrontDriverPosition :one
+-- 2.4.1: a recalled driver is next in the queue.
+SELECT CAST(COALESCE(MIN(position), 1) - 1 AS INTEGER) AS front_position FROM drivers;
+
 -- name: ListOnDeliveryByDriver :many
 SELECT * FROM orders
 WHERE state = 'on_delivery' AND driver_id = ?

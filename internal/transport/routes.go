@@ -122,6 +122,7 @@ func (s *Server) routes() []routeDef {
 		{"GET", "/api/settings/driver-reset", "device", "Daily driver clock-out time {time, last_run}", s.handleGetDriverReset},
 		{"POST", "/api/drivers/{id}/returned", "device", "Driver is back: their run is delivered, back of the queue", s.handleDriverReturned},
 		{"POST", "/api/drivers/{id}/undo-return", "device", "Undo the latest return (10 min): driver back out at their old queue spot", s.handleUndoReturn},
+		{"POST", "/api/drivers/{id}/recall", "device", "Bring a driver who is out back with his run (2.4.1): undelivered orders back in his pool (ready, run order), he is next in the queue, his phone told the run is on hold -> []StoredOrder | 404 driver_not_found | 409 driver_not_out", s.handleRecallDriver},
 		{"POST", "/api/device/unpair", "device", "A paired tablet revokes its own key (204)", s.handleUnpairSelf},
 		{"GET", "/api/batches", "device", "Open + kept closed batches, newest first", s.handleListBatches},
 		{"POST", "/api/batch/close", "device", "Close the batch {force}: 409 lists leftovers unless force (prints driver reports)", s.handleCloseBatch},

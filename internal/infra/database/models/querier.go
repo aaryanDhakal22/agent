@@ -59,6 +59,8 @@ type Querier interface {
 	FinishHiddenClosed(ctx context.Context, arg FinishHiddenClosedParams) (int64, error)
 	// Close-batch auto-finish: force an order to its terminal state.
 	FinishOrder(ctx context.Context, arg FinishOrderParams) error
+	// 2.4.1: a recalled driver is next in the queue.
+	FrontDriverPosition(ctx context.Context) (int64, error)
 	GetActiveDriverByPosNumber(ctx context.Context, posNumber string) (Driver, error)
 	GetAppRelease(ctx context.Context) (string, error)
 	// Settings -----------------------------------------------------------------
@@ -186,6 +188,9 @@ type Querier interface {
 	// ring_at passed: it rings again like a new order. last_alert_at starts the
 	// 2-minute escalation from now, not from the first arrival.
 	RaiseScheduled(ctx context.Context, arg RaiseScheduledParams) (int64, error)
+	// 2.4.1: an undelivered order of a recalled run goes back to its driver's
+	// pool, ready, keeping its stop number (run_seq is rewritten on the next run).
+	RecallOrder(ctx context.Context, arg RecallOrderParams) (int64, error)
 	// A came-back order is released: a normal unassigned ready delivery again.
 	ReleaseCameBack(ctx context.Context, id string) (int64, error)
 	RenameDriver(ctx context.Context, arg RenameDriverParams) (int64, error)

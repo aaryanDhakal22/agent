@@ -178,6 +178,10 @@ const (
 const (
 	NotDeliveredRetry  = "retry"
 	NotDeliveredCancel = "cancel"
+	// NotDeliveredRecall is only a hub feed action (2.4.1): a POS check in
+	// a recalled run is un-dispatched in SoftTouch (the hub ignores the
+	// action); main hears no order.not_delivered for a recall.
+	NotDeliveredRecall = "recall"
 )
 
 // NotDelivered records a delivery that came back: the action staff chose,

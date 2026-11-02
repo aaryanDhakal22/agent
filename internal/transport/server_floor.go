@@ -45,6 +45,8 @@ func (s *Server) floorErr(w http.ResponseWriter, r *http.Request, err error) {
 		s.writeJSON(w, http.StatusConflict, map[string]any{"error": err.Error(), "code": "not_ready", "order_ids": nr.IDs})
 	case errors.Is(err, orderApp.ErrBadAction):
 		s.writeJSON(w, http.StatusBadRequest, errCodeMap("bad_action", "bad_action"))
+	case errors.Is(err, order.ErrDriverNotOut):
+		s.writeJSON(w, http.StatusConflict, errCodeMap(err.Error(), "driver_not_out"))
 	case errors.Is(err, order.ErrNotOutOrDelivered):
 		s.writeJSON(w, http.StatusConflict, errCodeMap("not_out_or_delivered", "not_out_or_delivered"))
 	case errors.Is(err, order.ErrNotUnassigned):
@@ -302,6 +304,19 @@ func (s *Server) handleDriverReturned(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Query().Get("v") == "2" {
 		s.writeJSON(w, http.StatusOK, map[string]any{"orders": out, "auto_assigned_order_ids": assigned})
 		return
+	}
+	s.writeJSON(w, http.StatusOK, out)
+}
+
+// POST /api/drivers/{id}/recall (2.4.1)
+func (s *Server) handleRecallDriver(w http.ResponseWriter, r *http.Request) {
+	out, err := s.service.RecallDriver(r.Context(), r.PathValue("id"))
+	if err != nil {
+		s.floorErr(w, r, err)
+		return
+	}
+	if out == nil {
+		out = []order.StoredOrder{}
 	}
 	s.writeJSON(w, http.StatusOK, out)
 }

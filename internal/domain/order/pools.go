@@ -171,6 +171,10 @@ type PoolRepository interface {
 	// like AssignDriver, and writes the delivery.run event. Returns the sent
 	// orders and the ones it marked ready.
 	SendOut(ctx context.Context, driverID string, include []string, markReady bool, meta RunMeta) (sent, readied []StoredOrder, err error)
+	// RecallDriver brings a driver who is out back to the store (2.4.1): his
+	// undelivered orders go back to his pool, ready, in their run order; he is
+	// available at the front of the queue. ErrDriverNotOut otherwise.
+	RecallDriver(ctx context.Context, driverID string) (recalled []StoredOrder, err error)
 	// SetPoolSeq numbers the driver's pooled orders 1..n in the given order
 	// (one order.status event per order whose number changed) and returns the
 	// changed orders.
