@@ -55,6 +55,7 @@ func (s *Server) routes() []routeDef {
 		{"GET", "/api/session", "none", "Provisioning state (unconfigured|needs_password|locked|ready) + SSE health", s.handleSession},
 
 		// Tablet pairing — open (needs a live 6-digit code from the web UI).
+		{"POST", "/api/pair/manager", "none", "Join a linked Pi with the store manager login (2.4.2; no other tablet to get a code from) {username, password, tablet_name} -> 201 {device_id, name, kind, key, device_key} | 400 name_required | 401 bad_login | 409 not_linked/manager_login_unavailable | 429 too_many_attempts", s.handlePairManager},
 		{"POST", "/api/pair", "none", "Pair a tablet or the store hub: {code, name, kind?: tablet|integration} -> {device_id, name, kind, key, device_key} (shown once)", s.handlePair},
 
 		// Floor — paired tablet (X-Agent-Device-Key) or web-UI session.

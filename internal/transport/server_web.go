@@ -289,17 +289,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer release()
-	ok := s.loginUsernameOK(r, body.Username) && bcrypt.CompareHashAndPassword([]byte(hash), []byte(body.Password)) == nil
-	if !ok && s.recovery != nil {
-		// The manager may have changed the password in main since the last
-		// sync: refresh the hash once (online only) and try again.
-		if changed, _ := s.recovery.RefreshManagerHash(ctx); changed {
-			if h, _, err := s.settings.GetUIPassword(ctx); err == nil {
-				ok = s.loginUsernameOK(r, body.Username) && bcrypt.CompareHashAndPassword([]byte(h), []byte(body.Password)) == nil
-			}
-		}
-	}
-	if !ok {
+	if !s.passwordOK(r, hash, body.Username, body.Password) {
 		s.logins.fail(ip, time.Now())
 		s.writeJSON(w, http.StatusUnauthorized, errCodeMap("Incorrect password.", "invalid_password"))
 		return
@@ -307,6 +297,22 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	s.logins.ok(ip)
 	s.session.issue(w)
 	s.writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+// passwordOK checks a login against the stored UI hash (the manager's on a
+// linked Pi). The manager may have changed the password in main since the
+// last sync: on a miss the hash is refreshed once (online only) and checked
+// again. Shared by the web login and POST /api/pair/manager.
+func (s *Server) passwordOK(r *http.Request, hash, username, password string) bool {
+	ok := s.loginUsernameOK(r, username) && bcrypt.CompareHashAndPassword([]byte(hash), []byte(password)) == nil
+	if !ok && s.recovery != nil {
+		if changed, _ := s.recovery.RefreshManagerHash(r.Context()); changed {
+			if h, _, err := s.settings.GetUIPassword(r.Context()); err == nil {
+				ok = s.loginUsernameOK(r, username) && bcrypt.CompareHashAndPassword([]byte(h), []byte(password)) == nil
+			}
+		}
+	}
+	return ok
 }
 
 func (s *Server) handleLogout(w http.ResponseWriter, _ *http.Request) {

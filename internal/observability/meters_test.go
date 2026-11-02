@@ -177,3 +177,27 @@ func TestLiveUptimeSSEAndUpdateGauges(t *testing.T) {
 		t.Fatalf("agent.update.last_success = %+v", pts)
 	}
 }
+
+// 2.4.2: floor.tablets.version is in the callback's instrument list (it
+// wasn't: the SDK dropped every point and logged "not registered for
+// callback" every collection).
+func TestLiveTabletVersions(t *testing.T) {
+	reader := sdkmetric.NewManualReader()
+	prev := otel.GetMeterProvider()
+	otel.SetMeterProvider(sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader)))
+	t.Cleanup(func() { otel.SetMeterProvider(prev) })
+	if _, err := RegisterLive(Live{
+		Version:        "2.4.2",
+		TabletVersions: func() map[string]int { return map[string]int{"2.0.3": 1, "unknown": 2} },
+	}); err != nil {
+		t.Fatal(err)
+	}
+	pts := intGauge(t, collect(t, reader)["floor.tablets.version"])
+	byVer := map[string]int64{}
+	for _, p := range pts {
+		byVer[attr(p.Attributes, "app_version")] = p.Value
+	}
+	if len(byVer) != 2 || byVer["2.0.3"] != 1 || byVer["unknown"] != 2 {
+		t.Fatalf("floor.tablets.version = %+v", pts)
+	}
+}
