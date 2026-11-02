@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"math/big"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -239,6 +240,12 @@ func (s *Server) handlePair(w http.ResponseWriter, r *http.Request) {
 		s.writeJSON(w, http.StatusUnauthorized, errCodeMap("wrong or expired pairing code", "invalid_code"))
 		return
 	}
+	s.pairDevice(w, r, name, kind, "code")
+}
+
+// pairDevice creates a paired device and answers 201 with its key — the
+// tail of POST /api/pair and POST /api/pair/manager.
+func (s *Server) pairDevice(w http.ResponseWriter, r *http.Request, name, kind, how string) {
 	key, err := newDeviceKey()
 	if err != nil {
 		s.writeError(w, r, http.StatusInternalServerError, err)
@@ -249,12 +256,73 @@ func (s *Server) handlePair(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, r, http.StatusInternalServerError, err)
 		return
 	}
-	s.logger.Info().Ctx(r.Context()).Str("device_id", id).Str("name", name).Str("kind", kind).Msg("Device paired")
+	s.logger.Info().Ctx(r.Context()).Str("device_id", id).Str("name", name).Str("kind", kind).Str("with", how).Msg("Device paired")
 	if kind == device.KindIntegration && s.broker != nil {
 		s.broker.PublishFloorChanged() // the web UI shows the POS switches now
 	}
 	// device_key is the same key under the name the integration contract uses.
 	s.writeJSON(w, http.StatusCreated, map[string]any{"device_id": id, "name": name, "kind": kind, "key": key, "device_key": key})
+}
+
+// POST /api/pair/manager {username, password, tablet_name} (open, 2.4.2) — a
+// tablet joins a linked Pi with the store manager login, for when there is no
+// working tablet to get a code from (the only one was reinstalled). Same
+// login, hash refresh and per-IP throttle as the web UI's /api/login; the
+// tablet is created like POST /api/pair.
+func (s *Server) handlePairManager(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	key, err := s.settings.GetStoreAPIKey(ctx)
+	if err != nil {
+		s.writeError(w, r, http.StatusInternalServerError, err)
+		return
+	}
+	if key == "" {
+		s.writeJSON(w, http.StatusConflict, errCodeMap("This Pi isn't set up yet — set it up with the manager login first.", "not_linked"))
+		return
+	}
+	li, err := s.settings.GetLinkInfo(ctx)
+	if err != nil {
+		s.writeError(w, r, http.StatusInternalServerError, err)
+		return
+	}
+	hash, _, err := s.settings.GetUIPassword(ctx)
+	if err != nil {
+		s.writeError(w, r, http.StatusInternalServerError, err)
+		return
+	}
+	if li.ManagerUsername == "" || hash == "" {
+		s.writeJSON(w, http.StatusConflict, errCodeMap("This Pi doesn't use the manager login — get a pairing code on its web page.", "manager_login_unavailable"))
+		return
+	}
+	var body struct {
+		Username   string `json:"username"`
+		Password   string `json:"password"`
+		TabletName string `json:"tablet_name"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		s.writeJSON(w, http.StatusBadRequest, errCodeMap("invalid body", "bad_request"))
+		return
+	}
+	name := strings.TrimSpace(body.TabletName)
+	if name == "" || utf8.RuneCountInString(name) > 40 {
+		s.writeJSON(w, http.StatusBadRequest, errCodeMap("name must be 1-40 characters", "name_required"))
+		return
+	}
+	ip := clientIP(r)
+	release, wait := s.logins.begin(ip, time.Now())
+	if wait > 0 {
+		w.Header().Set("Retry-After", strconv.Itoa(int(wait.Seconds())+1))
+		s.writeJSON(w, http.StatusTooManyRequests, errCodeMap("Too many wrong passwords — wait a minute and try again.", "too_many_attempts"))
+		return
+	}
+	defer release()
+	if !s.passwordOK(r, hash, body.Username, body.Password) {
+		s.logins.fail(ip, time.Now())
+		s.writeJSON(w, http.StatusUnauthorized, errCodeMap("Wrong manager username or password.", "bad_login"))
+		return
+	}
+	s.logins.ok(ip)
+	s.pairDevice(w, r, name, device.KindTablet, "manager_login")
 }
 
 // GET /api/devices (session).

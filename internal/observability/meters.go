@@ -399,5 +399,5 @@ func RegisterLive(src Live) (metric.Registration, error) {
 			}
 		}
 		return nil
-	}, floorOpen, tablets, hubUp, hubAge, info, sseUp, uptime, hostUptime, lastUpdate)
+	}, floorOpen, tablets, tabletVersions, hubUp, hubAge, info, sseUp, uptime, hostUptime, lastUpdate)
 }
