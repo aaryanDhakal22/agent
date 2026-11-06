@@ -26,9 +26,10 @@ import (
 // 2.1.0 store hub surface through the service with the real SQLite repo.
 
 type printCall struct {
-	OrderID string
-	Mode    printer.Mode
-	Number  int64
+	OrderID  string
+	Mode     printer.Mode
+	Number   int64
+	Promised *time.Time // the snapshot's promised_at as printed
 }
 
 type printLog struct {
@@ -104,10 +105,13 @@ func newIntegService(t *testing.T) (*Service, *repositories.OrderRepository, cha
 		if snap.KitchenNumber != nil {
 			n = *snap.KitchenNumber
 		}
-		log.calls = append(log.calls, printCall{OrderID: snap.ID, Mode: mode, Number: n})
+		log.calls = append(log.calls, printCall{OrderID: snap.ID, Mode: mode, Number: n, Promised: snap.Fulfillment.PromisedAt})
 		printed := []printer.TicketResult{{Kind: printer.TicketStation}}
-		if mode == printer.ModeFutureEarly { // 2.4.0: the switches' early tickets
+		switch mode {
+		case printer.ModeFutureEarly, printer.ModeFutureBoth: // 2.4.0: the switches' early tickets; 2.4.3 PRINT NOW
 			printed = append(printed, printer.TicketResult{Kind: printer.TicketReceipt})
+		case printer.ModeFutureReceipt:
+			printed = []printer.TicketResult{{Kind: printer.TicketReceipt}}
 		}
 		return printer.Outcome{Printed: printed, InsertExpected: log.insert && mode == printer.ModeAccept}, nil
 	}

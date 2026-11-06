@@ -334,3 +334,63 @@ def test_future_orders_schedule(kitchen) -> None:  # noqa: F811
     r = a.http.put(f"{a.base}/api/settings/times", json={"default_pickup_minutes": 20}, timeout=5)
     assert r.json() == {"default_pickup_minutes": 20, "default_delivery_minutes": 35}
     assert uuid.UUID(later["id"])
+
+
+def test_future_order_actions(kitchen, fakes) -> None:  # noqa: F811
+    """2.4.3: MAKE NOW / CHANGE DUE TIME / PRINT NOW / CANCEL on a waiting
+    future order, end to end on fake printers."""
+    a, ids = kitchen["agent"], kitchen["ids"]
+
+    def future(hours: float) -> dict:
+        snap = _snap(kitchen["main_store"], [_item("Pepperoni", ids["Pizza"])])
+        snap["fulfillment"] = {"type": "pickup",
+                               "promised_at": (datetime.now(timezone.utc) + timedelta(hours=hours)).isoformat()}
+        assert a.http.post(f"{a.base}/api/resend", json=snap, timeout=15).status_code == 200
+        r = a.http.post(f"{a.base}/api/orders/{snap['id']}/schedule", json={"lead_minutes": 30}, timeout=5)
+        assert r.status_code == 200, r.text
+        return snap
+
+    # PRINT NOW: the kitchen's DO NOT MAKE ticket only.
+    one = future(20)
+    r = a.http.post(f"{a.base}/api/orders/{one['id']}/print-now", json={"kitchen": True, "receipt": False}, timeout=30)
+    assert r.status_code == 200, r.text
+    assert r.json()["printed"] == ["Pizza"] and r.json()["order"]["status"]["early_kitchen"] is True
+    wait_until(lambda: len(fakes["Pizza"].jobs) >= 1, timeout=10, what="the early kitchen ticket")
+    assert b"DO NOT MAKE" in fakes["Pizza"].jobs[-1]
+    assert a.http.post(f"{a.base}/api/orders/{one['id']}/print-now", json={}, timeout=5).status_code == 400
+
+    # CHANGE DUE TIME: the ring time follows.
+    due = datetime.now(timezone.utc) + timedelta(hours=3)
+    r = a.http.post(f"{a.base}/api/orders/{one['id']}/due", json={"promised_at": due.isoformat()}, timeout=5)
+    st = r.json()["status"]
+    assert r.status_code == 200 and st["due_moved_from"] and st["state"] == "scheduled"
+    ring = datetime.fromisoformat(st["ring_at"].replace("Z", "+00:00"))
+    assert abs((due - timedelta(minutes=30) - ring).total_seconds()) < 1
+    past = (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat()
+    assert a.http.post(f"{a.base}/api/orders/{one['id']}/due", json={"promised_at": past}, timeout=5).status_code == 400
+
+    # MAKE NOW: accepted, a kitchen number, printed with no FUTURE.
+    pizza_before = len(fakes["Pizza"].jobs)
+    r = a.http.post(f"{a.base}/api/orders/{one['id']}/make-now", json={"prep_minutes": 20}, timeout=30)
+    assert r.status_code == 200, r.text
+    st = r.json()["status"]
+    assert st["state"] == "accepted" and st["kitchen_number"] and st.get("made_now") is True and not st.get("future")
+    wait_until(lambda: len(fakes["Pizza"].jobs) > pizza_before, timeout=10, what="the make-now kitchen ticket")
+    made = fakes["Pizza"].jobs[pizza_before]
+    assert b"FUTURE" not in made and b"DO NOT MAKE" not in made
+    r = a.http.post(f"{a.base}/api/orders/{one['id']}/make-now", json={"prep_minutes": 20}, timeout=5)
+    assert r.status_code == 409
+
+    # CANCEL a second one.
+    two = future(30)
+    r = a.http.post(f"{a.base}/api/orders/{two['id']}/cancel", timeout=5)
+    assert r.status_code == 200 and r.json()["status"]["state"] == "cancelled"
+    assert a.http.post(f"{a.base}/api/orders/{two['id']}/cancel", timeout=5).status_code == 409
+
+    # The store's colours.
+    look = a.http.get(f"{a.base}/api/settings/look", timeout=5).json()
+    assert look == {"accent": "#AC94F4", "tickets": {"delivery": "#3B82F6", "pickup": "#3B82F6", "counter": "#3B82F6"}}
+    r = a.http.put(f"{a.base}/api/settings/look", json={"tickets": {"delivery": "#7C3AED"}}, timeout=5)
+    assert r.status_code == 200 and r.json()["tickets"]["delivery"] == "#7C3AED" and r.json()["tickets"]["pickup"] == "#3B82F6"
+    assert a.http.put(f"{a.base}/api/settings/look", json={"accent": "blue"}, timeout=5).status_code == 400
+    assert a.http.get(f"{a.base}/api/floor", timeout=5).json()["settings"]["look"]["tickets"]["delivery"] == "#7C3AED"

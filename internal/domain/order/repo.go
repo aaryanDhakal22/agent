@@ -131,6 +131,16 @@ type IntegrationRepository interface {
 	RaiseDue(ctx context.Context, now time.Time) ([]StoredOrder, error)
 	// SetEarlyPrinted records a future order's early tickets (2.4.0).
 	SetEarlyPrinted(ctx context.Context, id string, kitchen, receipt bool) error
+	// PrepareMakeNow (2.4.3) marks a waiting future order (arrived or
+	// scheduled) made now and leaves it arrived for the accept that follows
+	// (ErrInvalidState otherwise).
+	PrepareMakeNow(ctx context.Context, id string) error
+	// SetDueOverride (2.4.3) stores the Pi's own due time of a waiting order
+	// and, when ringAt is set, its new ring time; no floor event.
+	SetDueOverride(ctx context.Context, id string, due time.Time, ringAt *time.Time) (*StoredOrder, error)
+	// CancelWaiting (2.4.3) cancels a waiting order (arrived or scheduled,
+	// not mid-accept) with its cancelled floor event (ErrInvalidState).
+	CancelWaiting(ctx context.Context, id string) (*StoredOrder, error)
 
 	// 00019. AckPosChange marks an order's terminal change OK'd (acked_at;
 	// it stops ringing, the ticket keeps CHANGED). changeID "" = whatever is

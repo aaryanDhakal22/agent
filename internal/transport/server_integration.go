@@ -89,6 +89,16 @@ func (s *Server) handleSetFinishing(w http.ResponseWriter, r *http.Request) {
 	s.putSettings(w, r, func(set *order.IntegrationSettings) any { return &set.Finishing })
 }
 
+// GET /api/settings/look (2.4.3)
+func (s *Server) handleGetLook(w http.ResponseWriter, _ *http.Request) {
+	s.writeJSON(w, http.StatusOK, s.service.IntegrationSettings().Look)
+}
+
+// PUT /api/settings/look {accent?, tickets?: {delivery?, pickup?, counter?}}
+func (s *Server) handleSetLook(w http.ResponseWriter, r *http.Request) {
+	s.putSettings(w, r, func(set *order.IntegrationSettings) any { return &set.Look })
+}
+
 // GET /api/settings/callout
 func (s *Server) handleGetCalloutSettings(w http.ResponseWriter, _ *http.Request) {
 	s.writeJSON(w, http.StatusOK, s.service.IntegrationSettings().Callout)
@@ -493,4 +503,98 @@ func (s *Server) handleIntegrationEvents(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	s.writeJSON(w, http.StatusOK, page)
+}
+
+// --- future-order actions (2.4.3) ------------------------------------------------------------
+
+// POST /api/orders/{id}/make-now {prep_minutes}
+func (s *Server) handleMakeNow(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		PrepMinutes *int `json:"prep_minutes"`
+	}
+	if err := decodeBody(r, &req); err != nil {
+		s.floorErr(w, r, err)
+		return
+	}
+	if req.PrepMinutes == nil {
+		s.writeJSON(w, http.StatusBadRequest, errCodeMap("prep_minutes is required", "bad_request"))
+		return
+	}
+	so, err := s.service.MakeNow(r.Context(), r.PathValue("id"), *req.PrepMinutes)
+	if err != nil {
+		if errors.Is(err, orderApp.ErrNothingPrinted) {
+			s.writeJSON(w, http.StatusBadGateway, errCodeMap(err.Error(), "nothing_printed"))
+			return
+		}
+		s.floorErr(w, r, err)
+		return
+	}
+	s.writeJSON(w, http.StatusOK, so)
+}
+
+// POST /api/orders/{id}/due {promised_at}
+func (s *Server) handleChangeDue(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		PromisedAt *time.Time `json:"promised_at"`
+	}
+	if err := decodeBody(r, &req); err != nil {
+		s.floorErr(w, r, err)
+		return
+	}
+	if req.PromisedAt == nil {
+		s.writeJSON(w, http.StatusBadRequest, errCodeMap("promised_at is required", "bad_request"))
+		return
+	}
+	so, err := s.service.ChangeDue(r.Context(), r.PathValue("id"), *req.PromisedAt)
+	if err != nil {
+		s.floorErr(w, r, err)
+		return
+	}
+	s.writeJSON(w, http.StatusOK, so)
+}
+
+// POST /api/orders/{id}/print-now {kitchen, receipt}
+func (s *Server) handlePrintNow(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Kitchen bool `json:"kitchen"`
+		Receipt bool `json:"receipt"`
+	}
+	if err := decodeBody(r, &req); err != nil {
+		s.floorErr(w, r, err)
+		return
+	}
+	so, out, err := s.service.PrintNow(r.Context(), r.PathValue("id"), req.Kitchen, req.Receipt)
+	switch {
+	case err == nil:
+	case errors.Is(err, orderApp.ErrNothingForKitchen):
+		s.writeJSON(w, http.StatusConflict, errCodeMap(err.Error(), "nothing_for_kitchen"))
+		return
+	case errors.Is(err, orderApp.ErrFuturePrintFailed):
+		s.writeJSON(w, http.StatusBadGateway, errCodeMap(err.Error(), "print_failed"))
+		return
+	default:
+		s.floorErr(w, r, err)
+		return
+	}
+	printed, failed, rerouted := []string{}, []string{}, []reroutedDTO{}
+	for _, p := range out.Printed {
+		printed = append(printed, p.Station)
+		if p.ReroutedFrom != "" {
+			rerouted = append(rerouted, reroutedDTO{Station: p.Station, PrintedOn: p.PrintedOn})
+		}
+	}
+	for _, f := range out.Failed {
+		failed = append(failed, f.Station)
+	}
+	s.writeJSON(w, http.StatusOK, map[string]any{"order": so, "printed": printed, "failed": failed, "rerouted": rerouted})
+}
+
+// POST /api/orders/{id}/cancel
+func (s *Server) handleCancelFuture(w http.ResponseWriter, r *http.Request) {
+	so, err := s.service.CancelFuture(r.Context(), r.PathValue("id"))
+	if err != nil {
+		s.floorErr(w, r, err)
+		return
+	}
+	s.writeJSON(w, http.StatusOK, so)
 }

@@ -287,6 +287,21 @@ func toStored(row models.Order) (order.StoredOrder, error) {
 	if st.PaidAt, err = optTS(row.PaidAt); err != nil {
 		return order.StoredOrder{}, fmt.Errorf("parse paid_at for order %s: %w", row.ID, err)
 	}
+	// 00023: the Pi's own due time / MADE NOW, applied here so every reader
+	// (future rule, ring, printing, Close batch, tablets, the hub) sees it.
+	due, err := optTS(row.DueOverride)
+	if err != nil {
+		return order.StoredOrder{}, fmt.Errorf("parse due_override for order %s: %w", row.ID, err)
+	}
+	if due != nil {
+		st.DueMovedFrom = s.Fulfillment.PromisedAt
+		d := due.UTC()
+		s.Fulfillment.PromisedAt = &d
+	}
+	if row.MadeNow {
+		st.MadeNow = true
+		s.Fulfillment.PromisedAt = nil
+	}
 	return order.StoredOrder{Order: s, Status: st}, nil
 }
 

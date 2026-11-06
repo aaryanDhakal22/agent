@@ -78,6 +78,9 @@ CREATE TABLE orders (
     -- 00022: a future order's tickets printed early (first ACCEPT).
     early_kitchen           boolean NOT NULL DEFAULT false,
     early_receipt           boolean NOT NULL DEFAULT false,
+    -- 00023: a future order's due time moved on the Pi / MADE NOW.
+    due_override            text,
+    made_now                boolean NOT NULL DEFAULT false,
     CHECK (state IN ('arrived', 'scheduled', 'accepted', 'ready', 'on_delivery', 'delivered', 'cancelled'))
 );
 CREATE INDEX idx_orders_arrival_date ON orders (arrival_date DESC);
@@ -218,6 +221,8 @@ CREATE TABLE settings (
     -- 00019_callout: finishing orders + the order callout (JSON).
     finishing                 text NOT NULL DEFAULT '{}',
     callout                   text NOT NULL DEFAULT '{}',
+    -- 00023_future_actions: the store's colours (JSON).
+    look                      text NOT NULL DEFAULT '{}',
     CHECK (id = 1)
 );
 
