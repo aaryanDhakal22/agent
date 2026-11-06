@@ -95,6 +95,41 @@ class ApiError extends Error {
 function ts(v) { if (!v) return 0; const n = new Date(v).getTime(); return Number.isFinite(n) ? n : 0; }
 function money(cents) { const c = Number(cents) || 0; return (c < 0 ? '-$' : '$') + (Math.abs(c) / 100).toFixed(2); }
 function clock(v) { const t = ts(v); return t ? new Date(t).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) : '—'; }
+// 2.4.3 store colours: '#RRGGBB' <-> HSL, and the CSS the accent needs.
+const DEFAULT_ACCENT = '#AC94F4', DEFAULT_TICKET = '#3B82F6';
+function hexRGB(hex) { const n = parseInt(String(hex || '').slice(1), 16); return [(n >> 16) & 255, (n >> 8) & 255, n & 255]; }
+function rgbHSL([r, g, b]) {
+  r /= 255; g /= 255; b /= 255;
+  const mx = Math.max(r, g, b), mn = Math.min(r, g, b), l = (mx + mn) / 2;
+  if (mx === mn) return [0, 0, l * 100];
+  const d = mx - mn, s = l > 0.5 ? d / (2 - mx - mn) : d / (mx + mn);
+  const h = mx === r ? (g - b) / d + (g < b ? 6 : 0) : mx === g ? (b - r) / d + 2 : (r - g) / d + 4;
+  return [h * 60, s * 100, l * 100];
+}
+function lum([r, g, b]) {
+  const c = v => { v /= 255; return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4); };
+  return 0.2126 * c(r) + 0.7152 * c(g) + 0.0722 * c(b);
+}
+// accentCSS: the brand tokens for an accent (empty for the default lavender,
+// which app.css already has).
+function accentCSS(hex) {
+  if (!/^#[0-9a-f]{6}$/i.test(hex || '') || hex.toUpperCase() === DEFAULT_ACCENT) return '';
+  const rgb = hexRGB(hex), [h, sat, l] = rgbHSL(rgb), H = Math.round(h), S = Math.round(Math.min(sat, 85));
+  const hsl = (sx, lx) => 'hsl(' + H + ' ' + Math.round(sx) + '% ' + Math.round(lx) + '%)';
+  const deep = hsl(S, Math.min(l, 42));
+  const onBrand = lum(rgb) > 0.4 ? hsl(S * 0.5, 16) : '#FFFFFF';
+  const light = '--brand:' + hex + ';--brand-hover:' + hsl(S, Math.min(l + 6, 92)) + ';--on-brand:' + onBrand +
+    ';--brand-soft:' + hsl(S, 96) + ';--accent:' + deep + ';--focus:' + deep + ';--sw-on:' + deep + ';';
+  const dark = '--accent:' + hsl(S, Math.max(l, 62)) + ';--brand-soft:rgba(' + rgb.join(',') + ',.16);--focus:' + hsl(S, Math.max(l, 62)) +
+    ';--sw-on:' + hsl(S, Math.max(l, 62)) + ';';
+  return '.q{' + light + '}.q.dark{' + dark + '}@media (prefers-color-scheme: dark){.q:not(.light){' + dark + '}}';
+}
+function applyAccent(hex) {
+  let el = document.getElementById('look-css');
+  if (!el) { el = document.createElement('style'); el.id = 'look-css'; document.head.appendChild(el); }
+  const css = accentCSS(hex);
+  if (el.textContent !== css) el.textContent = css;
+}
 function dateTime(v) { const t = ts(v); return t ? new Date(t).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : '—'; }
 // m:ss, or h:mm:ss past an hour (Quibase's duration()).
 function dur(ms) {
@@ -626,6 +661,7 @@ function agentApp() {
           this.call('/api/floor'), this.call('/api/drivers'), this.call('/api/orders?batch=current&limit=200'),
         ]);
         this.floor = f; this.drivers = d || []; this.orders = o || [];
+        applyAccent(f && f.settings && f.settings.look ? f.settings.look.accent : DEFAULT_ACCENT);
         this.floorErr = ''; this.floorLoaded = true;
         this.syncFloorUI();
       } catch (e) {
@@ -729,6 +765,13 @@ function agentApp() {
       if (t < 0.5) return '--tone:' + mix('--t-green', '--t-amber', t * 2) + ';--ink:' + mix('--i-green', '--i-amber', t * 2);
       return '--tone:' + mix('--t-amber', '--t-red', (t - 0.5) * 2) + ';--ink:' + mix('--i-amber', '--i-red', (t - 0.5) * 2);
     },
+    // 2.4.3: the ticket's bar in the store's colour for its type.
+    barStyle(so) {
+      const t = (this.floor && this.floor.settings && this.floor.settings.look && this.floor.settings.look.tickets) || {};
+      const ft = ftype(so.order);
+      const c = ft === 'delivery' ? t.delivery : ft === 'pickup' ? t.pickup : t.counter;
+      return '--bar:' + (/^#[0-9a-f]{6}$/i.test(c || '') ? c : DEFAULT_TICKET);
+    },
     dueText(so) {
       const eta = ts(so.status.estimated_ready_at); if (!eta) return '';
       const left = eta - this.now;
@@ -768,6 +811,73 @@ function agentApp() {
         await this.call('/api/orders/' + so.order.id + '/resend', { method: 'POST' });
         this.toast('Rang the tablet again');
       } catch (e) { this.toast("Couldn't ring the tablet. " + e.message, true); } finally { this.busy[key] = false; }
+    },
+    // --- future orders (2.4.3): the Later strip's actions -----------------------------
+    futureDefault(so) {
+      const t = (this.floor && this.floor.settings && this.floor.settings.times) || {};
+      return isDelivery(so) ? (t.default_delivery_minutes || 35) : (t.default_pickup_minutes || 15);
+    },
+    futureError(e, what) {
+      if (e instanceof ApiError && (e.code === 'not_future' || e.code === 'invalid_state')) return 'This order already moved on — the screen will refresh.';
+      if (e instanceof ApiError && e.status === 502) return 'Printer problem — nothing printed. ' + what + ' not done.';
+      return what + ' not done. ' + e.message;
+    },
+    async makeNow(so) {
+      const id = so.order.id, key = 'mn' + id;
+      if (this.busy[key]) return;
+      const v = await this.ask({ title: 'Make ' + custName(so.order) + "'s order now?", body: 'It is accepted right away: kitchen tickets and the receipt print, and it cooks like a new order.',
+        confirmLabel: 'Make now', input: { label: 'Prep time (minutes)', type: 'number', min: 1, max: 240, maxlength: 3 }, value: String(this.futureDefault(so)) });
+      if (v === null) return;
+      const minutes = Math.round(Number(v));
+      if (!(minutes >= 1 && minutes <= 240)) { this.toast('Prep time must be 1-240 minutes.', true); return; }
+      this.busy[key] = true;
+      try {
+        await this.call('/api/orders/' + id + '/make-now', { method: 'POST', body: { prep_minutes: minutes } });
+        this.toast('Making ' + custName(so.order) + ' now · ' + minutes + ' min');
+      } catch (e) { this.toast(this.futureError(e, 'Make now'), true); } finally { this.busy[key] = false; this.loadFloor(); }
+    },
+    async changeDue(so) {
+      const id = so.order.id, key = 'due' + id;
+      if (this.busy[key]) return;
+      const local = t => { const d = new Date(t - new Date(t).getTimezoneOffset() * 60000); return d.toISOString().slice(0, 16); };
+      const cur = ts(so.order.fulfillment && so.order.fulfillment.promised_at) || this.now;
+      const v = await this.ask({ title: 'Change when ' + custName(so.order) + "'s order is due", body: 'Only this store sees the new time. It rings again its lead time before.',
+        confirmLabel: 'Save', input: { label: 'Due', type: 'datetime-local', min: local(this.now), max: local(this.now + 14 * 86400000), maxlength: 20 }, value: local(cur) });
+      if (v === null || !v) return;
+      const due = new Date(v);
+      if (isNaN(due.getTime())) { this.toast('Pick a date and time.', true); return; }
+      this.busy[key] = true;
+      try {
+        await this.call('/api/orders/' + id + '/due', { method: 'POST', body: { promised_at: due.toISOString() } });
+        this.toast('Due ' + dateTime(due.toISOString()));
+      } catch (e) {
+        this.toast(e instanceof ApiError && e.status === 400 ? 'Pick a time in the next 14 days.' : this.futureError(e, 'Change time'), true);
+      } finally { this.busy[key] = false; this.loadFloor(); }
+    },
+    async printNow(so, kitchen, receipt) {
+      const id = so.order.id, key = 'pn' + id;
+      if (this.busy[key]) return;
+      this.busy[key] = true;
+      try {
+        const r = await this.call('/api/orders/' + id + '/print-now', { method: 'POST', body: { kitchen, receipt } });
+        this.toast((kitchen ? 'Kitchen tickets' : 'Receipt') + ' printed' + (r && r.failed && r.failed.length ? ' · not on ' + r.failed.join(', ') : ''));
+      } catch (e) {
+        this.toast(e instanceof ApiError && e.code === 'nothing_for_kitchen' ? 'Nothing on this order goes to the kitchen.' : this.futureError(e, 'Print'), true);
+      } finally { this.busy[key] = false; this.loadFloor(); }
+    },
+    async cancelFuture(so) {
+      const id = so.order.id, key = 'cx' + id;
+      if (this.busy[key]) return;
+      const card = (so.status.cash_due_cents || 0) === 0;
+      const ok = await this.ask({ title: 'Cancel ' + custName(so.order) + "'s order?", danger: true, confirmLabel: 'Cancel order', cancelLabel: 'Keep it',
+        body: moneyLabel(so.order) + ' · due ' + dateTime(so.order.fulfillment && so.order.fulfillment.promised_at) + '. It leaves the board for good.' +
+          (card ? ' Paid by card — refund it with the online ordering company.' : '') });
+      if (!ok) return;
+      this.busy[key] = true;
+      try {
+        await this.call('/api/orders/' + id + '/cancel', { method: 'POST' });
+        this.toast(custName(so.order) + "'s order cancelled");
+      } catch (e) { this.toast(this.futureError(e, 'Cancel'), true); } finally { this.busy[key] = false; this.loadFloor(); }
     },
     async markReady(so) {
       const key = 'rd' + so.order.id;

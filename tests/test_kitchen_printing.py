@@ -185,7 +185,7 @@ def test_legacy_order_prints_one_full_receipt(kitchen, fakes) -> None:
 
 def _reset(fakes) -> None:
     for f in fakes.values():
-        f.jobs.clear()
+        f.clear()
 
 
 def test_reprint_prints_only_the_receipt(kitchen, fakes) -> None:

@@ -345,3 +345,24 @@ func TestPlan_FutureEarlyAndAcceptKitchen(t *testing.T) {
 		t.Fatalf("accept kitchen: %v", kinds(tk))
 	}
 }
+
+// 2.4.3 PRINT NOW: the early tickets staff picked, whatever the switches.
+func TestPlan_FuturePrintNow(t *testing.T) {
+	roster := []RosterEntry{front, pizza}
+	snap := order.Snapshot{Items: []order.LineItem{item("Pepperoni", order.RoutingMatched, pizza.ID), item("Soda", order.RoutingMatched, front.ID)}}
+	for mode, want := range map[printer.Mode][]string{
+		printer.ModeFutureKitchen: {"station:p-pizza"},
+		printer.ModeFutureReceipt: {"receipt:p-front"},
+		printer.ModeFutureBoth:    {"station:p-pizza", "receipt:p-front"},
+	} {
+		tk, _ := PlanWith(snap, roster, mode, Rules{})
+		if !reflect.DeepEqual(kinds(tk), want) {
+			t.Fatalf("%s: %v", mode, kinds(tk))
+		}
+		for _, x := range tk {
+			if !x.Future {
+				t.Fatalf("%s: not marked future", mode)
+			}
+		}
+	}
+}

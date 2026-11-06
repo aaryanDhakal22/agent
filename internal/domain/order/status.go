@@ -138,6 +138,12 @@ type Status struct {
 	// tickets / customer receipt printed at its first ACCEPT.
 	EarlyKitchen bool `json:"early_kitchen,omitempty"`
 	EarlyReceipt bool `json:"early_receipt,omitempty"`
+	// MadeNow (2.4.3): MAKE NOW took a future order out of the future - its
+	// promised_at is dropped from the order the Pi serves and prints.
+	MadeNow bool `json:"made_now,omitempty"`
+	// DueMovedFrom (2.4.3): CHANGE DUE TIME moved the due time on the Pi;
+	// this is the vendor's own promised_at (the order shows the new one).
+	DueMovedFrom *time.Time `json:"due_moved_from,omitempty"`
 }
 
 // MarkedBy is who did something on the floor: a paired tablet (kind

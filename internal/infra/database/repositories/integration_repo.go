@@ -72,6 +72,9 @@ func integrationSettings(ctx context.Context, q *models.Queries) (order.Integrat
 	if set.Callout, err = order.DecodeCallout([]byte(row.Callout)); err != nil {
 		set.Callout = order.DefaultCallout()
 	}
+	if set.Look, err = order.DecodeLook([]byte(row.Look)); err != nil {
+		set.Look = order.DefaultLook()
+	}
 	return set, nil
 }
 
@@ -103,10 +106,14 @@ func (r *OrderRepository) SetIntegrationSettings(ctx context.Context, set order.
 	if err != nil {
 		return err
 	}
+	lk, err := json.Marshal(set.Look)
+	if err != nil {
+		return err
+	}
 	return r.withTx(ctx, func(q *models.Queries) error {
 		if err := q.SetIntegrationSettings(ctx, models.SetIntegrationSettingsParams{Features: string(f), TicketToggles: string(t),
 			DefaultPickupMinutes: set.Times.DefaultPickupMinutes, DefaultDeliveryMinutes: set.Times.DefaultDeliveryMinutes,
-			Finishing: string(fin), Callout: string(co)}); err != nil {
+			Finishing: string(fin), Callout: string(co), Look: string(lk)}); err != nil {
 			return err
 		}
 		return insertFeed(ctx, q, order.FeedSettingsChanged, time.Now(), set)

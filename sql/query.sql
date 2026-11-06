@@ -788,6 +788,25 @@ UPDATE orders SET flag = ? WHERE id = ?;
 UPDATE orders SET state = 'scheduled', scheduled_lead_minutes = ?, ring_at = ?
 WHERE id = ? AND state IN ('arrived', 'scheduled');
 
+-- name: PrepareMakeNow :execrows
+-- 2.4.3 MAKE NOW: a waiting future order leaves the future (made_now hides
+-- its promised_at) and waits as a plain arrived order for the accept that
+-- follows at once.
+UPDATE orders SET made_now = true, state = 'arrived', rerung = false, ring_at = NULL
+WHERE id = ? AND state IN ('arrived', 'scheduled') AND accept_pending = 0;
+
+-- name: SetDueOverride :execrows
+-- 2.4.3 CHANGE DUE TIME: the Pi's own due time (main keeps the vendor's);
+-- a scheduled order's ring time moves with it.
+UPDATE orders SET due_override = sqlc.arg(due), ring_at = COALESCE(sqlc.narg(ring_at), ring_at)
+WHERE id = sqlc.arg(id) AND state IN ('arrived', 'scheduled');
+
+-- name: CancelWaiting :execrows
+-- 2.4.3 CANCEL on a waiting future order (never accepted, nothing cooked).
+UPDATE orders SET state = 'cancelled', cancelled_at = ?, ring_at = NULL, pool_driver_id = NULL, pooled_at = NULL,
+    pool_seq = NULL, pool_plan_id = NULL
+WHERE id = ? AND state IN ('arrived', 'scheduled') AND accept_pending = 0;
+
 -- name: ListDueScheduled :many
 SELECT * FROM orders WHERE state = 'scheduled' AND ring_at <= ? ORDER BY ring_at ASC;
 
@@ -823,11 +842,11 @@ DELETE FROM integration_events WHERE created_at < ?;
 -- Integration settings (2.1.0) ---------------------------------------------------
 
 -- name: GetIntegrationSettings :one
-SELECT features, ticket_toggles, default_pickup_minutes, default_delivery_minutes, finishing, callout FROM settings WHERE id = 1;
+SELECT features, ticket_toggles, default_pickup_minutes, default_delivery_minutes, finishing, callout, look FROM settings WHERE id = 1;
 
 -- name: SetIntegrationSettings :exec
 UPDATE settings SET features = ?, ticket_toggles = ?, default_pickup_minutes = ?, default_delivery_minutes = ?,
-    finishing = ?, callout = ?
+    finishing = ?, callout = ?, look = ?
 WHERE id = 1;
 
 -- name: GetIntegrationStatus :one

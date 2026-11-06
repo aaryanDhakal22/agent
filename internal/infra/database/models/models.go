@@ -119,6 +119,8 @@ type Order struct {
 	PaidAt               sql.NullString `json:"paid_at"`
 	EarlyKitchen         bool           `json:"early_kitchen"`
 	EarlyReceipt         bool           `json:"early_receipt"`
+	DueOverride          sql.NullString `json:"due_override"`
+	MadeNow              bool           `json:"made_now"`
 }
 
 type OrderGeo struct {
@@ -212,6 +214,7 @@ type Setting struct {
 	AutoAssign                 bool    `json:"auto_assign"`
 	Finishing                  string  `json:"finishing"`
 	Callout                    string  `json:"callout"`
+	Look                       string  `json:"look"`
 }
 
 type SettingsLog struct {

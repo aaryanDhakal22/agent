@@ -18,6 +18,8 @@ type Querier interface {
 	CancelExternalOrder(ctx context.Context, arg CancelExternalOrderParams) (int64, error)
 	// Close-batch: an order nobody accepted is cancelled (never printed, no kitchen number).
 	CancelOrder(ctx context.Context, arg CancelOrderParams) error
+	// 2.4.3 CANCEL on a waiting future order (never accepted, nothing cooked).
+	CancelWaiting(ctx context.Context, arg CancelWaitingParams) (int64, error)
 	// Claims an arrived order for acceptance (0 rows = missing or already taken).
 	// The kitchen number is kept across a revert + re-accept.
 	ClaimAccept(ctx context.Context, arg ClaimAcceptParams) (int64, error)
@@ -184,6 +186,10 @@ type Querier interface {
 	OpenBatch(ctx context.Context, openedAt string) (Batch, error)
 	// Driver shifts ----------------------------------------------------------------
 	OpenShift(ctx context.Context, arg OpenShiftParams) error
+	// 2.4.3 MAKE NOW: a waiting future order leaves the future (made_now hides
+	// its promised_at) and waits as a plain arrived order for the accept that
+	// follows at once.
+	PrepareMakeNow(ctx context.Context, id string) (int64, error)
 	PruneSettingsLog(ctx context.Context, before string) error
 	// ring_at passed: it rings again like a new order. last_alert_at starts the
 	// 2-minute escalation from now, not from the first arrival.
@@ -225,6 +231,9 @@ type Querier interface {
 	// Back from a run: available again, at the back of the queue.
 	SetDriverReturned(ctx context.Context, arg SetDriverReturnedParams) error
 	SetDriverStatus(ctx context.Context, arg SetDriverStatusParams) (int64, error)
+	// 2.4.3 CHANGE DUE TIME: the Pi's own due time (main keeps the vendor's);
+	// a scheduled order's ring time moves with it.
+	SetDueOverride(ctx context.Context, arg SetDueOverrideParams) (int64, error)
 	// 2.4.0: a future order's early tickets printed (kitchen / receipt).
 	SetEarlyPrinted(ctx context.Context, arg SetEarlyPrintedParams) error
 	SetExtDriverPos(ctx context.Context, arg SetExtDriverPosParams) error

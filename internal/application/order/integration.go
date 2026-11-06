@@ -203,6 +203,9 @@ func (s *Service) UpdateIntegrationSettings(ctx context.Context, change func(*or
 	if err := set.Callout.Validate(); err != nil {
 		return set, fmt.Errorf("%w: %w", ErrBadRequest, err)
 	}
+	if err := set.Look.Validate(); err != nil {
+		return set, fmt.Errorf("%w: %w", ErrBadRequest, err)
+	}
 	if err := s.repo.SetIntegrationSettings(ctx, set); err != nil {
 		return set, err
 	}
@@ -786,15 +789,7 @@ func (s *Service) printEarly(ctx context.Context, so order.StoredOrder) {
 		if errors.Is(err, printer.ErrNoTickets) {
 			return
 		}
-		kitchen, receipt := false, false
-		for _, r := range out.Printed {
-			switch r.Kind {
-			case printer.TicketStation:
-				kitchen = true
-			case printer.TicketReceipt, printer.TicketFull:
-				receipt = true
-			}
-		}
+		kitchen, receipt := earlyPrinted(out)
 		if kitchen || receipt {
 			if err := s.repo.SetEarlyPrinted(ctx, so.Order.ID, kitchen, receipt); err != nil {
 				s.logger.Warn().Ctx(ctx).Err(err).Str("order_id", so.Order.ID).Msg("record early future tickets failed")

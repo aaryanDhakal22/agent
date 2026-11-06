@@ -314,7 +314,7 @@
         </div>
         <div class="tickets">
           <template x-for="so in kitchen" :key="so.order.id">
-            <article class="tk" :style="toneStyle(so)" :aria-label="'Ticket ' + displayNumber(so) + ', ' + custName(so.order)">
+            <article class="tk" :style="toneStyle(so) + ';' + barStyle(so)" :aria-label="'Ticket ' + displayNumber(so) + ', ' + custName(so.order)">
               <div class="hrow" style="justify-content:space-between"><span class="num" x-text="displayNumber(so)"></span><span class="hrow" style="gap:6px"><span class="tag pos" x-show="isPOS(so)">POS</span><span class="tag paid" x-show="so.status.paid">PAID</span><span class="tag" :class="{ delivery: ftype(so.order) === 'delivery' }" x-text="ftype(so.order).toUpperCase()"></span></span></div>
               <div class="flagline" :class="so.status.flag ? so.status.flag.severity : ''" x-show="so.status.flag || so.status.pos_driver_note" x-text="(so.status.flag ? so.status.flag.text : '') + (so.status.flag && so.status.pos_driver_note ? ' · ' : '') + (so.status.pos_driver_note || '')"></div>
               <div class="hrow" style="align-items:baseline"><span class="age" x-text="sinceText(so)"></span><span class="due" :class="{ late: isLate(so) }" x-text="dueText(so)"></span></div>
@@ -334,7 +334,20 @@
         <div class="later" x-show="laterOrders.length" aria-label="Later (future orders)">
           <span class="eyebrow">Later</span>
           <template x-for="so in laterOrders" :key="so.order.id">
-            <span class="chip" :title="'Rings again at ' + clock(so.status.ring_at)"><b class="mono" x-text="custName(so.order)"></b> <span x-text="'due ' + clock(so.order.fulfillment && so.order.fulfillment.promised_at) + ' · rings ' + clock(so.status.ring_at)"></span></span>
+            <div class="later-card" :aria-label="'Later order from ' + custName(so.order)">
+              <div class="hrow" style="justify-content:space-between;gap:8px">
+                <b class="mono" x-text="custName(so.order)"></b>
+                <span class="tag" x-text="ftype(so.order).toUpperCase()"></span>
+              </div>
+              <div class="small muted" x-text="'due ' + dateTime(so.order.fulfillment && so.order.fulfillment.promised_at) + (so.status.ring_at ? ' · rings ' + clock(so.status.ring_at) : '') + (so.status.due_moved_from ? ' · moved' : '')"></div>
+              <div class="hrow" style="gap:6px;flex-wrap:wrap">
+                <button type="button" class="btn btn-p" :disabled="!!busy['mn' + so.order.id]" @click="makeNow(so)">Make now</button>
+                <button type="button" class="btn" :disabled="!!busy['due' + so.order.id]" @click="changeDue(so)">Change time</button>
+                <button type="button" class="btn" :disabled="!!busy['pn' + so.order.id]" @click="printNow(so, true, false)">Kitchen tickets</button>
+                <button type="button" class="btn" :disabled="!!busy['pn' + so.order.id]" @click="printNow(so, false, true)">Receipt</button>
+                <button type="button" class="btn btn-danger" :disabled="!!busy['cx' + so.order.id]" @click="cancelFuture(so)">Cancel</button>
+              </div>
+            </div>
           </template>
         </div>
       </section>
@@ -875,7 +888,7 @@
       <p id="dlg-body" x-show="dialog.body" x-text="dialog.body"></p>
       <div class="dlg-input" x-show="!!dialog.input">
         <label class="lbl" for="dlg-input" x-text="dialog.input ? dialog.input.label : ''"></label>
-        <input class="field" id="dlg-input" autocomplete="off" x-model="dialog.value" :maxlength="dialog.input ? (dialog.input.maxlength || 40) : 40" @keydown.enter.prevent="closeDialog(true)" />
+        <input class="field" id="dlg-input" autocomplete="off" x-model="dialog.value" :type="dialog.input && dialog.input.type ? dialog.input.type : 'text'" :min="dialog.input ? dialog.input.min : null" :max="dialog.input ? dialog.input.max : null" :maxlength="dialog.input ? (dialog.input.maxlength || 40) : 40" @keydown.enter.prevent="closeDialog(true)" />
       </div>
       <ul x-show="dialog.list && dialog.list.length"><template x-for="(l, i) in dialog.list" :key="i"><li x-text="l"></li></template></ul>
       <div class="acts">

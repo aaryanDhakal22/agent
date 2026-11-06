@@ -43,6 +43,12 @@ const (
 	// ModeAcceptKitchen (2.4.0): the accept print without the customer
 	// receipt - a future order whose receipt already printed early.
 	ModeAcceptKitchen Mode = "accept_kitchen"
+	// ModeFutureKitchen / ModeFutureReceipt / ModeFutureBoth (2.4.3): staff's
+	// PRINT NOW on a waiting future order - the same early tickets as
+	// ModeFutureEarly (Future set), whatever the store's future switches say.
+	ModeFutureKitchen Mode = "future_kitchen"
+	ModeFutureReceipt Mode = "future_receipt"
+	ModeFutureBoth    Mode = "future_both"
 )
 
 // Ticket is one thing to print for an order. A planned order is a set of

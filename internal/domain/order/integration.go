@@ -110,12 +110,13 @@ type IntegrationSettings struct {
 	Times     Times             `json:"times"`
 	Finishing FinishingSettings `json:"finishing"`
 	Callout   CalloutSettings   `json:"callout"`
+	Look      LookSettings      `json:"look"`
 }
 
 // DefaultIntegrationSettings are the migration defaults.
 func DefaultIntegrationSettings() IntegrationSettings {
 	return IntegrationSettings{Features: DefaultFeatures(), Tickets: DefaultTicketToggles(), Times: DefaultTimes,
-		Finishing: DefaultFinishing(), Callout: DefaultCallout()}
+		Finishing: DefaultFinishing(), Callout: DefaultCallout(), Look: DefaultLook()}
 }
 
 // DecodeFeatures reads stored features over the defaults (missing keys keep
