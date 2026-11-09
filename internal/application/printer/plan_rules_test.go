@@ -143,3 +143,65 @@ func TestPlanWith_POSSnapshotFromHub(t *testing.T) {
 		t.Fatalf("got %v", kinds(tk))
 	}
 }
+
+// 2.5.0: a channel order (the store's website) always prints the station
+// tickets + the receipt, whatever the online switches and the hub say, and is
+// never inserted into the POS.
+func TestPlanWith_ChannelOrders(t *testing.T) {
+	roster := []RosterEntry{front, pizza, wings}
+	off := Rules{Tickets: order.TicketToggles{}}
+	live := Rules{Tickets: order.DefaultTicketToggles(), InsertLive: true}
+	for _, tc := range []struct {
+		name  string
+		snap  order.Snapshot
+		rules Rules
+	}{
+		{"web card pickup, switches off", ruleSnap("web", "pickup", card), off},
+		{"web cash pickup, switches off", ruleSnap("web", "pickup", nil), off},
+		{"web cash pickup, defaults (2.0.7 rule)", ruleSnap("web", "pickup", nil), DefaultRules()},
+		{"web cash pickup, insert live", ruleSnap("web", "pickup", nil), live},
+		{"web cash delivery, switches off", ruleSnap("web", "delivery", nil), off},
+		{"web card delivery, switches off", ruleSnap("web", "delivery", card), off},
+		{"operator cash pickup", ruleSnap("operator", "pickup", nil), off},
+		{"counter card pickup", ruleSnap("counter", "pickup", card), off},
+	} {
+		tk, _ := PlanWith(tc.snap, roster, printer.ModeAccept, tc.rules)
+		if got := kinds(tk); !reflect.DeepEqual(got, full) {
+			t.Errorf("%s: got %v, want %v", tc.name, got, full)
+		}
+		if InsertsLive(tc.snap, tc.rules) {
+			t.Errorf("%s: a channel order must never be insert-expected", tc.name)
+		}
+		// Kitchen-only accept (future order whose receipt printed early).
+		tk, _ = PlanWith(tc.snap, roster, printer.ModeAcceptKitchen, tc.rules)
+		if got := kinds(tk); !reflect.DeepEqual(got, stns) {
+			t.Errorf("%s accept_kitchen: got %v, want %v", tc.name, got, stns)
+		}
+	}
+	// The same cash pickup from the vendor keeps the 2.0.7 rule.
+	if tk, _ := PlanWith(ruleSnap("online", "pickup", nil), roster, printer.ModeAccept, off); !reflect.DeepEqual(kinds(tk), rcpt) {
+		t.Fatalf("online cash pickup = %v, want receipt only", kinds(tk))
+	}
+	if !InsertsLive(ruleSnap("online", "pickup", nil), live) {
+		t.Fatal("online cash pickup with insert live must still be insert-expected")
+	}
+	// VOID (CANCEL ORDER): station tickets only, no receipt.
+	tk, _ := PlanWith(ruleSnap("web", "delivery", card), roster, printer.ModeVoid, off)
+	if got := kinds(tk); !reflect.DeepEqual(got, stns) {
+		t.Fatalf("void = %v, want %v", got, stns)
+	}
+	for _, x := range tk {
+		if !x.Void || x.Others != nil {
+			t.Fatalf("void ticket %+v: want Void, no others", x)
+		}
+	}
+}
+
+func TestSnapshot_IsChannel(t *testing.T) {
+	for src, want := range map[string]bool{"web": true, "operator": true, "counter": true, "Web": true,
+		"online": false, "pos": false, "": false, " online ": false} {
+		if got := (order.Snapshot{Source: src}).IsChannel(); got != want {
+			t.Errorf("IsChannel(%q) = %v, want %v", src, got, want)
+		}
+	}
+}

@@ -144,6 +144,16 @@ type Status struct {
 	// DueMovedFrom (2.4.3): CHANGE DUE TIME moved the due time on the Pi;
 	// this is the vendor's own promised_at (the order shows the new one).
 	DueMovedFrom *time.Time `json:"due_moved_from,omitempty"`
+
+	// Website / channel orders (2.5.0). AddedTipCents: the whole tip added
+	// on the tablet after the order (ADD TIP; a card channel order only).
+	// TipLocked: main has charged the card (the driver clocked out after
+	// taking it out, or Close batch) - the tip can't change any more.
+	// CancelReason: CANCEL ORDER's reason (customer_asked | couldnt_deliver |
+	// other) on an order cancelled by hand.
+	AddedTipCents int64  `json:"added_tip_cents,omitempty"`
+	TipLocked     bool   `json:"tip_locked,omitempty"`
+	CancelReason  string `json:"cancel_reason,omitempty"`
 }
 
 // MarkedBy is who did something on the floor: a paired tablet (kind
@@ -229,6 +239,16 @@ var (
 	ErrCameBack          = fmt.Errorf("order came back with its driver: release it first")
 )
 
+// Website / channel orders (2.5.0): ADD TIP on an order that can't take one
+// (not a card channel order of the open batch, or cancelled); its tip was
+// charged already (tip_locked); CANCEL ORDER on an order that isn't a
+// channel order still before delivered / picked up.
+var (
+	ErrNotTippable    = fmt.Errorf("only a card website order of the open batch can take a tip")
+	ErrTipLocked      = fmt.Errorf("the card was charged already: the tip can't change")
+	ErrNotCancellable = fmt.Errorf("only a website order not delivered yet can be cancelled")
+)
+
 // ErrInvalidState is returned when a floor transition doesn't apply to the
 // order's current state (e.g. Ready on an order that isn't accepted, or a
 // driver assigned to a non-delivery order).
@@ -240,6 +260,29 @@ var ErrNotUnassigned = fmt.Errorf("order is not delivered without a driver")
 
 // IsPOS reports whether the order was pulled from the store's POS.
 func (so StoredOrder) IsPOS() bool { return so.Status.ExtSource != "" }
+
+// IsChannel (2.5.0): an order from one of the store's own channels (the
+// website "web", later "operator" / "counter") - see Snapshot.IsChannel.
+func (so StoredOrder) IsChannel() bool { return !so.IsPOS() && so.Order.IsChannel() }
+
+// SourceLabel is the order's source as metrics label it: pos, web (every
+// channel order) or online.
+func (so StoredOrder) SourceLabel() string {
+	switch {
+	case so.IsPOS():
+		return SourcePOS
+	case so.IsChannel():
+		return SourceWeb
+	}
+	return SourceOnline
+}
+
+// Tippable (2.5.0): ADD TIP is allowed - a channel order paid by card (no
+// cash due) that isn't cancelled or locked. The open-batch rule is the
+// repository's.
+func (so StoredOrder) Tippable() bool {
+	return so.IsChannel() && so.Order.CashDue() == 0 && so.Status.State != StateCancelled && !so.Status.TipLocked
+}
 
 // Number is the number staff call: the POS check number, else the kitchen
 // number (nil before accept).

@@ -38,10 +38,10 @@ type Meters struct {
 	DriverRouteSent  metric.Int64Counter
 	FloorSyncBacklog metric.Int64Gauge
 	// FloorAcceptSeconds: arrival (or a future order's re-ring) → accept,
-	// by source=online|pos.
+	// by source=online|web|pos.
 	FloorAcceptSeconds metric.Float64Histogram
 	// OrdersPrintSeconds: an accept's print job, start → every ticket
-	// written or given up (result=ok|partial|failed, source=online|pos).
+	// written or given up (result=ok|partial|failed, source=online|web|pos).
 	OrdersPrintSeconds metric.Float64Histogram
 
 	// Pi updates: one per finished update / rollback run
@@ -162,7 +162,7 @@ func NewMeters() (Meters, error) {
 	if ms.FloorAcceptSeconds, err = m.Float64Histogram(
 		"floor.accept.seconds",
 		metric.WithUnit("s"),
-		metric.WithDescription("Time from an order's arrival (a future order: its re-ring) to its accept (source=online|pos)"),
+		metric.WithDescription("Time from an order's arrival (a future order: its re-ring) to its accept (source=online|web|pos)"),
 		metric.WithExplicitBucketBoundaries(5, 15, 30, 60, 90, 120, 180, 300, 600, 900, 1800),
 	); err != nil {
 		return Meters{}, fmt.Errorf("floor.accept.seconds: %w", err)
@@ -172,7 +172,7 @@ func NewMeters() (Meters, error) {
 	if ms.OrdersPrintSeconds, err = m.Float64Histogram(
 		"orders.print.seconds",
 		metric.WithUnit("s"),
-		metric.WithDescription("An accept's print job: start to every ticket written or given up (result=ok|partial|failed, source=online|pos)"),
+		metric.WithDescription("An accept's print job: start to every ticket written or given up (result=ok|partial|failed, source=online|web|pos)"),
 		metric.WithExplicitBucketBoundaries(0.05, 0.1, 0.25, 0.5, 1, 2, 3, 5, 10, 15, 20, 30),
 	); err != nil {
 		return Meters{}, fmt.Errorf("orders.print.seconds: %w", err)
@@ -228,7 +228,7 @@ func NewMeters() (Meters, error) {
 }
 
 // FloorCount is one floor.orders.open series: State is new|cooking|ready|
-// out|scheduled, Source online|pos.
+// out|scheduled, Source online|web|pos (web = every channel order, 2.5.0).
 type FloorCount struct {
 	State  string
 	Source string
@@ -239,7 +239,7 @@ type FloorCount struct {
 // combination is reported (0 when empty) so dashboards never see "no data".
 var (
 	FloorStates  = []string{"new", "cooking", "ready", "out", "scheduled"}
-	FloorSources = []string{"online", "pos"}
+	FloorSources = []string{"online", "web", "pos"}
 )
 
 // HubLink is the store hub's last report as the gauges see it.
@@ -285,7 +285,7 @@ func RegisterLive(src Live) (metric.Registration, error) {
 	m := otel.Meter(MeterName)
 
 	floorOpen, err := m.Int64ObservableGauge("floor.orders.open",
-		metric.WithDescription("Open-batch orders in play by state (new|cooking|ready|out|scheduled) and source (online|pos)"))
+		metric.WithDescription("Open-batch orders in play by state (new|cooking|ready|out|scheduled) and source (online|web|pos)"))
 	if err != nil {
 		return nil, fmt.Errorf("floor.orders.open: %w", err)
 	}

@@ -66,7 +66,28 @@ const (
 	FloorEventDriverShift   = "driver.shift"
 	// FloorEventNotDelivered (2.2.1): a delivery came back with its driver.
 	FloorEventNotDelivered = "order.not_delivered"
+	// FloorEventOrderTip (2.5.0): ADD TIP on a card channel order - the
+	// whole tip added after the order (absolute, so a replay is harmless).
+	FloorEventOrderTip = "order.tip"
+	// FloorEventBatchClosed (2.5.0): Close batch - main charges every card
+	// hold left in the batch.
+	FloorEventBatchClosed = "batch.closed"
 )
+
+// Cancel reasons (2.5.0 CANCEL ORDER on a channel order; order.status
+// cancelled carries one so main applies it after accept too).
+const (
+	CancelCustomerAsked  = "customer_asked"
+	CancelCouldntDeliver = "couldnt_deliver"
+	CancelOther          = "other"
+	MaxCancelNoteRunes   = 140
+	MaxAddedTipCents     = 50000
+)
+
+// ValidCancelReason reports whether r is one of the cancel reasons.
+func ValidCancelReason(r string) bool {
+	return r == CancelCustomerAsked || r == CancelCouldntDeliver || r == CancelOther
+}
 
 // FloorEvent is one change to sync to main. Payload is the complete JSON sent
 // (it carries its own event_id + type + at, so main can dedupe on event_id).
@@ -90,7 +111,10 @@ type OrderStatusEvent struct {
 	EstimatedReadyAt *time.Time `json:"estimated_ready_at,omitempty"`
 	DriverName       string     `json:"driver_name,omitempty"`
 	Auto             bool       `json:"auto,omitempty"` // set by Close batch's auto-finish / auto-cancel
-	At               time.Time  `json:"at"`
+	// Reason (2.5.0): a cancel by hand (CANCEL ORDER) - main applies it in
+	// any state before completed and releases the card hold.
+	Reason string    `json:"reason,omitempty"`
+	At     time.Time `json:"at"`
 	// The agent's whole status + batch, stored by main so a replacement Pi
 	// (swapped SD card) can restore the open batch exactly.
 	BatchID     int64   `json:"batch_id,omitempty"`
@@ -114,6 +138,25 @@ type NotDeliveredEvent struct {
 	BatchID    int64     `json:"batch_id,omitempty"`
 	// The agent's whole status, as on order.status (a replacement Pi's restore).
 	AgentStatus *Status `json:"agent_status,omitempty"`
+}
+
+// OrderTipEvent is the payload of an order.tip floor event (2.5.0): the
+// whole tip added after the order, in cents (absolute).
+type OrderTipEvent struct {
+	EventID  string    `json:"event_id"`
+	Type     string    `json:"type"` // order.tip
+	OrderID  string    `json:"order_id"`
+	TipCents int64     `json:"tip_cents"`
+	At       time.Time `json:"at"`
+}
+
+// BatchClosedEvent is the payload of a batch.closed floor event (2.5.0),
+// written by Close batch after the batch's own order events.
+type BatchClosedEvent struct {
+	EventID string    `json:"event_id"`
+	Type    string    `json:"type"` // batch.closed
+	BatchID int64     `json:"batch_id"`
+	At      time.Time `json:"at"`
 }
 
 // DriversRosterEvent is the payload of a drivers.roster floor event (the whole
@@ -217,6 +260,10 @@ type DriverReport struct {
 	// OwedRoundedCents is OwedCents rounded to whole dollars (RoundOwed) —
 	// what the slip prints.
 	OwedRoundedCents int64 `json:"owed_rounded_cents"`
+	// PendingTipCents (2.5.0): the card channel tips in TipCents main hasn't
+	// charged yet (the driver hasn't clocked out, the batch isn't closed) -
+	// ADD TIP can still change them.
+	PendingTipCents int64 `json:"pending_tip_cents"`
 	// 2.3.0: the driver's Driver # (also on a POS driver Quibase doesn't
 	// know: DriverID ""), whether the report was checked against the POS
 	// ledger (nil = the store has no POS hub) and notes for the slip.
@@ -252,6 +299,11 @@ type DriverReportLine struct {
 	Street         string `json:"street"`
 	OrderTipCents  int64  `json:"order_tip_cents"`
 	SlipTotalCents int64  `json:"slip_total_cents"`
+	// 2.5.0, a card channel order: AddedTipCents = the tip added on the
+	// tablet after the order (included in TipCents / OrderTipCents);
+	// TipPending = main hasn't charged the card yet (not tip_locked).
+	AddedTipCents int64 `json:"added_tip_cents,omitempty"`
+	TipPending    bool  `json:"tip_pending,omitempty"`
 }
 
 // setSlipMoney fills the slip's Tip / Total from the order's total without
@@ -315,20 +367,29 @@ func NewDriverReportLine(so StoredOrder) DriverReportLine {
 	}
 	if due := snap.CashDue(); due > 0 {
 		l.Cash, l.CashCents = true, max(due-snap.Money.Tip, 0)
-	} else {
-		l.TipCents = snap.Money.Tip
+		l.setSlipMoney(snap.Money.Total-snap.Money.Tip, snap.Money.Tip) // an online total includes the tip
+		return l
 	}
-	l.setSlipMoney(snap.Money.Total-snap.Money.Tip, snap.Money.Tip) // an online total includes the tip
+	tip := snap.Money.Tip
+	if so.IsChannel() { // 2.5.0: the checkout tip + the tip added on the tablet
+		tip += so.Status.AddedTipCents
+		l.AddedTipCents, l.TipPending = so.Status.AddedTipCents, !so.Status.TipLocked
+	}
+	l.TipCents = tip
+	l.setSlipMoney(snap.Money.Total-snap.Money.Tip, tip)
 	return l
 }
 
 // Finish fills the report's totals with the store's tip tax.
 func (r *DriverReport) Finish(tipTaxBps int64) {
 	r.Deliveries = len(r.Lines)
-	r.CashCents, r.TipCents = 0, 0
+	r.CashCents, r.TipCents, r.PendingTipCents = 0, 0, 0
 	for _, l := range r.Lines {
 		r.CashCents += l.CashCents
 		r.TipCents += l.TipCents
+		if l.TipPending {
+			r.PendingTipCents += l.TipCents
+		}
 	}
 	r.TipTaxBps = tipTaxBps
 	r.TipAfterTaxCents = (r.TipCents*(10000-tipTaxBps) + 5000) / 10000
@@ -402,7 +463,8 @@ type FloorRepository interface {
 	// ClockOut takes an available driver out of the queue and closes it
 	// (ErrInvalidState while the driver is out on a run).
 	ClockIn(ctx context.Context, id string) (*Driver, error)
-	// ClockOut also returns the orders its pool held (back to unassigned).
+	// ClockOut also returns the orders its pool held (back to unassigned)
+	// and those whose tip locked with the shift (2.5.0).
 	ClockOut(ctx context.Context, id string) (*Driver, []StoredOrder, error)
 	// AutoClockOut is the daily reset: clocks out every available driver
 	// (drivers out on a run are clocked out when they return) and records the
@@ -443,6 +505,18 @@ type FloorRepository interface {
 	NotDelivered(ctx context.Context, id, action string) (so *StoredOrder, returnedDriver bool, err error)
 	// ReleaseCameBack ends a came-back hold (ErrNotCameBack when not held).
 	ReleaseCameBack(ctx context.Context, id string) (*StoredOrder, error)
+
+	// 2.5.0 website / channel orders. SetAddedTip saves ADD TIP (the whole
+	// tip added after the order, absolute) and writes order.tip - a card
+	// channel order of the open batch, not cancelled (ErrNotTippable), not
+	// charged yet (ErrTipLocked); an unchanged tip writes nothing.
+	// CancelChannelOrder is CANCEL ORDER: a channel order before delivered
+	// (arrived|scheduled|accepted|ready|on_delivery, not mid-accept) is
+	// cancelled with the reason, off any pool or run (the last stop of a run
+	// brings the driver back: returnedDriver), order.status cancelled +
+	// reason; prev is the order before. ErrNotCancellable otherwise.
+	SetAddedTip(ctx context.Context, id string, cents int64) (*StoredOrder, error)
+	CancelChannelOrder(ctx context.Context, id, reason string) (so *StoredOrder, prev StoredOrder, returnedDriver bool, err error)
 
 	// 2.4.0 Unassigned. MarkDeliveredNoDriver delivers an open delivery of
 	// the open batch (cooking or ready, out of its pool) with no driver

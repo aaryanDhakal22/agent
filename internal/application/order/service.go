@@ -335,10 +335,7 @@ func (s *Service) recordAcceptTime(ctx context.Context, so order.StoredOrder) {
 	if from.IsZero() || at.Before(from) {
 		return
 	}
-	src := "online"
-	if so.IsPOS() {
-		src = "pos"
-	}
+	src := so.SourceLabel() // online | web | pos
 	s.meters.FloorAcceptSeconds.Record(ctx, at.Sub(from).Seconds(), metric.WithAttributes(attribute.String("source", src)))
 }
 
@@ -358,10 +355,7 @@ func (s *Service) recordPrintTime(ctx context.Context, so order.StoredOrder, sta
 	case len(out.Failed) > 0:
 		result = "partial"
 	}
-	src := "online"
-	if so.IsPOS() {
-		src = "pos"
-	}
+	src := so.SourceLabel() // online | web | pos
 	s.meters.OrdersPrintSeconds.Record(ctx, time.Since(start).Seconds(), metric.WithAttributes(
 		attribute.String("result", result), attribute.String("source", src)))
 }

@@ -155,6 +155,16 @@ func (s Snapshot) CashDue() int64 {
 	return cash
 }
 
+// IsChannel (2.5.0) reports an order from one of the store's own channels:
+// any source other than the vendor's "online" and the hub's "pos" (main
+// sends "web" for the website, later "operator" / "counter"). An empty
+// source is an old online order. Channel orders always print station
+// tickets + the receipt and never go into the store's POS.
+func (s Snapshot) IsChannel() bool {
+	src := strings.ToLower(strings.TrimSpace(s.Source))
+	return src != "" && src != SourceOnline && src != SourcePOS
+}
+
 // MustParseID returns the snapshot id as a uuid.UUID. The wire shape uses
 // strings; callers that need to put the id in a pgtype.UUID convert through
 // this helper. Empty / invalid ids surface as uuid.Nil — callers should

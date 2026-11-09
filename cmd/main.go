@@ -687,9 +687,12 @@ func main() {
 			}
 			out := make([]observability.FloorCount, 0, len(rows))
 			for _, r := range rows {
-				src := "online"
-				if r.POS {
-					src = "pos"
+				src := order.SourceOnline
+				switch {
+				case r.POS:
+					src = order.SourcePOS
+				case r.Channel:
+					src = order.SourceWeb
 				}
 				out = append(out, observability.FloorCount{State: floorStateLabel(r.State), Source: src, N: r.N})
 			}

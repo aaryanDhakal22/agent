@@ -139,3 +139,56 @@ func TestPercent(t *testing.T) {
 		}
 	}
 }
+
+// 2.5.0: website card orders - the checkout tip + the tip added on the
+// tablet; a tip main hasn't charged yet is marked pending.
+func webReportFixture() order.DriverReport {
+	k1, k2, k3 := int64(1201), int64(1202), int64(1203)
+	opened := time.Date(2026, 11, 9, 14, 2, 0, 0, time.UTC)
+	rep := order.DriverReport{BatchID: 9, BatchOpenedAt: opened, DriverName: "Abdul",
+		Lines: []order.DriverReportLine{
+			{KitchenNumber: &k1, Source: "web", Street: "12 Main St", TipCents: 700, OrderTipCents: 700, SlipTotalCents: 3200,
+				AddedTipCents: 400, TipPending: true},
+			{KitchenNumber: &k2, Source: "web", Street: "4 Elm St", TipCents: 500, OrderTipCents: 500, SlipTotalCents: 2500,
+				TipPending: true},
+			{KitchenNumber: &k3, Source: "web", Street: "9 Oak Ave", TipCents: 600, OrderTipCents: 600, SlipTotalCents: 2600,
+				AddedTipCents: 200}, // charged at an earlier clock-out
+			{KitchenNumber: &k3, Street: "7 Pine Rd", Cash: true, CashCents: 1800, SlipTotalCents: 1800},
+		}}
+	rep.Finish(600)
+	return rep
+}
+
+func TestBuildDriverReport_WebGolden(t *testing.T) {
+	_, sc := reportFixture()
+	rep := webReportFixture()
+	if rep.PendingTipCents != 1200 || rep.TipCents != 1800 {
+		t.Fatalf("pending %d / tips %d, want 1200 / 1800", rep.PendingTipCents, rep.TipCents)
+	}
+	got := BuildDriverReport(rep, sc, "", "", printed)
+	path := "testdata/driver_report_web.golden"
+	if *update {
+		if err := os.WriteFile(path, got, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	want, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read golden (run with -update): %v", err)
+	}
+	if !bytes.Equal(got, want) {
+		t.Errorf("web driver report differs from %s (run with -update after checking)\n%s", path, got)
+	}
+	s := string(got)
+	const W = lineWidth
+	for _, want := range []string{
+		leftRight("Tip: $7.00 (pending)", "Total: $32.00", W),
+		leftRight("Tip: $5.00 (pending)", "Total: $25.00", W),
+		leftRight("Tip: $6.00", "Total: $26.00", W),
+		leftRight("Card tips (2 pending)", "$18.00", W),
+	} {
+		if !strings.Contains(s, want) {
+			t.Errorf("missing %q", want)
+		}
+	}
+}

@@ -58,6 +58,10 @@ func PlanFor(snap order.Snapshot, roster []RosterEntry, mode printer.Mode) (tick
 //     tickets only while the hub inserts it into the POS live
 //     (rules.InsertLive) — otherwise staff type it into the store's old POS,
 //     which prints the kitchen tickets (the 2.0.7 rule, Lombardi's).
+//   - A channel order (2.5.0: the store's own website - source not online /
+//     pos, see Snapshot.IsChannel) always prints the station tickets + the
+//     customer receipt: the online switches and the cash-pickup rule don't
+//     apply (it never goes into the store's POS).
 //   - A POS order (source pos, pulled by the store hub) never prints a
 //     receipt on accept; it prints its station tickets only when the switch
 //     for its type is on (pos_delivery / pos_takeout / pos_counter). Its
@@ -146,7 +150,7 @@ func PlanWith(snap order.Snapshot, roster []RosterEntry, mode printer.Mode, rule
 		}
 		return stationTickets(snap, roster, receipt)
 	}
-	if receiptOnly(snap, rules) {
+	if !snap.IsChannel() && receiptOnly(snap, rules) {
 		return []printer.Ticket{receiptTicket}, nil
 	}
 	if !isRouted(snap) {
@@ -237,8 +241,9 @@ func isPickupCash(snap order.Snapshot) bool {
 // InsertsLive: an online cash pickup that prints its kitchen tickets on
 // accept because the hub inserts it into the POS live (rules.InsertLive and
 // the online_cash_pickup switch) — the hub is then expected to insert it.
+// Never a channel order (2.5.0: the store's website never goes into the POS).
 func InsertsLive(snap order.Snapshot, rules Rules) bool {
-	return !isPOS(snap) && isPickupCash(snap) && rules.InsertLive && rules.Tickets.OnlineCashPickup
+	return !isPOS(snap) && !snap.IsChannel() && isPickupCash(snap) && rules.InsertLive && rules.Tickets.OnlineCashPickup
 }
 
 // receiptOnly applies the online kitchen-ticket switches: an online order

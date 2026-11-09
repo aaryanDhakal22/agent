@@ -13,6 +13,9 @@ type Querier interface {
 	// Close batch: a came-back order nobody took out again never reached the
 	// customer - cancelled (not auto-delivered).
 	CancelCameBack(ctx context.Context, arg CancelCameBackParams) (int64, error)
+	// 2.5.0 CANCEL ORDER on a channel (website) order not delivered yet: off any
+	// pool or run (no driver, so it counts on no driver report).
+	CancelChannelOrder(ctx context.Context, arg CancelChannelOrderParams) (int64, error)
 	// A void at the POS (or Close batch): cancelled, out of any pool. A delivered
 	// order stays delivered (its driver collected it).
 	CancelExternalOrder(ctx context.Context, arg CancelExternalOrderParams) (int64, error)
@@ -155,6 +158,11 @@ type Querier interface {
 	ListShiftsOverlapping(ctx context.Context, arg ListShiftsOverlappingParams) ([]DriverShift, error)
 	ListShiftsSince(ctx context.Context, clockIn string) ([]DriverShift, error)
 	ListUnsyncedFloorEvents(ctx context.Context, limit int64) ([]FloorEvent, error)
+	// 2.5.0 Close batch: main charges everything left, every tip is final.
+	LockBatchTips(ctx context.Context, batchID int64) error
+	// 2.5.0: a driver's shift ended - main charges the card deliveries they took
+	// out during it, so their tips can't change any more. Returns the ids locked.
+	LockShiftTips(ctx context.Context, arg LockShiftTipsParams) ([]string, error)
 	MarkAlerted(ctx context.Context, arg MarkAlertedParams) error
 	MarkDelivered(ctx context.Context, arg MarkDeliveredParams) (int64, error)
 	// 2.4.0 MARK DELIVERED: an open delivery (cooking or ready, pooled or not,
@@ -217,6 +225,9 @@ type Querier interface {
 	// Future orders (2.1.0) --------------------------------------------------------
 	// First confirm of a future order (or a lead edit): it waits until ring_at.
 	ScheduleOrder(ctx context.Context, arg ScheduleOrderParams) (int64, error)
+	// 2.5.0 ADD TIP: the whole tip added after the order (absolute). Only an
+	// order of the given (open) batch that isn't cancelled, POS or locked (0 rows).
+	SetAddedTip(ctx context.Context, arg SetAddedTipParams) (int64, error)
 	SetAppRelease(ctx context.Context, appRelease string) error
 	SetAutoAccept(ctx context.Context, autoAccept bool) error
 	SetAutoUpdate(ctx context.Context, autoUpdate bool) error

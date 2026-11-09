@@ -114,26 +114,9 @@ func (r *OrderRepository) NotDelivered(ctx context.Context, id, action string) (
 				return err
 			}
 		}
-		if hasDriver && st == order.StateOnDelivery && drv.Active && drv.Status == order.DriverOut {
-			left, err := q.CountOnDeliveryByDriver(ctx, sql.NullString{String: drv.ID, Valid: true})
-			if err != nil {
+		if hasDriver && st == order.StateOnDelivery {
+			if returnedDriver, err = returnIfRunDone(ctx, q, drv, now); err != nil {
 				return err
-			}
-			if left == 0 {
-				pos, err := q.NextDriverPosition(ctx)
-				if err != nil {
-					return err
-				}
-				if err := q.SetDriverReturned(ctx, models.SetDriverReturnedParams{LastReturnedAt: nullTS(now), Position: pos, ID: drv.ID}); err != nil {
-					return err
-				}
-				if err := clockOutIfResetPassed(ctx, q, drv.ID, now); err != nil {
-					return err
-				}
-				if err := recordRoster(ctx, q, now); err != nil {
-					return err
-				}
-				returnedDriver = true
 			}
 		}
 

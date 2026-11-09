@@ -21,6 +21,11 @@ import (
 const (
 	SourcePOS          = "pos"
 	ExtSourceSoftTouch = "softtouch"
+	// SourceOnline is the vendor's online orders (relayed by online/);
+	// SourceWeb the store's own website - every other source is one of the
+	// store's channels too (Snapshot.IsChannel).
+	SourceOnline = "online"
+	SourceWeb    = "web"
 )
 
 // Features are the 2.1.0 feature toggles (settings.features).

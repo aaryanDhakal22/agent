@@ -550,8 +550,9 @@ INSERT INTO orders (id, tenant_id, location_id, source, source_event_id, snapsho
                     ready_at, out_at, delivered_at, driver_id, driver_name, cancelled_at,
                     pool_driver_id, pooled_at, pool_seq, pool_plan_id,
                     scheduled_lead_minutes, ring_at, rerung,
-                    came_back, not_delivered_action, not_delivered_at, not_delivered_driver_id, run_seq)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+                    came_back, not_delivered_action, not_delivered_at, not_delivered_driver_id, run_seq,
+                    added_tip_cents, tip_locked, cancel_reason)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
 
 -- name: RestoreDriver :exec
 INSERT INTO drivers (id, name, active, position, status, last_returned_at, pos_number) VALUES (?, ?, true, ?, ?, ?, ?);
@@ -575,12 +576,13 @@ WHERE batch_id = (SELECT id FROM batches WHERE closed_at IS NULL ORDER BY id DES
 -- name: CountOpenFloorOrders :many
 SELECT state,
        CAST(ext_source <> '' AS INTEGER) AS pos,
+       CAST(source NOT IN ('online', 'pos', '') AS INTEGER) AS channel,
        CAST(count(*) AS INTEGER) AS n
 FROM orders
 WHERE batch_id = (SELECT id FROM batches WHERE closed_at IS NULL ORDER BY id DESC LIMIT 1)
   AND state IN ('arrived', 'scheduled', 'accepted', 'ready', 'on_delivery')
   AND board_hidden = 0
-GROUP BY state, pos;
+GROUP BY state, pos, channel;
 
 -- name: GetUpdateState :one
 SELECT update_job, update_notified FROM settings WHERE id = 1;
@@ -905,3 +907,35 @@ DELETE FROM settings_log WHERE at < sqlc.arg(before);
 -- name: ListSettingsLog :many
 -- Newest first, since a time (the keep window), at most lim rows.
 SELECT * FROM settings_log WHERE at >= sqlc.arg(since) ORDER BY id DESC LIMIT sqlc.arg(lim);
+
+-- name: SetAddedTip :execrows
+-- 2.5.0 ADD TIP: the whole tip added after the order (absolute). Only an
+-- order of the given (open) batch that isn't cancelled, POS or locked (0 rows).
+UPDATE orders SET added_tip_cents = sqlc.arg(tip_cents)
+WHERE id = sqlc.arg(id) AND ext_source = '' AND NOT tip_locked AND state <> 'cancelled'
+  AND batch_id = sqlc.arg(batch_id);
+
+-- name: LockShiftTips :many
+-- 2.5.0: a driver's shift ended - main charges the card deliveries they took
+-- out during it, so their tips can't change any more. Returns the ids locked.
+UPDATE orders SET tip_locked = true
+WHERE driver_id = sqlc.arg(driver_id) AND ext_source = '' AND NOT tip_locked
+  AND state IN ('on_delivery', 'delivered')
+  AND COALESCE(out_at, delivered_at, sqlc.arg(clock_in)) >= sqlc.arg(clock_in)
+  AND batch_id = sqlc.arg(batch_id)
+RETURNING id;
+
+-- name: LockBatchTips :exec
+-- 2.5.0 Close batch: main charges everything left, every tip is final.
+UPDATE orders SET tip_locked = true WHERE batch_id = ? AND ext_source = '' AND NOT tip_locked;
+
+-- name: CancelChannelOrder :execrows
+-- 2.5.0 CANCEL ORDER on a channel (website) order not delivered yet: off any
+-- pool or run (no driver, so it counts on no driver report).
+UPDATE orders
+SET state = 'cancelled', cancelled_at = sqlc.arg(cancelled_at), cancel_reason = sqlc.arg(reason),
+    ring_at = NULL, came_back = false,
+    driver_id = NULL, driver_name = '', out_at = NULL, delivered_at = NULL, run_seq = NULL,
+    pool_driver_id = NULL, pooled_at = NULL, pool_seq = NULL, pool_plan_id = NULL
+WHERE id = sqlc.arg(id) AND ext_source = '' AND accept_pending = 0
+  AND state IN ('arrived', 'scheduled', 'accepted', 'ready', 'on_delivery');

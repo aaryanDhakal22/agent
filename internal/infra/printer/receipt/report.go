@@ -14,7 +14,8 @@ import (
 // size (size = the receipt settings' driver_report_size: small | normal |
 // large; nothing larger, so a long slip stays short): the header, the CASH
 // orders first (each with its amount, then a subtotal), the CARD orders below
-// (each with its tip, then the tips), the POS notes, the totals, and what is
+// (each with its tip, then the tips; a website card tip not charged yet is
+// marked pending, 2.5.0), the POS notes, the totals, and what is
 // owed — to the store, or (negative) by the store — rounded to whole dollars
 // with the exact amount under it. The report must already be Finish()ed.
 // printedAt is shown in the footer.
@@ -72,11 +73,15 @@ func BuildDriverReport(rep order.DriverReport, sc storeconfig.StoreContext, size
 	// --- Deliveries: cash first, then card --------------------------------
 	var cash, card []order.DriverReportLine
 	var cashSum, tipSum int64
+	pending := 0 // 2.5.0: card website tips main hasn't charged yet
 	for _, l := range rep.Lines {
 		if l.Cash {
 			cash, cashSum = append(cash, l), cashSum+l.CashCents
 		} else {
 			card, tipSum = append(card, l), tipSum+l.TipCents
+			if l.TipPending {
+				pending++
+			}
 		}
 	}
 	if len(rep.Lines) == 0 {
@@ -97,7 +102,11 @@ func BuildDriverReport(rep order.DriverReport, sc storeconfig.StoreContext, size
 		}
 		w(itemSize)
 		bold(truncRunes(strings.TrimSpace(num+" "+l.Street), itemWidth))
-		w(leftRight("Tip: "+dollars(l.OrderTipCents), "Total: "+dollars(l.SlipTotalCents), itemWidth))
+		tip := "Tip: " + dollars(l.OrderTipCents)
+		if l.TipPending { // a website card tip ADD TIP can still change
+			tip += " (pending)"
+		}
+		w(leftRight(tip, "Total: "+dollars(l.SlipTotalCents), itemWidth))
 		nl()
 		if l.Note != "" { // how it matched the POS
 			w("  * " + truncRunes(l.Note, itemWidth-4))
@@ -122,7 +131,11 @@ func BuildDriverReport(rep order.DriverReport, sc storeconfig.StoreContext, size
 		for _, l := range card {
 			line(l)
 		}
-		w(leftRight("Card tips", dollars(tipSum), lineWidth))
+		tips := "Card tips"
+		if pending > 0 {
+			tips += fmt.Sprintf(" (%d pending)", pending)
+		}
+		w(leftRight(tips, dollars(tipSum), lineWidth))
 		nl()
 	}
 	if len(rep.Notes) > 0 {

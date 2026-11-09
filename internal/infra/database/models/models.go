@@ -121,6 +121,9 @@ type Order struct {
 	EarlyReceipt         bool           `json:"early_receipt"`
 	DueOverride          sql.NullString `json:"due_override"`
 	MadeNow              bool           `json:"made_now"`
+	AddedTipCents        int64          `json:"added_tip_cents"`
+	TipLocked            bool           `json:"tip_locked"`
+	CancelReason         string         `json:"cancel_reason"`
 }
 
 type OrderGeo struct {

@@ -96,11 +96,13 @@ func (r *PrinterNetRepository) SaveMAC(ctx context.Context, m printer.NetAddress
 type OpenFloorCount struct {
 	State order.State
 	POS   bool
-	N     int64
+	// Channel (2.5.0): a website / channel order (source not online / pos).
+	Channel bool
+	N       int64
 }
 
 // CountOpenFloor counts the open batch's orders still in play (arrived,
-// scheduled, accepted, ready, on_delivery) by state and online/POS. POS
+// scheduled, accepted, ready, on_delivery) by state and online/web/POS. POS
 // counter checks hidden from Kitchen are left out. No span: the metric
 // reader calls it every export (15 s), which would be a root trace each time.
 func (r *OrderRepository) CountOpenFloor(ctx context.Context) ([]OpenFloorCount, error) {
@@ -110,7 +112,7 @@ func (r *OrderRepository) CountOpenFloor(ctx context.Context) ([]OpenFloorCount,
 	}
 	out := make([]OpenFloorCount, 0, len(rows))
 	for _, row := range rows {
-		out = append(out, OpenFloorCount{State: order.State(row.State), POS: row.Pos != 0, N: row.N})
+		out = append(out, OpenFloorCount{State: order.State(row.State), POS: row.Pos != 0, Channel: row.Pos == 0 && row.Channel != 0, N: row.N})
 	}
 	return out, nil
 }

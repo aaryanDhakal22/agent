@@ -81,6 +81,11 @@ CREATE TABLE orders (
     -- 00023: a future order's due time moved on the Pi / MADE NOW.
     due_override            text,
     made_now                boolean NOT NULL DEFAULT false,
+    -- 00024_weborder_floor: the tip added after the order (card channel
+    -- orders), locked once main charged it; why it was cancelled by hand.
+    added_tip_cents         integer NOT NULL DEFAULT 0,
+    tip_locked              boolean NOT NULL DEFAULT false,
+    cancel_reason           text    NOT NULL DEFAULT '',
     CHECK (state IN ('arrived', 'scheduled', 'accepted', 'ready', 'on_delivery', 'delivered', 'cancelled'))
 );
 CREATE INDEX idx_orders_arrival_date ON orders (arrival_date DESC);

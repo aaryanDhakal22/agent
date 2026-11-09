@@ -302,6 +302,8 @@ func toStored(row models.Order) (order.StoredOrder, error) {
 		st.MadeNow = true
 		s.Fulfillment.PromisedAt = nil
 	}
+	// 00024: ADD TIP, the tip lock, CANCEL ORDER's reason.
+	st.AddedTipCents, st.TipLocked, st.CancelReason = row.AddedTipCents, row.TipLocked, row.CancelReason
 	return order.StoredOrder{Order: s, Status: st}, nil
 }
 

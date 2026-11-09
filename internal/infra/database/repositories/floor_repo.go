@@ -67,6 +67,9 @@ func recordOrderStatus(ctx context.Context, q *models.Queries, so order.StoredOr
 		At:               at.UTC().Truncate(time.Millisecond),
 		BatchID:          so.Status.BatchID,
 	}
+	if so.Status.State == order.StateCancelled {
+		ev.Reason = so.Status.CancelReason // CANCEL ORDER (2.5.0): main cancels after accept too
+	}
 	st := so.Status
 	ev.AgentStatus = &st
 	return insertEvent(ctx, q, ev.EventID, so.Order.ID, ev.Type, at, ev)
@@ -436,6 +439,14 @@ func (r *OrderRepository) CloseBatch(ctx context.Context, force bool) (closed *o
 				return err
 			}
 		}
+		// 2.5.0: main charges every card hold left in the batch - tips are
+		// final, and batch.closed goes after the batch's own order events.
+		if err := q.LockBatchTips(ctx, b.ID); err != nil {
+			return err
+		}
+		if err := recordBatchClosed(ctx, q, b.ID, now); err != nil {
+			return err
+		}
 		if err := insertFeed(ctx, q, order.FeedBatchClosed, now, order.BatchClosedData{BatchID: b.ID, ClosedAt: now.UTC().Truncate(time.Millisecond)}); err != nil {
 			return err
 		}
@@ -718,7 +729,7 @@ func (r *OrderRepository) RemoveDriver(ctx context.Context, id string) (unpooled
 				return err
 			}
 			if sh, err := q.GetOpenShift(ctx, id); err == nil {
-				if err := closeShift(ctx, q, sh, false, now); err != nil {
+				if _, err := closeShift(ctx, q, sh, false, now); err != nil {
 					return err
 				}
 			}
@@ -805,15 +816,23 @@ func clockOutIfResetPassed(ctx context.Context, q *models.Queries, driverID stri
 	if _, err := clearDriverPool(ctx, q, driverID, now); err != nil {
 		return err
 	}
-	return closeShift(ctx, q, sh, true, now)
+	_, err = closeShift(ctx, q, sh, true, now)
+	return err
 }
 
-func closeShift(ctx context.Context, q *models.Queries, sh models.DriverShift, auto bool, at time.Time) error {
+// closeShift ends a shift and writes its driver.shift event. main charges
+// the card deliveries the driver took out during it at that moment, so their
+// tips lock here too (2.5.0); returns the orders locked.
+func closeShift(ctx context.Context, q *models.Queries, sh models.DriverShift, auto bool, at time.Time) ([]string, error) {
 	if err := q.CloseShift(ctx, models.CloseShiftParams{ClockOut: nullTS(at), AutoOut: auto, ID: sh.ID}); err != nil {
-		return err
+		return nil, err
 	}
 	sh.ClockOut, sh.AutoOut = nullTS(at), auto
-	return recordShift(ctx, q, sh, at)
+	locked, err := lockShiftTips(ctx, q, sh)
+	if err != nil {
+		return nil, err
+	}
+	return locked, recordShift(ctx, q, sh, at)
 }
 
 func (r *OrderRepository) driverByID(ctx context.Context, id string) (*order.Driver, error) {
@@ -889,7 +908,11 @@ func (r *OrderRepository) ClockOut(ctx context.Context, id string) (d *order.Dri
 			return err
 		}
 		if sh, err := q.GetOpenShift(ctx, id); err == nil {
-			if err := closeShift(ctx, q, sh, false, now); err != nil {
+			ids, err := closeShift(ctx, q, sh, false, now)
+			if err != nil {
+				return err
+			}
+			if unpooled, err = appendLocked(ctx, q, unpooled, ids); err != nil {
 				return err
 			}
 		}
@@ -921,7 +944,11 @@ func (r *OrderRepository) AutoClockOut(ctx context.Context, at time.Time) (n int
 			}
 			unpooled = append(unpooled, cleared...)
 			if sh, err := q.GetOpenShift(ctx, d.ID); err == nil {
-				if err := closeShift(ctx, q, sh, true, at); err != nil {
+				ids, err := closeShift(ctx, q, sh, true, at)
+				if err != nil {
+					return err
+				}
+				if unpooled, err = appendLocked(ctx, q, unpooled, ids); err != nil {
 					return err
 				}
 			}
