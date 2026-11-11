@@ -86,8 +86,7 @@ func (c *Controller) Status() sseraw.ConnStatus {
 
 // SetKey atomically swaps the in-flight SSE connection's key. Empty string
 // shuts the connection down (the agent stays "unconfigured" until a new
-// key is provided). No-op if the key is unchanged — use Reconnect to force a
-// restart with the same key.
+// key is provided). No-op if the key is unchanged.
 func (c *Controller) SetKey(key string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -97,20 +96,6 @@ func (c *Controller) SetKey(key string) {
 	}
 	c.key = key
 	c.startLocked("key changed")
-}
-
-// Reconnect force-restarts the SSE connection with the CURRENT key, even when
-// the key is unchanged. Used after a store-config edit is accepted by main/ so
-// the agent re-pulls the updated store_config handshake frame (refreshing the
-// receipt context + printer roster). No-op if unconfigured (empty key).
-func (c *Controller) Reconnect() {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	if c.key == "" {
-		return
-	}
-	c.startLocked("reconnect requested")
 }
 
 // startLocked cancels any in-flight client and starts a fresh one for the

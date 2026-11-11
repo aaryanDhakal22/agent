@@ -19,7 +19,7 @@ from datetime import datetime, timedelta, timezone
 import requests
 
 from conftest import wait_until
-from test_driver_reports import deliver_order, driver, run
+from test_driver_reports import deliver_order, driver
 from test_floor import floor, post  # noqa: F401  (fixture re-export)
 from test_integration import _feed, _hub, _order, _pos, _put
 from test_kitchen_printing import _item, _snap, kitchen  # noqa: F401  (kitchen is a fixture)
