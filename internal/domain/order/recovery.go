@@ -16,7 +16,10 @@ type AgentState struct {
 	Batch           StateBatch `json:"batch"`
 	KitchenNext     int64      `json:"kitchen_next"`
 	LastPrepMinutes int64      `json:"last_prep_minutes"`
-	Prefs           FloorPrefs `json:"prefs"`
+	// CounterNext (terminal stage 0d): the counter sequence's next number,
+	// 0 = start again at the terminal config's counter_start.
+	CounterNext int64      `json:"counter_next"`
+	Prefs       FloorPrefs `json:"prefs"`
 	// ReceiptPrefs: nil in reports from agents older than receipt settings.
 	ReceiptPrefs      *ReceiptPrefs `json:"receipt_prefs,omitempty"`
 	DriverResetTime   string        `json:"driver_reset_time"`
@@ -79,6 +82,7 @@ type RestoreResult struct {
 	Drivers     int   `json:"drivers"`
 	Shifts      int   `json:"shifts"`
 	KitchenNext int64 `json:"kitchen_next"`
+	CounterNext int64 `json:"counter_next"`
 }
 
 // ErrNotEmpty: restore only runs on a blank agent.

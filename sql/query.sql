@@ -551,8 +551,10 @@ INSERT INTO orders (id, tenant_id, location_id, source, source_event_id, snapsho
                     pool_driver_id, pooled_at, pool_seq, pool_plan_id,
                     scheduled_lead_minutes, ring_at, rerung,
                     came_back, not_delivered_action, not_delivered_at, not_delivered_driver_id, run_seq,
-                    added_tip_cents, tip_locked, cancel_reason)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+                    added_tip_cents, tip_locked, cancel_reason,
+                    paid, paid_at, tip_cents, client_key)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+        ?, ?, ?, ?);
 
 -- name: RestoreDriver :exec
 INSERT INTO drivers (id, name, active, position, status, last_returned_at, pos_number) VALUES (?, ?, true, ?, ?, ?, ?);
@@ -939,3 +941,89 @@ SET state = 'cancelled', cancelled_at = sqlc.arg(cancelled_at), cancel_reason = 
     pool_driver_id = NULL, pooled_at = NULL, pool_seq = NULL, pool_plan_id = NULL
 WHERE id = sqlc.arg(id) AND ext_source = '' AND accept_pending = 0
   AND state IN ('arrived', 'scheduled', 'accepted', 'ready', 'on_delivery');
+
+-- ===== 00025 terminal (stage 0d): the Pi serves the store's POS terminals =====
+
+-- name: GetTerminalSnapshot :one
+SELECT * FROM terminal_snapshots WHERE kind = ?;
+
+-- name: PutTerminalSnapshot :exec
+-- The last good counter menu / terminal config main sent (replaced whole).
+INSERT INTO terminal_snapshots (kind, version, etag, body, fetched_at)
+VALUES (sqlc.arg(kind), sqlc.arg(version), sqlc.arg(etag), sqlc.arg(body), sqlc.arg(fetched_at))
+ON CONFLICT (kind) DO UPDATE SET version = excluded.version, etag = excluded.etag,
+    body = excluded.body, fetched_at = excluded.fetched_at;
+
+-- name: TakeCounterNumber :one
+-- The counter sequence: hands out counter_next (or start when it is 0, i.e.
+-- after Close batch) and moves it on. Returns the number AFTER the one taken.
+UPDATE settings
+SET counter_next = CASE WHEN counter_next > 0 THEN counter_next + 1 ELSE CAST(sqlc.arg(start) AS INTEGER) + 1 END
+WHERE id = 1
+RETURNING counter_next;
+
+-- name: GetCounterNext :one
+SELECT counter_next FROM settings WHERE id = 1;
+
+-- name: SetCounterNext :exec
+UPDATE settings SET counter_next = ? WHERE id = 1;
+
+-- name: ResetCounterNumber :exec
+-- Close batch: the next counter order starts again at counter_start.
+UPDATE settings SET counter_next = 0 WHERE id = 1;
+
+-- name: InsertCounterOrder :exec
+-- A counter order from a terminal: stored accepted at once (no ring) with its
+-- counter number, in the open batch.
+INSERT INTO orders (id, tenant_id, location_id, source, source_event_id, snapshot, state, arrival_date,
+                    batch_id, kitchen_number, prep_minutes, estimated_ready_at, accepted_at,
+                    paid, cash_due_cents, tip_cents, sent_at, paid_at, client_key)
+VALUES (sqlc.arg(id), sqlc.arg(tenant_id), sqlc.arg(location_id), sqlc.arg(source), sqlc.arg(source_event_id),
+        sqlc.arg(snapshot), 'accepted', sqlc.arg(arrival_date),
+        (SELECT id FROM batches WHERE closed_at IS NULL ORDER BY id DESC LIMIT 1),
+        sqlc.arg(kitchen_number), sqlc.arg(prep_minutes), sqlc.arg(estimated_ready_at), sqlc.arg(accepted_at),
+        sqlc.arg(paid), sqlc.arg(cash_due_cents), sqlc.arg(tip_cents), sqlc.arg(sent_at), sqlc.narg(paid_at),
+        sqlc.arg(client_key));
+
+-- name: GetOrderByClientKey :one
+SELECT * FROM orders WHERE client_key = ? AND client_key <> '';
+
+-- name: SetCounterMoney :exec
+-- A payment / refund on a counter order: the snapshot (payments, tip, total)
+-- and the money columns.
+UPDATE orders SET snapshot = sqlc.arg(snapshot), paid = sqlc.arg(paid), cash_due_cents = sqlc.arg(cash_due_cents),
+    tip_cents = sqlc.arg(tip_cents), paid_at = sqlc.narg(paid_at)
+WHERE id = sqlc.arg(id);
+
+-- name: ListCounterOrders :many
+-- Counter orders of a batch (the terminals' Pick Up list filters them).
+SELECT * FROM orders WHERE source = 'counter' AND batch_id = ? ORDER BY arrival_date, id;
+
+-- name: InsertOrderPayment :exec
+INSERT INTO order_payments (id, order_id, client_key, at, tender, amount_cents, tip_cents, tendered_cents,
+                            change_cents, refund, reason, ref, last4, staff_id, device_id, approved_by)
+VALUES (sqlc.arg(id), sqlc.arg(order_id), sqlc.arg(client_key), sqlc.arg(at), sqlc.arg(tender), sqlc.arg(amount_cents),
+        sqlc.arg(tip_cents), sqlc.arg(tendered_cents), sqlc.arg(change_cents), sqlc.arg(refund), sqlc.arg(reason),
+        sqlc.arg(ref), sqlc.arg(last4), sqlc.arg(staff_id), sqlc.arg(device_id), sqlc.arg(approved_by));
+
+-- name: ListOrderPayments :many
+SELECT * FROM order_payments WHERE order_id = ? ORDER BY at, rowid;
+
+-- name: GetOrderPaymentByKey :one
+SELECT * FROM order_payments WHERE order_id = ? AND client_key = ? AND client_key <> '';
+
+-- name: InsertJournal :exec
+INSERT INTO journal (id, at, staff_id, device_id, action, order_id, detail)
+VALUES (sqlc.arg(id), sqlc.arg(at), sqlc.arg(staff_id), sqlc.arg(device_id), sqlc.arg(action), sqlc.arg(order_id), sqlc.arg(detail));
+
+-- name: ListJournal :many
+-- Newest first.
+SELECT * FROM journal ORDER BY at DESC, rowid DESC LIMIT ?;
+
+-- name: DeleteOrphanOrderPayments :exec
+-- Retention: the payments of trimmed counter orders.
+DELETE FROM order_payments WHERE order_id NOT IN (SELECT id FROM orders);
+
+-- name: PruneJournal :execrows
+-- The Pi keeps the journal 30 days (main keeps it all).
+DELETE FROM journal WHERE at < ?;

@@ -3,7 +3,7 @@
 // sends as X-Agent-Device-Key on every request; the key is stored hashed.
 // Since 2.1.0 a device has a kind: a counter tablet, or an integration (the
 // store hub), whose key opens only /api/integration/* and the read-only
-// floor routes.
+// floor routes, or (0d) a POS terminal (/api/terminal/*).
 package device
 
 import (
@@ -12,10 +12,12 @@ import (
 	"time"
 )
 
-// Device kinds.
+// Device kinds. A terminal (terminal stage 0d) is one of the store's own POS
+// terminals: its key opens /api/terminal/* and /api/events.
 const (
 	KindTablet      = "tablet"
 	KindIntegration = "integration"
+	KindTerminal    = "terminal"
 )
 
 // Device is one paired tablet (the key itself is never stored or returned).

@@ -453,6 +453,9 @@ func (r *OrderRepository) CloseBatch(ctx context.Context, force bool) (closed *o
 		if err := q.ResetKitchenNumber(ctx); err != nil {
 			return err
 		}
+		if err := q.ResetCounterNumber(ctx); err != nil { // terminal stage 0d: counter orders start again too
+			return err
+		}
 		outDrivers, err := q.ListActiveDrivers(ctx)
 		if err != nil {
 			return err
@@ -1093,6 +1096,14 @@ func (r *OrderRepository) TrimBatches(ctx context.Context, keepClosed int, synce
 			return err
 		}
 		if err := q.DeleteOrphanOrderTimes(ctx); err != nil {
+			return err
+		}
+		// Terminal stage 0d: payments of trimmed counter orders; the journal
+		// is kept 30 days (main keeps it all).
+		if err := q.DeleteOrphanOrderPayments(ctx); err != nil {
+			return err
+		}
+		if _, err := q.PruneJournal(ctx, fmtTS(time.Now().Add(-order.JournalRetention))); err != nil {
 			return err
 		}
 		return q.DeleteOldAutoPlans(ctx, fmtTS(syncedBefore))

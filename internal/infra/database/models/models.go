@@ -61,6 +61,16 @@ type IntegrationEvent struct {
 	CreatedAt string `json:"created_at"`
 }
 
+type Journal struct {
+	ID       string `json:"id"`
+	At       string `json:"at"`
+	StaffID  string `json:"staff_id"`
+	DeviceID string `json:"device_id"`
+	Action   string `json:"action"`
+	OrderID  string `json:"order_id"`
+	Detail   string `json:"detail"`
+}
+
 type Order struct {
 	ID                   string         `json:"id"`
 	TenantID             string         `json:"tenant_id"`
@@ -124,6 +134,7 @@ type Order struct {
 	AddedTipCents        int64          `json:"added_tip_cents"`
 	TipLocked            bool           `json:"tip_locked"`
 	CancelReason         string         `json:"cancel_reason"`
+	ClientKey            string         `json:"client_key"`
 }
 
 type OrderGeo struct {
@@ -143,6 +154,25 @@ type OrderGeo struct {
 	ConfirmedAddress string          `json:"confirmed_address"`
 	Corrected        bool            `json:"corrected"`
 	Note             string          `json:"note"`
+}
+
+type OrderPayment struct {
+	ID            string `json:"id"`
+	OrderID       string `json:"order_id"`
+	ClientKey     string `json:"client_key"`
+	At            string `json:"at"`
+	Tender        string `json:"tender"`
+	AmountCents   int64  `json:"amount_cents"`
+	TipCents      int64  `json:"tip_cents"`
+	TenderedCents int64  `json:"tendered_cents"`
+	ChangeCents   int64  `json:"change_cents"`
+	Refund        bool   `json:"refund"`
+	Reason        string `json:"reason"`
+	Ref           string `json:"ref"`
+	Last4         string `json:"last4"`
+	StaffID       string `json:"staff_id"`
+	DeviceID      string `json:"device_id"`
+	ApprovedBy    string `json:"approved_by"`
 }
 
 type OrderTime struct {
@@ -218,6 +248,7 @@ type Setting struct {
 	Finishing                  string  `json:"finishing"`
 	Callout                    string  `json:"callout"`
 	Look                       string  `json:"look"`
+	CounterNext                int64   `json:"counter_next"`
 }
 
 type SettingsLog struct {
@@ -234,4 +265,12 @@ type StoreConfig struct {
 	ID        int64  `json:"id"`
 	Context   string `json:"context"`
 	UpdatedAt string `json:"updated_at"`
+}
+
+type TerminalSnapshot struct {
+	Kind      string `json:"kind"`
+	Version   int64  `json:"version"`
+	Etag      string `json:"etag"`
+	Body      string `json:"body"`
+	FetchedAt string `json:"fetched_at"`
 }

@@ -19,6 +19,7 @@ import (
 	"quiccpos/agent/internal/application/printernet"
 	"quiccpos/agent/internal/application/recovery"
 	"quiccpos/agent/internal/application/sseclient"
+	terminalApp "quiccpos/agent/internal/application/terminal"
 	"quiccpos/agent/internal/application/update"
 	"quiccpos/agent/internal/domain/device"
 	"quiccpos/agent/internal/domain/order"
@@ -83,6 +84,8 @@ type Server struct {
 	// audited settings PUTs (settings_audit.go).
 	settingsLog settingslog.Repository
 	auditMu     sync.Mutex
+	// terminalSvc: the POS terminals' API (terminal stage 0d).
+	terminalSvc *terminalApp.Service
 }
 
 // SetAppUpdater wires the tablet-app release cache (/api/app/*).

@@ -255,6 +255,9 @@ func toStored(row models.Order) (order.StoredOrder, error) {
 		st.CashDueCents, st.TipCents = row.CashDueCents.Int64, row.TipCents.Int64
 	} else {
 		st.CashDueCents = s.CashDue() // the one cash rule
+		if row.Source == order.SourceCounter {
+			st.TipCents = row.TipCents.Int64 // tips taken at the terminal
+		}
 	}
 	if row.Flag != "" {
 		var f order.Flag

@@ -14,7 +14,7 @@ import (
 type routeDef struct {
 	Method      string
 	Path        string
-	Auth        string // "none" (LAN-open) | "device" (paired tablet key OR session) | "session" (web-UI cookie) | "integration" (the store hub's key only)
+	Auth        string // "none" (LAN-open) | "device" (paired tablet key OR session) | "session" (web-UI cookie) | "integration" (the store hub's key only) | "terminal" (a POS terminal's key OR session)
 	Description string
 	Handler     http.HandlerFunc
 }
@@ -56,7 +56,7 @@ func (s *Server) routes() []routeDef {
 
 		// Tablet pairing — open (needs a live 6-digit code from the web UI).
 		{"POST", "/api/pair/manager", "none", "Join a linked Pi with the store manager login (2.4.2; no other tablet to get a code from) {username, password, tablet_name} -> 201 {device_id, name, kind, key, device_key} | 400 name_required | 401 bad_login | 409 not_linked/manager_login_unavailable | 429 too_many_attempts", s.handlePairManager},
-		{"POST", "/api/pair", "none", "Pair a tablet or the store hub: {code, name, kind?: tablet|integration} -> {device_id, name, kind, key, device_key} (shown once)", s.handlePair},
+		{"POST", "/api/pair", "none", "Pair a tablet, the store hub or a POS terminal: {code, name, kind?: tablet|integration|terminal} -> {device_id, name, kind, key, device_key} (shown once)", s.handlePair},
 
 		// Floor — paired tablet (X-Agent-Device-Key) or web-UI session.
 		{"GET", "/api/floor", "device", "Open batch, kitchen counter, prep quick-picks, sync backlog, delivery settings, store pin + map, settings {features, tickets, times}, integration (hub status)", s.handleFloor},
@@ -147,7 +147,7 @@ func (s *Server) routes() []routeDef {
 		{"GET", "/api/app/latest", "device", "Newest Quibase release cached for tablets (204 none)", s.handleAppLatest},
 		{"GET", "/api/app/apk", "device", "Download the cached Quibase APK", s.handleAppAPK},
 		{"GET", "/api/update/status", "device", "Pi update state: versions, latest, pending request, last result, can_update_now/blocked_reason", s.handleUpdateStatus},
-		{"GET", "/api/events", "device", "SSE: order.arrived|added|updated|escalated, drivers.updated|dispatched, driver.route, batch.closed, floor.updated, settings.updated, integration.status|toast", s.handleEvents},
+		{"GET", "/api/events", "device", "SSE: order.arrived|added|updated|escalated, drivers.updated|dispatched, driver.route, batch.closed, floor.updated, settings.updated, integration.status|toast, terminal.menu.changed|config.changed|order.placed|order.paid|order.voided", s.handleEvents},
 
 		// Quibase setup + diagnostics — paired tablet (or web-UI session).
 		{"POST", "/api/pairing/code", "device", "Show a 6-digit tablet pairing code (5 min) — web UI or a paired tablet (Pair another tablet)", s.handlePairingCode},
@@ -171,6 +171,20 @@ func (s *Server) routes() []routeDef {
 		{"PUT", "/api/integration/driver-ledger", "integration", "The POS's delivery checks of the day {operation_day, generated_at, checks, unknown_pos_numbers} -> 204 (kept in memory)", s.handleIntegrationDriverLedger},
 		{"PUT", "/api/integration/callout-audio/{id}", "integration", "A callout.render's audio: body audio/wav (<= 2 MB) or JSON {error, code?: not_installed|render_failed} -> 204 | 404 unknown/expired | 400 not a WAV | 413", s.handleIntegrationCalloutAudio},
 		{"GET", "/api/integration/events", "integration", "The hub feed (?after=<seq>&wait=<sec <=25>, long-poll) -> {events:[{seq,type,at,data}], next}; kept 3 days", s.handleIntegrationEvents},
+
+		// POS terminals (terminal stage 0d) — a paired terminal's key (or the web-UI session).
+		{"POST", "/api/terminal/login", "terminal", "Staff PIN login on this terminal {pin: 2-4 digits} -> {staff, role, limits, settings} | 400 bad_pin | 401 wrong_pin | 429 too_many_attempts | 503 config_unavailable", s.handleTerminalLogin},
+		{"POST", "/api/terminal/logout", "terminal", "Lock: the staff member leaves this terminal -> 204", s.handleTerminalLogout},
+		{"GET", "/api/terminal/session", "terminal", "Who is logged in here + the snapshot versions {staff|null, role, limits, menu_version, config_version, menu_fetched_at}", s.handleTerminalSession},
+		{"GET", "/api/terminal/menu", "terminal", "The counter menu snapshot {menu_version, config_version, fetched_at, settings, counter_menu} (ETag / If-None-Match -> 304) | 503 menu_unavailable", s.handleTerminalMenu},
+		{"POST", "/api/terminal/quote", "terminal", "Price a cart with the Pi's engine {type?: counter|pickup|delivery, cart: {lines, code?, tip_cents?, discount?: {pct|amount_cents, reason}}} -> {quote, menu_version, discount_pct, needs_manager} | 400 | 503 menu_unavailable", s.handleTerminalQuote},
+		{"POST", "/api/terminal/orders", "terminal", "Place a counter order (accepted at once, counter number, station tickets, synced as order.placed) {client_key, type, cart, customer?, payments?, note?, manager_pin?} -> 201 {order, number, duplicate:false, change_cents} | 200 the key's order (duplicate:true) | 400 | 401 login_required | 403 manager_required/manager_pin_invalid | 409 over_balance | 422 cart_invalid | 503 menu_unavailable", s.handleTerminalPlace},
+		{"GET", "/api/terminal/orders", "terminal", "The open batch's counter orders, oldest first (?open=1: the Pick Up list - unpaid or not picked up)", s.handleTerminalOrders},
+		{"GET", "/api/terminal/orders/{id}", "terminal", "One counter order with its payments {order, payments} | 404", s.handleTerminalOrder},
+		{"POST", "/api/terminal/orders/{id}/payments", "terminal", "Take a payment {tender, amount_cents, tip_cents?, tendered_cents?, client_key?, ref?, last4?} or give money back {refund: true, reason, manager_pin?} -> {order, payment, duplicate, balance_cents} (order.payment to main) | 400 | 401 login_required | 403 manager_required | 404 | 409 over_balance/refund_too_big/not_payable", s.handleTerminalPayment},
+		{"POST", "/api/terminal/orders/{id}/void", "terminal", "Void a counter order {reason, manager_pin?}: refunds what was paid (over the limit: a manager's PIN), VOID slip, order.void to main -> {order, refunds, refunded_cents, already} | 400 | 401 | 403 manager_required | 404 | 409 not_voidable", s.handleTerminalVoid},
+		{"POST", "/api/terminal/journal", "terminal", "Journal a terminal-only action {action (not a Pi one), order_id?, detail?: object <= 4 KB} -> 201 the entry (journal.entries to main) | 400 | 401 login_required", s.handleTerminalJournalPost},
+		{"GET", "/api/terminal/journal", "terminal", "The action journal, newest first ?limit=N (default 100, max 500)", s.handleTerminalJournal},
 
 		// Web-UI-only — session-gated.
 		{"GET", "/api/devices", "session", "Paired tablets", s.handleListDevices},
@@ -201,6 +215,8 @@ func (s *Server) register(mux *http.ServeMux) {
 			wrap = s.floor
 		case "integration":
 			wrap = s.integration
+		case "terminal":
+			wrap = s.terminal
 		}
 		mux.HandleFunc(r.Method+" "+r.Path, wrap(r.Handler))
 	}

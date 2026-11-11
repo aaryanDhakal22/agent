@@ -1,0 +1,196 @@
+{
+ "at": "2026-11-02T18:00:00-05:00",
+ "cart": {
+  "code": "",
+  "first_order": null,
+  "lines": [
+   {
+    "item_id": "00000000-0000-0000-0000-0000000000a1",
+    "price_cents": 2500,
+    "qty": 1
+   },
+   {
+    "item_id": "00000000-0000-0000-0000-0000000000a2",
+    "qty": 2
+   }
+  ],
+  "payment": "cash",
+  "tip_cents": null,
+  "tip_pct": null,
+  "type": "pickup"
+ },
+ "context": {
+  "deals": [],
+  "items": {
+   "00000000-0000-0000-0000-0000000000a1": {
+    "category_id": "00000000-0000-0000-0000-0000000000e1",
+    "open_price": true,
+    "tax_bps": 0
+   },
+   "00000000-0000-0000-0000-0000000000a2": {
+    "category_id": "00000000-0000-0000-0000-0000000000e1",
+    "tax_bps": 0
+   },
+   "00000000-0000-0000-0000-0000000000a3": {
+    "category_id": "00000000-0000-0000-0000-0000000000e1",
+    "no_tax": true,
+    "tax_bps": 0
+   },
+   "00000000-0000-0000-0000-0000000000a4": {
+    "category_id": "00000000-0000-0000-0000-0000000000e1",
+    "no_tax": true,
+    "tax_bps": 0
+   }
+  },
+  "menu": {
+   "categories": [
+    {
+     "items": [
+      {
+       "anchor": {
+        "item_ids": [
+         "00000000-0000-0000-0000-0000000000a1"
+        ]
+       },
+       "description": "",
+       "id": "00000000-0000-0000-0000-0000000000a1",
+       "modifier_group_ids": [],
+       "name": "Advance Payment",
+       "photo": "",
+       "price_cents": 0,
+       "sizes": [],
+       "sold_out": false
+      },
+      {
+       "anchor": {
+        "item_ids": [
+         "00000000-0000-0000-0000-0000000000a2"
+        ]
+       },
+       "description": "",
+       "id": "00000000-0000-0000-0000-0000000000a2",
+       "modifier_group_ids": [],
+       "name": "Soda",
+       "photo": "",
+       "price_cents": 199,
+       "sizes": [],
+       "sold_out": false
+      },
+      {
+       "anchor": {
+        "item_ids": [
+         "00000000-0000-0000-0000-0000000000a3"
+        ]
+       },
+       "description": "",
+       "id": "00000000-0000-0000-0000-0000000000a3",
+       "modifier_group_ids": [],
+       "name": "Ice Cup",
+       "photo": "",
+       "price_cents": 0,
+       "sizes": [],
+       "sold_out": false
+      },
+      {
+       "anchor": {
+        "item_ids": [
+         "00000000-0000-0000-0000-0000000000a4"
+        ]
+       },
+       "description": "",
+       "id": "00000000-0000-0000-0000-0000000000a4",
+       "modifier_group_ids": [],
+       "name": "Garlic Knots",
+       "photo": "",
+       "price_cents": 499,
+       "sizes": [],
+       "sold_out": false
+      }
+     ],
+     "key": "00000000-0000-0000-0000-0000000000e1",
+     "name": "Counter",
+     "position": 1
+    }
+   ],
+   "modifier_groups": []
+  },
+  "open_prices": true,
+  "settings": {
+   "card_fee": {
+    "bps": 0,
+    "mode": "none"
+   },
+   "delivery_fee_cents": 299,
+   "delivery_min_cents": 1000,
+   "free_delivery_over_cents": null,
+   "service_fee_bps": 0,
+   "service_fee_cents": 0,
+   "stacking": "best",
+   "tax_bps": 600,
+   "tips": {
+    "default_pct": 18,
+    "enabled": false,
+    "presets": [
+     15,
+     18,
+     20
+    ]
+   }
+  },
+  "timezone": "America/New_York",
+  "types": {
+   "delivery": true,
+   "pickup": true
+  }
+ },
+ "expect": {
+  "errors": [],
+  "lines": [
+   {
+    "unit_cents": 2500
+   },
+   {
+    "unit_cents": 199
+   }
+  ],
+  "subtotal_cents": 2898,
+  "tax_cents": 174
+ },
+ "name": "open_price",
+ "quote": {
+  "card_fee_cents": 0,
+  "delivery_fee_cents": 0,
+  "discounts": [],
+  "errors": [],
+  "lines": [
+   {
+    "deal_id": "",
+    "index": 0,
+    "mods": [],
+    "name": "Advance Payment",
+    "qty": 1,
+    "regular_cents": null,
+    "total_cents": 2500,
+    "unit_cents": 2500
+   },
+   {
+    "deal_id": "",
+    "index": 1,
+    "mods": [],
+    "name": "Soda",
+    "qty": 2,
+    "regular_cents": null,
+    "total_cents": 398,
+    "unit_cents": 199
+   }
+  ],
+  "nudges": [],
+  "saved_cents": 0,
+  "service_fee_cents": 0,
+  "subtotal_cents": 2898,
+  "tax_cents": 174,
+  "tip_cents": 0,
+  "total_cents": 3072,
+  "warnings": []
+ }
+}

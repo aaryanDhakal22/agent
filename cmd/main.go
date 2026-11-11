@@ -38,6 +38,7 @@ import (
 	"quiccpos/agent/internal/application/retention"
 	ssecontroller "quiccpos/agent/internal/application/sseclient"
 	"quiccpos/agent/internal/application/statesync"
+	terminalApp "quiccpos/agent/internal/application/terminal"
 	"quiccpos/agent/internal/application/update"
 	"quiccpos/agent/internal/config"
 	"quiccpos/agent/internal/domain/order"
@@ -321,6 +322,22 @@ func main() {
 
 	sseCtrl := ssecontroller.New(ctx, cfg.MainServerURL, orderService, sink, registry, logger, meters)
 	rpcPoster.key = sseCtrl.CurrentKey
+
+	// POS terminals (terminal stage 0d): the counter menu + terminal config
+	// snapshots main sends (kept in SQLite, refetched at connect and on
+	// main's menu.changed / terminal.changed), and the /api/terminal/* flow.
+	termStore := terminalApp.NewStore(orderRepo, func(rc context.Context, path string) (int, []byte, error) {
+		k := sseCtrl.CurrentKey()
+		if k == "" {
+			return 0, nil, fmt.Errorf("not linked to a store")
+		}
+		return mainClient.Download(rc, k, path, "")
+	}, broker, logger)
+	termSvc := terminalApp.NewService(termStore, orderRepo, orderService, broker, logger)
+	termStore.Load(ctx)
+	registry.Register(terminalApp.MsgMenuChanged, termStore.HandleMenuChanged)
+	registry.Register(terminalApp.MsgTerminalChanged, termStore.HandleTerminalChanged)
+	termStore.Run(ctx, 5*time.Minute, sseCtrl.Configured)
 	// Delivery maps + AUTO: the store pin and map for /api/floor, and the
 	// agent->main geo RPCs (pin, trip).
 	orderService.SetGeo(orderApp.GeoDeps{
@@ -535,6 +552,7 @@ func main() {
 		}
 		catchupHook()
 		orderService.RelocatePOS(ctx) // POS deliveries pulled while main was away
+		termStore.Kick("")            // the terminals' menu + config, fresh at every connect
 	})
 	// Reconciliation: a quiet catch-up pass every minute while connected.
 	go catchup.Reconcile(ctx, time.Minute, func(rc context.Context, path, rawQuery string) (int, []byte, error) {
@@ -595,6 +613,7 @@ func main() {
 	})
 	httpServer := transport.NewServer(orderService, broker, printerRegistry, settingsRepo, sseCtrl, mainClient, session, deviceRepo, cfg.HTTPPort, version, commit, logger)
 	httpServer.SetAltPort(cfg.HTTPAltPort)
+	httpServer.SetTerminal(termSvc)
 	httpServer.SetDevLog(devRing)
 	httpServer.SetSettingsLog(repositories.NewSettingsLogRepository(db))
 	httpRef.Store(httpServer)

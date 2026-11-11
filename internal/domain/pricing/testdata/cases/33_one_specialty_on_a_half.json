@@ -1,0 +1,431 @@
+{
+ "at": "2026-11-11T18:00:00-05:00",
+ "cart": {
+  "code": "",
+  "first_order": null,
+  "lines": [
+   {
+    "halves": [
+     {
+      "half": 2,
+      "item_id": "00000000-0000-0000-0000-0000000000a2"
+     }
+    ],
+    "item_id": "00000000-0000-0000-0000-0000000000a1",
+    "options": [
+     {
+      "group_id": "00000000-0000-0000-0000-0000000000c1",
+      "option_id": "00000000-0000-0000-0000-0000000000d1",
+      "portion": "first"
+     }
+    ],
+    "qty": 1,
+    "size_id": "00000000-0000-0000-0000-0000000000b2"
+   },
+   {
+    "halves": [
+     {
+      "half": 1,
+      "item_id": "00000000-0000-0000-0000-0000000000a2"
+     }
+    ],
+    "item_id": "00000000-0000-0000-0000-0000000000a1",
+    "options": [],
+    "qty": 1,
+    "size_id": "00000000-0000-0000-0000-0000000000b1"
+   },
+   {
+    "halves": [
+     {
+      "half": 2,
+      "item_id": "00000000-0000-0000-0000-0000000000a3"
+     }
+    ],
+    "item_id": "00000000-0000-0000-0000-0000000000a2",
+    "options": [
+     {
+      "group_id": "00000000-0000-0000-0000-0000000000c1",
+      "mode": "only",
+      "option_id": "00000000-0000-0000-0000-0000000000d1",
+      "portion": "first"
+     }
+    ],
+    "qty": 1,
+    "size_id": "00000000-0000-0000-0000-0000000000b2"
+   }
+  ],
+  "payment": "cash",
+  "tip_cents": null,
+  "tip_pct": null,
+  "type": "pickup"
+ },
+ "context": {
+  "deals": [],
+  "items": {
+   "00000000-0000-0000-0000-0000000000a1": {
+    "category_id": "00000000-0000-0000-0000-0000000000e1",
+    "tax_bps": 0
+   },
+   "00000000-0000-0000-0000-0000000000a2": {
+    "category_id": "00000000-0000-0000-0000-0000000000e1",
+    "half_base": "00000000-0000-0000-0000-0000000000a1",
+    "tax_bps": 0
+   },
+   "00000000-0000-0000-0000-0000000000a3": {
+    "category_id": "00000000-0000-0000-0000-0000000000e1",
+    "half_base": "00000000-0000-0000-0000-0000000000a1",
+    "tax_bps": 0
+   },
+   "00000000-0000-0000-0000-0000000000a4": {
+    "category_id": "00000000-0000-0000-0000-0000000000e1",
+    "half_base": "00000000-0000-0000-0000-0000000000a1",
+    "tax_bps": 0
+   },
+   "00000000-0000-0000-0000-0000000000a5": {
+    "category_id": "00000000-0000-0000-0000-0000000000e1",
+    "tax_bps": 0
+   },
+   "00000000-0000-0000-0000-0000000000a6": {
+    "category_id": "00000000-0000-0000-0000-0000000000e1",
+    "tax_bps": 0
+   }
+  },
+  "menu": {
+   "categories": [
+    {
+     "items": [
+      {
+       "anchor": {
+        "item_ids": [
+         "00000000-0000-0000-0000-0000000000a1"
+        ]
+       },
+       "description": "",
+       "id": "00000000-0000-0000-0000-0000000000a1",
+       "modifier_group_ids": [
+        "00000000-0000-0000-0000-0000000000c1"
+       ],
+       "name": "Cheese Pizza",
+       "photo": "",
+       "price_cents": 0,
+       "sizes": [
+        {
+         "name": "12 Medium",
+         "price_cents": 999,
+         "size_id": "00000000-0000-0000-0000-0000000000b1"
+        },
+        {
+         "name": "16 X-Large",
+         "price_cents": 1299,
+         "size_id": "00000000-0000-0000-0000-0000000000b2"
+        }
+       ],
+       "sold_out": false
+      },
+      {
+       "anchor": {
+        "item_ids": [
+         "00000000-0000-0000-0000-0000000000a2"
+        ]
+       },
+       "description": "",
+       "id": "00000000-0000-0000-0000-0000000000a2",
+       "modifier_group_ids": [
+        "00000000-0000-0000-0000-0000000000c1"
+       ],
+       "name": "Hawaiian",
+       "photo": "",
+       "price_cents": 0,
+       "sizes": [
+        {
+         "name": "12 Medium",
+         "price_cents": 1499,
+         "size_id": "00000000-0000-0000-0000-0000000000b1"
+        },
+        {
+         "name": "16 X-Large",
+         "price_cents": 1999,
+         "size_id": "00000000-0000-0000-0000-0000000000b2"
+        }
+       ],
+       "sold_out": false
+      },
+      {
+       "anchor": {
+        "item_ids": [
+         "00000000-0000-0000-0000-0000000000a3"
+        ]
+       },
+       "description": "",
+       "id": "00000000-0000-0000-0000-0000000000a3",
+       "modifier_group_ids": [
+        "00000000-0000-0000-0000-0000000000c1"
+       ],
+       "name": "Supreme",
+       "photo": "",
+       "price_cents": 0,
+       "sizes": [
+        {
+         "name": "12 Medium",
+         "price_cents": 1699,
+         "size_id": "00000000-0000-0000-0000-0000000000b1"
+        },
+        {
+         "name": "16 X-Large",
+         "price_cents": 2199,
+         "size_id": "00000000-0000-0000-0000-0000000000b2"
+        }
+       ],
+       "sold_out": false
+      },
+      {
+       "anchor": {
+        "item_ids": [
+         "00000000-0000-0000-0000-0000000000a4"
+        ]
+       },
+       "description": "",
+       "id": "00000000-0000-0000-0000-0000000000a4",
+       "modifier_group_ids": [
+        "00000000-0000-0000-0000-0000000000c1"
+       ],
+       "name": "Veggie",
+       "photo": "",
+       "price_cents": 0,
+       "sizes": [
+        {
+         "name": "16 X-Large",
+         "price_cents": 1850,
+         "size_id": "00000000-0000-0000-0000-0000000000b2"
+        }
+       ],
+       "sold_out": false
+      },
+      {
+       "anchor": {
+        "item_ids": [
+         "00000000-0000-0000-0000-0000000000a5"
+        ]
+       },
+       "description": "",
+       "id": "00000000-0000-0000-0000-0000000000a5",
+       "modifier_group_ids": [
+        "00000000-0000-0000-0000-0000000000c1"
+       ],
+       "name": "BBQ Chicken",
+       "photo": "",
+       "price_cents": 0,
+       "sizes": [
+        {
+         "name": "12 Medium",
+         "price_cents": 1599,
+         "size_id": "00000000-0000-0000-0000-0000000000b1"
+        },
+        {
+         "name": "16 X-Large",
+         "price_cents": 2099,
+         "size_id": "00000000-0000-0000-0000-0000000000b2"
+        }
+       ],
+       "sold_out": false
+      },
+      {
+       "anchor": {
+        "item_ids": [
+         "00000000-0000-0000-0000-0000000000a6"
+        ]
+       },
+       "description": "",
+       "id": "00000000-0000-0000-0000-0000000000a6",
+       "modifier_group_ids": [],
+       "name": "Soda",
+       "photo": "",
+       "price_cents": 199,
+       "sizes": [],
+       "sold_out": false
+      }
+     ],
+     "key": "00000000-0000-0000-0000-0000000000e1",
+     "name": "Pizza",
+     "position": 1
+    }
+   ],
+   "modifier_groups": [
+    {
+     "allow_multiple": false,
+     "id": "00000000-0000-0000-0000-0000000000c1",
+     "max_select": 6,
+     "min_select": 0,
+     "name": "Toppings",
+     "options": [
+      {
+       "id": "00000000-0000-0000-0000-0000000000d1",
+       "is_default": false,
+       "name": "Pepperoni",
+       "price_cents": 150,
+       "prices": [
+        {
+         "price_cents": 225,
+         "size_id": "00000000-0000-0000-0000-0000000000b2"
+        }
+       ],
+       "sold_out": false
+      },
+      {
+       "id": "00000000-0000-0000-0000-0000000000d2",
+       "is_default": false,
+       "name": "Mushrooms",
+       "price_cents": 150,
+       "prices": [
+        {
+         "price_cents": 225,
+         "size_id": "00000000-0000-0000-0000-0000000000b2"
+        }
+       ],
+       "sold_out": false
+      },
+      {
+       "id": "00000000-0000-0000-0000-0000000000d3",
+       "is_default": false,
+       "name": "Pineapple",
+       "price_cents": 150,
+       "prices": [
+        {
+         "price_cents": 225,
+         "size_id": "00000000-0000-0000-0000-0000000000b2"
+        }
+       ],
+       "sold_out": false
+      },
+      {
+       "id": "00000000-0000-0000-0000-0000000000d4",
+       "is_default": false,
+       "name": "Onion",
+       "price_cents": 125,
+       "prices": [
+        {
+         "price_cents": 175,
+         "size_id": "00000000-0000-0000-0000-0000000000b2"
+        }
+       ],
+       "sold_out": false
+      }
+     ],
+     "portions": true,
+     "required": false
+    }
+   ]
+  },
+  "settings": {
+   "card_fee": {
+    "bps": 0,
+    "mode": "none"
+   },
+   "delivery_fee_cents": 0,
+   "delivery_min_cents": 0,
+   "free_delivery_over_cents": null,
+   "half_specialty_off_pct": 0,
+   "half_topping_price": "full",
+   "service_fee_bps": 0,
+   "service_fee_cents": 0,
+   "stacking": "best",
+   "tax_bps": 600,
+   "tips": {
+    "default_pct": 0,
+    "enabled": false,
+    "presets": []
+   }
+  },
+  "timezone": "America/New_York",
+  "types": {
+   "delivery": true,
+   "pickup": true
+  }
+ },
+ "expect": {
+  "error_codes": [],
+  "lines": [
+   {
+    "mods": [
+     "16 X-Large",
+     "Hawaiian (2nd half)",
+     "Pepperoni (1st half)"
+    ],
+    "unit_cents": 2224
+   },
+   {
+    "mods": [
+     "12 Medium",
+     "Hawaiian (1st half)"
+    ],
+    "unit_cents": 1499
+   },
+   {
+    "mods": [
+     "16 X-Large",
+     "Supreme (2nd half)",
+     "ONLY Pepperoni (1st half)"
+    ],
+    "unit_cents": 2424
+   }
+  ]
+ },
+ "name": "one specialty on a half costs that specialty's full price",
+ "quote": {
+  "card_fee_cents": 0,
+  "delivery_fee_cents": 0,
+  "discounts": [],
+  "errors": [],
+  "lines": [
+   {
+    "deal_id": "",
+    "index": 0,
+    "mods": [
+     "16 X-Large",
+     "Hawaiian (2nd half)",
+     "Pepperoni (1st half)"
+    ],
+    "name": "Cheese Pizza",
+    "qty": 1,
+    "regular_cents": null,
+    "total_cents": 2224,
+    "unit_cents": 2224
+   },
+   {
+    "deal_id": "",
+    "index": 1,
+    "mods": [
+     "12 Medium",
+     "Hawaiian (1st half)"
+    ],
+    "name": "Cheese Pizza",
+    "qty": 1,
+    "regular_cents": null,
+    "total_cents": 1499,
+    "unit_cents": 1499
+   },
+   {
+    "deal_id": "",
+    "index": 2,
+    "mods": [
+     "16 X-Large",
+     "Supreme (2nd half)",
+     "ONLY Pepperoni (1st half)"
+    ],
+    "name": "Hawaiian",
+    "qty": 1,
+    "regular_cents": null,
+    "total_cents": 2424,
+    "unit_cents": 2424
+   }
+  ],
+  "nudges": [],
+  "saved_cents": 0,
+  "service_fee_cents": 0,
+  "subtotal_cents": 6147,
+  "tax_cents": 369,
+  "tip_cents": 0,
+  "total_cents": 6516,
+  "warnings": []
+ }
+}

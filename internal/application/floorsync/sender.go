@@ -220,12 +220,24 @@ func (s *Sender) send(ctx context.Context, events []order.FloorEvent) (err error
 	}
 	now := s.now()
 	known := make(map[string]bool, len(events))
+	typeOf := make(map[string]string, len(events))
 	for _, e := range events {
 		known[e.ID] = true
+		typeOf[e.ID] = e.Type
 	}
-	synced := 0
+	synced, kept := 0, 0
 	for _, r := range results.Results {
 		if !known[r.EventID] {
+			continue
+		}
+		// Terminal stage 0d: a counter order exists only on the Pi until main
+		// has it. A main older than 0d answers order.placed `invalid`: keep it
+		// queued (retried with the backoff) rather than lose the order.
+		if r.Result == "invalid" && typeOf[r.EventID] == "order.placed" {
+			_ = s.repo.MarkEventFailed(ctx, r.EventID, "main answered invalid (older than terminal 0d?)")
+			s.logger.Warn().Ctx(ctx).Str("event_id", r.EventID).Msg("main refused a counter order (kept, retried)")
+			s.count(ctx, "rejected", 1)
+			kept++
 			continue
 		}
 		if err := s.repo.MarkEventSynced(ctx, r.EventID, now); err != nil {
@@ -238,6 +250,9 @@ func (s *Sender) send(ctx context.Context, events []order.FloorEvent) (err error
 			s.logger.Warn().Ctx(ctx).Str("event_id", r.EventID).Str("result", r.Result).Msg("main rejected a floor event (dropped)")
 		}
 		s.count(ctx, res, 1)
+	}
+	if kept > 0 {
+		return fmt.Errorf("main refused %d counter order(s); kept for a retry", kept)
 	}
 	if synced < len(events) {
 		return fmt.Errorf("main acknowledged %d of %d events", synced, len(events))

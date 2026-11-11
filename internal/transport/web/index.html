@@ -781,17 +781,17 @@
             <span class="muted" x-show="pair && pairLeft <= 0">That code expired — make a new one.</span>
           </div>
           <div class="srow top" style="flex-direction:column;align-items:stretch;gap:0">
-            <div class="lbl">Paired tablets</div>
+            <div class="lbl">Paired devices</div>
             <div class="list">
               <template x-for="d in devices" :key="d.id">
                 <div class="li">
                   <div class="main"><b x-text="d.name"></b>
-                    <div class="small muted"><span class="mono" x-text="d.key_prefix + '…'"></span> · <span x-text="d.revoked_at ? 'revoked ' + dateTime(d.revoked_at) : (d.last_seen_at ? 'seen ' + ago(d.last_seen_at) : 'never used')"></span><template x-if="d.app_version"><span> · <span class="mono" x-text="'Quibase ' + d.app_version"></span></span></template></div>
+                    <div class="small muted"><span x-text="({tablet: 'Tablet', integration: 'Store hub', terminal: 'POS terminal'})[d.kind] || d.kind"></span> · <span class="mono" x-text="d.key_prefix + '…'"></span> · <span x-text="d.revoked_at ? 'revoked ' + dateTime(d.revoked_at) : (d.last_seen_at ? 'seen ' + ago(d.last_seen_at) : 'never used')"></span><template x-if="d.app_version"><span> · <span class="mono" x-text="'Quibase ' + d.app_version"></span></span></template></div>
                   </div>
                   <button type="button" class="btn" x-show="!d.revoked_at" @click="revokeDevice(d)">Revoke</button>
                 </div>
               </template>
-              <p class="muted" x-show="devicesLoaded && !devices.length">No tablets paired yet.</p>
+              <p class="muted" x-show="devicesLoaded && !devices.length">No tablets or terminals paired yet.</p>
             </div>
           </div>
           <div class="srow">

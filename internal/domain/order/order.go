@@ -166,12 +166,29 @@ type PaymentSummary struct {
 	AuthCode    string `json:"auth_code,omitempty"`
 }
 
+// SourceCounter is Snapshot.Source of an order placed at one of the store's
+// own POS terminals (terminal stage 0d): the Pi makes it, accepted at once.
+const SourceCounter = "counter"
+
+// JournalRetention: how long the Pi keeps the terminals' action journal
+// (main keeps it all).
+const JournalRetention = 30 * 24 * time.Hour
+
 // CashDue is what is collected in cash for the order (at the counter or by
 // the driver): the cash payments, or the whole total when the order carries
 // no payments at all — that is how the vendor sends a cash order (v1 printed
 // "Collect Cash" for exactly that case). Card and other payments (a third
 // party, an invoice) are already paid and never count.
 func (s Snapshot) CashDue() int64 {
+	if s.Source == SourceCounter {
+		// A counter order (terminal stage 0d) lists the money already taken
+		// at the counter (refunds negative): what is left is still due.
+		due := s.Money.Total
+		for _, p := range s.Payments {
+			due -= p.AmountCents
+		}
+		return max(due, 0)
+	}
 	if len(s.Payments) == 0 {
 		return s.Money.Total
 	}

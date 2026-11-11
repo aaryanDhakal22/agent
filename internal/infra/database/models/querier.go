@@ -58,6 +58,8 @@ type Querier interface {
 	// Batch retention: keep the open batch plus the newest N closed batches.
 	DeleteOrdersOutsideKeptBatches(ctx context.Context, limit int64) (int64, error)
 	DeleteOrphanOrderGeo(ctx context.Context) error
+	// Retention: the payments of trimmed counter orders.
+	DeleteOrphanOrderPayments(ctx context.Context) error
 	DeleteOrphanOrderTimes(ctx context.Context) error
 	// A POS check that was never on Kitchen (board hidden) closed at the POS:
 	// ready and finished at once (no feed event: nothing is called out).
@@ -73,6 +75,7 @@ type Querier interface {
 	GetAutoPlan(ctx context.Context, id string) (AutoPlan, error)
 	GetAutoUpdate(ctx context.Context) (bool, error)
 	GetBatch(ctx context.Context, id int64) (Batch, error)
+	GetCounterNext(ctx context.Context) (int64, error)
 	// Delivery settings + store map (2.0.9) -------------------------------------------
 	GetDeliveryPrefs(ctx context.Context) (GetDeliveryPrefsRow, error)
 	GetDriver(ctx context.Context, id string) (Driver, error)
@@ -91,22 +94,29 @@ type Querier interface {
 	// Batches -------------------------------------------------------------------
 	GetOpenBatch(ctx context.Context) (Batch, error)
 	GetOpenShift(ctx context.Context, driverID string) (DriverShift, error)
+	GetOrderByClientKey(ctx context.Context, clientKey string) (Order, error)
 	// The newest order for a POS check (a check number is never reused by the POS).
 	GetOrderByExtRef(ctx context.Context, arg GetOrderByExtRefParams) (Order, error)
 	GetOrderByID(ctx context.Context, id string) (Order, error)
 	GetOrderGeo(ctx context.Context, orderID string) (OrderGeo, error)
+	GetOrderPaymentByKey(ctx context.Context, arg GetOrderPaymentByKeyParams) (OrderPayment, error)
 	GetPairedDeviceByHash(ctx context.Context, keyHash string) (PairedDevice, error)
 	GetReceiptPrefs(ctx context.Context) (string, error)
 	GetSessionSecret(ctx context.Context) (string, error)
 	GetStoreAPIKey(ctx context.Context) (string, error)
 	// Store config (starter pack from main/'s SSE handshake) --------------------
 	GetStoreConfig(ctx context.Context) (GetStoreConfigRow, error)
+	// ===== 00025 terminal (stage 0d): the Pi serves the store's POS terminals =====
+	GetTerminalSnapshot(ctx context.Context, kind string) (TerminalSnapshot, error)
 	GetUIPassword(ctx context.Context) (GetUIPasswordRow, error)
 	GetUpdateLastSuccess(ctx context.Context) (string, error)
 	GetUpdateState(ctx context.Context) (GetUpdateStateRow, error)
 	// AUTO plans ------------------------------------------------------------------------
 	InsertAutoPlan(ctx context.Context, arg InsertAutoPlanParams) error
 	InsertBatchWithID(ctx context.Context, arg InsertBatchWithIDParams) error
+	// A counter order from a terminal: stored accepted at once (no ring) with its
+	// counter number, in the open batch.
+	InsertCounterOrder(ctx context.Context, arg InsertCounterOrderParams) error
 	// POS orders from the store hub (2.1.0) ------------------------------------------
 	// A POS check the hub pulled: stored accepted (no kitchen number), local only.
 	InsertExternalOrder(ctx context.Context, arg InsertExternalOrderParams) error
@@ -114,6 +124,8 @@ type Querier interface {
 	InsertFloorEvent(ctx context.Context, arg InsertFloorEventParams) error
 	// Integration feed (2.1.0) -----------------------------------------------------
 	InsertIntegrationEvent(ctx context.Context, arg InsertIntegrationEventParams) error
+	InsertJournal(ctx context.Context, arg InsertJournalParams) error
+	InsertOrderPayment(ctx context.Context, arg InsertOrderPaymentParams) error
 	InsertSettingsChange(ctx context.Context, arg InsertSettingsChangeParams) error
 	// Drivers -------------------------------------------------------------------
 	ListActiveDrivers(ctx context.Context) ([]Driver, error)
@@ -128,18 +140,23 @@ type Querier interface {
 	// 2.4.0: a batch's deliveries delivered with no driver (the UNASSIGNED report).
 	ListBatchUnassigned(ctx context.Context, batchID int64) ([]Order, error)
 	ListBatches(ctx context.Context, limit int64) ([]ListBatchesRow, error)
+	// Counter orders of a batch (the terminals' Pick Up list filters them).
+	ListCounterOrders(ctx context.Context, batchID int64) ([]Order, error)
 	// Online pickups / dine-in ready since before the cutoff and not finished yet.
 	ListDueOnlinePickups(ctx context.Context, cutoff sql.NullString) ([]string, error)
 	ListDueScheduled(ctx context.Context, ringAt sql.NullString) ([]Order, error)
 	ListIntegrationEvents(ctx context.Context, arg ListIntegrationEventsParams) ([]IntegrationEvent, error)
 	// Claimed but never recorded: the agent stopped between claim and record.
 	ListInterruptedAccepts(ctx context.Context) ([]string, error)
+	// Newest first.
+	ListJournal(ctx context.Context, limit int64) ([]Journal, error)
 	ListLocalOnlyByBatch(ctx context.Context, batchID int64) ([]Order, error)
 	ListOnDeliveryByDriver(ctx context.Context, driverID sql.NullString) ([]Order, error)
 	// The open batch's deliveries still on the floor (cooking, ready or out).
 	ListOpenDeliveries(ctx context.Context) ([]Order, error)
 	ListOpenShifts(ctx context.Context) ([]DriverShift, error)
 	ListOrderGeo(ctx context.Context, ids []string) ([]OrderGeo, error)
+	ListOrderPayments(ctx context.Context, orderID string) ([]OrderPayment, error)
 	// Drive times between the given orders (both ends in the set).
 	ListOrderTimes(ctx context.Context, arg ListOrderTimesParams) ([]OrderTime, error)
 	ListOrdersByBatch(ctx context.Context, arg ListOrdersByBatchParams) ([]Order, error)
@@ -198,7 +215,11 @@ type Querier interface {
 	// its promised_at) and waits as a plain arrived order for the accept that
 	// follows at once.
 	PrepareMakeNow(ctx context.Context, id string) (int64, error)
+	// The Pi keeps the journal 30 days (main keeps it all).
+	PruneJournal(ctx context.Context, at string) (int64, error)
 	PruneSettingsLog(ctx context.Context, before string) error
+	// The last good counter menu / terminal config main sent (replaced whole).
+	PutTerminalSnapshot(ctx context.Context, arg PutTerminalSnapshotParams) error
 	// ring_at passed: it rings again like a new order. last_alert_at starts the
 	// 2-minute escalation from now, not from the first arrival.
 	RaiseScheduled(ctx context.Context, arg RaiseScheduledParams) (int64, error)
@@ -212,6 +233,8 @@ type Querier interface {
 	// A ready POS order the terminal added a kitchen item to: back to cooking,
 	// out of any pool, not finished.
 	ReopenPosOrder(ctx context.Context, arg ReopenPosOrderParams) (int64, error)
+	// Close batch: the next counter order starts again at counter_start.
+	ResetCounterNumber(ctx context.Context) error
 	// Close batch: drivers out on a run are back in the queue (clocked-out stay off).
 	ResetDriversAvailable(ctx context.Context) error
 	ResetKitchenNumber(ctx context.Context) error
@@ -231,6 +254,10 @@ type Querier interface {
 	SetAppRelease(ctx context.Context, appRelease string) error
 	SetAutoAccept(ctx context.Context, autoAccept bool) error
 	SetAutoUpdate(ctx context.Context, autoUpdate bool) error
+	// A payment / refund on a counter order: the snapshot (payments, tip, total)
+	// and the money columns.
+	SetCounterMoney(ctx context.Context, arg SetCounterMoneyParams) error
+	SetCounterNext(ctx context.Context, counterNext int64) error
 	SetDeliveryPrefs(ctx context.Context, arg SetDeliveryPrefsParams) error
 	SetDriverOut(ctx context.Context, id string) error
 	// Undo a mistaken return: back out on the run, at its old queue position.
@@ -297,6 +324,9 @@ type Querier interface {
 	SetUpdateNotified(ctx context.Context, updateNotified string) error
 	// A hidden POS check that now qualifies for Kitchen: shown as if new.
 	ShowPosOrder(ctx context.Context, arg ShowPosOrderParams) error
+	// The counter sequence: hands out counter_next (or start when it is 0, i.e.
+	// after Close batch) and moves it on. Returns the number AFTER the one taken.
+	TakeCounterNumber(ctx context.Context, start int64) (int64, error)
 	TouchPairedDevice(ctx context.Context, arg TouchPairedDeviceParams) error
 	// 2.4.0 Back to deliveries: an Unassigned delivery goes back to the state it
 	// was in (cooking or ready), no longer delivered.

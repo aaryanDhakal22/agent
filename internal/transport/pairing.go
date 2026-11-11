@@ -157,6 +157,10 @@ func (s *Server) floor(h http.HandlerFunc) http.HandlerFunc {
 				s.writeJSON(w, http.StatusForbidden, errCodeMap("an integration key can't use this route", "integration_only"))
 				return
 			}
+			if d.Kind == device.KindTerminal && !terminalMayUse(r) {
+				s.writeJSON(w, http.StatusForbidden, errCodeMap("a terminal key opens /api/terminal/* and /api/events only", "terminal_only"))
+				return
+			}
 			h(w, r.WithContext(context.WithValue(r.Context(), deviceCtxKey{}, d)))
 			return
 		}
@@ -177,6 +181,41 @@ func integrationMayRead(r *http.Request) bool {
 		return true
 	}
 	return false
+}
+
+// terminalMayUse: the floor routes a POS terminal's key may call besides
+// /api/terminal/* - the event stream, the floor summary, renaming or
+// unpairing itself.
+func terminalMayUse(r *http.Request) bool {
+	switch p := r.URL.Path; {
+	case r.Method == http.MethodGet && (p == "/api/events" || p == "/api/floor"):
+		return true
+	case r.Method == http.MethodPatch && p == "/api/device/self", r.Method == http.MethodPost && p == "/api/device/unpair":
+		return true
+	}
+	return false
+}
+
+// terminal gates /api/terminal/*: a paired POS terminal's key, or the web-UI
+// session (tests, the Pi web page); a tablet or integration key gets 403.
+func (s *Server) terminal(h http.HandlerFunc) http.HandlerFunc {
+	return s.withCORS(func(w http.ResponseWriter, r *http.Request) {
+		d, ok, err := s.deviceFromRequest(r)
+		if err != nil {
+			s.writeError(w, r, http.StatusInternalServerError, err)
+			return
+		}
+		switch {
+		case ok && d.Kind == device.KindTerminal:
+			h(w, r.WithContext(context.WithValue(r.Context(), deviceCtxKey{}, d)))
+		case ok:
+			s.writeJSON(w, http.StatusForbidden, errCodeMap("only a paired POS terminal can use this route", "terminal_required"))
+		case s.session != nil && s.session.valid(r):
+			h(w, r)
+		default:
+			s.writeJSON(w, http.StatusUnauthorized, errCodeMap("pair this terminal first (or log in)", "device_required"))
+		}
+	})
 }
 
 // integration gates /api/integration/*: an integration device's key only
@@ -211,7 +250,8 @@ func (s *Server) handlePairingCode(w http.ResponseWriter, _ *http.Request) {
 }
 
 // POST /api/pair {code, name, kind?} (open) — exchange a code for a device
-// key. kind: tablet (default) | integration (the store hub).
+// key. kind: tablet (default) | integration (the store hub) | terminal (a
+// POS terminal, 0d).
 func (s *Server) handlePair(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Code string `json:"code"`
@@ -231,9 +271,9 @@ func (s *Server) handlePair(w http.ResponseWriter, r *http.Request) {
 	switch kind {
 	case "":
 		kind = device.KindTablet
-	case device.KindTablet, device.KindIntegration:
+	case device.KindTablet, device.KindIntegration, device.KindTerminal:
 	default:
-		s.writeJSON(w, http.StatusBadRequest, errCodeMap("kind must be tablet or integration", "bad_request"))
+		s.writeJSON(w, http.StatusBadRequest, errCodeMap("kind must be tablet, integration or terminal", "bad_request"))
 		return
 	}
 	if !s.pairing.consume(strings.TrimSpace(req.Code), time.Now()) {

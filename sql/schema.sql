@@ -86,6 +86,8 @@ CREATE TABLE orders (
     added_tip_cents         integer NOT NULL DEFAULT 0,
     tip_locked              boolean NOT NULL DEFAULT false,
     cancel_reason           text    NOT NULL DEFAULT '',
+    -- 00025_terminal: a counter order's terminal idempotency key ('' = none).
+    client_key              text    NOT NULL DEFAULT '',
     CHECK (state IN ('arrived', 'scheduled', 'accepted', 'ready', 'on_delivery', 'delivered', 'cancelled'))
 );
 CREATE INDEX idx_orders_arrival_date ON orders (arrival_date DESC);
@@ -95,6 +97,7 @@ CREATE INDEX idx_orders_batch ON orders (batch_id, arrival_date DESC);
 CREATE INDEX idx_orders_pool ON orders (pool_driver_id) WHERE pool_driver_id IS NOT NULL;
 CREATE INDEX idx_orders_ext ON orders (ext_source, ext_ref) WHERE ext_ref <> '';
 CREATE INDEX idx_orders_scheduled ON orders (ring_at) WHERE state = 'scheduled';
+CREATE UNIQUE INDEX idx_orders_client_key ON orders (client_key) WHERE client_key <> '';
 
 CREATE TABLE drivers (
     id               text    PRIMARY KEY,
@@ -144,8 +147,8 @@ CREATE TABLE paired_devices (
     created_at   text NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     last_seen_at text,
     revoked_at   text,
-    -- 00014_integration: tablet | integration (the store hub).
-    kind         text NOT NULL DEFAULT 'tablet' CHECK (kind IN ('tablet', 'integration')),
+    -- 00014_integration: tablet | integration (the store hub); 00025_terminal: | terminal.
+    kind         text NOT NULL DEFAULT 'tablet' CHECK (kind IN ('tablet', 'integration', 'terminal')),
     -- 00016_v220: the Quibase version the tablet last sent (X-Quibase-Version).
     app_version         text NOT NULL DEFAULT '',
     app_version_seen_at text
@@ -228,6 +231,8 @@ CREATE TABLE settings (
     callout                   text NOT NULL DEFAULT '{}',
     -- 00023_future_actions: the store's colours (JSON).
     look                      text NOT NULL DEFAULT '{}',
+    -- 00025_terminal: the counter sequence's next number (0 = counter_start).
+    counter_next              integer NOT NULL DEFAULT 0,
     CHECK (id = 1)
 );
 
@@ -293,3 +298,50 @@ CREATE TABLE settings_log (
     changes    text    NOT NULL
 );
 CREATE INDEX settings_log_at ON settings_log(at);
+
+-- 00025_terminal
+-- The snapshots main sends for the terminals (kind counter_menu |
+-- terminal_config): the last good body, kept so both terminals get the same
+-- one, also offline.
+CREATE TABLE terminal_snapshots (
+    kind       text    PRIMARY KEY CHECK (kind IN ('counter_menu', 'terminal_config')),
+    version    integer NOT NULL,
+    etag       text    NOT NULL,
+    body       text    NOT NULL,
+    fetched_at text    NOT NULL
+);
+
+-- Money taken (or given back) on a counter order at a terminal.
+CREATE TABLE order_payments (
+    id             text    PRIMARY KEY,
+    order_id       text    NOT NULL,
+    client_key     text    NOT NULL DEFAULT '',
+    at             text    NOT NULL,
+    tender         text    NOT NULL,
+    amount_cents   integer NOT NULL,
+    tip_cents      integer NOT NULL DEFAULT 0,
+    tendered_cents integer NOT NULL DEFAULT 0,
+    change_cents   integer NOT NULL DEFAULT 0,
+    refund         boolean NOT NULL DEFAULT false,
+    reason         text    NOT NULL DEFAULT '',
+    ref            text    NOT NULL DEFAULT '',
+    last4          text    NOT NULL DEFAULT '',
+    staff_id       text    NOT NULL DEFAULT '',
+    device_id      text    NOT NULL DEFAULT '',
+    approved_by    text    NOT NULL DEFAULT ''
+);
+CREATE INDEX idx_order_payments_order ON order_payments (order_id, at);
+CREATE UNIQUE INDEX idx_order_payments_key ON order_payments (order_id, client_key) WHERE client_key <> '';
+
+-- Every terminal action (login, lock, order, payment, void, no sale, ...):
+-- one row each, synced to main as the floor event journal.entries.
+CREATE TABLE journal (
+    id        text PRIMARY KEY,
+    at        text NOT NULL,
+    staff_id  text NOT NULL DEFAULT '',
+    device_id text NOT NULL DEFAULT '',
+    action    text NOT NULL,
+    order_id  text NOT NULL DEFAULT '',
+    detail    text NOT NULL DEFAULT '{}'
+);
+CREATE INDEX idx_journal_at ON journal (at);

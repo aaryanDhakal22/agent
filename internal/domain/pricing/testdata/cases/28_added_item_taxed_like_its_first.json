@@ -1,0 +1,412 @@
+{
+ "at": "2026-11-02T18:00:00-05:00",
+ "cart": {
+  "code": "",
+  "first_order": null,
+  "lines": [
+   {
+    "choice_id": "",
+    "deal_id": "",
+    "item_id": "00000000-0000-0000-0000-0000000000f2",
+    "note": "",
+    "options": [],
+    "picks": [],
+    "qty": 1,
+    "size_id": ""
+   },
+   {
+    "choice_id": "",
+    "deal_id": "",
+    "item_id": "00000000-0000-0000-0000-0000000000a1",
+    "note": "",
+    "options": [],
+    "picks": [],
+    "qty": 1,
+    "size_id": "00000000-0000-0000-0000-0000000000b1"
+   }
+  ],
+  "payment": "card",
+  "tip_cents": null,
+  "tip_pct": null,
+  "type": "pickup"
+ },
+ "context": {
+  "deals": [
+   {
+    "active": true,
+    "description": "",
+    "each_cents": 1000,
+    "eligible": {
+     "categories": [
+      "00000000-0000-0000-0000-0000000000e1"
+     ],
+     "items": [],
+     "sizes": []
+    },
+    "fulfil": "",
+    "id": "00000000-0000-0000-0000-000000000101",
+    "kind": "mix",
+    "name": "Any 2 pizzas",
+    "qty": 2,
+    "schedule": null
+   }
+  ],
+  "items": {
+   "00000000-0000-0000-0000-0000000000a1": {
+    "category_id": "00000000-0000-0000-0000-0000000000e1",
+    "tax_bps": 0
+   },
+   "00000000-0000-0000-0000-0000000000a2": {
+    "category_id": "00000000-0000-0000-0000-0000000000e2",
+    "tax_bps": 0
+   },
+   "00000000-0000-0000-0000-0000000000a3": {
+    "category_id": "00000000-0000-0000-0000-0000000000e3",
+    "tax_bps": 0
+   },
+   "00000000-0000-0000-0000-0000000000a4": {
+    "category_id": "00000000-0000-0000-0000-0000000000e4",
+    "tax_bps": 0
+   },
+   "00000000-0000-0000-0000-0000000000a5": {
+    "category_id": "00000000-0000-0000-0000-0000000000e4",
+    "tax_bps": 0
+   },
+   "00000000-0000-0000-0000-0000000000a6": {
+    "category_id": "00000000-0000-0000-0000-0000000000e3",
+    "tax_bps": 1000
+   },
+   "00000000-0000-0000-0000-0000000000a7": {
+    "category_id": "00000000-0000-0000-0000-0000000000e1",
+    "tax_bps": 0
+   }
+  },
+  "menu": {
+   "categories": [
+    {
+     "items": [
+      {
+       "anchor": {
+        "item_ids": [
+         "00000000-0000-0000-0000-0000000000a1"
+        ]
+       },
+       "description": "",
+       "id": "00000000-0000-0000-0000-0000000000a1",
+       "modifier_group_ids": [
+        "00000000-0000-0000-0000-0000000000c1"
+       ],
+       "name": "Cheese Pizza",
+       "photo": "",
+       "price_cents": 0,
+       "sizes": [
+        {
+         "name": "12 Medium",
+         "price_cents": 1199,
+         "size_id": "00000000-0000-0000-0000-0000000000b1"
+        },
+        {
+         "name": "16 X-Large",
+         "price_cents": 1599,
+         "size_id": "00000000-0000-0000-0000-0000000000b2"
+        }
+       ],
+       "sold_out": false
+      },
+      {
+       "anchor": {
+        "item_ids": [
+         "00000000-0000-0000-0000-0000000000a7"
+        ]
+       },
+       "description": "",
+       "id": "00000000-0000-0000-0000-0000000000a7",
+       "modifier_group_ids": [],
+       "name": "Garlic Knots",
+       "photo": "",
+       "price_cents": 499,
+       "sizes": [],
+       "sold_out": true
+      },
+      {
+       "anchor": {
+        "item_ids": [
+         "00000000-0000-0000-0000-0000000000a1",
+         "00000000-0000-0000-0000-0000000000a2"
+        ]
+       },
+       "description": "",
+       "id": "00000000-0000-0000-0000-0000000000f2",
+       "modifier_group_ids": [],
+       "name": "Pizza + Wings",
+       "photo": "",
+       "price_cents": 2299,
+       "sizes": [],
+       "sold_out": false
+      }
+     ],
+     "key": "00000000-0000-0000-0000-0000000000e1",
+     "name": "Pizza",
+     "position": 1
+    },
+    {
+     "items": [
+      {
+       "anchor": {
+        "item_ids": [
+         "00000000-0000-0000-0000-0000000000a2"
+        ]
+       },
+       "description": "",
+       "id": "00000000-0000-0000-0000-0000000000a2",
+       "modifier_group_ids": [
+        "00000000-0000-0000-0000-0000000000c2"
+       ],
+       "name": "Wings 8pc",
+       "photo": "",
+       "price_cents": 1099,
+       "sizes": [],
+       "sold_out": false
+      }
+     ],
+     "key": "00000000-0000-0000-0000-0000000000e2",
+     "name": "Wings",
+     "position": 2
+    },
+    {
+     "items": [
+      {
+       "anchor": {
+        "item_ids": [
+         "00000000-0000-0000-0000-0000000000a3"
+        ]
+       },
+       "description": "",
+       "id": "00000000-0000-0000-0000-0000000000a3",
+       "modifier_group_ids": [],
+       "name": "Soda",
+       "photo": "",
+       "price_cents": 199,
+       "sizes": [],
+       "sold_out": false
+      },
+      {
+       "anchor": {
+        "item_ids": [
+         "00000000-0000-0000-0000-0000000000a6"
+        ]
+       },
+       "description": "",
+       "id": "00000000-0000-0000-0000-0000000000a6",
+       "modifier_group_ids": [],
+       "name": "Water",
+       "photo": "",
+       "price_cents": 150,
+       "sizes": [],
+       "sold_out": false
+      }
+     ],
+     "key": "00000000-0000-0000-0000-0000000000e3",
+     "name": "Drinks",
+     "position": 3
+    },
+    {
+     "items": [
+      {
+       "anchor": {
+        "item_ids": [
+         "00000000-0000-0000-0000-0000000000a4",
+         "00000000-0000-0000-0000-0000000000a5"
+        ]
+       },
+       "choices": [
+        {
+         "item_id": "00000000-0000-0000-0000-0000000000a4",
+         "name": "Strawberry",
+         "price_cents": 599,
+         "sizes": [],
+         "sold_out": false
+        },
+        {
+         "item_id": "00000000-0000-0000-0000-0000000000a5",
+         "name": "Oreo",
+         "price_cents": 649,
+         "sizes": [],
+         "sold_out": false
+        }
+       ],
+       "description": "",
+       "id": "00000000-0000-0000-0000-0000000000f1",
+       "modifier_group_ids": [],
+       "name": "Cheesecake",
+       "photo": "",
+       "price_cents": 599,
+       "sizes": [],
+       "sold_out": false
+      }
+     ],
+     "key": "00000000-0000-0000-0000-0000000000e4",
+     "name": "Desserts",
+     "position": 4
+    }
+   ],
+   "modifier_groups": [
+    {
+     "allow_multiple": false,
+     "id": "00000000-0000-0000-0000-0000000000c1",
+     "max_select": 5,
+     "min_select": 0,
+     "name": "Toppings",
+     "options": [
+      {
+       "id": "00000000-0000-0000-0000-0000000000d1",
+       "is_default": false,
+       "name": "Pepperoni",
+       "price_cents": 150,
+       "prices": [
+        {
+         "price_cents": 150,
+         "size_id": "00000000-0000-0000-0000-0000000000b1"
+        },
+        {
+         "price_cents": 225,
+         "size_id": "00000000-0000-0000-0000-0000000000b2"
+        }
+       ],
+       "sold_out": false
+      },
+      {
+       "id": "00000000-0000-0000-0000-0000000000d2",
+       "is_default": false,
+       "name": "Mushrooms",
+       "price_cents": 150,
+       "prices": [
+        {
+         "price_cents": 150,
+         "size_id": "00000000-0000-0000-0000-0000000000b1"
+        },
+        {
+         "price_cents": 225,
+         "size_id": "00000000-0000-0000-0000-0000000000b2"
+        }
+       ],
+       "sold_out": false
+      },
+      {
+       "id": "00000000-0000-0000-0000-0000000000d3",
+       "is_default": true,
+       "name": "Cheese",
+       "price_cents": 0,
+       "prices": [],
+       "sold_out": false
+      }
+     ],
+     "portions": true,
+     "required": false
+    },
+    {
+     "allow_multiple": false,
+     "id": "00000000-0000-0000-0000-0000000000c2",
+     "max_select": 1,
+     "min_select": 1,
+     "name": "Sauce",
+     "options": [
+      {
+       "id": "00000000-0000-0000-0000-0000000000d4",
+       "is_default": false,
+       "name": "Ranch",
+       "price_cents": 0,
+       "prices": [],
+       "sold_out": false
+      },
+      {
+       "id": "00000000-0000-0000-0000-0000000000d5",
+       "is_default": false,
+       "name": "BBQ",
+       "price_cents": 50,
+       "prices": [],
+       "sold_out": false
+      }
+     ],
+     "portions": false,
+     "required": true
+    }
+   ]
+  },
+  "settings": {
+   "card_fee": {
+    "bps": 0,
+    "mode": "none"
+   },
+   "delivery_fee_cents": 299,
+   "delivery_min_cents": 1000,
+   "free_delivery_over_cents": null,
+   "service_fee_bps": 0,
+   "service_fee_cents": 0,
+   "stacking": "best",
+   "tax_bps": 600,
+   "tips": {
+    "default_pct": 18,
+    "enabled": false,
+    "presets": [
+     15,
+     18,
+     20
+    ]
+   }
+  },
+  "timezone": "America/New_York",
+  "types": {
+   "delivery": true,
+   "pickup": true
+  }
+ },
+ "expect": {
+  "discounts": [],
+  "errors": [],
+  "tax_cents": 210,
+  "total_cents": 3708
+ },
+ "name": "added_item_taxed_like_its_first",
+ "quote": {
+  "card_fee_cents": 0,
+  "delivery_fee_cents": 0,
+  "discounts": [],
+  "errors": [],
+  "lines": [
+   {
+    "deal_id": "",
+    "index": 0,
+    "mods": [],
+    "name": "Pizza + Wings",
+    "qty": 1,
+    "regular_cents": null,
+    "total_cents": 2299,
+    "unit_cents": 2299
+   },
+   {
+    "deal_id": "",
+    "index": 1,
+    "mods": [
+     "12 Medium",
+     "NO Cheese"
+    ],
+    "name": "Cheese Pizza",
+    "qty": 1,
+    "regular_cents": null,
+    "total_cents": 1199,
+    "unit_cents": 1199
+   }
+  ],
+  "nudges": [
+   "Add 1 more for Any 2 pizzas: $10.00 each."
+  ],
+  "saved_cents": 0,
+  "service_fee_cents": 0,
+  "subtotal_cents": 3498,
+  "tax_cents": 210,
+  "tip_cents": 0,
+  "total_cents": 3708,
+  "warnings": []
+ }
+}

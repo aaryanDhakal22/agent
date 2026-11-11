@@ -33,6 +33,9 @@ func (r *OrderRepository) AgentState(ctx context.Context) (st order.AgentState, 
 		return st, err
 	}
 	st.KitchenNext, st.LastPrepMinutes = fs.KitchenNext, fs.LastPrepMinutes
+	if st.CounterNext, err = q.GetCounterNext(ctx); err != nil {
+		return st, err
+	}
 	if p, err := q.GetFloorPrefs(ctx); err == nil {
 		st.Prefs = order.FloorPrefs{GreenTillMinutes: p.GreenTillMinutes, TipTaxBps: p.TipTaxBps}
 	}
@@ -135,7 +138,7 @@ func (r *OrderRepository) Restore(ctx context.Context, data order.RestoreData) (
 		res.BatchID = batchID
 
 		// Orders.
-		maxKitchen := int64(0)
+		maxKitchen, maxCounter := int64(0), int64(0)
 		for _, ro := range data.Orders {
 			snap := ro.Order
 			var st order.Status
@@ -149,6 +152,9 @@ func (r *OrderRepository) Restore(ctx context.Context, data order.RestoreData) (
 			}
 			if st.ArrivalDate.IsZero() {
 				st.ArrivalDate = time.Now()
+			}
+			if snap.Source == order.SourceCounter && snap.Fulfillment.Type == "counter" {
+				snap.Fulfillment.Type = "dine_in" // main keeps "counter"; the tablets know dine_in
 			}
 			raw, err := json.Marshal(snap)
 			if err != nil {
@@ -178,6 +184,11 @@ func (r *OrderRepository) Restore(ctx context.Context, data order.RestoreData) (
 				CameBack: st.CameBack && st.State == order.StateReady, RunSeq: nullInt(st.RunSeq),
 				AddedTipCents: st.AddedTipCents, TipLocked: st.TipLocked, CancelReason: st.CancelReason,
 			}
+			if snap.Source == order.SourceCounter { // terminal stage 0d: paid state + the terminal's key
+				p.Paid, p.PaidAt = st.Paid, nullTSPtr(st.PaidAt)
+				p.TipCents = sql.NullInt64{Int64: snap.Money.Tip, Valid: true}
+				p.ClientKey = snap.SourceEventID
+			}
 			if nd := st.NotDelivered; nd != nil {
 				p.NotDeliveredAction, p.NotDeliveredAt, p.NotDeliveredDriverID = nd.Action, nullTSPtr(&nd.At), nd.DriverID
 			}
@@ -188,7 +199,11 @@ func (r *OrderRepository) Restore(ctx context.Context, data order.RestoreData) (
 			if st.State == order.StateArrived {
 				res.Waiting++
 			}
-			if st.KitchenNumber != nil && *st.KitchenNumber > maxKitchen {
+			switch {
+			case st.KitchenNumber == nil:
+			case snap.Source == order.SourceCounter: // the counter sequence is its own
+				maxCounter = max(maxCounter, *st.KitchenNumber)
+			case *st.KitchenNumber > maxKitchen:
 				maxKitchen = *st.KitchenNumber
 			}
 		}
@@ -210,6 +225,17 @@ func (r *OrderRepository) Restore(ctx context.Context, data order.RestoreData) (
 			return err
 		}
 		res.KitchenNext = next
+		var counter int64
+		if data.State != nil {
+			counter = data.State.CounterNext
+		}
+		if maxCounter > 0 && maxCounter >= counter {
+			counter = maxCounter + 1 // never hand out a counter number twice
+		}
+		if err := q.SetCounterNext(ctx, counter); err != nil {
+			return err
+		}
+		res.CounterNext = counter
 		if data.State != nil {
 			if p := data.State.Prefs; p.GreenTillMinutes > 0 {
 				if err := q.SetFloorPrefs(ctx, models.SetFloorPrefsParams{GreenTillMinutes: p.GreenTillMinutes, TipTaxBps: p.TipTaxBps}); err != nil {
