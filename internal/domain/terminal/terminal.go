@@ -350,7 +350,7 @@ var actionRe = regexp.MustCompile(`^[a-z][a-z0-9_.]{1,39}$`)
 // line edits, price change, ...).
 func CheckPostedAction(a string) error {
 	if !actionRe.MatchString(a) {
-		return errors.New("action is 2-40 lowercase letters, digits, _ or .")
+		return errors.New("action must be 2-40 lowercase letters, digits, underscores or dots")
 	}
 	if reserved[a] {
 		return fmt.Errorf("%q is journaled by the Pi itself", a)
