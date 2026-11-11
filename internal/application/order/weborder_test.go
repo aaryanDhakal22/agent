@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -198,5 +199,85 @@ func TestOnlineProxies(t *testing.T) {
 	svc.SetGeo(GeoDeps{Send: reg.Send, Linked: func() bool { return false }})
 	if _, err := svc.OnlineStatus(ctx); !errors.Is(err, ErrMainUnreachable) {
 		t.Fatalf("unlinked: %v", err)
+	}
+}
+
+// A future website order whose kitchen tickets printed early (PRINT NOW)
+// gets a VOID when cancelled; bad ids never reach the store.
+func TestCancelEarlyPrintedFutureWebOrder(t *testing.T) {
+	ctx := context.Background()
+	svc, log, _ := newWebService(t)
+	promised := time.Now().Add(20 * time.Hour).UTC().Truncate(time.Millisecond)
+	s := order.Snapshot{ID: uuid.NewString(), TenantID: uuid.NewString(), LocationID: uuid.NewString(), Source: "web",
+		SourceEventID: "w2", PlacedAt: time.Now().UTC(), Fulfillment: order.Fulfillment{Type: "pickup", PromisedAt: &promised},
+		Money: order.Money{Total: 2500}, Payments: []order.PaymentSummary{{Method: "card", AmountCents: 2500}}}
+	if err := svc.OnArrival(ctx, s); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := svc.PrintNow(ctx, s.ID, true, false); err != nil {
+		t.Fatal(err)
+	}
+	so, err := svc.CancelOrder(ctx, s.ID, order.CancelCustomerAsked, "")
+	if err != nil || so.Status.State != order.StateCancelled {
+		t.Fatalf("%v %+v", err, so)
+	}
+	svc.WaitBackground()
+	if m := log.all(); len(m) != 2 || m[0] != printer.ModeFutureKitchen || m[1] != printer.ModeVoid {
+		t.Fatalf("prints = %v, want the early kitchen tickets then a VOID", m)
+	}
+	for _, bad := range []string{"", "not-an-id"} {
+		if _, err := svc.CancelOrder(ctx, bad, order.CancelOther, ""); !errors.Is(err, ErrBadRequest) {
+			t.Errorf("cancel %q: %v", bad, err)
+		}
+		if _, err := svc.SetTip(ctx, bad, 100); !errors.Is(err, ErrBadRequest) {
+			t.Errorf("tip %q: %v", bad, err)
+		}
+	}
+}
+
+// Cancelling the last stop of a run brings the driver back: the tablets hear
+// order.updated and drivers.updated; the VOID goes to the stations.
+func TestCancelOnARunPublishesDrivers(t *testing.T) {
+	ctx := context.Background()
+	svc, log, events := newWebService(t)
+	s := order.Snapshot{ID: uuid.NewString(), TenantID: uuid.NewString(), LocationID: uuid.NewString(), Source: "web",
+		SourceEventID: "w3", PlacedAt: time.Now().UTC(), Fulfillment: order.Fulfillment{Type: "delivery", Address: &order.Address{Line1: "1 Main"}},
+		Money: order.Money{Total: 2500}, Payments: []order.PaymentSummary{{Method: "card", AmountCents: 2500}}}
+	if err := svc.OnArrival(ctx, s); err != nil {
+		t.Fatal(err)
+	}
+	p := 15
+	if _, err := svc.Accept(ctx, uuid.MustParse(s.ID), &p); err != nil {
+		t.Fatal(err)
+	}
+	d, err := svc.CreateDriver(ctx, "Sam", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.ClockIn(ctx, d.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.Ready(ctx, s.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.AssignDriver(ctx, d.ID, []string{s.ID}); err != nil {
+		t.Fatal(err)
+	}
+	svc.WaitBackground()
+	drain(events)
+	so, err := svc.CancelOrder(ctx, s.ID, order.CancelCouldntDeliver, "Nobody home")
+	if err != nil || so.Status.DriverID != "" {
+		t.Fatalf("%v %+v", err, so)
+	}
+	if _, ok := eventOf(events, "order.updated"); !ok {
+		t.Fatal("no order.updated")
+	}
+	raw, ok := eventOf(events, "drivers.updated")
+	if !ok || !strings.Contains(string(raw), `"status":"available"`) {
+		t.Fatalf("drivers.updated: %v %s", ok, raw)
+	}
+	svc.WaitBackground()
+	if m := log.all(); m[len(m)-1] != printer.ModeVoid {
+		t.Fatalf("prints = %v, want a VOID last", m)
 	}
 }

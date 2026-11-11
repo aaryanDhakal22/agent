@@ -223,3 +223,149 @@ func TestCancelChannelOrder(t *testing.T) {
 		t.Fatalf("auto cancel: %v", ev)
 	}
 }
+
+// ADD TIP is refused off the open batch, on a cancelled order and on a POS
+// check; it is taken while the driver is still out with the order and on a
+// card pickup.
+func TestSetAddedTipRefusals(t *testing.T) {
+	r := newFloorRepo(t)
+	ctx := context.Background()
+	d, _ := r.CreateDriver(ctx, "Sam", "")
+	clockIn(t, r, d.ID)
+
+	out := accept(t, r, arriveWeb(t, r, "web", "delivery", true))
+	if _, err := r.MarkReady(ctx, out.Order.ID, true); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.AssignDriver(ctx, d.ID, []string{out.Order.ID}); err != nil {
+		t.Fatal(err)
+	}
+	if so, err := r.SetAddedTip(ctx, out.Order.ID, 250); err != nil || so.Status.AddedTipCents != 250 {
+		t.Fatalf("tip while the driver is out: %v %+v", err, so)
+	}
+	pickup := accept(t, r, arriveWeb(t, r, "web", "pickup", true))
+	if _, err := r.SetAddedTip(ctx, pickup.Order.ID, 100); err != nil {
+		t.Fatalf("card pickup: %v", err)
+	}
+	waiting := arriveWeb(t, r, "web", "pickup", true)
+	if _, err := r.SetAddedTip(ctx, waiting.Order.ID, 100); err != nil {
+		t.Fatalf("a card order not accepted yet: %v", err)
+	}
+
+	cancelled := accept(t, r, arriveWeb(t, r, "web", "pickup", true))
+	if _, _, _, err := r.CancelChannelOrder(ctx, cancelled.Order.ID, order.CancelOther); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.SetAddedTip(ctx, cancelled.Order.ID, 100); !errors.Is(err, order.ErrNotTippable) {
+		t.Errorf("cancelled: %v", err)
+	}
+	pos := upsertPOS(t, r, "7001", posOrder("pickup", "tip-pos"))
+	if _, err := r.SetAddedTip(ctx, pos.Order.Order.ID, 100); !errors.Is(err, order.ErrNotTippable) {
+		t.Errorf("POS check: %v", err)
+	}
+	before := len(eventsOfType(t, r, order.FloorEventOrderTip))
+	if _, err := r.DriverReturned(ctx, d.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := r.CloseBatch(ctx, true); err != nil {
+		t.Fatal(err)
+	}
+	// Last batch's orders: refused before the lock is even looked at, and
+	// nothing reaches main.
+	for _, id := range []string{out.Order.ID, pickup.Order.ID} {
+		if _, err := r.SetAddedTip(ctx, id, 900); !errors.Is(err, order.ErrNotTippable) {
+			t.Errorf("%s in a closed batch: %v", id, err)
+		}
+	}
+	if n := len(eventsOfType(t, r, order.FloorEventOrderTip)); n != before {
+		t.Fatalf("refused tips wrote %d order.tip events", n-before)
+	}
+}
+
+// CANCEL ORDER: a ready pickup can still be cancelled; one stop of a
+// two-stop run leaves the driver out until the last stop is gone; a POS
+// check, an order mid-accept, a picked-up pickup and an earlier batch's
+// order can't be cancelled.
+func TestCancelChannelOrderEdges(t *testing.T) {
+	r := newFloorRepo(t)
+	ctx := context.Background()
+	d, _ := r.CreateDriver(ctx, "Sam", "")
+	clockIn(t, r, d.ID)
+
+	ready := accept(t, r, arriveWeb(t, r, "web", "pickup", true))
+	if _, err := r.MarkReady(ctx, ready.Order.ID, true); err != nil {
+		t.Fatal(err)
+	}
+	so, prev, returned, err := r.CancelChannelOrder(ctx, ready.Order.ID, order.CancelCustomerAsked)
+	if err != nil || so.Status.State != order.StateCancelled || prev.Status.State != order.StateReady || returned {
+		t.Fatalf("ready pickup: %v %+v returned=%v", err, so, returned)
+	}
+
+	a := accept(t, r, arriveWeb(t, r, "web", "delivery", true))
+	b := accept(t, r, arriveWeb(t, r, "web", "delivery", true))
+	for _, x := range []order.StoredOrder{a, b} {
+		if _, err := r.MarkReady(ctx, x.Order.ID, true); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := r.AssignDriver(ctx, d.ID, []string{a.Order.ID, b.Order.ID}); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, returned, err := r.CancelChannelOrder(ctx, a.Order.ID, order.CancelCouldntDeliver); err != nil || returned {
+		t.Fatalf("first stop: %v returned=%v", err, returned)
+	}
+	ds, _ := r.ListDrivers(ctx)
+	if ds[0].Status != order.DriverOut {
+		t.Fatalf("one stop left: the driver stays out: %+v", ds[0])
+	}
+	if got := get(t, r, b.Order.ID); got.Status.State != order.StateOnDelivery || got.Status.DriverID != d.ID {
+		t.Fatalf("the other stop stays on the run: %+v", got.Status)
+	}
+	if _, _, returned, err := r.CancelChannelOrder(ctx, b.Order.ID, order.CancelCouldntDeliver); err != nil || !returned {
+		t.Fatalf("last stop: %v returned=%v", err, returned)
+	}
+	if ds, _ = r.ListDrivers(ctx); ds[0].Status != order.DriverAvailable {
+		t.Fatalf("driver back after the last stop: %+v", ds[0])
+	}
+
+	// Picked up (the store's finish time passed): done with.
+	picked := accept(t, r, arriveWeb(t, r, "web", "pickup", true))
+	if _, err := r.MarkReady(ctx, picked.Order.ID, true); err != nil {
+		t.Fatal(err)
+	}
+	if fin, err := r.FinishDueOnlinePickups(ctx, time.Now().Add(time.Minute), time.Now()); err != nil || len(fin) != 1 {
+		t.Fatalf("finish: %v %d", err, len(fin))
+	}
+	if _, _, _, err := r.CancelChannelOrder(ctx, picked.Order.ID, order.CancelOther); !errors.Is(err, order.ErrNotCancellable) {
+		t.Errorf("picked up: %v", err)
+	}
+
+	pos := upsertPOS(t, r, "7002", posOrder("delivery", "cancel-pos"))
+	if _, _, _, err := r.CancelChannelOrder(ctx, pos.Order.Order.ID, order.CancelOther); !errors.Is(err, order.ErrNotCancellable) {
+		t.Errorf("POS check: %v", err)
+	}
+	claiming := arriveWeb(t, r, "web", "pickup", true)
+	if _, err := r.ClaimAccept(ctx, uuid.MustParse(claiming.Order.ID), 15, false); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, err := r.CancelChannelOrder(ctx, claiming.Order.ID, order.CancelOther); !errors.Is(err, order.ErrNotCancellable) {
+		t.Errorf("mid-accept (printing): %v", err)
+	}
+	if err := r.RecordAccepted(ctx, get(t, r, claiming.Order.ID), false); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, err := r.CancelChannelOrder(ctx, uuid.NewString(), order.CancelOther); !errors.Is(err, order.ErrNotFound) {
+		t.Errorf("unknown: %v", err)
+	}
+	if _, _, err := r.CloseBatch(ctx, true); err != nil {
+		t.Fatal(err)
+	}
+	if got := get(t, r, claiming.Order.ID); got.Status.State == order.StateAccepted {
+		t.Fatalf("Close batch left it accepted: %+v", got.Status)
+	}
+	// Close batch charged its card: an earlier batch's order is never
+	// cancelled here (refunds are Square's).
+	if _, _, _, err := r.CancelChannelOrder(ctx, claiming.Order.ID, order.CancelOther); !errors.Is(err, order.ErrNotCancellable) {
+		t.Errorf("an earlier batch's order: %v", err)
+	}
+}

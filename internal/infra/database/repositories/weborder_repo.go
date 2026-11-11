@@ -123,7 +123,13 @@ func (r *OrderRepository) CancelChannelOrder(ctx context.Context, id, reason str
 			return err
 		}
 		prev = so
-		if !so.IsChannel() {
+		// Only the open batch's (Close batch charged the earlier ones' cards:
+		// refunds are Square's), and never once picked up.
+		b, err := q.GetOpenBatch(ctx)
+		if err != nil {
+			return fmt.Errorf("open batch: %w", err)
+		}
+		if !so.IsChannel() || so.Status.BatchID != b.ID || so.Status.FinishedAt != nil {
 			return order.ErrNotCancellable
 		}
 		n, err := q.CancelChannelOrder(ctx, models.CancelChannelOrderParams{CancelledAt: nullTS(now), Reason: reason, ID: id})

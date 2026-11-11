@@ -202,6 +202,7 @@ def test_cancel_order_after_accept_voids_and_main_cancels(admin, web, fakes) -> 
     o = place(a)
     _ok(post(a, f"/api/orders/{o['id']}/accept", {"prep_minutes": 15}))
     wait_jobs(fakes["Pizza"], 1)
+    wait_jobs(fakes["Front"], 1)  # the accept's receipt, so it can't land after the clear below
     for f in fakes.values():
         f.clear()
     assert post(a, f"/api/orders/{o['id']}/cancel-order", {"reason": "because"}).json()["code"] == "bad_request"
@@ -255,3 +256,38 @@ def test_online_proxies_round_trip(web) -> None:
     assert post(a, "/api/online/stock", {"kind": "item", "id": str(uuid.uuid4()), "in_stock": False}).status_code == 400
     # Floor auth: a stranger gets nothing.
     assert requests.get(f"{a.base}/api/online", timeout=5).status_code == 401
+
+
+def test_tablet_key_drives_tip_cancel_and_online(web, fakes) -> None:
+    """Quibase's path: a paired tablet's key (not the web-UI session) adds a
+    tip, cancels and pauses; an earlier batch's order can't be cancelled."""
+    a = web
+    code = _ok(post(a, "/api/pairing/code"))["code"]
+    key = _ok(requests.post(f"{a.base}/api/pair", json={"code": code, "name": "Counter"}, timeout=5), 201)["key"]
+    tab = {"X-Agent-Device-Key": key}
+
+    def tpost(path: str, body: dict | None = None) -> requests.Response:
+        return requests.post(f"{a.base}{path}", json=body, headers=tab, timeout=30)
+
+    o = place(a)
+    _ok(tpost(f"/api/orders/{o['id']}/accept", {"prep_minutes": 15}))
+    wait_jobs(fakes["Pizza"], 1)
+    wait_jobs(fakes["Front"], 1)
+    assert _ok(tpost(f"/api/orders/{o['id']}/tip", {"tip_cents": 300}))["status"]["added_tip_cents"] == 300
+    # Same tip again: answered, nothing new for main (the repo tests pin the event count).
+    assert _ok(tpost(f"/api/orders/{o['id']}/tip", {"tip_cents": 300}))["status"]["added_tip_cents"] == 300
+    st = _ok(requests.get(f"{a.base}/api/online", headers=tab, timeout=15))
+    assert st["state"] in ("open", "closed"), st
+    assert _ok(tpost("/api/online/pause", {"preset": "15m"}))["state"] == "paused"
+    assert _ok(requests.delete(f"{a.base}/api/online/pause", headers=tab, timeout=15))["pause"] is None
+
+    # A ready pickup left at Close batch: main captured its card, so it is
+    # never cancelled from the floor afterwards (refunds are Square's).
+    _ok(tpost(f"/api/orders/{o['id']}/ready"))
+    _ok(post(a, "/api/batch/close", {"force": True}))
+    r = tpost(f"/api/orders/{o['id']}/cancel-order", {"reason": "customer_asked"})
+    assert r.status_code == 409 and r.json()["code"] == "not_cancellable", r.text
+    # A fresh one in the new batch: cancelled with the tablet key.
+    w = place(a)
+    so = _ok(tpost(f"/api/orders/{w['id']}/cancel-order", {"reason": "other", "note": "Duplicate"}))
+    assert so["status"]["state"] == "cancelled" and so["status"]["cancel_reason"] == "other"

@@ -295,3 +295,24 @@ func TestBuildStation_Void(t *testing.T) {
 		t.Fatal("void ticket lists other items")
 	}
 }
+
+// TestBuildStation_VoidGolden pins the VOID slip a cancelled website order
+// prints on its stations (2.5.0 CANCEL ORDER) byte for byte.
+func TestBuildStation_VoidGolden(t *testing.T) {
+	snap, tk := stationFixture()
+	tk.Void, tk.Others, tk.ReroutedFrom = true, nil, ""
+	got := BuildStation(snap, tk)
+	path := "testdata/station_void.golden"
+	if *update {
+		if err := os.WriteFile(path, got, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	want, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("%v (run with -update to create)", err)
+	}
+	if !bytes.Equal(got, want) {
+		t.Fatalf("void ticket bytes changed (run with -update if intended)\ngot:  %q\nwant: %q", got, want)
+	}
+}
