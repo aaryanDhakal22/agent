@@ -40,6 +40,7 @@ type Repository interface {
 	FloorRepository
 	PoolRepository
 	IntegrationRepository
+	DriverViewRepository
 }
 
 // ExternalMeta is what the service adds to a POS upsert: the id for a new
@@ -216,4 +217,24 @@ type LinkInfo struct {
 	Secrets         Secrets
 	ManagerUsername string
 	DeviceID        string
+}
+
+// DriverViewRepository is the terminal's driver view (contract/agent.md
+// §2.10b) and the batch auto-close (§2.10c).
+type DriverViewRepository interface {
+	// DeliverOne is a driver's "close" on one of his out orders: delivered
+	// (order.status to main); returned = it was his last stop and he is back
+	// in the queue. ErrDriverNotFound; ErrInvalidState when it isn't one of
+	// his out orders.
+	DeliverOne(ctx context.Context, driverID, orderID string) (so *StoredOrder, returned bool, err error)
+	// SetDoorTip records a tip the driver got at the door (absolute) on an
+	// out / delivered delivery of the open batch; ErrNotTippable otherwise.
+	SetDoorTip(ctx context.Context, id string, cents int64) (*StoredOrder, error)
+	// AutoCloseLast / SetAutoCloseLast: the last auto-close slot handled
+	// (zero = none yet).
+	AutoCloseLast(ctx context.Context) (time.Time, error)
+	SetAutoCloseLast(ctx context.Context, slot time.Time) error
+	// CountOpenBatchOrders: the open batch's orders (total) and the ones
+	// still on the floor (active).
+	CountOpenBatchOrders(ctx context.Context) (total, active int64, err error)
 }

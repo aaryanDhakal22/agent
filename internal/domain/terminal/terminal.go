@@ -103,6 +103,25 @@ type Settings struct {
 	// RoleLimits are each role's default limits (a staff member's own
 	// limits override them; the cashier_* fields win for cashiers).
 	RoleLimits map[string]Limits `json:"role_limits"`
+	// AutoCloseBatchAt is when the Pi closes a batch nobody closed ("HH:MM"
+	// store time; "" = off; missing = DefaultAutoCloseAt).
+	AutoCloseBatchAt *string `json:"auto_close_batch_at"`
+}
+
+// DefaultAutoCloseAt is the batch auto-close time when main's settings
+// don't say (main's own default, the owner's 4:00 am).
+const DefaultAutoCloseAt = "04:00"
+
+// AutoCloseAt is the batch auto-close time in use: "" = off (also when the
+// Pi has no terminal config from main yet: nil).
+func (c *Config) AutoCloseAt() string {
+	if c == nil {
+		return ""
+	}
+	if c.parsed.AutoCloseBatchAt == nil {
+		return DefaultAutoCloseAt
+	}
+	return strings.TrimSpace(*c.parsed.AutoCloseBatchAt)
 }
 
 // DefaultCounterStart is the counter sequence's start when main's config
@@ -341,10 +360,17 @@ const (
 	ActionRefund      = "refund"
 	ActionVoid        = "void"
 	ActionOverride    = "override"
+	// The driver view (contract §2.10b).
+	ActionDriverLinked = "driver.linked"
+	ActionDriverClaim  = "driver.claim"
+	ActionDriverTip    = "driver.tip"
+	ActionDriverClose  = "driver.close"
+	ActionDriverReport = "driver.report"
 )
 
 var reserved = map[string]bool{ActionLogin: true, ActionLoginFailed: true, ActionLogout: true, ActionOrderPlaced: true,
-	ActionDiscount: true, ActionPayment: true, ActionRefund: true, ActionVoid: true, ActionOverride: true}
+	ActionDiscount: true, ActionPayment: true, ActionRefund: true, ActionVoid: true, ActionOverride: true,
+	ActionDriverLinked: true, ActionDriverClaim: true, ActionDriverTip: true, ActionDriverClose: true, ActionDriverReport: true}
 
 var actionRe = regexp.MustCompile(`^[a-z][a-z0-9_.]{1,39}$`)
 
@@ -393,6 +419,9 @@ var (
 	ErrRefundTooBig     = errors.New("more than was paid")
 	ErrNotVoidable      = errors.New("this order can't be voided")
 	ErrDuplicateKeyUsed = errors.New("that client_key belongs to another order")
+	ErrDriverOnly       = errors.New("only a driver can do this")
+	ErrNotYourOrder     = errors.New("that isn't one of your orders")
+	ErrDriverOut        = errors.New("you are out on a run: close your orders first")
 )
 
 // ManagerRequired: the action is over the staff member's limit and needs a

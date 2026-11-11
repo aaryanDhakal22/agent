@@ -23,6 +23,7 @@ import (
 
 	"quiccpos/agent/internal/application/acker"
 	"quiccpos/agent/internal/application/appupdate"
+	"quiccpos/agent/internal/application/autoclose"
 	"quiccpos/agent/internal/application/backup"
 	"quiccpos/agent/internal/application/catchup"
 	"quiccpos/agent/internal/application/devlog"
@@ -334,6 +335,7 @@ func main() {
 		return mainClient.Download(rc, k, path, "")
 	}, broker, logger)
 	termSvc := terminalApp.NewService(termStore, orderRepo, orderService, broker, logger)
+	termSvc.SetFloor(orderService, orderRepo) // the driver view (§2.10b)
 	termStore.Load(ctx)
 	registry.Register(terminalApp.MsgMenuChanged, termStore.HandleMenuChanged)
 	registry.Register(terminalApp.MsgTerminalChanged, termStore.HandleTerminalChanged)
@@ -755,6 +757,14 @@ func main() {
 	go floorSender.Run(ctx)
 	go escalation.Run(ctx, orderService, logger)
 	go driverreset.Run(ctx, orderService, storeTZ, logger)
+	// Batch auto-close at main's terminal setting auto_close_batch_at
+	// (default 04:00 store time; off until the Pi has main's terminal config).
+	autoCloseTick := time.NewTicker(autoclose.Tick)
+	defer autoCloseTick.Stop()
+	go autoclose.Run(ctx, orderService, autoclose.Deps{
+		Setting: func() string { cfg, _ := termStore.Config(); return cfg.AutoCloseAt() },
+		Loc:     storeTZ, Now: time.Now, Ticks: autoCloseTick.C,
+	}, logger)
 
 	<-ctx.Done()
 	logger.Info().Msg("Agent shut down")

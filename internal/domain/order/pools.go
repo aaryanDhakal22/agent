@@ -42,7 +42,18 @@ type RunMeta struct {
 	// pool that go back to unassigned instead of out (ids not in the pool
 	// are ignored).
 	Exclude []string
+	// Claim (terminal driver view): the driver claims the include orders
+	// himself. Each must be a ready delivery of the open batch that is in no
+	// other driver's pool (else *ErrTaken, all or nothing); his own pool's
+	// cooking orders go back to unassigned instead of out.
+	Claim bool
 }
+
+// ErrTaken (terminal driver view): a claim lost the race - another driver
+// (or the manager) got these orders first, or they aren't ready any more.
+type ErrTaken struct{ IDs []string }
+
+func (e *ErrTaken) Error() string { return fmt.Sprintf("taken: %v", e.IDs) }
 
 // DeliveryRunEvent is the payload of a delivery.run floor event.
 type DeliveryRunEvent struct {

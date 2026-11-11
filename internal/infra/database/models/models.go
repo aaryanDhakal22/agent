@@ -135,6 +135,7 @@ type Order struct {
 	TipLocked            bool           `json:"tip_locked"`
 	CancelReason         string         `json:"cancel_reason"`
 	ClientKey            string         `json:"client_key"`
+	DoorTipCents         int64          `json:"door_tip_cents"`
 }
 
 type OrderGeo struct {
@@ -249,6 +250,7 @@ type Setting struct {
 	Callout                    string  `json:"callout"`
 	Look                       string  `json:"look"`
 	CounterNext                int64   `json:"counter_next"`
+	AutoCloseLast              string  `json:"auto_close_last"`
 }
 
 type SettingsLog struct {
@@ -265,6 +267,12 @@ type StoreConfig struct {
 	ID        int64  `json:"id"`
 	Context   string `json:"context"`
 	UpdatedAt string `json:"updated_at"`
+}
+
+type TerminalDriverLink struct {
+	StaffID  string `json:"staff_id"`
+	DriverID string `json:"driver_id"`
+	LinkedAt string `json:"linked_at"`
 }
 
 type TerminalSnapshot struct {

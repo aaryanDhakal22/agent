@@ -552,9 +552,9 @@ INSERT INTO orders (id, tenant_id, location_id, source, source_event_id, snapsho
                     scheduled_lead_minutes, ring_at, rerung,
                     came_back, not_delivered_action, not_delivered_at, not_delivered_driver_id, run_seq,
                     added_tip_cents, tip_locked, cancel_reason,
-                    paid, paid_at, tip_cents, client_key)
+                    paid, paid_at, tip_cents, client_key, door_tip_cents)
 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-        ?, ?, ?, ?);
+        ?, ?, ?, ?, ?);
 
 -- name: RestoreDriver :exec
 INSERT INTO drivers (id, name, active, position, status, last_returned_at, pos_number) VALUES (?, ?, true, ?, ?, ?, ?);
@@ -1027,3 +1027,32 @@ DELETE FROM order_payments WHERE order_id NOT IN (SELECT id FROM orders);
 -- name: PruneJournal :execrows
 -- The Pi keeps the journal 30 days (main keeps it all).
 DELETE FROM journal WHERE at < ?;
+
+-- Terminal driver view + batch auto-close (00026_terminal_driver) ----------------
+
+-- name: GetTerminalDriverLink :one
+SELECT driver_id FROM terminal_driver_links WHERE staff_id = ?;
+
+-- name: ListTerminalDriverLinks :many
+SELECT staff_id, driver_id FROM terminal_driver_links ORDER BY staff_id;
+
+-- name: DeleteTerminalDriverLinkOfDriver :exec
+-- A driver is linked to one staff member at a time.
+DELETE FROM terminal_driver_links WHERE driver_id = sqlc.arg(driver_id) AND staff_id <> sqlc.arg(staff_id);
+
+-- name: UpsertTerminalDriverLink :exec
+INSERT INTO terminal_driver_links (staff_id, driver_id, linked_at) VALUES (?, ?, ?)
+ON CONFLICT (staff_id) DO UPDATE SET driver_id = excluded.driver_id, linked_at = excluded.linked_at;
+
+-- name: SetDoorTip :execrows
+-- A tip the driver got at the door (absolute). Only a delivery of the given
+-- (open) batch that is out or delivered, not a POS check.
+UPDATE orders SET door_tip_cents = sqlc.arg(tip_cents)
+WHERE id = sqlc.arg(id) AND ext_source = '' AND state IN ('on_delivery', 'delivered')
+  AND batch_id = sqlc.arg(batch_id);
+
+-- name: GetAutoCloseLast :one
+SELECT auto_close_last FROM settings WHERE id = 1;
+
+-- name: SetAutoCloseLast :exec
+UPDATE settings SET auto_close_last = ? WHERE id = 1;

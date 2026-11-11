@@ -147,7 +147,7 @@ func (s *Server) routes() []routeDef {
 		{"GET", "/api/app/latest", "device", "Newest Quibase release cached for tablets (204 none)", s.handleAppLatest},
 		{"GET", "/api/app/apk", "device", "Download the cached Quibase APK", s.handleAppAPK},
 		{"GET", "/api/update/status", "device", "Pi update state: versions, latest, pending request, last result, can_update_now/blocked_reason", s.handleUpdateStatus},
-		{"GET", "/api/events", "device", "SSE: order.arrived|added|updated|escalated, drivers.updated|dispatched, driver.route, batch.closed, floor.updated, settings.updated, integration.status|toast, terminal.menu.changed|config.changed|order.placed|order.paid|order.voided", s.handleEvents},
+		{"GET", "/api/events", "device", "SSE: order.arrived|added|updated|escalated, drivers.updated|dispatched, driver.route, batch.closed, floor.updated, settings.updated, integration.status|toast, terminal.menu.changed|config.changed|order.placed|order.paid|order.voided|driver.linked|driver.claimed|driver.tip|driver.closed|driver.report", s.handleEvents},
 
 		// Quibase setup + diagnostics — paired tablet (or web-UI session).
 		{"POST", "/api/pairing/code", "device", "Show a 6-digit tablet pairing code (5 min) — web UI or a paired tablet (Pair another tablet)", s.handlePairingCode},
@@ -185,6 +185,14 @@ func (s *Server) routes() []routeDef {
 		{"POST", "/api/terminal/orders/{id}/void", "terminal", "Void a counter order {reason, manager_pin?}: refunds what was paid (over the limit: a manager's PIN), VOID slip, order.void to main -> {order, refunds, refunded_cents, already} | 400 | 401 | 403 manager_required | 404 | 409 not_voidable", s.handleTerminalVoid},
 		{"POST", "/api/terminal/journal", "terminal", "Journal a terminal-only action {action (not a Pi one), order_id?, detail?: object <= 4 KB} -> 201 the entry (journal.entries to main) | 400 | 401 login_required", s.handleTerminalJournalPost},
 		{"GET", "/api/terminal/journal", "terminal", "The action journal, newest first ?limit=N (default 100, max 500)", s.handleTerminalJournal},
+		// The driver view (a driver logged in on the terminal; other roles 403 driver_only).
+		{"GET", "/api/terminal/driver/available", "terminal", "Ready, unassigned deliveries to claim, oldest ready first (never cooking) [{order_id, number, street, address, ready_at, payment, cash_due_cents, total_cents}] | 401 login_required | 403 driver_only", s.handleDriverAvailable},
+		{"POST", "/api/terminal/driver/claim", "terminal", "Claim deliveries {order_ids}: pooled to him + sent out at once (SEND OUT), all or nothing; clocks him in if off -> {driver, orders} | 400 | 403 driver_only | 404 | 409 taken {order_ids} / driver_out", s.handleDriverClaim},
+		{"GET", "/api/terminal/driver/mine", "terminal", "His orders {driver, out: [ticket], delivered: [ticket]} (ticket: number, name, phone, address, notes, geo, payment, tip so far)", s.handleDriverMine},
+		{"POST", "/api/terminal/driver/orders/{id}/tip", "terminal", "Set the tip on one of his orders {tip_cents 0-50000, absolute}: website card = ADD TIP (raises the hold), cash/counter = a door tip on his report -> {ticket, kind: card|door} | 403 not_your_order | 409 not_tippable/tip_locked", s.handleDriverTip},
+		{"POST", "/api/terminal/driver/orders/{id}/close", "terminal", "Close one of his out orders (delivered); his last one puts him back in the queue -> {ticket, returned, driver} | 403 not_your_order | 409 invalid_state", s.handleDriverClose},
+		{"GET", "/api/terminal/driver/report", "terminal", "His driver report for the open batch so far (cash, tips, orders)", s.handleDriverReportGet},
+		{"POST", "/api/terminal/driver/report", "terminal", "Print his driver report on the receipt printer -> {driver_id, driver_name, printed_on, report} | 502 nothing_printed | 503 printing_unavailable", s.handleDriverReportPrint},
 
 		// Web-UI-only — session-gated.
 		{"GET", "/api/devices", "session", "Paired tablets", s.handleListDevices},

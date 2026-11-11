@@ -307,6 +307,7 @@ func toStored(row models.Order) (order.StoredOrder, error) {
 	}
 	// 00024: ADD TIP, the tip lock, CANCEL ORDER's reason.
 	st.AddedTipCents, st.TipLocked, st.CancelReason = row.AddedTipCents, row.TipLocked, row.CancelReason
+	st.DoorTipCents = row.DoorTipCents // 00026
 	return order.StoredOrder{Order: s, Status: st}, nil
 }
 

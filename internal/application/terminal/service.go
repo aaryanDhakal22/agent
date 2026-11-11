@@ -58,6 +58,7 @@ type Service struct {
 	logger zerolog.Logger
 	staff  *staffBook
 	now    func() time.Time
+	drv    driverView
 }
 
 // NewService wires the terminal flow; the store's config changes reach the
@@ -95,6 +96,8 @@ type LoginResult struct {
 	Limits terminal.Limits `json:"limits"`
 	// Settings: the terminal settings (auto-lock minutes etc.) as main sent them.
 	Settings json.RawMessage `json:"settings"`
+	// Driver: a driver's Pi driver (linked at his first login; §2.10b).
+	Driver *DriverPublic `json:"driver,omitempty"`
 }
 
 // Login checks a PIN on a terminal; the staff member is then the one on it.
@@ -120,7 +123,17 @@ func (s *Service) Login(ctx context.Context, a Actor, pin string) (*LoginResult,
 	s.staff.login(a.DeviceID, st.ID)
 	s.journal(ctx, terminal.Entry{StaffID: st.ID, DeviceID: a.DeviceID, Action: terminal.ActionLogin,
 		Detail: detail(map[string]any{"role": st.Role, "device_name": a.DeviceName})})
-	return &LoginResult{Staff: st.Public(), Role: st.Role, Limits: cfg.LimitsOf(st), Settings: cfg.Settings}, nil
+	res := &LoginResult{Staff: st.Public(), Role: st.Role, Limits: cfg.LimitsOf(st), Settings: cfg.Settings}
+	if st.Role == terminal.RoleDriver && s.drv.floor != nil {
+		// Link him to the roster now; a failure never blocks the login (the
+		// driver routes try again).
+		if d, err := s.ensureDriver(ctx, a, st); err != nil {
+			s.logger.Warn().Ctx(ctx).Err(err).Str("staff_id", st.ID).Msg("driver link at login failed")
+		} else {
+			res.Driver = driverPublic(*d)
+		}
+	}
+	return res, nil
 }
 
 // Logout ends the staff session on a terminal (the terminal locked).

@@ -183,6 +183,7 @@ func (r *OrderRepository) Restore(ctx context.Context, data order.RestoreData) (
 				ScheduledLeadMinutes: nullInt(st.ScheduledLeadMinutes), RingAt: nullTSPtr(st.RingAt), Rerung: st.Rerung,
 				CameBack: st.CameBack && st.State == order.StateReady, RunSeq: nullInt(st.RunSeq),
 				AddedTipCents: st.AddedTipCents, TipLocked: st.TipLocked, CancelReason: st.CancelReason,
+				DoorTipCents: st.DoorTipCents,
 			}
 			if snap.Source == order.SourceCounter { // terminal stage 0d: paid state + the terminal's key
 				p.Paid, p.PaidAt = st.Paid, nullTSPtr(st.PaidAt)

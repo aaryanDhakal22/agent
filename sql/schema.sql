@@ -88,6 +88,8 @@ CREATE TABLE orders (
     cancel_reason           text    NOT NULL DEFAULT '',
     -- 00025_terminal: a counter order's terminal idempotency key ('' = none).
     client_key              text    NOT NULL DEFAULT '',
+    -- 00026_terminal_driver: a tip the driver got at the door (cash / counter).
+    door_tip_cents          integer NOT NULL DEFAULT 0,
     CHECK (state IN ('arrived', 'scheduled', 'accepted', 'ready', 'on_delivery', 'delivered', 'cancelled'))
 );
 CREATE INDEX idx_orders_arrival_date ON orders (arrival_date DESC);
@@ -233,6 +235,8 @@ CREATE TABLE settings (
     look                      text NOT NULL DEFAULT '{}',
     -- 00025_terminal: the counter sequence's next number (0 = counter_start).
     counter_next              integer NOT NULL DEFAULT 0,
+    -- 00026_terminal_driver: the last batch auto-close slot handled (UTC).
+    auto_close_last           text    NOT NULL DEFAULT '',
     CHECK (id = 1)
 );
 
@@ -345,3 +349,10 @@ CREATE TABLE journal (
     detail    text NOT NULL DEFAULT '{}'
 );
 CREATE INDEX idx_journal_at ON journal (at);
+
+-- 00026_terminal_driver: a driver staff member's Pi driver.
+CREATE TABLE terminal_driver_links (
+    staff_id  text PRIMARY KEY,
+    driver_id text NOT NULL UNIQUE,
+    linked_at text NOT NULL
+);

@@ -61,6 +61,8 @@ type Querier interface {
 	// Retention: the payments of trimmed counter orders.
 	DeleteOrphanOrderPayments(ctx context.Context) error
 	DeleteOrphanOrderTimes(ctx context.Context) error
+	// A driver is linked to one staff member at a time.
+	DeleteTerminalDriverLinkOfDriver(ctx context.Context, arg DeleteTerminalDriverLinkOfDriverParams) error
 	// A POS check that was never on Kitchen (board hidden) closed at the POS:
 	// ready and finished at once (no feed event: nothing is called out).
 	FinishHiddenClosed(ctx context.Context, arg FinishHiddenClosedParams) (int64, error)
@@ -72,6 +74,7 @@ type Querier interface {
 	GetAppRelease(ctx context.Context) (string, error)
 	// Settings -----------------------------------------------------------------
 	GetAutoAccept(ctx context.Context) (bool, error)
+	GetAutoCloseLast(ctx context.Context) (string, error)
 	GetAutoPlan(ctx context.Context, id string) (AutoPlan, error)
 	GetAutoUpdate(ctx context.Context) (bool, error)
 	GetBatch(ctx context.Context, id int64) (Batch, error)
@@ -106,6 +109,8 @@ type Querier interface {
 	GetStoreAPIKey(ctx context.Context) (string, error)
 	// Store config (starter pack from main/'s SSE handshake) --------------------
 	GetStoreConfig(ctx context.Context) (GetStoreConfigRow, error)
+	// Terminal driver view + batch auto-close (00026_terminal_driver) ----------------
+	GetTerminalDriverLink(ctx context.Context, staffID string) (string, error)
 	// ===== 00025 terminal (stage 0d): the Pi serves the store's POS terminals =====
 	GetTerminalSnapshot(ctx context.Context, kind string) (TerminalSnapshot, error)
 	GetUIPassword(ctx context.Context) (GetUIPasswordRow, error)
@@ -174,6 +179,7 @@ type Querier interface {
 	// Driver report: shifts that overlap a batch window (opened_at .. closed_at).
 	ListShiftsOverlapping(ctx context.Context, arg ListShiftsOverlappingParams) ([]DriverShift, error)
 	ListShiftsSince(ctx context.Context, clockIn string) ([]DriverShift, error)
+	ListTerminalDriverLinks(ctx context.Context) ([]ListTerminalDriverLinksRow, error)
 	ListUnsyncedFloorEvents(ctx context.Context, limit int64) ([]FloorEvent, error)
 	// 2.5.0 Close batch: main charges everything left, every tip is final.
 	LockBatchTips(ctx context.Context, batchID int64) error
@@ -253,12 +259,16 @@ type Querier interface {
 	SetAddedTip(ctx context.Context, arg SetAddedTipParams) (int64, error)
 	SetAppRelease(ctx context.Context, appRelease string) error
 	SetAutoAccept(ctx context.Context, autoAccept bool) error
+	SetAutoCloseLast(ctx context.Context, autoCloseLast string) error
 	SetAutoUpdate(ctx context.Context, autoUpdate bool) error
 	// A payment / refund on a counter order: the snapshot (payments, tip, total)
 	// and the money columns.
 	SetCounterMoney(ctx context.Context, arg SetCounterMoneyParams) error
 	SetCounterNext(ctx context.Context, counterNext int64) error
 	SetDeliveryPrefs(ctx context.Context, arg SetDeliveryPrefsParams) error
+	// A tip the driver got at the door (absolute). Only a delivery of the given
+	// (open) batch that is out or delivered, not a POS check.
+	SetDoorTip(ctx context.Context, arg SetDoorTipParams) (int64, error)
 	SetDriverOut(ctx context.Context, id string) error
 	// Undo a mistaken return: back out on the run, at its old queue position.
 	SetDriverOutAt(ctx context.Context, arg SetDriverOutAtParams) (int64, error)
@@ -348,6 +358,7 @@ type Querier interface {
 	UpsertOrderTime(ctx context.Context, arg UpsertOrderTimeParams) error
 	UpsertPrinterMAC(ctx context.Context, arg UpsertPrinterMACParams) error
 	UpsertStoreConfig(ctx context.Context, argContext string) error
+	UpsertTerminalDriverLink(ctx context.Context, arg UpsertTerminalDriverLinkParams) error
 }
 
 var _ Querier = (*Queries)(nil)
