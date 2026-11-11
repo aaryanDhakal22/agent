@@ -276,7 +276,11 @@ func buildFull(snap order.Snapshot, sc storeconfig.StoreContext, reroutedFrom st
 			nl()
 		}
 
-		for j, mod := range item.Children {
+		mods := item.Children
+		if item.HasHalves() { // compact: whole, then "1st: …", then "2nd: …"
+			mods = receiptHalfMods(item)
+		}
+		for j, mod := range mods {
 			if j == 0 {
 				w(feedDots(sp.ItemMod))
 			} else {
@@ -464,10 +468,17 @@ func buildStation(snap order.Snapshot, t printer.Ticket, prefs order.ReceiptPref
 		w(cmdBoldOn)
 		w(textSize(prefs.KitchenItemSize))
 		label := fmt.Sprintf("%d %s", it.Quantity, itemName(it))
+		halves := it.HasHalves() // half and half: the summary + WHOLE PIE / 1ST HALF / 2ND HALF
+		if halves {
+			label = glue(halfSummary(it))
+		}
 		if t.Void {
 			label = "VOID " + label
 		}
 		for _, line := range wordWrap(label, itemWidth(prefs.KitchenItemSize), "  ") {
+			if halves {
+				line = printable(line)
+			}
 			w(line)
 			nl()
 		}
@@ -479,7 +490,14 @@ func buildStation(snap order.Snapshot, t printer.Ticket, prefs order.ReceiptPref
 			w(cmdInvertOff)
 			nl()
 		}
+		if halves {
+			w(feedDots(sp.ItemMod))
+			writeHalves(w, nl, it)
+		}
 		for j, mod := range it.Children {
+			if halves {
+				break
+			}
 			if j == 0 {
 				w(feedDots(sp.ItemMod))
 			} else {
@@ -867,7 +885,14 @@ func writeCondensedItems(w func(string), nl func(), items []order.LineItem, sp o
 		w(itemLine(item.Quantity, name, sum))
 		w(cmdBoldOff)
 		nl()
-		if len(item.Children) > 0 {
+		if item.HasHalves() { // half and half: the kitchen summary instead
+			w(feedDots(sp.ItemMod))
+			w(cmdLeft)
+			for _, line := range wordWrap("    - "+glue(halfText(item)), lineWidth, "      ") {
+				w(printable(line))
+				nl()
+			}
+		} else if len(item.Children) > 0 {
 			w(feedDots(sp.ItemMod))
 			mod := item.Children[0]
 			label := mod.Name

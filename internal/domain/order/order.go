@@ -108,6 +108,13 @@ type LineItem struct {
 	Notes     string     `json:"notes,omitempty"`
 	Children  []LineItem `json:"children,omitempty"`
 
+	// Half and half (modifier children, main Stage 0b): Portion is "" (the
+	// whole pie) | first | second; Mode is add | only | no | specialty ("" on
+	// older and vendor orders = add). Name still reads on its own
+	// ("Pepperoni (1st half)").
+	Portion string `json:"portion,omitempty"`
+	Mode    string `json:"mode,omitempty"`
+
 	// Kitchen routing stamped by main at ingest (top-level items only):
 	// the station printer this line prints on, and how it was matched.
 	MenuItemID string `json:"menu_item_id,omitempty"`
@@ -120,6 +127,28 @@ type LineItem struct {
 	PosRef  string `json:"pos_ref,omitempty"`
 	Kitchen bool   `json:"kitchen,omitempty"`
 	Added   bool   `json:"added,omitempty"`
+}
+
+// Portions and modes (LineItem.Portion / Mode).
+const (
+	PortionFirst  = "first"
+	PortionSecond = "second"
+
+	ModeAdd       = "add"
+	ModeOnly      = "only"
+	ModeNo        = "no"
+	ModeSpecialty = "specialty"
+)
+
+// HasHalves says the line is a pizza built in halves: a child sits on the
+// 1st or 2nd half.
+func (it LineItem) HasHalves() bool {
+	for _, c := range it.Children {
+		if c.Portion == PortionFirst || c.Portion == PortionSecond {
+			return true
+		}
+	}
+	return false
 }
 
 // Routing values (LineItem.Routing).
