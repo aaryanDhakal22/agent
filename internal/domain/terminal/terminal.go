@@ -206,15 +206,17 @@ type CounterMenu struct {
 	MenuVersion int64           `json:"menu_version"`
 	Build       json.RawMessage `json:"build"`
 	Pricing     pricing.Context `json:"pricing"`
-	// Routes: bank item id → its kitchen printer (absent = unmatched: the
-	// line prints on every station) and the bank's name for the kitchen.
+	// Routes: bank item id → its kitchen printer (main: the item's own, else
+	// its category's default; absent = no printer: the line prints on every
+	// station).
 	Routes map[string]Route `json:"routes"`
 }
 
-// Route is one bank item's kitchen routing.
+// Route is one bank item's kitchen routing. Name is the printer's name
+// (informational; the line keeps the menu's item name).
 type Route struct {
 	PrinterID string `json:"printer_id"`
-	Name      string `json:"name"`
+	Name      string `json:"name,omitempty"`
 }
 
 // ParseCounterMenu decodes a counter menu body. The pricing context's menu

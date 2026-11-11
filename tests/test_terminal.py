@@ -167,9 +167,11 @@ def staff_config(version: int = 1, counter_start: int = 500) -> dict:
 
 
 def counter_menu(printer_id: str, version: int = 7) -> dict:
+    """main's shape: routes {bank item id: {printer_id, name = the printer's}};
+    an item with no printer is left out (SODA: every station)."""
     ctx = json.loads(CASE.read_text())["context"]
     return {"menu_version": version, "build": {"view": {"kind": "counter", "name": "Counter"}, "layout": {"tabs": []}},
-            "pricing": ctx, "routes": {CHEESE: {"printer_id": printer_id, "name": "CHEESE PIZZA"}, HAWAIIAN: {"printer_id": printer_id}}}
+            "pricing": ctx, "routes": {CHEESE: {"printer_id": printer_id, "name": "Pizza"}, HAWAIIAN: {"printer_id": printer_id, "name": "Pizza"}}}
 
 
 def pizza_line() -> dict:
@@ -184,14 +186,19 @@ def rig(admin, main_store, spawn_agent, fakes):
     fm = FakeMain()
     mgr = manager_session(admin, main_store)
     fakes["Pizza"], fakes["Front"] = FakePrinter(), FakePrinter()
+    # main's POST ignores is_receipt: the first printer a location gets is its
+    # receipt printer, so Front goes in first and Pizza is a kitchen station.
+    r = mgr.post(f"{STORE_V1}/me/printers", json={"name": "Front", "ip": fakes["Front"].addr}, timeout=5)
+    assert r.status_code == 201 and r.json()["is_receipt"], r.text
     r = mgr.post(f"{STORE_V1}/me/printers", json={"name": "Pizza", "ip": fakes["Pizza"].addr}, timeout=5)
-    assert r.status_code == 201, r.text
+    assert r.status_code == 201 and not r.json()["is_receipt"], r.text
     pizza_id = r.json()["id"]
-    r = mgr.post(f"{STORE_V1}/me/printers", json={"name": "Front", "ip": fakes["Front"].addr, "is_receipt": True}, timeout=5)
-    assert r.status_code == 201, r.text
     fm.counter_menu, fm.terminal_config = counter_menu(pizza_id), staff_config()
     agent = spawn_agent(MAIN_SERVER_URL=fm.url)
     provision(agent, main_store)
+    # The printers reached the Pi through store_config, Front as the receipt printer.
+    wait_until(lambda: {(p["name"], p["is_receipt"]) for p in agent.http.get(f"{agent.base}/api/diag", timeout=5).json()["printers"]}
+               == {("Front", True), ("Pizza", False)}, what="printers from store_config")
     code = agent.http.post(f"{agent.base}/api/pairing/code", timeout=5).json()["code"]
     r = requests.post(f"{agent.base}/api/pair", json={"code": code, "name": "Till 1", "kind": "terminal"}, timeout=5)
     assert r.status_code == 201 and r.json()["kind"] == "terminal", r.text

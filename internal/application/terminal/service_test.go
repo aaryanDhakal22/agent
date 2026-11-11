@@ -174,7 +174,7 @@ func newRig(t *testing.T) *rig {
 	fm := &fakeMain{bodies: map[string][]byte{}, status: map[string]int{}}
 	pctx := caseContext(t)
 	fm.set(PathCounterMenu, map[string]any{"menu_version": 12, "build": map[string]any{"view": map[string]any{"kind": "counter"}},
-		"pricing": pctx, "routes": map[string]any{cheese: map[string]any{"printer_id": pizzaPrn, "name": "CHEESE PIZZA"}, hawaiian: map[string]any{"printer_id": pizzaPrn}}})
+		"pricing": pctx, "routes": map[string]any{cheese: map[string]any{"printer_id": pizzaPrn, "name": "Pizza"}, hawaiian: map[string]any{"printer_id": pizzaPrn}}})
 	fm.set(PathTerminalConfig, staffConfig(t, 1))
 	pub, orders := &fakePub{}, &fakeOrders{}
 	store := NewStore(repo, fm.fetch, pub, zerolog.Nop())
@@ -308,10 +308,10 @@ func TestQuoteAndPlaceOrder(t *testing.T) {
 		t.Fatalf("snapshot: %+v / %+v", so.Order, so.Status)
 	}
 	pizza := so.Order.Items[0]
-	if pizza.Name != "CHEESE PIZZA" || pizza.PrinterID != pizzaPrn || pizza.Routing != order.RoutingMatched || !pizza.HasHalves() {
+	if pizza.Name != "Cheese Pizza" || pizza.PrinterID != pizzaPrn || pizza.Routing != order.RoutingMatched || !pizza.HasHalves() {
 		t.Fatalf("pizza line: %+v", pizza)
 	}
-	if so.Order.Items[1].Routing != order.RoutingUnmatched || so.Order.Money.Total != quote.TotalCents {
+	if so.Order.Items[1].Routing != order.RoutingUnassigned || so.Order.Items[1].MenuItemID != soda || so.Order.Money.Total != quote.TotalCents {
 		t.Fatalf("soda line / money: %+v %+v", so.Order.Items[1], so.Order.Money)
 	}
 	var spec, pep bool

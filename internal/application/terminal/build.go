@@ -119,7 +119,8 @@ func priceCart(menu *terminal.CounterMenu, tz *time.Location, typ string, c Cart
 // channel order's (orderport build): one line per item with its options as
 // children (portion / mode kept), a bundle deal's picks as lines of their own
 // ("Combo: <deal>") with the difference to the deal price as a discount (or
-// fee), and each line's kitchen printer from the counter menu's routes.
+// fee), and each line's kitchen printer from the counter menu's routes
+// (the line keeps the menu's item name: a route's name is its printer's).
 func buildItems(menu *terminal.CounterMenu, p priced) (items []order.LineItem, off []order.Discount, fees []order.Fee, err error) {
 	type built struct {
 		item  order.LineItem
@@ -131,11 +132,7 @@ func buildItems(menu *terminal.CounterMenu, p priced) (items []order.LineItem, o
 		if route == "" {
 			route = r.RateItem
 		}
-		name := r.Name
-		if rt, ok := menu.Routes[route]; ok && rt.Name != "" && r.BankItem != "" {
-			name = rt.Name // the kitchen reads the bank's names
-		}
-		li := order.LineItem{ID: uuid.Must(uuid.NewV7()).String(), Position: pos, Name: name, Size: r.SizeName, Quantity: qty,
+		li := order.LineItem{ID: uuid.Must(uuid.NewV7()).String(), Position: pos, Name: r.Name, Size: r.SizeName, Quantity: qty,
 			UnitPrice: r.BaseCents, Notes: note}
 		total := r.BaseCents * int64(qty)
 		for k, o := range r.Options {
@@ -190,10 +187,13 @@ func buildItems(menu *terminal.CounterMenu, p priced) (items []order.LineItem, o
 	items = make([]order.LineItem, len(lines))
 	for i, b := range lines {
 		it := b.item
+		// main's routes leave out an item with no kitchen printer: a bank
+		// item without one is unassigned (every station, like an online
+		// line without a printer); only an added item is unmatched.
 		switch rt, ok := menu.Routes[b.route]; {
-		case !ok || b.route == "":
+		case b.route == "":
 			it.Routing = order.RoutingUnmatched
-		case rt.PrinterID == "":
+		case !ok || rt.PrinterID == "":
 			it.MenuItemID, it.Routing = b.route, order.RoutingUnassigned
 		default:
 			it.MenuItemID, it.PrinterID, it.Routing = b.route, rt.PrinterID, order.RoutingMatched
