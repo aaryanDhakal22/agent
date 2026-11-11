@@ -19,6 +19,7 @@ from contextlib import closing
 import pytest
 import requests
 
+from gatemark import intentional_sleep
 from conftest import ADMIN_V1, MAIN_BASE_URL, STORE_V1, FakePrinter, manager_session, wait_until
 
 
@@ -114,7 +115,7 @@ def test_printer_test_never_fails_over(diag, fakes) -> None:
     assert res["Front"]["ok"] is True and res["Front"]["id"] == ids["Front"]
     assert res["Dead"]["ok"] is False and res["Dead"]["error_code"] == "unreachable" and res["Dead"]["error"]
     wait_until(lambda: len(front.jobs) >= 1, timeout=10, what="test slip on Front")
-    time.sleep(0.5)
+    intentional_sleep(0.5, "absence: the dead printer's slip is not rerouted")
     assert len(front.jobs) == 1, "the dead printer's slip must not be rerouted to Front"
     slip = front.text()
     for want in ("TEST - Quibase setup", "FRONT", "Tablet:  Counter", "If you can read this, this printer works."):
@@ -130,7 +131,7 @@ def test_printer_test_never_fails_over(diag, fakes) -> None:
     r = requests.post(f"{a.base}/api/printers/test", headers=_hdr(tab), json={"probe_only": True}, timeout=30)
     res = {x["name"]: x for x in r.json()["results"]}
     assert res["Front"]["ok"] is True and res["Dead"]["error_code"] == "unreachable"
-    time.sleep(0.5)
+    intentional_sleep(0.5, "absence: probe_only prints nothing")
     assert len(front.jobs) == 1, "probe_only must not print"
 
     r = requests.post(f"{a.base}/api/printers/test", headers=_hdr(tab), json={"printer_id": str(uuid.uuid4())}, timeout=10)

@@ -25,6 +25,7 @@ from datetime import datetime, timezone
 import pytest
 import requests
 
+from gatemark import intentional_sleep
 from conftest import ADMIN_V1, MAIN_BASE_URL, STORE_V1, FakePrinter, manager_session, provision, wait_until
 
 CH_V1 = f"{MAIN_BASE_URL}/channel/v1"
@@ -128,7 +129,7 @@ def test_channel_order_prints_stations_and_receipt_with_switches_off(web, fakes)
     oid = resend(a, "online", "pickup", card=True)
     _ok(post(a, f"/api/orders/{oid}/accept"))
     wait_jobs(fakes["Front"], 1)
-    time.sleep(1.0)  # nothing else may follow (waits on purpose)
+    intentional_sleep(1.0, "absence: nothing else may print")
     assert fakes["Pizza"].jobs == []
 
 
@@ -211,7 +212,7 @@ def test_cancel_order_after_accept_voids_and_main_cancels(admin, web, fakes) -> 
     assert so["status"]["state"] == "cancelled" and so["status"]["cancel_reason"] == "customer_asked"
     wait_jobs(fakes["Pizza"], 1)
     assert "VOID" in fakes["Pizza"].text() and "1 Cheese Pizza" in fakes["Pizza"].text(), fakes["Pizza"].text()
-    time.sleep(1.0)  # no receipt for a cancel (waits on purpose)
+    intentional_sleep(1.0, "absence: no receipt for a cancel")
     assert fakes["Front"].jobs == []
     # main: cancelled (after accept, by the reason), the card hold released.
     wait_until(lambda: channel_status(a, o["id"]) == "cancelled", timeout=20, what="main to cancel the order")
@@ -225,7 +226,7 @@ def test_cancel_order_after_accept_voids_and_main_cancels(admin, web, fakes) -> 
     for f in fakes.values():
         f.clear()
     _ok(post(a, f"/api/orders/{w['id']}/cancel-order", {"reason": "other"}))
-    time.sleep(1.0)  # nothing may print (waits on purpose)
+    intentional_sleep(1.0, "absence: nothing may print")
     assert fakes["Pizza"].jobs == [] and fakes["Front"].jobs == []
 
 

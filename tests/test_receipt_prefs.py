@@ -6,11 +6,11 @@ agent.state to main so a replacement Pi gets them back on link."""
 from __future__ import annotations
 
 import secrets
-import time
 
 import pytest
 import requests
 
+from gatemark import intentional_sleep
 from conftest import ADMIN_V1, STORE_V1, FakePrinter, manager_session, wait_until
 
 CUT = b"\x1d\x56\x42\x03"
@@ -113,7 +113,7 @@ def test_print_sample(store, fakes) -> None:
     assert r.status_code == 200, r.text
     assert r.json()["results"] == [{"id": ids["Front"], "name": "Front", "ok": True}]
     wait_until(lambda: len(front.jobs) >= 1, timeout=10, what="sample on Front")
-    time.sleep(0.5)
+    intentional_sleep(0.5, "absence: the sample prints only on the chosen printer")
     assert len(front.jobs) == 1 and not pizza.jobs, "the sample prints only on the chosen printer"
     job = front.jobs[0]
     assert job.count(b"CUSTOMER, SAMPLE") == 3, "two receipt copies + the kitchen ticket"
