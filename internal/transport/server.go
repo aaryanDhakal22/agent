@@ -394,17 +394,6 @@ func (s *Server) handleListPrinters(w http.ResponseWriter, _ *http.Request) {
 	s.writeJSON(w, http.StatusOK, s.printers.All())
 }
 
-// GET /api/printers/{name} — single printer status.
-func (s *Server) handleGetPrinter(w http.ResponseWriter, r *http.Request) {
-	name := r.PathValue("name")
-	snap, ok := s.printers.Get(name)
-	if !ok {
-		s.writeError(w, r, http.StatusNotFound, fmt.Errorf("unknown printer %q", name))
-		return
-	}
-	s.writeJSON(w, http.StatusOK, snap)
-}
-
 // --- SSE to mobile --------------------------------------------------------
 
 // GET /api/events — mobile subscribes here. Pushes `order.arrived` events

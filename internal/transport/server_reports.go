@@ -11,17 +11,6 @@ import (
 
 // Driver reports any time + the POS driver ledger (2.3.0).
 
-// GET /api/drivers/{id}/report — the driver's report for the open batch so
-// far, merged with the POS ledger as it is now.
-func (s *Server) handleDriverReport(w http.ResponseWriter, r *http.Request) {
-	rep, err := s.service.DriverReport(r.Context(), r.PathValue("id"))
-	if err != nil {
-		s.floorErr(w, r, err)
-		return
-	}
-	s.writeJSON(w, http.StatusOK, rep)
-}
-
 // POST /api/drivers/{id}/report/print — print it on the receipt printer
 // (a fresh POS ledger first, ≤ 5 s) → 200 {driver_id, driver_name,
 // printed_on, rerouted_from?, report} · 502 nothing_printed · 503

@@ -160,16 +160,8 @@ func TestDriverReportRoutes(t *testing.T) {
 	s, h, key := diagServer(t)
 	juma := newDriver(t, s, "Juma", "31")
 	base := "/api/drivers/" + juma.ID + "/report"
-	for _, rt := range []struct{ method, path string }{{"GET", base}, {"POST", base + "/print"}} {
-		if rec := call(h, rt.method, rt.path, "", ""); rec.Code != http.StatusUnauthorized {
-			t.Errorf("%s %s without a key = %d", rt.method, rt.path, rec.Code)
-		}
-	}
-	if rec := call(h, "GET", base, key, ""); rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"driver_name":"Juma"`) {
-		t.Fatalf("GET report = %d %s", rec.Code, rec.Body)
-	}
-	if rec := call(h, "GET", "/api/drivers/nope/report", key, ""); rec.Code != http.StatusNotFound || code(rec) != "driver_not_found" {
-		t.Fatalf("unknown driver = %d %s", rec.Code, rec.Body)
+	if rec := call(h, "POST", base+"/print", "", ""); rec.Code != http.StatusUnauthorized {
+		t.Errorf("POST %s/print without a key = %d", base, rec.Code)
 	}
 	// Not wired → 503.
 	if rec := call(h, "POST", base+"/print", key, ""); rec.Code != http.StatusServiceUnavailable || code(rec) != "printing_unavailable" {
@@ -178,7 +170,7 @@ func TestDriverReportRoutes(t *testing.T) {
 	fp := newFakeTCPPrinter(t, "DRIVER REPORT")
 	withReportPrinting(t, s, fp.addr)
 	rec := call(h, "POST", base+"/print", key, "")
-	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"printed_on":"Front"`) || !strings.Contains(rec.Body.String(), `"report":{`) {
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"printed_on":"Front"`) || !strings.Contains(rec.Body.String(), `"driver_name":"Juma"`) || !strings.Contains(rec.Body.String(), `"report":{`) {
 		t.Fatalf("print = %d %s", rec.Code, rec.Body)
 	}
 	fp.waitJobs(t, 1)
