@@ -156,7 +156,10 @@ func (s *Service) OnArrival(ctx context.Context, snap order.Snapshot) error {
 	if fn := s.stamp.Load(); fn != nil && *fn != nil {
 		(*fn)(&snap)
 	}
-	placedDirectMeta(&snap) // status.placed_direct (§2.10aa)
+	wait := s.waitsArrived(ctx) // only the tests' kept accept path waits
+	if !wait {
+		placedDirectMeta(&snap) // status.placed_direct (§2.10aa)
+	}
 
 	ctx, span := s.tracer.Start(ctx, "order.on_arrival",
 		trace.WithAttributes(
@@ -195,7 +198,7 @@ func (s *Service) OnArrival(ctx context.Context, snap order.Snapshot) error {
 	// accept step, no ring; the auto-accept setting no longer matters). The
 	// print runs on the accept worker (hardening F-7) so the SSE reader takes
 	// the next frame at once.
-	if s.waitsArrived(ctx) {
+	if wait {
 		s.announceStored(ctx, id, snap)
 		return nil
 	}
