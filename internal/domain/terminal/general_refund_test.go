@@ -8,19 +8,19 @@ import (
 )
 
 func TestGeneralRefundNeed(t *testing.T) {
-	cashier := Staff{ID: "c", Role: RoleCashier, Limits: &Limits{RefundCents: 2000}}
-	if n := GeneralRefundNeed(nil, cashier, 2000); n != nil {
-		t.Fatalf("$20 needs %+v", n)
-	}
-	n := GeneralRefundNeed(nil, cashier, 2001)
-	if n == nil || n.Action != ActionRefund || n.Limit != 2000 || n.Requested != 2001 {
-		t.Fatalf("$20.01: %+v", n)
+	// The owner, 2026-11-12: a manager every time, whatever the amount or the person's limit.
+	for _, st := range []Staff{
+		{ID: "c", Role: RoleCashier, Limits: &Limits{RefundCents: 2000}},
+		{ID: "u", Role: RoleCashier, EffectiveLimits: []byte("null")}, // unlimited by main: still a manager
+		{ID: "d", Role: RoleDriver, Limits: &Limits{}},
+	} {
+		n := GeneralRefundNeed(nil, st, 1)
+		if n == nil || n.Action != ActionRefund || n.Limit != 0 || n.Requested != 1 {
+			t.Fatalf("%s: %+v", st.ID, n)
+		}
 	}
 	if n := GeneralRefundNeed(nil, Staff{ID: "m", Role: RoleManager}, 1_000_000); n != nil {
 		t.Fatalf("a manager needs %+v", n)
-	}
-	if n := GeneralRefundNeed(nil, Staff{ID: "d", Role: RoleDriver, Limits: &Limits{}}, 1); n == nil {
-		t.Fatal("a driver gave a general refund alone")
 	}
 }
 

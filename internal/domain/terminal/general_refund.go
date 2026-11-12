@@ -33,18 +33,16 @@ func IsGeneralRefund(p Payment) bool {
 }
 
 // GeneralRefundNeed is what a manager must approve for a general refund of
-// cents (nil = nothing), the same rule as an order's cash refund: a cashier
-// gives back cash up to the cashier limit (cashier_refund_cents, default
-// $20) without a manager. There is no order to add earlier refunds up on, so
-// the limit is per general refund; a manager (or anyone main made
-// unlimited) needs no one. The action is "refund" (the order refund's: the
-// same manager approval covers it).
+// cents (nil = nothing). The owner, 2026-11-12: **a manager every time** -
+// no cashier allowance (unlike an order's cash refund). A logged-in manager
+// needs no one; anyone else (a cashier, a driver, a cashier main made
+// unlimited) needs a manager's PIN or approval. The action is "refund" (the
+// order refund's: the same manager approval covers it); limit 0.
 func GeneralRefundNeed(c *Config, st Staff, cents int64) *ManagerRequired {
-	lim := c.LimitsOf(st)
-	if lim.Unlimited || cents <= lim.RefundCents {
+	if st.Role == RoleManager {
 		return nil
 	}
-	return &ManagerRequired{Action: ActionRefund, Limit: lim.RefundCents, Requested: cents}
+	return &ManagerRequired{Action: ActionRefund, Limit: 0, Requested: cents}
 }
 
 // GeneralRefunds sums the general refunds among pays (count, cents).

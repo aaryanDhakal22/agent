@@ -15,9 +15,9 @@ import (
 // General refund (the owner, 2026-11-12; contract/agent.md §2.10x):
 // POST /api/terminal/refunds. Cash given back with no order attached (the
 // Management menu's "General refund" asks for no ticket number). Cash only;
-// a cashier up to the cashier refund limit (cashier_refund_cents, default
-// $20) per refund, above it a manager (manager_pin, an approval, or a
-// logged-in manager). Idempotent by client_key (contract 2.10s).
+// a manager every time (the owner, 2026-11-12: manager_pin, an approval or a
+// logged-in manager; no cashier allowance). Idempotent by client_key
+// (contract 2.10s).
 
 // EventGeneralRefund is the terminals' SSE event {payment} after one.
 const EventGeneralRefund = "terminal.refund.general"
