@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -33,6 +34,12 @@ type fakeTerm struct {
 	payments  map[string]terminal.Payment // client_key -> payment
 	recordErr error
 	journal   []map[string]any
+	// an unsent cart (§2.10z)
+	cartTotal   int64
+	needManager bool
+	placed      map[string]*terminalApp.OrderView // order key -> the order PlaceAs made (or "another way")
+	placedWith  []string                          // approved_by of each PlaceAs
+	entries     []terminal.Entry
 }
 
 func (f *fakeTerm) CurrentStaff(a terminalApp.Actor) (terminal.Staff, error) {
@@ -50,6 +57,11 @@ func (f *fakeTerm) Order(_ context.Context, id string) (*terminalApp.OrderView, 
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if id != orderID {
+		for _, ov := range f.placed {
+			if ov.Order.Order.ID == id {
+				return ov, nil
+			}
+		}
 		return nil, order.ErrNotFound
 	}
 	n := int64(12)
@@ -89,6 +101,59 @@ func (f *fakeTerm) RecordPi(_ context.Context, _, action string, d map[string]an
 }
 
 func (f *fakeTerm) Store() *terminalApp.Store { return nil }
+
+func (f *fakeTerm) PrecheckOrder(_ context.Context, _ terminalApp.Actor, in terminalApp.OrderIn) (*terminalApp.Precheck, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if ov, ok := f.placed[in.ClientKey]; ok {
+		return nil, &terminalApp.AlreadyPlaced{OrderID: ov.Order.Order.ID}
+	}
+	if len(in.Payments) > 0 {
+		return nil, fmt.Errorf("%w: no payments", terminalApp.ErrBadRequest)
+	}
+	out := &terminalApp.Precheck{TotalCents: f.cartTotal}
+	if f.needManager {
+		if in.ManagerPIN != "9876" {
+			return nil, &terminal.ManagerRequired{Action: "discount"}
+		}
+		out.ApprovedBy = "mgr-1"
+	}
+	return out, nil
+}
+
+func (f *fakeTerm) PlaceAs(_ context.Context, a terminalApp.Actor, staffID, approvedBy string, in terminalApp.OrderIn) (*terminalApp.PlaceResult, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if in.ManagerPIN != "" || len(in.Approvals) > 0 {
+		return nil, fmt.Errorf("a PIN reached PlaceAs")
+	}
+	if _, ok := f.placed[in.ClientKey]; ok {
+		return nil, &terminal.KeyReused{ClientKey: in.ClientKey}
+	}
+	n := int64(300 + len(f.placed))
+	so := order.StoredOrder{Order: order.Snapshot{ID: fmt.Sprintf("0193a1b2-0000-7000-8000-%012d", n), Source: order.SourceCounter}}
+	so.Status.KitchenNumber = &n
+	var pays []terminal.Payment
+	for i, p := range in.Payments {
+		pays = append(pays, terminal.Payment{ID: fmt.Sprintf("placed-pay-%d-%d", n, i), OrderID: so.Order.ID, Tender: p.Tender, AmountCents: p.AmountCents,
+			TipCents: p.TipCents, Ref: p.Ref, Last4: p.Last4, Brand: p.Brand, StaffID: staffID, DeviceID: a.DeviceID, ClientKey: p.ClientKey})
+	}
+	f.placed[in.ClientKey] = &terminalApp.OrderView{Order: so, Payments: pays}
+	f.placedWith = append(f.placedWith, approvedBy)
+	return &terminalApp.PlaceResult{Order: so, Number: n}, nil
+}
+
+func (f *fakeTerm) OrderByKey(_ context.Context, key string) (*terminalApp.OrderView, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.placed[key], nil
+}
+
+func (f *fakeTerm) Journal(context.Context, int) ([]terminal.Entry, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]terminal.Entry(nil), f.entries...), nil
+}
 
 func (f *fakeTerm) statuses() []string {
 	f.mu.Lock()
@@ -153,7 +218,8 @@ func newRig(t *testing.T, appEnv string) *rig {
 	}
 	t.Cleanup(func() { db.Close() })
 	r := &rig{ctx: ctx, now: time.Date(2026, 11, 12, 18, 0, 0, 0, time.UTC),
-		term: &fakeTerm{loggedIn: true, due: 2000, state: order.StateAccepted, payments: map[string]terminal.Payment{}},
+		term: &fakeTerm{loggedIn: true, due: 2000, state: order.StateAccepted, payments: map[string]terminal.Payment{}, cartTotal: 1500,
+			placed: map[string]*terminalApp.OrderView{}},
 		rpc: &fakeRPC{reply: map[string]func(map[string]any) (int, any, error){
 			MsgPosConfig: func(map[string]any) (int, any, error) {
 				return 200, map[string]any{"app_id": "sq0idp-x", "environment": "production", "callback_url": "https://b.example/pay/back", "linked": true}, nil
@@ -163,7 +229,7 @@ func newRig(t *testing.T, appEnv string) *rig {
 		{ID: "tab-1", Name: "Kitchen", Kind: device.KindTablet}}}
 	r.svc = New(Deps{Repo: repositories.NewPhoneChargeRepository(db), Term: r.term, Devices: devs, RPC: func() Sender { return r.rpc },
 		Publish: func(typ string, v any) { r.mu.Lock(); r.pub = append(r.pub, typ); r.mu.Unlock() },
-		AppEnv: appEnv, Logger: zerolog.Nop(), Now: func() time.Time { return r.now }})
+		AppEnv:  appEnv, Logger: zerolog.Nop(), Now: func() time.Time { return r.now }})
 	return r
 }
 
@@ -179,7 +245,9 @@ func (r *rig) found(tip int64) {
 func (r *rig) notFound() {
 	r.rpc.mu.Lock()
 	defer r.rpc.mu.Unlock()
-	r.rpc.reply[MsgPosLookup] = func(map[string]any) (int, any, error) { return 200, map[string]any{"found": false, "code": "not_found"}, nil }
+	r.rpc.reply[MsgPosLookup] = func(map[string]any) (int, any, error) {
+		return 200, map[string]any{"found": false, "code": "not_found"}, nil
+	}
 }
 
 func (r *rig) create(t *testing.T, key, phone string, amount, tip int64) pp.Charge {
@@ -486,4 +554,111 @@ func TestResultNormalize(t *testing.T) {
 	if w := pp.WordsFor("com.squareup.pos.ERROR_USER_NOT_LOGGED_IN"); w != "Square isn't signed in on this phone." {
 		t.Fatal(w)
 	}
+}
+
+// ---- an unsent cart: placed only when paid (the owner, 2026-11-12) ----------
+
+func cartIn(key, orderKey string, amount int64, pin string) CreateIn {
+	return CreateIn{ClientKey: key, PhoneID: "ph-1", AmountCents: amount,
+		Order: &terminalApp.OrderIn{ClientKey: orderKey, Type: "pickup", ManagerPIN: pin, Note: "no onions"}}
+}
+
+func (r *rig) createCart(t *testing.T, in CreateIn) pp.Charge {
+	t.Helper()
+	c, dup, err := r.svc.Create(r.ctx, till, "", in)
+	if err != nil || dup {
+		t.Fatalf("create: %+v %v %v", c, dup, err)
+	}
+	return c
+}
+
+func TestUnsentCartIsPlacedOnlyWhenPaid(t *testing.T) {
+	r := newRig(t, "prod")
+	r.found(0)
+	if _, _, err := r.svc.Create(r.ctx, till, "", cartIn("ph-key-0701", "ord-key-0701", 1501, "")); refusalCode(err) != "over_balance" {
+		t.Fatalf("over the cart's total: %v", err)
+	}
+	r.term.needManager = true
+	if _, _, err := r.svc.Create(r.ctx, till, "", cartIn("ph-key-0702", "ord-key-0702", 1500, "")); !isManagerRequired(err) {
+		t.Fatalf("a discount over the limit: %v", err)
+	}
+	c := r.createCart(t, cartIn("ph-key-0703", "ord-key-0703", 1500, "9876"))
+	if !c.Unsent() || c.OrderID != "" || c.Number != 0 || c.OrderKey != "ord-key-0703" || c.ApprovedBy != "mgr-1" || len(r.term.placed) != 0 {
+		t.Fatalf("pending, nothing placed: %+v (%d placed)", c, len(r.term.placed))
+	}
+	if strings.Contains(string(c.OrderBody), "9876") {
+		t.Fatalf("the PIN was kept: %s", c.OrderBody)
+	}
+	// The same tap again = the same charge; the same key with another cart = key_reused.
+	if again, dup, err := r.svc.Create(r.ctx, till, "", cartIn("ph-key-0703", "ord-key-0703", 1500, "9876")); err != nil || !dup || again.ID != c.ID {
+		t.Fatalf("replay: %v %v", dup, err)
+	}
+	r.svc.Open(r.ctx, "ph-1", c.ID)
+	if len(r.term.placed) != 0 {
+		t.Fatal("placed before paid")
+	}
+	got, _, err := r.svc.Result(r.ctx, "ph-1", c.ID, pp.Result{Status: "ok", TransactionID: "tx-1"})
+	ov := r.term.placed["ord-key-0703"]
+	if err != nil || got.Status != pp.StatusPaid || ov == nil || got.OrderID != ov.Order.Order.ID || got.Number != 300 || got.PaymentID == "" {
+		t.Fatalf("paid + placed: %+v %v", got, err)
+	}
+	p := ov.Payments[0]
+	if len(ov.Payments) != 1 || p.Tender != terminal.TenderSquareApp || p.AmountCents != 1500 || p.Ref != "sqpay-1" || p.StaffID != "cash-1" ||
+		p.ClientKey != "" || r.term.placedWith[0] != "mgr-1" {
+		t.Fatalf("the order's payment: %+v approved %v", ov.Payments, r.term.placedWith)
+	}
+	if again, dup, err := r.svc.Result(r.ctx, "ph-1", c.ID, pp.Result{Status: "ok", TransactionID: "tx-1"}); err != nil || !dup || len(r.term.placed) != 1 || again.OrderID != got.OrderID {
+		t.Fatalf("callback again: %v %v (%d placed)", dup, err, len(r.term.placed))
+	}
+	if _, _, err := r.svc.Create(r.ctx, till, "", cartIn("ph-key-0704", "ord-key-0703", 100, "")); refusalCode(err) != "already_placed" {
+		t.Fatalf("a cart already sent: %v", err)
+	}
+}
+
+func TestUnsentCartDeclinedOrLate(t *testing.T) {
+	r := newRig(t, "prod")
+	r.found(0)
+	// Declined / cancelled: nothing placed.
+	c := r.createCart(t, cartIn("ph-key-0801", "ord-key-0801", 1500, ""))
+	if got, _, _ := r.svc.Result(r.ctx, "ph-1", c.ID, pp.Result{Status: "error", ErrorCode: "com.squareup.pos.ERROR_NO_NETWORK"}); got.Status != pp.StatusDeclined || len(r.term.placed) != 0 {
+		t.Fatalf("declined: %+v", got)
+	}
+	// Cancelled, then a late paid with nothing changed since: placed (Square has the money).
+	c = r.createCart(t, cartIn("ph-key-0802", "ord-key-0802", 1500, ""))
+	r.svc.Cancel(r.ctx, "", c.ID, "terminal")
+	if got, _, err := r.svc.Result(r.ctx, "ph-1", c.ID, pp.Result{Status: "ok", TransactionID: "tx-2"}); err != nil || got.Status != pp.StatusPaid || r.term.placed["ord-key-0802"] == nil {
+		t.Fatalf("late paid, nothing moved: %+v %v", got, err)
+	}
+	// Cancelled, the cashier sent an order from that terminal since: unrecorded; Record it places it.
+	r.now = r.now.Add(time.Minute)
+	c = r.createCart(t, cartIn("ph-key-0803", "ord-key-0803", 1500, ""))
+	r.svc.Expire(r.ctx, c.ID)
+	r.term.entries = []terminal.Entry{{DeviceID: till.DeviceID, Action: terminal.ActionOrderPlaced, At: r.now.Add(time.Second)}}
+	got, _, err := r.svc.Result(r.ctx, "ph-1", c.ID, pp.Result{Status: "ok", TransactionID: "tx-3"})
+	if err != nil || got.Status != pp.StatusUnrecorded || r.term.placed["ord-key-0803"] != nil || !strings.Contains(got.Message, "cart changed") {
+		t.Fatalf("late paid, the terminal moved on: %+v %v", got, err)
+	}
+	if got, err := r.svc.Record(r.ctx, c.ID); err != nil || got.Status != pp.StatusPaid || r.term.placed["ord-key-0803"] == nil {
+		t.Fatalf("record it places it: %+v %v", got, err)
+	}
+	// Cancelled, the same cart sent another way (its key used): unrecorded on that order; Record it adds the payment.
+	r.term.entries = nil
+	c = r.createCart(t, cartIn("ph-key-0804", "ord-key-0804", 1500, ""))
+	r.svc.Cancel(r.ctx, "", c.ID, "terminal")
+	n := int64(999)
+	other := order.StoredOrder{Order: order.Snapshot{ID: orderID, Source: order.SourceCounter}}
+	other.Status.KitchenNumber = &n
+	r.term.placed["ord-key-0804"] = &terminalApp.OrderView{Order: other}
+	got, _, err = r.svc.Result(r.ctx, "ph-1", c.ID, pp.Result{Status: "ok", TransactionID: "tx-4"})
+	if err != nil || got.Status != pp.StatusUnrecorded || got.OrderID != orderID || got.Number != 999 {
+		t.Fatalf("sent another way: %+v %v", got, err)
+	}
+	if got, err := r.svc.Record(r.ctx, c.ID); err != nil || got.Status != pp.StatusPaid || r.term.payments[c.ClientKey].AmountCents != 1500 {
+		t.Fatalf("record it on that order: %+v %v", got, err)
+	}
+}
+
+func isManagerRequired(err error) bool {
+	var mr *terminal.ManagerRequired
+	return errors.As(err, &mr)
 }

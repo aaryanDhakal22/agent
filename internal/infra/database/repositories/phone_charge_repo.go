@@ -3,6 +3,7 @@ package repositories
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -24,7 +25,7 @@ func NewPhoneChargeRepository(db *sql.DB) *PhoneChargeRepository {
 const phoneChargeCols = `id, client_key, request_hash, order_id, number, phone_id, phone_name, device_id, device_name,
 staff_id, staff_name, amount_cents, tip_cents, code, note, status, message, created_at, updated_at, expires_at,
 opened_at, finished_at, transaction_id, client_transaction_id, error_code, payment_id, square_payment_id, brand,
-last4, entry, extra_tip_cents`
+last4, entry, extra_tip_cents, order_key, order_body, approved_by`
 
 func phoneTS(t *time.Time) any {
 	if t == nil {
@@ -37,7 +38,8 @@ func phoneChargeArgs(c phonepay.Charge) []any {
 	return []any{c.ID, c.ClientKey, c.RequestHash, c.OrderID, c.Number, c.PhoneID, c.PhoneName, c.DeviceID, c.DeviceName,
 		c.StaffID, c.StaffName, c.AmountCents, c.TipCents, c.Code, c.Note, c.Status, c.Message, fmtTS(c.CreatedAt),
 		fmtTS(c.UpdatedAt), fmtTS(c.ExpiresAt), phoneTS(c.OpenedAt), phoneTS(c.FinishedAt), c.TransactionID,
-		c.ClientTransactionID, c.ErrorCode, c.PaymentID, c.SquarePaymentID, c.Brand, c.Last4, c.Entry, c.ExtraTipCents}
+		c.ClientTransactionID, c.ErrorCode, c.PaymentID, c.SquarePaymentID, c.Brand, c.Last4, c.Entry, c.ExtraTipCents,
+		c.OrderKey, string(c.OrderBody), c.ApprovedBy}
 }
 
 type rowScanner interface{ Scan(dest ...any) error }
@@ -46,12 +48,16 @@ func scanPhoneCharge(r rowScanner) (phonepay.Charge, error) {
 	var c phonepay.Charge
 	var created, updated, expires string
 	var opened, finished sql.NullString
+	var body string
 	err := r.Scan(&c.ID, &c.ClientKey, &c.RequestHash, &c.OrderID, &c.Number, &c.PhoneID, &c.PhoneName, &c.DeviceID,
 		&c.DeviceName, &c.StaffID, &c.StaffName, &c.AmountCents, &c.TipCents, &c.Code, &c.Note, &c.Status, &c.Message,
 		&created, &updated, &expires, &opened, &finished, &c.TransactionID, &c.ClientTransactionID, &c.ErrorCode,
-		&c.PaymentID, &c.SquarePaymentID, &c.Brand, &c.Last4, &c.Entry, &c.ExtraTipCents)
+		&c.PaymentID, &c.SquarePaymentID, &c.Brand, &c.Last4, &c.Entry, &c.ExtraTipCents, &c.OrderKey, &body, &c.ApprovedBy)
 	if err != nil {
 		return c, err
+	}
+	if body != "" {
+		c.OrderBody = json.RawMessage(body)
 	}
 	if c.CreatedAt, err = parseTS(created); err != nil {
 		return c, err
@@ -80,7 +86,7 @@ func scanPhoneCharge(r rowScanner) (phonepay.Charge, error) {
 func (r *PhoneChargeRepository) Create(ctx context.Context, c phonepay.Charge) (got phonepay.Charge, dup bool, err error) {
 	ctx, _, end := dbSpan(ctx, "phone_charges.create")
 	defer end(&err)
-	ph := strings.TrimSuffix(strings.Repeat("?,", 31), ",")
+	ph := strings.TrimSuffix(strings.Repeat("?,", 34), ",")
 	res, err := r.db.ExecContext(ctx, `INSERT INTO phone_charges (`+phoneChargeCols+`) VALUES (`+ph+`)
 ON CONFLICT (client_key) DO NOTHING`, phoneChargeArgs(c)...)
 	if err != nil {
@@ -121,9 +127,9 @@ func (r *PhoneChargeRepository) Update(ctx context.Context, c phonepay.Charge) (
 	defer end(&err)
 	_, err = r.db.ExecContext(ctx, `UPDATE phone_charges SET status = ?, message = ?, updated_at = ?, opened_at = ?,
 finished_at = ?, transaction_id = ?, client_transaction_id = ?, error_code = ?, payment_id = ?, square_payment_id = ?,
-brand = ?, last4 = ?, entry = ?, extra_tip_cents = ? WHERE id = ?`,
+brand = ?, last4 = ?, entry = ?, extra_tip_cents = ?, order_id = ?, number = ? WHERE id = ?`,
 		c.Status, c.Message, fmtTS(c.UpdatedAt), phoneTS(c.OpenedAt), phoneTS(c.FinishedAt), c.TransactionID,
-		c.ClientTransactionID, c.ErrorCode, c.PaymentID, c.SquarePaymentID, c.Brand, c.Last4, c.Entry, c.ExtraTipCents, c.ID)
+		c.ClientTransactionID, c.ErrorCode, c.PaymentID, c.SquarePaymentID, c.Brand, c.Last4, c.Entry, c.ExtraTipCents, c.OrderID, c.Number, c.ID)
 	return err
 }
 

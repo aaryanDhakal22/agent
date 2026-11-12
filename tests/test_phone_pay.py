@@ -156,3 +156,47 @@ def test_cancel_decline_and_record_it(rig):
     assert [p["tender"] for p in view["payments"]] == ["square_app"] and view["order"]["status"]["paid"] is True
     # A paid order takes no more.
     assert _charge(rig, oid, 100).json()["code"] == "over_balance"
+
+
+def test_unsent_cart_goes_to_the_kitchen_only_when_paid(rig):
+    """The owner (2026-11-12): wait until the charge goes through. A cart not sent yet: nothing placed or printed
+    while the charge waits; declined = still nothing; paid = the order placed with the payment, the station
+    ticket prints then."""
+    from gatemark import intentional_sleep
+    from test_terminal import pizza_line
+
+    agent, term, fm, fakes = rig["agent"], rig["term"], rig["fm"], rig["fakes"]
+    base = agent.base
+    _lookups(fm)
+    phone = _phone(rig)
+    rig["phone_id"] = phone.get(f"{base}/api/phone/me", timeout=5).json()["phone"]["id"]
+    order = {"client_key": f"cart-{uuid.uuid4().hex[:12]}", "type": "counter", "cart": {"lines": [pizza_line()]}}
+    total = term.post(f"{base}/api/terminal/quote", json={"type": "counter", "cart": order["cart"]}, timeout=5).json()["quote"]["total_cents"]
+
+    def cart_charge(key: str, amount: int, body: dict | None = None) -> requests.Response:
+        return term.post(f"{base}/api/terminal/phone-charges", json={"client_key": key, "phone_id": rig["phone_id"],
+                                                                     "amount_cents": amount, "order": body or order}, timeout=10)
+
+    bad = cart_charge("ph-cart-0000", 500, {**order, "payments": [{"tender": "cash", "amount_cents": 100}]})
+    assert bad.status_code == 400, bad.text
+    assert cart_charge("ph-cart-0001", total + 1).json()["code"] == "over_balance"
+    # Declined in Square: nothing placed, nothing printed.
+    c = cart_charge("ph-cart-0002", total).json()["charge"]
+    assert c["order_id"] == "" and c["number"] == 0 and c["order_client_key"] == order["client_key"], c
+    phone.post(f"{base}/api/phone/charges/{c['id']}/open", json={}, timeout=5)
+    d = phone.post(f"{base}/api/phone/charges/{c['id']}/result", json=_fake_square(phone, base, c, "decline"), timeout=10).json()["charge"]
+    assert d["status"] == "declined" and d["order_id"] == "", d
+    # Paid: placed now, with the payment, the ticket prints now.
+    c = cart_charge("ph-cart-0003", total).json()["charge"]
+    phone.post(f"{base}/api/phone/charges/{c['id']}/open", json={}, timeout=5)
+    intentional_sleep(1.0, "absence: nothing may print while the charge waits")
+    assert not fakes["Pizza"].jobs, "a ticket printed before the charge was paid"
+    assert [o for o in term.get(f"{base}/api/terminal/orders", timeout=5).json() if o["order"]["source_event_id"] == order["client_key"]] == []
+    paid = phone.post(f"{base}/api/phone/charges/{c['id']}/result", json=_fake_square(phone, base, c, "approve"), timeout=15).json()["charge"]
+    assert paid["status"] == "paid" and paid["order_id"] and paid["number"] > 0 and paid["payment_id"], paid
+    wait_until(lambda: fakes["Pizza"].jobs, what="the station ticket once paid")
+    view = term.get(f"{base}/api/terminal/orders/{paid['order_id']}", timeout=5).json()
+    assert view["order"]["status"]["paid"] is True and [p["tender"] for p in view["payments"]] == ["square_app"], view
+    # The cart's key is an order now: another charge for it = already_placed.
+    again = cart_charge("ph-cart-0004", 100)
+    assert again.status_code == 409 and again.json()["code"] == "already_placed" and again.json()["order_id"] == paid["order_id"], again.text

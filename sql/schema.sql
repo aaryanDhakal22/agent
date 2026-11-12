@@ -562,8 +562,13 @@ CREATE TABLE phone_charges (
     brand                 text    NOT NULL DEFAULT '',
     last4                 text    NOT NULL DEFAULT '',
     entry                 text    NOT NULL DEFAULT '',
-    extra_tip_cents       integer NOT NULL DEFAULT 0
+    extra_tip_cents       integer NOT NULL DEFAULT 0,
+    -- 00041_phone_pay_cart: a charge for a cart not sent yet (placed when paid).
+    order_key             text    NOT NULL DEFAULT '',
+    order_body            text    NOT NULL DEFAULT '',
+    approved_by           text    NOT NULL DEFAULT ''
 );
 CREATE UNIQUE INDEX idx_phone_charges_key ON phone_charges (client_key);
 CREATE INDEX idx_phone_charges_phone ON phone_charges (phone_id, status);
 CREATE INDEX idx_phone_charges_order ON phone_charges (order_id);
+CREATE INDEX idx_phone_charges_order_key ON phone_charges (order_key) WHERE order_key <> '';

@@ -33,7 +33,15 @@ func (noTerm) RecordAs(context.Context, terminalApp.Actor, string, string, termi
 	return nil, terminal.ErrLoginRequired
 }
 func (noTerm) RecordPi(context.Context, string, string, map[string]any) {}
-func (noTerm) Store() *terminalApp.Store                                 { return nil }
+func (noTerm) Store() *terminalApp.Store                                { return nil }
+func (noTerm) PrecheckOrder(context.Context, terminalApp.Actor, terminalApp.OrderIn) (*terminalApp.Precheck, error) {
+	return nil, terminal.ErrLoginRequired
+}
+func (noTerm) PlaceAs(context.Context, terminalApp.Actor, string, string, terminalApp.OrderIn) (*terminalApp.PlaceResult, error) {
+	return nil, terminal.ErrLoginRequired
+}
+func (noTerm) OrderByKey(context.Context, string) (*terminalApp.OrderView, error) { return nil, nil }
+func (noTerm) Journal(context.Context, int) ([]terminal.Entry, error)             { return nil, nil }
 
 func phoneServer(t *testing.T, appEnv string) (*Server, http.Handler, string) {
 	t.Helper()

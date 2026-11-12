@@ -246,6 +246,9 @@ func (s *Service) staffOf(a Actor) (terminal.Staff, *terminal.Config, error) {
 // manager checks a manager's PIN given to go over a limit (a wrong one
 // counts as a wrong PIN on the terminal).
 func (s *Service) manager(ctx context.Context, a Actor, cfg *terminal.Config, pin string, need *terminal.ManagerRequired) (*terminal.Staff, error) {
+	if mgr, ok := preApproved(ctx, cfg); ok { // a phone charge's cart, approved at its creation
+		return mgr, nil
+	}
 	if mgr, ok := s.approvals.take(approvalsOf(ctx), a.DeviceID, need, s.now()); ok {
 		if cur, found := cfg.Find(mgr.ID); found && cur.Role == terminal.RoleManager {
 			s.cm.Override(ctx, need.Action, "approval", 0)
@@ -948,7 +951,7 @@ func (s *Service) PlaceOrder(ctx context.Context, a Actor, in OrderIn) (*PlaceRe
 }
 
 func (s *Service) placeOrder(ctx context.Context, a Actor, in OrderIn) (*PlaceResult, error) {
-	st, cfg, err := s.staffOf(a)
+	st, cfg, err := s.staffFor(ctx, a) // staffOf, or a phone charge's sender (phonepay_hooks.go)
 	if err != nil {
 		return nil, err
 	}

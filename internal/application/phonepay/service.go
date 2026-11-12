@@ -64,6 +64,11 @@ type Terminal interface {
 	RecordAs(ctx context.Context, a terminalApp.Actor, staffID, orderID string, in terminalApp.PaymentIn) (*terminalApp.PaymentResult, error)
 	RecordPi(ctx context.Context, deviceID, action string, d map[string]any)
 	Store() *terminalApp.Store
+	// An unsent cart (§2.10z): checked at the charge, placed when paid.
+	PrecheckOrder(ctx context.Context, a terminalApp.Actor, in terminalApp.OrderIn) (*terminalApp.Precheck, error)
+	PlaceAs(ctx context.Context, a terminalApp.Actor, staffID, approvedBy string, in terminalApp.OrderIn) (*terminalApp.PlaceResult, error)
+	OrderByKey(ctx context.Context, key string) (*terminalApp.OrderView, error)
+	Journal(ctx context.Context, limit int) ([]terminal.Entry, error)
 }
 
 // Devices lists paired devices.
@@ -305,6 +310,16 @@ type CreateIn struct {
 	PhoneID     string `json:"phone_id"`
 	AmountCents int64  `json:"amount_cents"`
 	TipCents    int64  `json:"tip_cents"`
+	// Order: a cart not sent yet (POST /api/terminal/phone-charges): the
+	// order as the terminal would SEND it, placed only once the phone says
+	// paid (the owner, 2026-11-12: nothing to the kitchen before that).
+	Order *terminalApp.OrderIn `json:"order,omitempty"`
+}
+
+// cartBody is the order kept on a charge: no PIN, no approvals, no payments.
+func cartBody(in terminalApp.OrderIn) (json.RawMessage, error) {
+	in.ManagerPIN, in.Approvals, in.Payments = "", nil, nil
+	return json.Marshal(in)
 }
 
 // Create sends a charge to a phone. dup = the same client_key again.
@@ -323,10 +338,19 @@ func (s *Service) Create(ctx context.Context, a terminalApp.Actor, orderID strin
 	if in.AmountCents < 1 || in.AmountCents > 1_000_000 || in.TipCents < 0 || in.TipCents > 100_000 {
 		return pp.Charge{}, false, refuse(http.StatusBadRequest, "bad_request", "amount_cents is 1-1000000, tip_cents 0-100000", nil)
 	}
-	if _, err := uuid.Parse(orderID); err != nil {
+	var body json.RawMessage
+	if in.Order != nil {
+		if orderID != "" {
+			return pp.Charge{}, false, refuse(http.StatusBadRequest, "bad_request", "an order id or an unsent order, not both", nil)
+		}
+		var err error
+		if body, err = cartBody(*in.Order); err != nil {
+			return pp.Charge{}, false, refuse(http.StatusBadRequest, "bad_request", err.Error(), nil)
+		}
+	} else if _, err := uuid.Parse(orderID); err != nil {
 		return pp.Charge{}, false, refuse(http.StatusNotFound, "not_found", "no such order", nil)
 	}
-	hash := pp.Fingerprint(orderID, in.PhoneID, in.AmountCents, in.TipCents)
+	hash := pp.Fingerprint(orderID+string(body), in.PhoneID, in.AmountCents, in.TipCents)
 	s.newMu.Lock()
 	defer s.newMu.Unlock()
 	if prev, err := s.d.Repo.ByKey(ctx, in.ClientKey); err == nil {
@@ -342,20 +366,42 @@ func (s *Service) Create(ctx context.Context, a terminalApp.Actor, orderID strin
 	if sq.Mode == ModeOff {
 		return pp.Charge{}, false, refuse(http.StatusConflict, "square_off", "Send to phone isn't set up for this store.", map[string]any{"reason": sq.Reason})
 	}
-	ov, err := s.d.Term.Order(ctx, orderID)
-	if errors.Is(err, order.ErrNotFound) {
-		return pp.Charge{}, false, refuse(http.StatusNotFound, "not_found", "no such order", nil)
-	}
-	if err != nil {
-		return pp.Charge{}, false, err
-	}
-	so := ov.Order
-	if so.Status.State == order.StateCancelled {
-		return pp.Charge{}, false, refuse(http.StatusConflict, "not_payable", "This order was cancelled.", nil)
-	}
-	if due := terminal.DueOf(so); in.AmountCents > due {
-		return pp.Charge{}, false, refuse(http.StatusConflict, "over_balance", fmt.Sprintf("The order owes %s.", dollars(due)),
-			map[string]any{"balance_cents": due})
+	var number int64
+	var approvedBy, orderKey string
+	if in.Order != nil {
+		chk, err := s.d.Term.PrecheckOrder(ctx, a, *in.Order)
+		var ap *terminalApp.AlreadyPlaced
+		if errors.As(err, &ap) {
+			return pp.Charge{}, false, refuse(http.StatusConflict, "already_placed", "This order was sent already: charge it on the order.",
+				map[string]any{"order_id": ap.OrderID})
+		}
+		if err != nil {
+			return pp.Charge{}, false, err
+		}
+		if in.AmountCents > chk.TotalCents {
+			return pp.Charge{}, false, refuse(http.StatusConflict, "over_balance", fmt.Sprintf("The order comes to %s.", dollars(chk.TotalCents)),
+				map[string]any{"balance_cents": chk.TotalCents})
+		}
+		approvedBy, orderKey = chk.ApprovedBy, strings.TrimSpace(in.Order.ClientKey)
+	} else {
+		ov, err := s.d.Term.Order(ctx, orderID)
+		if errors.Is(err, order.ErrNotFound) {
+			return pp.Charge{}, false, refuse(http.StatusNotFound, "not_found", "no such order", nil)
+		}
+		if err != nil {
+			return pp.Charge{}, false, err
+		}
+		so := ov.Order
+		if so.Status.State == order.StateCancelled {
+			return pp.Charge{}, false, refuse(http.StatusConflict, "not_payable", "This order was cancelled.", nil)
+		}
+		if due := terminal.DueOf(so); in.AmountCents > due {
+			return pp.Charge{}, false, refuse(http.StatusConflict, "over_balance", fmt.Sprintf("The order owes %s.", dollars(due)),
+				map[string]any{"balance_cents": due})
+		}
+		if so.Status.KitchenNumber != nil {
+			number = *so.Status.KitchenNumber
+		}
 	}
 	ph, err := s.phone(ctx, in.PhoneID)
 	if err != nil {
@@ -373,15 +419,12 @@ func (s *Service) Create(ctx context.Context, a terminalApp.Actor, orderID strin
 	}
 	now := s.d.Now().UTC().Truncate(time.Millisecond)
 	id := uuid.Must(uuid.NewV7()).String()
-	var number int64
-	if so.Status.KitchenNumber != nil {
-		number = *so.Status.KitchenNumber
-	}
 	code := pp.CodeOf(id)
 	c := pp.Charge{ID: id, ClientKey: in.ClientKey, RequestHash: hash, OrderID: orderID, Number: number,
 		PhoneID: ph.ID, PhoneName: ph.Name, DeviceID: a.DeviceID, DeviceName: a.DeviceName, StaffID: st.ID, StaffName: st.Name(),
 		AmountCents: in.AmountCents, TipCents: in.TipCents, Code: code, Note: pp.NoteOf(number, code),
-		Status: pp.StatusPending, CreatedAt: now, UpdatedAt: now, ExpiresAt: now.Add(time.Duration(s.TimeoutSeconds()) * time.Second)}
+		Status: pp.StatusPending, CreatedAt: now, UpdatedAt: now, ExpiresAt: now.Add(time.Duration(s.TimeoutSeconds()) * time.Second),
+		OrderKey: orderKey, OrderBody: body, ApprovedBy: approvedBy}
 	got, dup, err := s.d.Repo.Create(ctx, c)
 	if err != nil {
 		return pp.Charge{}, false, err
@@ -390,7 +433,7 @@ func (s *Service) Create(ctx context.Context, a terminalApp.Actor, orderID strin
 		return got, got.RequestHash == hash, nil
 	}
 	s.journal(ctx, c, "sent", nil)
-	s.d.Logger.Info().Ctx(ctx).Str("charge_id", c.ID).Str("order_id", orderID).Int64("number", number).Str("phone_id", ph.ID).
+	s.d.Logger.Info().Ctx(ctx).Str("charge_id", c.ID).Str("order_id", orderID).Str("order_client_key", orderKey).Int64("number", number).Str("phone_id", ph.ID).
 		Str("device_id", a.DeviceID).Str("staff_id", st.ID).Int64("amount_cents", c.AmountCents).Int64("tip_cents", c.TipCents).
 		Msg("Phone charge sent")
 	s.changed(c)
@@ -568,7 +611,9 @@ func (s *Service) Record(ctx context.Context, id string) (pp.Charge, error) {
 	case lk == nil:
 		return c, refuse(http.StatusConflict, "not_found_in_square", "Square doesn't show this charge: charge again or use another tender.", nil)
 	}
-	return s.recordFound(ctx, c, c.TransactionID, c.ClientTransactionID, lk, pp.Final(c.Status))
+	// Record it is a person's decision: an unsent cart is placed even if the
+	// terminal moved on since (the cashier saw it and pressed it).
+	return s.recordFound(ctx, c, c.TransactionID, c.ClientTransactionID, lk, pp.Final(c.Status), true)
 }
 
 // ---- recording -------------------------------------------------------------
@@ -652,12 +697,12 @@ func (s *Service) record(ctx context.Context, c pp.Charge, txID, clientTx string
 		s.journal(ctx, c, "unrecorded", map[string]any{"why": "not_found", "lookup": avail.reason})
 		return c, nil
 	}
-	return s.recordFound(ctx, c, c.TransactionID, c.ClientTransactionID, lk, late)
+	return s.recordFound(ctx, c, c.TransactionID, c.ClientTransactionID, lk, late, false)
 }
 
 // recordFound records the payment (lk nil = Square's word without card
 // details) and finishes the charge: paid, or unrecorded with the reason.
-func (s *Service) recordFound(ctx context.Context, c pp.Charge, txID, clientTx string, lk *Found, late bool) (pp.Charge, error) {
+func (s *Service) recordFound(ctx context.Context, c pp.Charge, txID, clientTx string, lk *Found, late, force bool) (pp.Charge, error) {
 	ref := txID
 	if ref == "" {
 		ref = clientTx
@@ -676,8 +721,12 @@ func (s *Service) recordFound(ctx context.Context, c pp.Charge, txID, clientTx s
 		ref = ref[:120]
 	}
 	in := terminalApp.PaymentIn{ClientKey: c.ClientKey, Tender: terminal.TenderSquareApp, AmountCents: c.AmountCents,
-		TipCents: min(c.TipCents+c.ExtraTipCents, 100_000), Ref: ref, Last4: c.Last4, Brand: c.Brand}
+		TipCents: min(c.TipCents+c.ExtraTipCents, 100_000), Ref: ref, Last4: c.Last4, Brand: c.Brand,
+		Entry: c.Entry, SquarePaymentID: c.SquarePaymentID} // §2.10r's fields: reprints and Square refunds read them
 	a := terminalApp.Actor{DeviceID: c.DeviceID, DeviceName: c.DeviceName}
+	if c.Unsent() {
+		return s.placeCart(ctx, c, a, in, late, force)
+	}
 	res, err := s.d.Term.RecordAs(ctx, a, c.StaffID, c.OrderID, in)
 	if err != nil {
 		if p := s.paidWithKey(ctx, c); p != nil { // recorded already (a race, or a retry with other details)
@@ -709,6 +758,127 @@ func (s *Service) recordFound(ctx context.Context, c pp.Charge, txID, clientTx s
 		Int64("amount_cents", c.AmountCents).Int64("tip_cents", c.TipCents+c.ExtraTipCents).Bool("late", late).
 		Bool("looked_up", lk != nil).Msg("Phone charge recorded")
 	return c, nil
+}
+
+// placeCart places an unsent charge's cart with Square's payment in it (the
+// SEND path, one transaction: the kitchen tickets print now). An order that
+// key already placed another way, or (a late paid) a terminal that moved on
+// since, leaves the charge unrecorded for Record it.
+func (s *Service) placeCart(ctx context.Context, c pp.Charge, a terminalApp.Actor, pay terminalApp.PaymentIn, late, force bool) (pp.Charge, error) {
+	unrecorded := func(why, msg string, extra map[string]any) (pp.Charge, error) {
+		c.Status, c.Message, c.UpdatedAt = pp.StatusUnrecorded, msg, s.d.Now().UTC().Truncate(time.Millisecond)
+		if err := s.save(ctx, c); err != nil {
+			return c, err
+		}
+		d := map[string]any{"why": why, "late": late, "order_client_key": c.OrderKey}
+		for k, v := range extra {
+			d[k] = v
+		}
+		s.journal(ctx, c, "unrecorded", d)
+		s.d.Logger.Error().Ctx(ctx).Str("charge_id", c.ID).Str("order_client_key", c.OrderKey).Int64("amount_cents", c.TotalCents()).
+			Str("why", why).Msg("Phone charge paid in Square but not recorded")
+		return c, nil
+	}
+	if ov, err := s.d.Term.OrderByKey(ctx, c.OrderKey); err != nil {
+		return c, err
+	} else if ov != nil {
+		if p := squarePaymentOf(ov.Payments, pay.Ref); p != nil { // ours: placed before (a crash or a race)
+			return s.paid(ctx, c, ov, p.ID, late)
+		}
+		// The cart was sent another way since: the money goes on that order
+		// only by Record it (the cashier decides).
+		c.OrderID, c.Number = ov.Order.Order.ID, numberOf(ov)
+		return unrecorded("already_placed", "Square took "+dollars(c.TotalCents()+c.ExtraTipCents)+
+			" but this order was sent another way meanwhile. Record it adds the payment to it; else a manager refunds it in Square.", nil)
+	}
+	if late && !force {
+		if moved, why := s.movedOn(ctx, c); moved {
+			return unrecorded(why, "Square took "+dollars(c.TotalCents()+c.ExtraTipCents)+
+				" after the charge was cancelled, and the cart changed since. Nothing was sent to the kitchen: press Record it to send this cart with the payment, or a manager refunds it in Square.", nil)
+		}
+	}
+	var in terminalApp.OrderIn
+	if err := json.Unmarshal(c.OrderBody, &in); err != nil {
+		return unrecorded("bad_cart", "The charge's cart can't be read: a manager records the payment by hand.", nil)
+	}
+	pay.ClientKey = "" // the order's own key covers it (as SEND's payments)
+	in.Payments = []terminalApp.PaymentIn{pay}
+	res, err := s.d.Term.PlaceAs(ctx, a, c.StaffID, c.ApprovedBy, in)
+	if err != nil {
+		if ov, oerr := s.d.Term.OrderByKey(ctx, c.OrderKey); oerr == nil && ov != nil {
+			if p := squarePaymentOf(ov.Payments, pay.Ref); p != nil { // a race placed it
+				return s.paid(ctx, c, ov, p.ID, late)
+			}
+		}
+		var kr *terminal.KeyReused
+		var ci *terminal.CartInvalid
+		var mr *terminal.ManagerRequired
+		if errors.As(err, &kr) || errors.As(err, &ci) || errors.As(err, &mr) || isRefusal(err) || errors.Is(err, terminal.ErrNoMenu) {
+			return unrecorded("place_failed", "Square took "+dollars(c.TotalCents()+c.ExtraTipCents)+
+				" but the order couldn't be sent ("+err.Error()+"). Press Record it, or a manager sorts it out.", map[string]any{"error": err.Error()})
+		}
+		return c, err // a DB problem: the phone tries again
+	}
+	ov, err := s.d.Term.Order(ctx, res.Order.Order.ID)
+	if err != nil {
+		return c, err
+	}
+	pid := ""
+	if p := squarePaymentOf(ov.Payments, pay.Ref); p != nil {
+		pid = p.ID
+	}
+	return s.paid(ctx, c, ov, pid, late)
+}
+
+func numberOf(ov *terminalApp.OrderView) int64 {
+	if ov.Order.Status.KitchenNumber != nil {
+		return *ov.Order.Status.KitchenNumber
+	}
+	return 0
+}
+
+func squarePaymentOf(pays []terminal.Payment, ref string) *terminal.Payment {
+	for _, p := range pays {
+		if p.Tender == terminal.TenderSquareApp && !p.Refund && p.Ref == ref && ref != "" {
+			return &p
+		}
+	}
+	return nil
+}
+
+// paid finishes a charge whose cart is now the order ov.
+func (s *Service) paid(ctx context.Context, c pp.Charge, ov *terminalApp.OrderView, paymentID string, late bool) (pp.Charge, error) {
+	c.OrderID, c.Number, c.PaymentID = ov.Order.Order.ID, numberOf(ov), paymentID
+	s.finish(&c, pp.StatusPaid, "")
+	if err := s.save(ctx, c); err != nil {
+		return c, err
+	}
+	s.journal(ctx, c, "recorded", map[string]any{"payment_id": c.PaymentID, "late": late, "placed": true,
+		"transaction_id": c.TransactionID, "square_payment_id": c.SquarePaymentID, "extra_tip_cents": c.ExtraTipCents})
+	s.d.Logger.Info().Ctx(ctx).Str("charge_id", c.ID).Str("order_id", c.OrderID).Int64("number", c.Number).
+		Int64("amount_cents", c.AmountCents).Bool("late", late).Msg("Phone charge paid: order placed")
+	return c, nil
+}
+
+// movedOn: after a charge was cancelled / expired, its terminal sent an
+// order or sent another phone charge (a late paid must not send a cart the
+// cashier has redone).
+func (s *Service) movedOn(ctx context.Context, c pp.Charge) (bool, string) {
+	if open, err := s.d.Repo.Recent(ctx, 200); err == nil {
+		for _, o := range open {
+			if o.ID != c.ID && o.DeviceID == c.DeviceID && o.CreatedAt.After(c.CreatedAt) {
+				return true, "newer_charge"
+			}
+		}
+	}
+	if rows, err := s.d.Term.Journal(ctx, 500); err == nil {
+		for _, e := range rows {
+			if e.DeviceID == c.DeviceID && e.Action == terminal.ActionOrderPlaced && e.At.After(c.CreatedAt) {
+				return true, "order_sent"
+			}
+		}
+	}
+	return false, ""
 }
 
 func (s *Service) paidWithKey(ctx context.Context, c pp.Charge) *terminal.Payment {
@@ -812,17 +982,20 @@ func (s *Service) Sweep(ctx context.Context) {
 		if !pp.Open(c.Status) || now.Before(c.ExpiresAt) {
 			continue
 		}
-		func() {
-			defer s.lock(c.ID)()
-			cur, err := s.d.Repo.Get(ctx, c.ID)
-			if err != nil || !pp.Open(cur.Status) {
-				return
-			}
-			s.finish(&cur, pp.StatusExpired, "Nobody finished it in time: don't charge it in Square now.")
-			if s.save(ctx, cur) == nil {
-				s.journal(ctx, cur, "expired", nil)
-			}
-		}()
+		s.Expire(ctx, c.ID)
+	}
+}
+
+// Expire ends one open charge now (the sweep's step; tests).
+func (s *Service) Expire(ctx context.Context, id string) {
+	defer s.lock(id)()
+	cur, err := s.d.Repo.Get(ctx, id)
+	if err != nil || !pp.Open(cur.Status) {
+		return
+	}
+	s.finish(&cur, pp.StatusExpired, "Nobody finished it in time: don't charge it in Square now.")
+	if s.save(ctx, cur) == nil {
+		s.journal(ctx, cur, "expired", nil)
 	}
 }
 

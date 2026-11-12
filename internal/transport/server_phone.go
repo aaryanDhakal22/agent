@@ -54,6 +54,7 @@ func (s *Server) phoneRoutes() []routeDef {
 		{"GET", "/api/terminal/phones", "terminal", "Send to phone: the paired phones {phones: [{id, name, online, last_seen_at?, busy_charge_id?}], square: {mode, reason?}, timeout_seconds}", s.handleTerminalPhones},
 		{"POST", "/api/terminal/phones/code", "terminal", "Pair a phone: a 6-digit code for kind phone {manager_pin?, approvals?} -> {code, expires_at} | 403 manager_required {action: pair_phone} | 429", s.handleTerminalPhoneCode},
 		{"POST", "/api/terminal/orders/{id}/phone-charges", "terminal", "Send a card charge to a phone {client_key, phone_id, amount_cents, tip_cents?} -> 201 {charge, duplicate: false} | 200 duplicate | 400 | 401 login_required | 404 not_found/unknown_phone | 409 over_balance/not_payable/phone_busy/square_off/key_reused (SSE terminal.phone_charge)", s.handleTerminalPhoneCharge},
+		{"POST", "/api/terminal/phone-charges", "terminal", "Send a charge for a cart not sent yet {client_key, phone_id, amount_cents, tip_cents?, order: <POST /api/terminal/orders' body without payments>}: checked now (prices, manager needs), nothing placed or printed; placed with the payment when the phone reports paid -> 201 {charge} | 200 duplicate | 400 | 401 | 403 manager_required | 404 unknown_phone | 409 already_placed {order_id}/over_balance/phone_busy/square_off/key_reused | 422 cart_invalid", s.handleTerminalCartPhoneCharge},
 		{"GET", "/api/terminal/orders/{id}/phone-charges", "terminal", "An order's phone charges, newest first {charges}", s.handleTerminalOrderPhoneCharges},
 		{"GET", "/api/terminal/phone-charges/{id}", "terminal", "One phone charge {charge} | 404", s.handleTerminalGetPhoneCharge},
 		{"POST", "/api/terminal/phone-charges/{id}/cancel", "terminal", "Cancel a phone charge -> {charge} | 404 | 409 charge_final", s.handleTerminalCancelPhoneCharge},
@@ -419,7 +420,34 @@ func (s *Server) handleTerminalPhoneCharge(w http.ResponseWriter, r *http.Reques
 		s.writeJSON(w, http.StatusBadRequest, errCodeMap("invalid body", "bad_request"))
 		return
 	}
+	in.Order = nil // a sent order: its route charges the order as it is
 	c, dup, err := s.phonePay.Create(r.Context(), actor(r), r.PathValue("id"), in)
+	if err != nil {
+		s.phoneError(w, r, err)
+		return
+	}
+	status := http.StatusCreated
+	if dup {
+		status = http.StatusOK
+	}
+	s.writeJSON(w, status, map[string]any{"charge": c, "duplicate": dup})
+}
+
+// POST /api/terminal/phone-charges: an unsent cart (the order is placed when paid).
+func (s *Server) handleTerminalCartPhoneCharge(w http.ResponseWriter, r *http.Request) {
+	if !s.phonePayReady(w) {
+		return
+	}
+	var in phoneApp.CreateIn
+	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+		s.writeJSON(w, http.StatusBadRequest, errCodeMap("invalid body", "bad_request"))
+		return
+	}
+	if in.Order == nil {
+		s.writeJSON(w, http.StatusBadRequest, errCodeMap("order is required (the cart as SEND would send it)", "bad_request"))
+		return
+	}
+	c, dup, err := s.phonePay.Create(r.Context(), actor(r), "", in)
 	if err != nil {
 		s.phoneError(w, r, err)
 		return

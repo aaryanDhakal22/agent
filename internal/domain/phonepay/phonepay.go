@@ -9,6 +9,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -83,7 +84,18 @@ type Charge struct {
 	// ExtraTipCents: a tip the customer added on Square's own screen (the
 	// Square app's tipping), learned from the lookup; recorded with TipCents.
 	ExtraTipCents int64 `json:"extra_tip_cents,omitempty"`
+	// OrderKey: a charge for a cart not sent yet (contract §2.10z) carries
+	// the order's client_key; OrderID / Number stay empty until the Pi
+	// places it when the phone reports paid. OrderBody is that order as the
+	// terminal would SEND it (no PIN); ApprovedBy the manager who approved
+	// its discount / price changes at the charge's creation.
+	OrderKey   string          `json:"order_client_key,omitempty"`
+	OrderBody  json.RawMessage `json:"-"`
+	ApprovedBy string          `json:"-"`
 }
+
+// Unsent: the charge's cart isn't an order yet.
+func (c Charge) Unsent() bool { return c.OrderKey != "" && c.OrderID == "" }
 
 // TotalCents is what Square is asked to charge: the amount + the tip
 // Cash Out added (the driver tip), like the reader's charge.

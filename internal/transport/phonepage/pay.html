@@ -161,7 +161,7 @@ function render() {
     if (sq.mode === "off") { $("off-why").textContent = offWords(sq.reason); return show("v-off"); }
     return show("v-idle");
   }
-  const title = c.number ? "Order #" + c.number : "Order " + c.code;
+  const title = c.number ? "Order #" + c.number : "New order " + c.code;
   if (c.status === "unrecorded") return renderDone(c);
   if (c.status === "in_app") { $("i-order").textContent = title + " · " + money(c.amount_cents + c.tip_cents); return show("v-inapp"); }
   $("c-order").textContent = title;
