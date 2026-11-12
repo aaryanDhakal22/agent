@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"quiccpos/agent/internal/domain/order"
+	"quiccpos/agent/internal/domain/printroute"
 	"quiccpos/agent/internal/domain/terminal"
 	"quiccpos/agent/internal/infra/database/models"
 
@@ -45,6 +46,11 @@ func (r *OrderRepository) AgentState(ctx context.Context) (st order.AgentState, 
 	if raw, err := q.GetReceiptPrefs(ctx); err == nil {
 		if rp, err := order.DecodeReceiptPrefs([]byte(raw)); err == nil {
 			st.ReceiptPrefs = &rp
+		}
+	}
+	if raw, err := q.GetPrintRouting(ctx); err == nil && raw != "" {
+		if pr, err := printroute.Decode([]byte(raw)); err == nil {
+			st.PrintRouting = &pr
 		}
 	}
 	if rs, err := q.GetDriverReset(ctx); err == nil {
@@ -260,6 +266,13 @@ func (r *OrderRepository) Restore(ctx context.Context, data order.RestoreData) (
 					if err := setReceiptPrefs(ctx, q, p); err != nil {
 						return err
 					}
+				}
+			}
+			// The routing setting comes back as it was (its printer ids are
+			// store_config's, the same store's); an unreadable one is dropped.
+			if pr := data.State.PrintRouting; pr != nil {
+				if err := setPrintRouting(ctx, q, pr.Normalize()); err != nil {
+					return err
 				}
 			}
 			if data.State.DriverResetTime != "" {

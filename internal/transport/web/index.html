@@ -780,6 +780,52 @@
           </template>
         </section>
 
+        <!-- Routing & emergency reroute (contract 2.3c) -->
+        <form class="card sbody" x-show="settingsTab === 'routing'" @submit.prevent="saveRouting()" aria-labelledby="h-s-route">
+          <h2 id="h-s-route">Routing &amp; emergency reroute</h2>
+          <p class="help">Where a ticket goes when its printer can't print. A rerouted ticket says so on top, white on black: <b class="mono">REROUTED FROM PIZZA</b> / <b class="mono">REDIRIGIDO DE PIZZA</b>. When every stand-in is down too, the automatic order takes over.</p>
+          <p class="err-text" role="alert" x-show="routeErr" x-text="routeErr"></p>
+          <template x-if="routeForm">
+            <div>
+              <div class="srow" style="margin-top:10px">
+                <div class="lblcol"><div class="lbl" id="l-rmode">When a printer can't print</div><p class="help" x-text="(routeModes.find(m => m[0] === routeForm.mode) || routeModes[0])[2]"></p></div>
+                <div class="seg" role="radiogroup" aria-labelledby="l-rmode"><template x-for="m in routeModes" :key="m[0]"><button type="button" role="radio" :aria-checked="routeForm.mode === m[0]" :class="{ on: routeForm.mode === m[0] }" @click="routeForm.mode = m[0]" x-text="m[1]"></button></template></div>
+              </div>
+              <div class="srow" x-show="routeForm.mode === 'one'">
+                <div class="lblcol"><label class="lbl" for="route-one">Emergency printer</label><p class="help">Every other printer's tickets go here when it can't print (best on Ethernet).</p></div>
+                <select id="route-one" class="field field-sm" style="width:auto;max-width:100%" x-model="routeForm.emergency_printer_id">
+                  <option value="">Choose…</option>
+                  <template x-for="p in routePrinters" :key="p.id"><option :value="p.id" x-text="p.name + ' (' + routeState(p.status).toLowerCase() + ')'" :selected="p.id === routeForm.emergency_printer_id"></option></template>
+                </select>
+              </div>
+              <template x-for="p in routePrinters" :key="p.id">
+                <div class="srow">
+                  <div class="lblcol">
+                    <div class="lbl"><span x-text="p.name"></span> <span class="badge" :class="routeTone(p.status)"><span class="dot"></span><span x-text="routeState(p.status)"></span></span> <span class="badge b-brand" x-show="p.is_receipt">Receipt printer</span></div>
+                    <p class="help"><span class="muted">If it can't print, now:</span> <template x-for="(f, i) in p.fallbacks" :key="f.id"><span><span x-show="i > 0"> → </span><span :style="f.by === 'rule' ? 'font-weight:700' : ''" :title="f.by === 'rule' ? 'Your setting' : 'Automatic'" x-text="f.name"></span><span class="muted" x-show="f.status === 'down'"> (down)</span></span></template><span class="muted" x-show="!p.fallbacks.length">nowhere else (the only printer)</span></p>
+                  </div>
+                  <div class="hrow" style="flex-wrap:wrap;gap:6px" x-show="routeForm.mode === 'per_printer'">
+                    <template x-for="(id, i) in routeList(p.id)" :key="p.id + ':' + i">
+                      <select class="field field-sm" style="width:auto" :aria-label="'Stand-in ' + (i + 1) + ' for ' + p.name" @change="setRouteTarget(p.id, i, $event.target.value)">
+                        <option value="">(remove)</option>
+                        <template x-for="c in routeChoices(p.id, id)" :key="c.id"><option :value="c.id" :selected="c.id === id" x-text="(i + 1) + '. ' + c.name"></option></template>
+                      </select>
+                    </template>
+                    <select class="field field-sm" style="width:auto" :aria-label="'Add a stand-in for ' + p.name" x-show="routeChoices(p.id, '').length" @change="addRouteTarget(p.id, $event.target.value); $event.target.value = ''">
+                      <option value="" selected x-text="routeList(p.id).length ? 'Then…' : 'Reroute to…'"></option>
+                      <template x-for="c in routeChoices(p.id, '')" :key="c.id"><option :value="c.id" x-text="c.name"></option></template>
+                    </select>
+                  </div>
+                </div>
+              </template>
+              <p class="help" x-show="!routePrinters.length">No printers yet: add them in the Store pages on main.</p>
+              <p class="help" style="margin-top:8px">The "now" lines show the saved setting with each printer's live status: printers the health check saw down are tried last.</p>
+              <div class="sfoot"><button type="submit" class="btn btn-p" :disabled="!routeDirty || routeBusy">Save</button></div>
+              <p class="help" style="margin-top:8px" x-show="routeDirty">Unsaved changes.</p>
+            </div>
+          </template>
+        </form>
+
         <!-- Daily clock-out -->
         <form class="card sbody" x-show="settingsTab === 'clockout'" @submit.prevent="saveReset()" aria-labelledby="h-s-reset">
           <h2 id="h-s-reset">Daily clock-out</h2>

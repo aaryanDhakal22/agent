@@ -257,6 +257,8 @@ CREATE TABLE settings (
     pin_throttle              text    NOT NULL DEFAULT '',
     -- 00035_terminal_app: the terminal APK this Pi has cached for its terminals (JSON).
     terminal_app_release      text    NOT NULL DEFAULT '',
+    -- 00037_print_routing: routing + emergency reroute (JSON, '' = none).
+    print_routing             text    NOT NULL DEFAULT '',
     CHECK (id = 1)
 );
 

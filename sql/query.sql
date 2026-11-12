@@ -352,6 +352,12 @@ SELECT receipt_prefs FROM settings WHERE id = 1;
 -- name: SetReceiptPrefs :exec
 UPDATE settings SET receipt_prefs = ? WHERE id = 1;
 
+-- name: GetPrintRouting :one
+SELECT print_routing FROM settings WHERE id = 1;
+
+-- name: SetPrintRouting :exec
+UPDATE settings SET print_routing = ? WHERE id = 1;
+
 -- name: SetLastReturn :exec
 UPDATE settings SET last_return_driver_id = ?, last_return_position = ?, last_return_at = ? WHERE id = 1;
 

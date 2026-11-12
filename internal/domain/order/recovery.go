@@ -5,6 +5,8 @@ import (
 	"errors"
 	"strings"
 	"time"
+
+	"quiccpos/agent/internal/domain/printroute"
 )
 
 // AgentState is the agent's whole floor state, reported to main on every
@@ -21,12 +23,15 @@ type AgentState struct {
 	CounterNext int64      `json:"counter_next"`
 	Prefs       FloorPrefs `json:"prefs"`
 	// ReceiptPrefs: nil in reports from agents older than receipt settings.
-	ReceiptPrefs      *ReceiptPrefs `json:"receipt_prefs,omitempty"`
-	DriverResetTime   string        `json:"driver_reset_time"`
-	LastDriverResetAt *time.Time    `json:"last_driver_reset_at,omitempty"`
-	AutoAccept        bool          `json:"auto_accept"`
-	Drivers           []StateDriver `json:"drivers"`
-	OpenShifts        []StateShift  `json:"open_shifts"`
+	ReceiptPrefs *ReceiptPrefs `json:"receipt_prefs,omitempty"`
+	// PrintRouting: the routing + emergency reroute setting (printroute);
+	// nil in reports from agents older than it (a restore keeps mode none).
+	PrintRouting      *printroute.Routing `json:"print_routing,omitempty"`
+	DriverResetTime   string              `json:"driver_reset_time"`
+	LastDriverResetAt *time.Time          `json:"last_driver_reset_at,omitempty"`
+	AutoAccept        bool                `json:"auto_accept"`
+	Drivers           []StateDriver       `json:"drivers"`
+	OpenShifts        []StateShift        `json:"open_shifts"`
 }
 
 type StateBatch struct {

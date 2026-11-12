@@ -14,14 +14,16 @@ import (
 // (TERMINAL-HALVES.md "Kitchen tickets"). The kitchen's steel rail hides the
 // top four lines, so they carry only the order type (double size, two
 // lines), "Printed h:mm PM" and a blank line; the ticket number sits right
-// under the rail, extra big. Reverse print only for a future order's band
-// and a change ticket's ADD / REMOVE bands.
+// under the rail, extra big. Reverse print only for a future order's band,
+// a change ticket's ADD / REMOVE bands and the reroute bands.
 //
 //	          COUNTER                 (double size: 2 lines)   ┐
 //	       Printed 6:31 PM            (1 line)                 │ under the rail
 //	                                  (1 line)                 ┘
 //	            12                    (extra big, bold)
 //	         SMITH, ANA               (bold)
+//	[ REROUTED FROM PIZZA ]           (reverse: printed on a stand-in printer,
+//	[ REDIRIGIDO DE PIZZA ]            English then Spanish, writeRerouted)
 //	[ MAKE AT 6:30 · READY 6:45 ]     (reverse: a future order only)
 //	------------------------------------------------
 //	NOTE: ring the side bell          (bold: the order's note, when it has one)
@@ -101,11 +103,13 @@ func buildStation(snap order.Snapshot, t printer.Ticket, prefs order.ReceiptPref
 		w(lastFirst(name))
 		nl()
 	}
-	if t.ReroutedFrom != "" {
-		w("REROUTED FROM " + strings.ToUpper(t.ReroutedFrom))
-		nl()
-	}
 	w(cmdBoldOff)
+	if t.ReroutedFrom != "" {
+		// Printed on a stand-in printer: the reroute bands, right under the
+		// number + name (writeRerouted).
+		writeRerouted(w, nl, t.ReroutedFrom)
+		w(cmdBaseSz)
+	}
 	if p := snap.Fulfillment.PromisedAt; p != nil && !p.IsZero() {
 		writeFutureBand(w, nl, snap, *p)
 	}

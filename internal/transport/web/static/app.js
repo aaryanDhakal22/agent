@@ -22,10 +22,17 @@ const SETTINGS_TABS = [
   { id: 'orders', label: 'Orders' },
   { id: 'kitchen', label: 'Kitchen tickets' },
   { id: 'receipts', label: 'Receipts' },
+  { id: 'routing', label: 'Routing & reroute' },
   { id: 'clockout', label: 'Daily clock-out' },
   { id: 'tablets', label: 'Tablets' },
   { id: 'store', label: 'Store info' },
   { id: 'account', label: 'Account' },
+];
+// Routing & emergency reroute modes (contract 2.3c): [id, label, help].
+const ROUTE_MODES = [
+  ['none', 'Automatic', 'A ticket whose printer can\'t print goes to the receipt printer, then the other printers in order.'],
+  ['one', 'One emergency printer', 'One printer stands in for any printer that can\'t print.'],
+  ['per_printer', 'Per printer', 'Each printer has its own stand-ins, tried in order.'],
 ];
 const NAV = [
   { id: 'overview', label: 'Overview', icon: 'overview' },
@@ -300,6 +307,7 @@ function agentApp() {
 
     // --- settings ---
     autoAccept: false, autoAcceptLoaded: false, autoUpdate: true, autoUpdateLoaded: false, floorForm: { green: '', tiptax: '' }, deliveryForm: { soon: '', target: '' }, timesForm: { pickup: '', delivery: '' },
+    route: null, routeForm: null, routeErr: '', routeBusy: false, routeModes: ROUTE_MODES,
     rcpt: null, rcptForm: null, footMode: 'default', customFooter: '', rcptPreview: 'r', rcptErr: '', rcptBusy: '',
     pair: null, storeCfg: null, storeCfgErr: '', storeCfgErrRaw: '',
     cp: { current: '', next: '', confirm: '', hint: '', err: '', busy: false },
@@ -602,6 +610,7 @@ function agentApp() {
       if (this.page === 'overview') { this.loadDiag(); this.loadDevices(); this.loadParked(); }
       if (this.page === 'printers') this.loadPrinters();
       if (this.page === 'settings' && this.settingsTab === 'account') this.loadUpdate();
+      if (this.page === 'settings' && this.settingsTab === 'routing') this.loadRouting(true);
     },
     get pageTitle() { return (NAV.find(n => n.id === this.page) || NAV[0]).label; },
 
@@ -616,6 +625,7 @@ function agentApp() {
       ['order.arrived', 'order.escalated'].forEach(t => es.addEventListener(t, () => { beep(); reload(); }));
       ['order.updated', 'drivers.updated', 'batch.closed', 'floor.updated', 'settings.updated', 'integration.status'].forEach(t => es.addEventListener(t, reload));
       es.addEventListener('sync.parked', () => this.loadParked());
+      es.addEventListener('routing.updated', () => { if (this.page === 'settings' && this.settingsTab === 'routing') this.loadRouting(true); });
       es.addEventListener('drivers.dispatched', e => {
         try {
           const d = JSON.parse(e.data);
@@ -1327,6 +1337,7 @@ function agentApp() {
         case 'orders': this.loadAutoAccept(); this.loadDeliveryPrefs(); this.loadTimes(); break;
         case 'kitchen': this.loadFloorPrefs(); this.loadDevices(); this.loadStoreCfg(); break;
         case 'receipts': this.loadReceipt(); this.loadStoreCfg(); this.loadPrinters(); break;
+        case 'routing': this.loadRouting(); break;
         case 'clockout': this.loadReset(); break;
         case 'tablets': this.loadDevices(); this.loadAppLatest(); break;
         case 'store': this.loadStoreCfg(); break;
@@ -1433,6 +1444,62 @@ function agentApp() {
     get storeAddress() {
       const l = (this.storeCfg && this.storeCfg.location) || {};
       return [l.address_line1, l.address_line2].filter(Boolean).join(', ');
+    },
+
+    // Routing & emergency reroute (contract 2.3c). statusOnly keeps unsaved edits
+    // (the 5 s status refresh and the routing.updated event while editing).
+    async loadRouting(statusOnly) {
+      try {
+        const r = await this.call('/api/settings/routing');
+        const keep = statusOnly && this.routeForm && this.routeDirty;
+        this.route = r; this.routeErr = '';
+        if (!keep) this.setRouteForm(r.routing);
+      } catch (e) { if (!statusOnly) this.routeErr = e.message; }
+    },
+    setRouteForm(r) {
+      const t = {};
+      Object.entries((r && r.targets) || {}).forEach(([k, v]) => { t[k] = (v || []).slice(); });
+      this.routeForm = { mode: (r && r.mode) || 'none', emergency_printer_id: (r && r.emergency_printer_id) || '', targets: t };
+    },
+    buildRouting() {
+      const f = this.routeForm || { targets: {} };
+      const targets = {};
+      Object.entries(f.targets).forEach(([k, v]) => { const ids = (v || []).filter(Boolean); if (ids.length) targets[k] = ids; });
+      return { mode: f.mode, emergency_printer_id: f.emergency_printer_id || '', targets };
+    },
+    get routeDirty() {
+      if (!this.route || !this.routeForm) return false;
+      const key = r => JSON.stringify([r.mode, r.emergency_printer_id || '', Object.keys(r.targets || {}).sort().map(k => [k, r.targets[k]])]);
+      return key(this.buildRouting()) !== key(this.route.routing);
+    },
+    get routePrinters() { return (this.route && this.route.printers) || []; },
+    routeName(id) { const p = this.routePrinters.find(x => x.id === id); return p ? p.name : '(removed printer)'; },
+    routeTone(st) { return st === 'up' ? 'b-ok' : st === 'down' ? 'b-bad' : 'b-mute'; },
+    routeState(st) { return st === 'up' ? 'Up' : st === 'down' ? 'Down' : 'Not checked yet'; },
+    routeList(pid) { return (this.routeForm && this.routeForm.targets[pid]) || []; },
+    // The printers a stand-in select may offer: never the printer itself or one already in its list.
+    routeChoices(pid, keep) {
+      const used = this.routeList(pid);
+      return this.routePrinters.filter(p => p.id !== pid && (p.id === keep || !used.includes(p.id)));
+    },
+    setRouteTarget(pid, i, id) {
+      const l = this.routeList(pid).slice();
+      if (id) l[i] = id; else l.splice(i, 1);
+      this.routeForm.targets = Object.assign({}, this.routeForm.targets, { [pid]: l });
+    },
+    addRouteTarget(pid, id) {
+      if (!id) return;
+      this.routeForm.targets = Object.assign({}, this.routeForm.targets, { [pid]: this.routeList(pid).concat([id]) });
+    },
+    async saveRouting() {
+      const body = this.buildRouting();
+      if (body.mode === 'one' && !body.emergency_printer_id) { this.toast('Choose the emergency printer.', true); return; }
+      this.routeBusy = true;
+      try {
+        const r = await this.call('/api/settings/routing', { method: 'PUT', body });
+        this.route = r; this.setRouteForm(r.routing);
+        this.toast('Routing saved');
+      } catch (e) { this.toast('Not saved. ' + e.message, true); } finally { this.routeBusy = false; }
     },
 
     // Receipts

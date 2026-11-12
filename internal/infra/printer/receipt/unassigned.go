@@ -38,13 +38,7 @@ func BuildUnassignedReport(rep order.UnassignedReport, sc storeconfig.StoreConte
 	w(cmdInit)
 	w(cmdBaseSz)
 	if reroutedFrom != "" {
-		w(cmdCenter)
-		w(cmdBoldOn)
-		w(cmdInvertOn)
-		w(" REROUTED from " + strings.ToUpper(reroutedFrom) + " ")
-		w(cmdInvertOff)
-		w(cmdBoldOff)
-		nl()
+		writeRerouted(w, nl, reroutedFrom)
 	}
 
 	// --- Header -----------------------------------------------------------

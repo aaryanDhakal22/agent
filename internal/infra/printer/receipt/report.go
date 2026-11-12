@@ -38,13 +38,7 @@ func BuildDriverReport(rep order.DriverReport, sc storeconfig.StoreContext, size
 	w(cmdInit)
 	w(cmdBaseSz)
 	if reroutedFrom != "" {
-		w(cmdCenter)
-		w(cmdBoldOn)
-		w(cmdInvertOn)
-		w(" REROUTED from " + strings.ToUpper(reroutedFrom) + " ")
-		w(cmdInvertOff)
-		w(cmdBoldOff)
-		nl()
+		writeRerouted(w, nl, reroutedFrom)
 	}
 
 	// --- Header -----------------------------------------------------------

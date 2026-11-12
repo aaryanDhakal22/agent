@@ -54,7 +54,10 @@ func TestBuildStation_Golden(t *testing.T) {
 func TestBuildStation_Content(t *testing.T) {
 	got := BuildStation(stationFixture())
 	for _, want := range []string{
-		"DELIVERY\n", cmdHugeSz + "1104\n", "ANA\n", "REROUTED FROM OVEN\n",
+		"DELIVERY\n", cmdHugeSz + "1104\n", "ANA\n",
+		// Printed on a stand-in: the reroute bands, English then Spanish, reverse + double size (2026-11-12).
+		cmdInvertOn + pad("REROUTED FROM OVEN", rerouteBandWidth) + cmdInvertOff,
+		cmdInvertOn + pad("REDIRIGIDO DE OVEN", rerouteBandWidth) + cmdInvertOff,
 		"2  PEPPERONI PIZZA\n   (LARGE)\n", "   - Extra cheese\n", "   - well done\n",
 		"1  MYSTERY\n", "** UNMATCHED **",
 		"Also on this order:\n   1 Fries\n",
@@ -65,8 +68,16 @@ func TestBuildStation_Content(t *testing.T) {
 		}
 	}
 	// The kitchen ticket is the type, the number, the name, the order's note
-	// and the food. No reverse print here (REROUTED included), no prices.
-	for _, gone := range []string{"Order #4417", "Order notes", cmdInvertOn, "$", "#1104"} {
+	// and the food. No reverse print but the two reroute bands, no prices.
+	if n := bytes.Count(got, []byte(cmdInvertOn)); n != 2 {
+		t.Errorf("reverse print %d times, want 2 (the reroute bands)", n)
+	}
+	ps, pt := stationFixture()
+	pt.ReroutedFrom = ""
+	if plain := BuildStation(ps, pt); bytes.Contains(plain, []byte(cmdInvertOn)) || bytes.Contains(plain, []byte("REROUTED")) {
+		t.Errorf("a ticket on its own printer has no reroute band")
+	}
+	for _, gone := range []string{"Order #4417", "Order notes", "$", "#1104"} {
 		if bytes.Contains(got, []byte(gone)) {
 			t.Errorf("station ticket should not carry %q", gone)
 		}
@@ -303,5 +314,48 @@ func TestBuildStation_AddOn(t *testing.T) {
 	}
 	if strings.Contains(out, "Also on this order") || strings.Contains(out, "VOID") {
 		t.Fatal("add-on ticket lists other items or says VOID")
+	}
+}
+
+// The reroute banner (the owner, 2026-11-12): English then Spanish, ALL
+// CAPS, each line a reverse double-size band like ADD / AGREGAR; a long
+// printer name wraps into more bands, never past the 21-character band
+// (the 72 mm printer's double-width line), a space either side of the text.
+func TestRerouteBands(t *testing.T) {
+	if got := RerouteLines("pizza"); strings.Join(got, "|") != "REROUTED FROM PIZZA|REDIRIGIDO DE PIZZA" {
+		t.Fatalf("lines = %q", got)
+	}
+	long := RerouteLines("Online receipt printer")
+	if strings.Join(long, "|") != "REROUTED FROM|ONLINE RECEIPT|PRINTER|REDIRIGIDO DE|ONLINE RECEIPT|PRINTER" {
+		t.Fatalf("long = %q", long)
+	}
+	for _, l := range long {
+		if len([]rune(l)) > rerouteTextWidth {
+			t.Fatalf("band text %q wider than %d", l, rerouteTextWidth)
+		}
+	}
+	var buf bytes.Buffer
+	writeRerouted(func(s string) { buf.WriteString(s) }, func() { buf.WriteString(cmdFeed) }, "Wings")
+	want := cmdCenter + cmdBoldOn + cmdDoubleSz + cmdInvertOn + " REROUTED FROM WINGS " + cmdInvertOff + cmdSizeReset + cmdBaseSz + cmdBoldOff + "\n" +
+		cmdCenter + cmdBoldOn + cmdDoubleSz + cmdInvertOn + " REDIRIGIDO DE WINGS " + cmdInvertOff + cmdSizeReset + cmdBaseSz + cmdBoldOff + "\n" +
+		cmdLeft + "\n"
+	if buf.String() != want {
+		t.Fatalf("bytes\n got %q\nwant %q", buf.String(), want)
+	}
+	// Every slip that can print on a stand-in carries the bands.
+	snap, tk := stationFixture()
+	tk.Kind = printer.TicketReceipt
+	for name, b := range map[string][]byte{
+		"receipt":    Build(snap, storeconfig.StoreContext{}, tk, order.DefaultReceiptPrefs()),
+		"station":    BuildStation(stationFixture()),
+		"unassigned": BuildUnassignedReport(order.UnassignedReport{}, storeconfig.StoreContext{}, "", "Oven", time.Now()),
+		"unsettled":  BuildUnsettledList(order.UnsettledList{}, storeconfig.StoreContext{}, "", "Oven", time.Now()),
+		"driver":     BuildDriverReport(order.DriverReport{}, storeconfig.StoreContext{}, "", "Oven", time.Now()),
+	} {
+		for _, l := range []string{"REROUTED FROM OVEN", "REDIRIGIDO DE OVEN"} {
+			if !bytes.Contains(b, []byte(cmdInvertOn+pad(l, rerouteBandWidth)+cmdInvertOff)) {
+				t.Errorf("%s: no %q band", name, l)
+			}
+		}
 	}
 }

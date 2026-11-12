@@ -136,6 +136,7 @@ type Querier interface {
 	GetPairedDeviceByHash(ctx context.Context, keyHash string) (PairedDevice, error)
 	GetPairedDeviceName(ctx context.Context, id string) (string, error)
 	GetPinThrottle(ctx context.Context) (string, error)
+	GetPrintRouting(ctx context.Context) (string, error)
 	GetReceiptPrefs(ctx context.Context) (string, error)
 	GetSessionSecret(ctx context.Context) (string, error)
 	GetStoreAPIKey(ctx context.Context) (string, error)
@@ -394,6 +395,7 @@ type Querier interface {
 	SetPinThrottle(ctx context.Context, pinThrottle string) error
 	// Renumbers one pooled order (0 rows = no longer in that pool, or unchanged).
 	SetPoolSeq(ctx context.Context, arg SetPoolSeqParams) (int64, error)
+	SetPrintRouting(ctx context.Context, printRouting string) error
 	// The Pushover part of the link secrets, refreshed from main (2.3.7).
 	SetPushoverSecrets(ctx context.Context, arg SetPushoverSecretsParams) error
 	// A terminal moved an order's ready / delivery time (contract 2.10v): the

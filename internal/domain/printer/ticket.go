@@ -79,7 +79,8 @@ type Ticket struct {
 	Mine   []order.LineItem
 	Others []order.LineItem
 	// ReroutedFrom is set when the ticket printed on a fallback printer
-	// because TargetID was unreachable — rendered as a "REROUTED from X" banner.
+	// because TargetID was unreachable — rendered as the inverted
+	// "REROUTED FROM X" / "REDIRIGIDO DE X" bands (receipt.writeRerouted).
 	ReroutedFrom string
 	// Void: a VOID ticket (ModeVoid) - the items are what was voided.
 	Void bool
@@ -107,7 +108,11 @@ type TicketResult struct {
 	Station      string // intended printer's name
 	PrintedOn    string // actual printer's name ("" if it didn't print)
 	ReroutedFrom string // non-empty when PrintedOn != the intended printer
-	Err          string // non-empty when it printed nowhere
+	// RerouteBy (with ReroutedFrom): "rule" when the store's routing +
+	// emergency reroute setting picked the printer, "auto" when the
+	// automatic failover did (printroute, spec §4.42).
+	RerouteBy string
+	Err       string // non-empty when it printed nowhere
 }
 
 // Outcome is the result of printing an order's tickets.

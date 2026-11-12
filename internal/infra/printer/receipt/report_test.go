@@ -53,7 +53,7 @@ func TestBuildDriverReport_Content(t *testing.T) {
 	s := string(BuildDriverReport(rep, sc, "", "Online", printed))
 	const W = lineWidth // 41: fits the store's 72 mm printer (48 wrapped there)
 	for _, want := range []string{
-		" REROUTED from ONLINE ",
+		cmdInvertOn + pad("REROUTED FROM", rerouteBandWidth), cmdInvertOn + pad("REDIRIGIDO DE", rerouteBandWidth), pad("ONLINE", rerouteBandWidth),
 		"ABDUL",
 		"Batch #3",
 		"Oct 16 10:02 AM - 11:48 PM", // New York time

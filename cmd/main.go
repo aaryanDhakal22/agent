@@ -358,6 +358,16 @@ func main() {
 	dispatcher.SetRules(func() printerApp.Rules {
 		return printerApp.Rules{Tickets: orderService.IntegrationSettings().Tickets}
 	})
+	// Routing & emergency reroute (contract 2.3c): a Pi setting, read per
+	// ticket; a save wakes state sync (main keeps it in agent.state for a
+	// re-imaged Pi). Loaded before anything can print.
+	var wakeStateSync func() // set once state sync exists, before HTTP starts
+	dispatcher.SetRoutingStore(orderRepo, func() {
+		if wakeStateSync != nil {
+			wakeStateSync()
+		}
+	})
+	dispatcher.LoadRouting(ctx)
 	// POS orders are made on this Pi: they carry the linked tenant + location.
 	orderService.SetStoreIDs(func() (string, string) {
 		sc, _ := storeCtx.Load().(storeconfig.StoreContext)
@@ -587,6 +597,7 @@ func main() {
 	// Floor state for a replacement Pi (agent.state) + the heartbeat.
 	stateSync := statesync.New(orderRepo.AgentState, registry.Report, sseCtrl.Configured, logger)
 	safego.Go("statesync", func() { stateSync.Run(ctx) })
+	wakeStateSync = stateSync.Wake
 	// The paired tablets (+ Quibase versions) come from the HTTP server,
 	// built further down.
 	var httpRef atomic.Pointer[transport.Server]
@@ -872,6 +883,7 @@ func main() {
 	httpServer.SetRecovery(recoverySvc, func(out *recovery.Outcome) {
 		stateSync.Reset()
 		orderService.LoadReceiptPrefs(ctx) // a restore brings the old Pi's back
+		dispatcher.LoadRouting(ctx)        // and its printer routing
 		if os.Getenv("AGENT_SELF_RESTART") == "1" && cfg.OTELEndpoint == "" && out.Secrets.OTLPEndpoint != "" {
 			logger.Info().Msg("linked: restarting in 3 s to start telemetry")
 			time.Sleep(3 * time.Second)

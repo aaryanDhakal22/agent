@@ -1727,6 +1727,17 @@ func (q *Queries) GetPinThrottle(ctx context.Context) (string, error) {
 	return pin_throttle, err
 }
 
+const getPrintRouting = `-- name: GetPrintRouting :one
+SELECT print_routing FROM settings WHERE id = 1
+`
+
+func (q *Queries) GetPrintRouting(ctx context.Context) (string, error) {
+	row := q.db.QueryRowContext(ctx, getPrintRouting)
+	var print_routing string
+	err := row.Scan(&print_routing)
+	return print_routing, err
+}
+
 const getReceiptPrefs = `-- name: GetReceiptPrefs :one
 SELECT receipt_prefs FROM settings WHERE id = 1
 `
@@ -6647,6 +6658,15 @@ func (q *Queries) SetPoolSeq(ctx context.Context, arg SetPoolSeqParams) (int64, 
 		return 0, err
 	}
 	return result.RowsAffected()
+}
+
+const setPrintRouting = `-- name: SetPrintRouting :exec
+UPDATE settings SET print_routing = ? WHERE id = 1
+`
+
+func (q *Queries) SetPrintRouting(ctx context.Context, printRouting string) error {
+	_, err := q.db.ExecContext(ctx, setPrintRouting, printRouting)
+	return err
 }
 
 const setPushoverSecrets = `-- name: SetPushoverSecrets :exec
