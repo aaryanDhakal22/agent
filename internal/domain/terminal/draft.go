@@ -55,6 +55,26 @@ type Draft struct {
 	Draft      json.RawMessage `json:"draft"`
 	CreatedAt  time.Time       `json:"created_at"`
 	UpdatedAt  time.Time       `json:"updated_at"`
+	// Origin: who put it last - "" a store terminal, DraftOriginCallcenter a
+	// call-center seat (contract §2.10ab). Never on the wire.
+	Origin string `json:"-"`
+}
+
+// DraftOriginCallcenter marks a draft a call-center seat put: the seat's
+// lock, in the call-center app's own body. A store terminal never lists or
+// opens it; it wins by opening the order itself (DraftPut.Displaces).
+const DraftOriginCallcenter = "callcenter"
+
+// FromSeat: a call-center seat's draft.
+func (d Draft) FromSeat() bool { return d.Origin == DraftOriginCallcenter }
+
+// DraftPutResult is one PUT's outcome: the stored draft, the holder it was
+// taken over from (nil = none) and the call-center drafts of the same order
+// it displaced (a store terminal opened the order: the store wins).
+type DraftPutResult struct {
+	Draft     Draft
+	Taken     *Holder
+	Displaced []Draft
 }
 
 // OpenElsewhere: another terminal has the draft open (409 open_elsewhere
@@ -108,6 +128,37 @@ func (p DraftPut) Decide(cur *Draft) (holder *Holder, taken *Holder, err error) 
 		holder = &h
 	}
 	return holder, taken, nil
+}
+
+// BySeat: the PUT comes from a call-center seat.
+func (p DraftPut) BySeat() bool { return device.IsCallcenterSeat(p.By.DeviceID) }
+
+// OrderLock decides a PUT that names a sent order (orderID) against the
+// store's other drafts of that order (others: every draft but the PUT's
+// own id). The store wins both ways (contract §2.10ab):
+//   - a seat's PUT while a store terminal has the order open → OpenElsewhere
+//     (its take_over refused the same way);
+//   - a store terminal's PUT displaces every call-center draft of the order
+//     (the seat's lock goes; it is told terminal.draft.taken).
+func (p DraftPut) OrderLock(orderID string, others []Draft) (displaced []Draft, err error) {
+	if orderID == "" {
+		return nil, nil
+	}
+	for _, d := range others {
+		if d.OrderID != orderID {
+			continue
+		}
+		if p.BySeat() {
+			if d.Holder != nil && !device.IsCallcenterSeat(d.Holder.DeviceID) {
+				return nil, &OpenElsewhere{Holder: *d.Holder, TakeOverRefused: p.TakeOver}
+			}
+			continue
+		}
+		if d.FromSeat() {
+			displaced = append(displaced, d)
+		}
+	}
+	return displaced, nil
 }
 
 // CheckDelete: a draft open on another terminal can't be deleted from here.

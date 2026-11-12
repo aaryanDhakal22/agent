@@ -21,6 +21,7 @@ import (
 	"quiccpos/agent/internal/domain/terminal"
 	"quiccpos/agent/internal/infra/database/repositories"
 
+	"github.com/google/uuid"
 	"github.com/rs/zerolog"
 	"golang.org/x/crypto/bcrypt"
 )
@@ -83,6 +84,7 @@ type ccRig struct {
 	s       *Server
 	h       http.Handler
 	termKey string
+	repo    *repositories.OrderRepository
 	floor   *ccFloor
 	fetches atomic.Int64
 	config  atomic.Value // []byte: main's terminal-config
@@ -130,6 +132,7 @@ func newCCRig(t *testing.T) *ccRig {
 	menu, _ := json.Marshal(map[string]any{"menu_version": 12, "build": map[string]any{"view": map[string]any{"kind": "counter"}}, "pricing": c.Context})
 	r.config.Store(ccConfig(t, 1, ccAgentStaff()))
 	repo := repositories.NewOrderRepository(db, zerolog.Nop())
+	r.repo = repo
 	store := terminalApp.NewStore(repo, func(_ context.Context, path string) (int, []byte, error) {
 		if path == terminalApp.PathCounterMenu {
 			return 200, menu, nil
@@ -550,5 +553,288 @@ func TestRelayKeyedPayment(t *testing.T) {
 	late := r.relay(t, ccAgent, "POST", "square/keyed-payments", body)
 	if late.Status != http.StatusServiceUnavailable || late.code() != "timeout" || time.Since(start) > 3*time.Second {
 		t.Fatalf("past the deadline: %d %s after %s", late.Status, late.Body, time.Since(start))
+	}
+}
+
+// arriveOnline stores a placed online pickup with two own lines (a $12.00
+// pie with a $1.00 topping, two $3.00 wings) and tax: paid online by card,
+// or to pay at pickup.
+func (r *ccRig) arriveOnline(t *testing.T, card bool) string {
+	t.Helper()
+	ctx := context.Background()
+	items := []order.LineItem{
+		{ID: uuid.NewString(), Name: "Cheese Pizza", Size: "Large", Quantity: 1, UnitPrice: 1200, LineTotal: 1300,
+			Children: []order.LineItem{{ID: uuid.NewString(), Name: "Pepperoni", Quantity: 1, UnitPrice: 100, LineTotal: 100}}, Routing: order.RoutingMatched},
+		{ID: uuid.NewString(), Name: "Wings", Quantity: 2, UnitPrice: 300, LineTotal: 600, Routing: order.RoutingMatched},
+	}
+	snap := order.Snapshot{ID: uuid.NewString(), TenantID: uuid.NewString(), LocationID: uuid.NewString(), Source: "online",
+		SourceEventID: "V-" + uuid.NewString()[:6], PlacedAt: time.Now().UTC(), Fulfillment: order.Fulfillment{Type: "pickup"},
+		Customer: order.Customer{DisplayName: "Sam", Phone: "4105550100"}, Items: items,
+		Money: order.Money{Subtotal: 1900, Tax: 190, Total: 2090}}
+	if card {
+		snap.Payments = []order.PaymentSummary{{Method: "card", AmountCents: 2090, Last4: "1881"}}
+	}
+	if _, err := r.repo.UpsertArrived(ctx, snap); err != nil {
+		t.Fatal(err)
+	}
+	got, err := r.repo.ClaimAccept(ctx, uuid.MustParse(snap.ID), 20, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := r.repo.RecordAccepted(ctx, *got); err != nil {
+		t.Fatal(err)
+	}
+	return snap.ID
+}
+
+type relayedOrder struct {
+	Order struct {
+		Order struct {
+			Items []struct {
+				Name     string `json:"name"`
+				Quantity int    `json:"quantity"`
+			} `json:"items"`
+			Money struct {
+				Total int64 `json:"total_cents"`
+			} `json:"money"`
+			Meta struct {
+				Terminal struct {
+					Cart struct {
+						Lines []map[string]any `json:"lines"`
+					} `json:"cart"`
+				} `json:"terminal"`
+			} `json:"source_metadata"`
+		} `json:"order"`
+		Status struct {
+			CashDue int64 `json:"cash_due_cents"`
+		} `json:"status"`
+	} `json:"order"`
+}
+
+func (r *ccRig) order(t *testing.T, id string) relayedOrder {
+	t.Helper()
+	got := r.relay(t, ccAgent, "GET", "orders/"+id, nil)
+	var v relayedOrder
+	if err := json.Unmarshal(got.Body, &v); err != nil || got.Status != 200 {
+		t.Fatalf("GET orders/%s: %d %s", id, got.Status, got.Body)
+	}
+	return v
+}
+
+func ccKey() string { return "cc-" + uuid.NewString() }
+
+// An online / website order edited from the call center (contract 2.10aa +
+// 2.10ab): its own lines are custom lines the app sends back unchanged.
+func TestRelayOnlineOrderEditedFromTheCallCenter(t *testing.T) {
+	r := newCCRig(t)
+	soda := map[string]any{"item_id": "00000000-0000-0000-0000-0000000000a6", "qty": 1}
+	put := func(id string, lines ...map[string]any) relayed {
+		return r.relay(t, ccAgent, "PUT", "orders/"+id+"/cart", map[string]any{"client_key": ccKey(), "cart": map[string]any{"lines": lines}})
+	}
+	with := func(l map[string]any, k string, v any) map[string]any {
+		out := map[string]any{}
+		for kk, vv := range l {
+			out[kk] = vv
+		}
+		out[k] = v
+		return out
+	}
+
+	// Paid online by card.
+	paid := r.arriveOnline(t, true)
+	was := r.order(t, paid)
+	own := was.Order.Order.Meta.Terminal.Cart.Lines
+	if len(own) != 2 || own[0]["custom"] != true || own[1]["custom"] != true || own[1]["name"] != "Wings" {
+		t.Fatalf("the order's own lines are custom lines on the terminal: %+v", own)
+	}
+	// (i) the same lines back: no open_price refusal, nothing changes.
+	if got := put(paid, own...); got.Status != 200 || !strings.Contains(string(got.Body), `"changed":false`) {
+		t.Fatalf("its own lines back unchanged: %d %s", got.Status, got.Body)
+	}
+	// (iii) removing or changing one of its lines: paid_locked; a line renamed or re-priced is a new custom line.
+	for name, c := range map[string]struct {
+		lines []map[string]any
+		want  string
+	}{
+		"a line removed":     {[]map[string]any{own[0]}, "409 paid_locked"},
+		"a quantity lowered": {[]map[string]any{own[0], with(own[1], "qty", 1)}, "409 paid_locked"},
+		"a note changed":     {[]map[string]any{with(own[0], "note", "no pepperoni"), own[1]}, "409 paid_locked"},
+		"a line renamed":     {[]map[string]any{own[0], with(own[1], "name", "Boneless wings")}, "403 not_allowed_for_callcenter:open_price"},
+		"a line re-priced":   {[]map[string]any{own[0], with(own[1], "price_cents", 1)}, "403 not_allowed_for_callcenter:open_price"},
+	} {
+		got := put(paid, c.lines...)
+		if res := fmt.Sprintf("%d %s", got.Status, got.code()); res != c.want {
+			t.Errorf("%s: %s, want %s", name, res, c.want)
+		}
+		if c.want == "409 paid_locked" && !strings.Contains(string(got.Body), `"lines":["`) {
+			t.Errorf("%s: no lines in %s", name, got.Body)
+		}
+	}
+	// (v) a NEW custom line is still refused.
+	if got := put(paid, own[0], own[1], map[string]any{"custom": true, "name": "Extra", "qty": 1, "price_cents": 100}); got.Status != http.StatusForbidden || got.code() != "not_allowed_for_callcenter:open_price" {
+		t.Fatalf("a new custom line: %d %s", got.Status, got.Body)
+	}
+	if now := r.order(t, paid); now.Order.Order.Money.Total != was.Order.Order.Money.Total || len(now.Order.Order.Items) != 2 || now.Order.Status.CashDue != 0 {
+		t.Fatalf("a refused change changes nothing: %+v", now.Order)
+	}
+	// (ii) adding a menu item: at our price, the balance is the extra.
+	added := put(paid, own[0], own[1], soda)
+	var av struct {
+		Added   []string `json:"added"`
+		Removed []string `json:"removed"`
+		Balance int64    `json:"balance_cents"`
+		Order   struct {
+			Order struct {
+				Money struct {
+					Total int64 `json:"total_cents"`
+				} `json:"money"`
+			} `json:"order"`
+		} `json:"order"`
+	}
+	if err := json.Unmarshal(added.Body, &av); err != nil || added.Status != 200 || len(av.Added) != 1 || av.Added[0] != "Soda" || len(av.Removed) != 0 {
+		t.Fatalf("adding a soda to a paid online order: %d %s", added.Status, added.Body)
+	}
+	if extra := av.Order.Order.Money.Total - was.Order.Order.Money.Total; extra <= 0 || av.Balance != extra {
+		t.Fatalf("the balance is the extra: total %d -> %d, balance %d", was.Order.Order.Money.Total, av.Order.Order.Money.Total, av.Balance)
+	}
+	// The added soda is paid for: locked like the rest; more can still be added.
+	if got := put(paid, own[0], own[1]); got.Status != http.StatusConflict || got.code() != "paid_locked" {
+		t.Fatalf("taking the added soda off again: %d %s", got.Status, got.Body)
+	}
+
+	// (iv) pay at pickup (nothing paid): cashier rules, the seat may remove a line.
+	unpaid := r.arriveOnline(t, false)
+	lines := r.order(t, unpaid).Order.Order.Meta.Terminal.Cart.Lines
+	if got := put(unpaid, lines[0]); got.Status != 200 || !strings.Contains(string(got.Body), `"removed":["2× Wings"]`) {
+		t.Fatalf("a line off an unpaid online order: %d %s", got.Status, got.Body)
+	}
+	if got := put(unpaid, lines[0], map[string]any{"custom": true, "name": "Extra", "qty": 1, "price_cents": 100}); got.code() != "not_allowed_for_callcenter:open_price" {
+		t.Fatalf("a new custom line on an unpaid one: %d %s", got.Status, got.Body)
+	}
+	// Once a typed card is on it, its lines are locked too.
+	if got := r.relay(t, ccAgent, "POST", "orders/"+unpaid+"/payments", map[string]any{"client_key": ccKey(), "tender": "manual_card", "amount_cents": 500, "last4": "1881"}); got.Status != 200 {
+		t.Fatalf("a typed card on an online pickup: %d %s", got.Status, got.Body)
+	}
+	if got := put(unpaid, with(lines[0], "note", "well done")); got.Status != http.StatusConflict || got.code() != "paid_locked" {
+		t.Fatalf("a change after a payment: %d %s", got.Status, got.Body)
+	}
+}
+
+// The edit lock on a sent order, on the relay path: a seat's draft is hidden
+// from the store's terminals; the store wins by opening the order; while it
+// has it open the seat can't change, cancel, pay or re-time it.
+func TestRelayEditLockTheStoreWins(t *testing.T) {
+	r := newCCRig(t)
+	if rec := call(r.h, "POST", "/api/terminal/login", r.termKey, `{"pin":"1234"}`); rec.Code != 200 {
+		t.Fatal(rec.Body.String())
+	}
+	placed := r.relay(t, ccAgent, "POST", "orders", ccOrder(ccKey()))
+	var pv struct {
+		Order struct {
+			Order struct {
+				ID string `json:"id"`
+			} `json:"order"`
+		} `json:"order"`
+	}
+	if err := json.Unmarshal(placed.Body, &pv); err != nil || placed.Status != http.StatusCreated {
+		t.Fatalf("place: %d %s", placed.Status, placed.Body)
+	}
+	x := pv.Order.Order.ID
+	lock := map[string]any{"type": "pickup", "name": "Ada Test", "held": false, "order_id": x, "draft": map[string]any{"cc": map[string]any{"step": "menu"}}}
+	if got := r.relay(t, ccAgent, "PUT", "drafts/d-cc-lock-01", lock); got.Status != 200 {
+		t.Fatalf("the seat's lock: %d %s", got.Status, got.Body)
+	}
+	// The terminal (and the Pi web page) don't list it; the seat does.
+	for name, rec := range map[string]*httptest.ResponseRecorder{"terminal": call(r.h, "GET", "/api/terminal/drafts", r.termKey, ""),
+		"web": webCall(r.s, r.h, "GET", "/api/terminal/drafts", "")} {
+		if rec.Code != 200 || strings.TrimSpace(rec.Body.String()) != `{"drafts":[]}` {
+			t.Fatalf("%s lists a seat's draft: %d %s", name, rec.Code, rec.Body)
+		}
+	}
+	if got := r.relay(t, ccAgent, "GET", "drafts", nil); !strings.Contains(string(got.Body), `"id":"d-cc-lock-01"`) || !strings.Contains(string(got.Body), `"cc":{"step":"menu"}`) {
+		t.Fatalf("the seat sees its lock: %s", got.Body)
+	}
+	// T1 opens X with its own draft: OK, the seat's is gone.
+	mine := `{"type":"pickup","name":"Ada Test","held":false,"order_id":"` + x + `","draft":{"lines":[{"item_id":"x"}]}}`
+	if rec := call(r.h, "PUT", "/api/terminal/drafts/d-till-edit1", r.termKey, mine); rec.Code != 200 || !strings.Contains(rec.Body.String(), `"device_id":"term-1"`) {
+		t.Fatalf("the store opens X: %d %s", rec.Code, rec.Body)
+	}
+	if got := r.relay(t, ccAgent, "GET", "drafts", nil); strings.Contains(string(got.Body), "d-cc-lock-01") || !strings.Contains(string(got.Body), "d-till-edit1") {
+		t.Fatalf("the seat's draft is gone, the store's is there: %s", got.Body)
+	}
+	// The seat's late calls on X: open_elsewhere {holder}; X untouched.
+	late := map[string]relayed{
+		"cart":     r.relay(t, ccAgent, "PUT", "orders/"+x+"/cart", map[string]any{"client_key": ccKey(), "draft_id": "d-cc-lock-01", "cart": map[string]any{"lines": []any{}}}),
+		"void":     r.relay(t, ccAgent, "POST", "orders/"+x+"/void", map[string]any{"reason": "customer called back"}),
+		"payments": r.relay(t, ccAgent, "POST", "orders/"+x+"/payments", map[string]any{"client_key": ccKey(), "tender": "manual_card", "amount_cents": 100}),
+		"time":     r.relay(t, ccAgent, "POST", "orders/"+x+"/time", map[string]any{"ready_at": time.Now().Add(time.Hour).UTC().Format(time.RFC3339)}),
+		"lock":     r.relay(t, ccAgent, "PUT", "drafts/d-cc-lock-02", lock),
+		"lock + take_over": r.relay(t, ccAgent, "PUT", "drafts/d-cc-lock-02", func() map[string]any {
+			m := map[string]any{"take_over": true}
+			for k, v := range lock {
+				m[k] = v
+			}
+			return m
+		}()),
+	}
+	for name, got := range late {
+		if got.Status != http.StatusConflict || got.code() != "open_elsewhere" || !strings.Contains(string(got.Body), `"holder":{"device_id":"term-1"`) {
+			t.Errorf("the seat's late %s: %d %s", name, got.Status, got.Body)
+		}
+	}
+	rec := call(r.h, "GET", "/api/terminal/orders/"+x, r.termKey, "")
+	if rec.Code != 200 || !strings.Contains(rec.Body.String(), `"state":"accepted"`) || !strings.Contains(rec.Body.String(), `"payments":[]`) ||
+		!strings.Contains(rec.Body.String(), `"total_cents":1377`) {
+		t.Fatalf("X is untouched: %d %.300s", rec.Code, rec.Body)
+	}
+	// Reads stay open to the seat; once the store lets go, so do the writes.
+	if got := r.relay(t, ccAgent, "GET", "orders/"+x, nil); got.Status != 200 {
+		t.Fatalf("GET while the store has it open: %d", got.Status)
+	}
+	if rec := call(r.h, "DELETE", "/api/terminal/drafts/d-till-edit1", r.termKey, ""); rec.Code != http.StatusNoContent {
+		t.Fatalf("the store lets go: %d %s", rec.Code, rec.Body)
+	}
+	if got := r.relay(t, ccAgent, "PUT", "drafts/d-cc-lock-02", lock); got.Status != 200 {
+		t.Fatalf("the seat locks X again: %d %s", got.Status, got.Body)
+	}
+	// The reverse by id: a seat can never take the store's draft over.
+	if rec := call(r.h, "PUT", "/api/terminal/drafts/d-till-new01", r.termKey, `{"type":"counter","name":"Sam","held":false,"draft":{}}`); rec.Code != 200 {
+		t.Fatal(rec.Body.String())
+	}
+	if got := r.relay(t, ccAgent, "PUT", "drafts/d-till-new01", map[string]any{"type": "counter", "take_over": true, "draft": map[string]any{}}); got.Status != http.StatusConflict || got.code() != "open_elsewhere" {
+		t.Fatalf("a seat's take_over of the store's draft: %d %s", got.Status, got.Body)
+	}
+}
+
+// A kept price from a seat is never a price (the relay path).
+func TestRelayRungIsNeverAPrice(t *testing.T) {
+	r := newCCRig(t)
+	q := r.relay(t, ccAgent, "POST", "quote", map[string]any{"type": "pickup", "cart": map[string]any{"lines": []map[string]any{{"item_id": ccCheese, "size_id": ccXL, "qty": 1}}}})
+	var qv struct {
+		Quote struct {
+			Lines []struct {
+				Unit int64  `json:"unit_cents"`
+				Name string `json:"name"`
+			} `json:"lines"`
+		} `json:"quote"`
+	}
+	if err := json.Unmarshal(q.Body, &qv); err != nil || q.Status != 200 || len(qv.Quote.Lines) != 1 || qv.Quote.Lines[0].Unit <= 0 {
+		t.Fatalf("quote: %d %s", q.Status, q.Body)
+	}
+	unit := qv.Quote.Lines[0].Unit
+	body := func(rung int64) map[string]any {
+		return map[string]any{"client_key": ccKey(), "type": "pickup", "cart": map[string]any{"lines": []map[string]any{
+			{"item_id": ccCheese, "size_id": ccXL, "qty": 1, "rung_cents": rung, "rung_name": qv.Quote.Lines[0].Name}}}}
+	}
+	for _, rung := range []int64{1, unit - 1, unit + 1} {
+		if got := r.relay(t, ccAgent, "POST", "orders", body(rung)); got.Status != http.StatusForbidden || got.code() != "not_allowed_for_callcenter:price_change" {
+			t.Errorf("rung %d (today's price is %d): %d %s", rung, unit, got.Status, got.Body)
+		}
+	}
+	if got := r.relay(t, ccAgent, "POST", "orders", body(unit)); got.Status != http.StatusCreated {
+		t.Fatalf("the quote's own price back: %d %s", got.Status, got.Body)
+	}
+	if got := r.relay(t, ccAgent, "GET", "orders", nil); strings.Count(string(got.Body), `"taken_by"`) != 1 {
+		t.Fatalf("one order placed: %.200s", got.Body)
 	}
 }

@@ -8,6 +8,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"quiccpos/agent/internal/domain/device"
 	"quiccpos/agent/internal/domain/terminal"
 
 	"github.com/google/uuid"
@@ -22,7 +23,7 @@ import (
 // DraftRepo is the drafts' storage (repositories.OrderRepository).
 type DraftRepo interface {
 	TerminalDrafts(ctx context.Context, locationID string) ([]terminal.Draft, error)
-	PutTerminalDraft(ctx context.Context, in terminal.Draft, put terminal.DraftPut, now time.Time) (terminal.Draft, *terminal.Holder, error)
+	PutTerminalDraft(ctx context.Context, in terminal.Draft, put terminal.DraftPut, now time.Time) (terminal.DraftPutResult, error)
 	DeleteTerminalDraft(ctx context.Context, id, locationID, deviceID string) (bool, error)
 }
 
@@ -52,13 +53,43 @@ func (s *Service) location() string {
 }
 
 // Drafts are the store's shared drafts, oldest first (no login needed: the
-// Pickup list shows them).
+// Pickup list shows them): every one, the call center's too (DraftsFor is
+// what a terminal is shown).
 func (s *Service) Drafts(ctx context.Context) (*DraftList, error) {
 	list, err := s.repo.TerminalDrafts(ctx, s.location())
 	if err != nil {
 		return nil, err
 	}
 	return &DraftList{Drafts: list}, nil
+}
+
+// DraftsFor is GET /api/terminal/drafts for a: a store terminal (and the Pi
+// web page) never sees a call-center seat's drafts - their body is the
+// call-center app's own, a terminal must not open it (contract §2.10ab);
+// a seat sees them all.
+func (s *Service) DraftsFor(ctx context.Context, a Actor) (*DraftList, error) {
+	all, err := s.Drafts(ctx)
+	if err != nil || a.Callcenter {
+		return all, err
+	}
+	out := &DraftList{Drafts: make([]terminal.Draft, 0, len(all.Drafts))}
+	for _, d := range all.Drafts {
+		if !d.FromSeat() {
+			out.Drafts = append(out.Drafts, d)
+		}
+	}
+	return out, nil
+}
+
+// publishDraft sends a draft event: about a call-center seat's draft it
+// goes to main only (the seats), never to the store's terminals or tablets
+// on /api/events.
+func (s *Service) publishDraft(seat bool, typ string, v any) {
+	if seat {
+		publishSeat(typ, v)
+		return
+	}
+	s.publish(typ, v)
 }
 
 // PutDraft creates or replaces a draft. The holder (device + staff) comes
@@ -98,7 +129,7 @@ func (s *Service) PutDraft(ctx context.Context, a Actor, id string, in DraftIn) 
 	}
 	by := terminal.Holder{DeviceID: a.DeviceID, DeviceName: a.DeviceName, StaffID: st.ID, StaffName: st.Name()}
 	now := s.now().UTC().Truncate(time.Millisecond)
-	got, taken, err := s.repo.PutTerminalDraft(ctx, terminal.Draft{ID: id, LocationID: s.location(), Type: in.Type, Name: name,
+	res, err := s.repo.PutTerminalDraft(ctx, terminal.Draft{ID: id, LocationID: s.location(), Type: in.Type, Name: name,
 		Held: in.Held, OrderID: in.OrderID, Draft: d}, terminal.DraftPut{By: by, Held: in.Held, TakeOver: in.TakeOver}, now)
 	var oe *terminal.OpenElsewhere
 	if errors.As(err, &oe) && oe.TakeOverRefused { // the store wins (§2.10ab)
@@ -110,14 +141,32 @@ func (s *Service) PutDraft(ctx context.Context, a Actor, id string, in DraftIn) 
 	if err != nil {
 		return nil, err
 	}
+	got, taken := res.Draft, res.Taken
+	// A store terminal opened an order a seat had locked: the seat's draft
+	// is gone (deleted with this PUT), the seat is told (§2.10ab).
+	for _, gone := range res.Displaced {
+		from := gone.Holder
+		if from == nil { // put aside by the seat's agent
+			from = &terminal.Holder{StaffID: gone.StaffID, StaffName: gone.StaffName}
+		}
+		publishSeat(terminal.EventDraftTaken, map[string]any{"id": gone.ID, "by": got.Holder, "from": from, "device_id": from.DeviceID,
+			"order_id": gone.OrderID})
+		publishSeat(terminal.EventDraftRemoved, map[string]any{"id": gone.ID})
+		s.journal(ctx, terminal.Entry{StaffID: st.ID, DeviceID: a.DeviceID, Action: terminal.ActionDraftTakeOver, OrderID: gone.OrderID,
+			Detail: detail(map[string]any{"draft_id": gone.ID, "from_device_id": from.DeviceID, "from_staff_id": from.StaffID, "by_draft_id": id})})
+		s.logger.Info().Ctx(ctx).Str("draft_id", gone.ID).Str("order_id", gone.OrderID).Str("device_id", a.DeviceID).
+			Str("from_device_id", from.DeviceID).Msg("Call-center draft displaced: the store opened the order")
+	}
 	if taken != nil {
-		// device_id: the terminal (or call-center seat) it was taken from.
-		s.publish(terminal.EventDraftTaken, map[string]any{"id": id, "by": got.Holder, "from": taken, "device_id": taken.DeviceID})
+		// device_id: the terminal (or call-center seat) it was taken from. A
+		// seat's goes to the seat only.
+		s.publishDraft(device.IsCallcenterSeat(taken.DeviceID), terminal.EventDraftTaken,
+			map[string]any{"id": id, "by": got.Holder, "from": taken, "device_id": taken.DeviceID})
 		s.journal(ctx, terminal.Entry{StaffID: st.ID, DeviceID: a.DeviceID, Action: terminal.ActionDraftTakeOver,
 			Detail: detail(map[string]any{"draft_id": id, "from_device_id": taken.DeviceID, "from_staff_id": taken.StaffID})})
 		s.logger.Info().Ctx(ctx).Str("draft_id", id).Str("device_id", a.DeviceID).Str("from_device_id", taken.DeviceID).Msg("Draft taken over")
 	}
-	s.publish(terminal.EventDraftChanged, map[string]any{"draft": got})
+	s.publishDraft(got.FromSeat(), terminal.EventDraftChanged, map[string]any{"draft": got})
 	return &DraftResult{Draft: got}, nil
 }
 
@@ -135,7 +184,7 @@ func (s *Service) DeleteDraft(ctx context.Context, a Actor, id string) error {
 		return err
 	}
 	if deleted {
-		s.publish(terminal.EventDraftRemoved, map[string]any{"id": id})
+		s.publishDraft(a.Callcenter, terminal.EventDraftRemoved, map[string]any{"id": id})
 	}
 	return nil
 }

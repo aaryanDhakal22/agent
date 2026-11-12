@@ -52,6 +52,9 @@ func (s *Server) decodeTerminal(w http.ResponseWriter, r *http.Request, v any) b
 
 // terminalError maps the terminal flow's errors to {error, code} answers.
 func (s *Server) terminalError(w http.ResponseWriter, r *http.Request, err error) {
+	if s.securityError(w, err) { // pin_locked, a manager's short PIN (server_security.go)
+		return
+	}
 	var mgr *terminal.ManagerRequired
 	var thr *terminal.Throttled
 	var cart *terminal.CartInvalid
@@ -418,7 +421,7 @@ func (s *Server) handleTerminalDrafts(w http.ResponseWriter, r *http.Request) {
 	if !s.terminalReady(w) {
 		return
 	}
-	v, err := s.terminalSvc.Drafts(r.Context())
+	v, err := s.terminalSvc.DraftsFor(r.Context(), actor(r)) // a store terminal never sees a seat's (2.10ab)
 	if err != nil {
 		s.terminalError(w, r, err)
 		return

@@ -184,7 +184,7 @@ func callcenterPaymentsGuard(a Actor, pays ...PaymentIn) error {
 // placed (stored nil) or changes a placed order (stored = the order's cart
 // as the terminals read it): a typed discount, a custom line, a price on a
 // line (an open price, a price change, a $0 comp line) or on one of its
-// options. A line the stored order already holds as it is (the same line
+// options, a kept price (rung_cents) that isn't today's price of its line. A line the stored order already holds as it is (the same line
 // but for its quantity and note: a cashier's Quicc Add, a kept price, an
 // online order's own lines) rides along.
 func callcenterCartGuard(a Actor, ctx pricing.Context, in Cart, stored *Cart) error {
@@ -217,13 +217,46 @@ func callcenterCartGuard(a Actor, ctx pricing.Context, in Cart, stored *Cart) er
 		}
 		return terminal.NotAllowedPriceChange
 	}
-	for _, l := range in.Lines {
+	// A kept price (rung_cents) from a seat never sets a price: on a line
+	// the stored order doesn't hold it must be today's price of that line
+	// (its menu unit price, or what today's quote of this cart gives it),
+	// and a line whose item is gone can't be sold at the seat's number.
+	var today *pricing.Quote
+	rungOK := func(i int, l pricing.Line) bool {
+		if l.Custom || i >= len(in.Rungs) || in.Rungs[i].Cents == nil {
+			return true
+		}
+		if goneReason(ctx, l) != "" {
+			return false
+		}
+		if l.DealID != "" {
+			return true // a bundle's price is the deal's: its rung is never read
+		}
+		want := *in.Rungs[i].Cents
+		if r := pricing.Resolve(ctx, l.Selection, 0); len(r.Issues) == 0 && r.UnitCents == want {
+			return true
+		}
+		if today == nil {
+			pc := in.Cart
+			pc.Type = terminal.TypePickup
+			if pc.Payment == "" {
+				pc.Payment = "cash"
+			}
+			q := pricing.Price(ctx, pc, time.Now())
+			today = &q
+		}
+		return i < len(today.Lines) && today.Lines[i].UnitCents == want
+	}
+	for i, l := range in.Lines {
 		if k := heldKey(l); held[k] > 0 {
 			held[k]--
 			continue
 		}
 		if l.Custom {
 			return notAllowed(terminal.NotAllowedOpenPrice)
+		}
+		if !rungOK(i, l) {
+			return notAllowed(terminal.NotAllowedPriceChange)
 		}
 		if l.DealID != "" {
 			for _, pk := range l.Picks {
@@ -337,6 +370,12 @@ func (s *Service) storeHolds(ctx context.Context, a Actor, orderID string) error
 		}
 	}
 	return nil
+}
+
+// StoreHolds: a store terminal has the order open (the relay asks before a
+// seat's payment or time change; a cart change and a void ask themselves).
+func (s *Service) StoreHolds(ctx context.Context, a Actor, orderID string) error {
+	return s.storeHolds(ctx, a, orderID)
 }
 
 // --- taken by ------------------------------------------------------------------------

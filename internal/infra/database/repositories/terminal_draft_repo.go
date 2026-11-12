@@ -51,16 +51,45 @@ func getDraft(ctx context.Context, q *models.Queries, id string) (*terminal.Draf
 func (r *OrderRepository) TerminalDrafts(ctx context.Context, locationID string) (out []terminal.Draft, err error) {
 	ctx, _, end := dbSpan(ctx, "terminal.drafts")
 	defer end(&err)
-	rows, err := models.New(r.db).ListTerminalDrafts(ctx, locationID)
+	return listDrafts(ctx, models.New(r.db), locationID)
+}
+
+// draftOrigins reads the drafts' origin column (00043; hand-written: the
+// sqlc queries name their columns): id -> origin, only the non-empty ones.
+func draftOrigins(ctx context.Context, q *models.Queries, locationID string) (map[string]string, error) {
+	rows, err := q.Raw().QueryContext(ctx, `SELECT id, origin FROM terminal_drafts WHERE location_id = ? AND origin <> ''`, locationID)
+	if err != nil {
+		return nil, fmt.Errorf("draft origins: %w", err)
+	}
+	defer rows.Close()
+	out := map[string]string{}
+	for rows.Next() {
+		var id, origin string
+		if err := rows.Scan(&id, &origin); err != nil {
+			return nil, err
+		}
+		out[id] = origin
+	}
+	return out, rows.Err()
+}
+
+// listDrafts are a store's drafts with their origin, oldest first.
+func listDrafts(ctx context.Context, q *models.Queries, locationID string) ([]terminal.Draft, error) {
+	rows, err := q.ListTerminalDrafts(ctx, locationID)
 	if err != nil {
 		return nil, err
 	}
-	out = make([]terminal.Draft, 0, len(rows))
+	origins, err := draftOrigins(ctx, q, locationID)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]terminal.Draft, 0, len(rows))
 	for _, row := range rows {
 		d, err := draftFromRow(row)
 		if err != nil {
 			return nil, err
 		}
+		d.Origin = origins[d.ID]
 		out = append(out, d)
 	}
 	return out, nil
@@ -69,11 +98,19 @@ func (r *OrderRepository) TerminalDrafts(ctx context.Context, locationID string)
 // PutTerminalDraft creates or replaces a draft under the soft lock (one
 // transaction: two terminals racing for the same draft get one winner).
 // The draft's holder and the one it was taken from (nil = none) come from
-// put.Decide.
-func (r *OrderRepository) PutTerminalDraft(ctx context.Context, in terminal.Draft, put terminal.DraftPut, now time.Time) (out terminal.Draft, taken *terminal.Holder, err error) {
+// put.Decide. A PUT that names a sent order also runs put.OrderLock against
+// the order's other drafts (contract 2.10ab, the store wins): a seat is
+// refused while a store terminal has the order open; a store terminal's PUT
+// deletes the call-center drafts of that order (Displaced).
+func (r *OrderRepository) PutTerminalDraft(ctx context.Context, in terminal.Draft, put terminal.DraftPut, now time.Time) (res terminal.DraftPutResult, err error) {
 	ctx, _, end := dbSpan(ctx, "terminal.put_draft")
 	defer end(&err)
 	err = r.withTx(ctx, func(q *models.Queries) error {
+		res = terminal.DraftPutResult{}
+		all, err := listDrafts(ctx, q, in.LocationID)
+		if err != nil {
+			return err
+		}
 		cur, err := getDraft(ctx, q, in.ID)
 		if err != nil {
 			return err
@@ -81,11 +118,27 @@ func (r *OrderRepository) PutTerminalDraft(ctx context.Context, in terminal.Draf
 		if cur != nil && cur.LocationID != in.LocationID {
 			cur = nil // another store's leftover: replaced
 		}
+		var others []terminal.Draft
+		for _, d := range all {
+			if d.ID != in.ID {
+				others = append(others, d)
+			}
+		}
+		displaced, err := put.OrderLock(in.OrderID, others)
+		if err != nil {
+			return err
+		}
 		holder, tk, err := put.Decide(cur)
 		if err != nil {
 			return err
 		}
-		taken = tk
+		res.Taken = tk
+		for _, d := range displaced {
+			if _, err := q.DeleteTerminalDraft(ctx, d.ID); err != nil {
+				return fmt.Errorf("displace draft: %w", err)
+			}
+		}
+		res.Displaced = displaced
 		created := now
 		if cur != nil {
 			created = cur.CreatedAt
@@ -103,14 +156,24 @@ func (r *OrderRepository) PutTerminalDraft(ctx context.Context, in terminal.Draf
 		if err := q.UpsertTerminalDraft(ctx, p); err != nil {
 			return fmt.Errorf("put draft: %w", err)
 		}
+		// Whose it is now: the PUT's sender (a store terminal taking a seat's
+		// draft over makes it the store's, with the terminal's own body).
+		origin := ""
+		if put.BySeat() {
+			origin = terminal.DraftOriginCallcenter
+		}
+		if _, err := q.Raw().ExecContext(ctx, `UPDATE terminal_drafts SET origin = ? WHERE id = ?`, origin, in.ID); err != nil {
+			return fmt.Errorf("draft origin: %w", err)
+		}
 		d, err := getDraft(ctx, q, in.ID)
 		if err != nil {
 			return err
 		}
-		out = *d
+		d.Origin = origin
+		res.Draft = *d
 		return nil
 	})
-	return out, taken, err
+	return res, err
 }
 
 // DeleteTerminalDraft removes a draft unless another terminal has it open.

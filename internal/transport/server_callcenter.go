@@ -177,6 +177,15 @@ func (s *Server) HandleTerminalRelay(ctx context.Context, payload json.RawMessag
 	}
 	s.ensureCallcenterDevice(ctx)
 	s.touchDevice(device.CallcenterID) // last seen: the Pi page's device list
+	// The store wins: an order a store terminal has open takes no payment
+	// or time change from the call center either (a cart change and a void
+	// check it themselves).
+	if id, ok := relayLockedOrder(method, path); ok {
+		var oe *terminal.OpenElsewhere
+		if err := s.terminalSvc.StoreHolds(ctx, actor, id); errors.As(err, &oe) {
+			return relayAnswer(http.StatusConflict, map[string]any{"error": oe.Error(), "code": "open_elsewhere", "holder": oe.Holder}), nil
+		}
+	}
 
 	deadline := relayDeadline
 	if path == relayKeyedPath {
@@ -230,6 +239,21 @@ func (s *Server) HandleTerminalRelay(ctx context.Context, payload json.RawMessag
 		}
 	}
 	return out, nil
+}
+
+// relayLockedOrder: the calls that change a sent order (its id): refused
+// while a store terminal has the order open.
+func relayLockedOrder(method, path string) (string, bool) {
+	segs := strings.Split(path, "/")
+	if len(segs) != 3 || segs[0] != "orders" {
+		return "", false
+	}
+	switch {
+	case method == http.MethodPost && (segs[2] == "payments" || segs[2] == "time" || segs[2] == "void"),
+		method == http.MethodPut && segs[2] == "cart":
+		return segs[1], true
+	}
+	return "", false
 }
 
 // relayBody checks a relayed body before any handler sees it, so nothing

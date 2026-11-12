@@ -218,7 +218,7 @@ func (s *Service) ChangeCart(ctx context.Context, a Actor, id string, in ChangeI
 	ctx = terminal.WithDraftID(WithApprovals(ctx, in.Approvals), strings.TrimSpace(in.DraftID))
 	res, err := s.changeCart(ctx, a, id, in)
 	if err == nil && !res.Duplicate && in.DraftID != "" {
-		s.publish(terminal.EventDraftRemoved, map[string]any{"id": in.DraftID})
+		s.publishDraft(a.Callcenter, terminal.EventDraftRemoved, map[string]any{"id": in.DraftID})
 	}
 	return res, err
 }

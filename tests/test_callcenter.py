@@ -289,3 +289,56 @@ def test_the_store_wins_and_events_to_main(rig):
                <= {e["event"] for e in seen}, what="the Pi's events forwarded as terminal.events")
     assert all(set(e) == {"event", "data", "at"} for e in seen)
     assert next(e for e in seen if e["event"] == "terminal.order.placed")["data"]["order"]["order"]["id"] == oid
+
+
+def test_edit_lock_on_a_sent_order(rig):
+    """A seat's draft of a sent order is its lock: the store never lists or opens it (its body is the
+    call-center app's own); the store wins by opening the order itself."""
+    agent, term, fm = rig["agent"], rig["term"], rig["fm"]
+    base = agent.base
+    seen: list[dict] = []
+    fm.rpc["terminal.events"] = lambda payload: (seen.extend(payload["events"]), (200, {}))[1]
+    relay(rig, "GET", "session")  # the stream is up and the agent known before main asks for events
+    fm.command("terminal.events.want", {"seconds": 120})
+    placed = relay(rig, "POST", "orders", {**order_body(), "cart": {"lines": [pizza_line(), {"item_id": "00000000-0000-0000-0000-0000000000a6", "qty": 1}]}})
+    assert placed["status"] == 201, placed
+    x = placed["body"]["order"]["order"]["id"]
+    total = placed["body"]["order"]["order"]["money"]["total_cents"]
+
+    # The seat locks X: a draft with order_id and no lines (the app's own body).
+    lock = {"type": "pickup", "name": "Ada Test", "held": False, "order_id": x, "draft": {"cc": {"step": "menu"}}}
+    assert relay(rig, "PUT", "drafts/d-cc-lock-01", lock)["status"] == 200
+    assert term.get(f"{base}/api/terminal/drafts", timeout=5).json() == {"drafts": []}  # the store's terminal doesn't list it
+    assert agent.http.get(f"{base}/api/terminal/drafts", timeout=5).json() == {"drafts": []}  # nor the Pi web page
+    assert [d["id"] for d in relay(rig, "GET", "drafts")["body"]["drafts"]] == ["d-cc-lock-01"]
+    wait_until(lambda: any(e["event"] == "terminal.draft.changed" and e["data"]["draft"]["id"] == "d-cc-lock-01" for e in seen),
+               what="the seat's draft.changed reaches main")
+
+    # T1 opens X for changes with its own draft (no take_over): it wins, the seat's lock is gone and the seat is told.
+    mine = {"type": "pickup", "name": "Ada Test", "held": False, "order_id": x, "draft": {"lines": [{"item_id": "x"}]}}
+    r = term.put(f"{base}/api/terminal/drafts/d-till-edit1", json=mine, timeout=5)
+    assert r.status_code == 200 and r.json()["draft"]["holder"]["device_name"] == "Till 1", r.text
+    assert [d["id"] for d in relay(rig, "GET", "drafts")["body"]["drafts"]] == ["d-till-edit1"]
+    taken = wait_until(lambda: next((e["data"] for e in seen if e["event"] == "terminal.draft.taken" and e["data"]["id"] == "d-cc-lock-01"), None),
+                       what="terminal.draft.taken for the seat")
+    assert taken["order_id"] == x and taken["device_id"] == "callcenter:desk-1" and taken["by"]["device_name"] == "Till 1"
+    over = [e for e in term.get(f"{base}/api/terminal/journal?limit=50", timeout=5).json() if e["action"] == "draft.take_over"]
+    assert [e["detail"]["from_device_id"] for e in over] == ["callcenter:desk-1"] and over[0]["order_id"] == x
+
+    # The seat's late calls on X: open_elsewhere; X's lines are untouched.
+    late = {"client_key": f"c-{uuid.uuid4()}", "draft_id": "d-cc-lock-01", "cart": {"lines": [pizza_line()]}}
+    for got in (relay(rig, "PUT", f"orders/{x}/cart", late),
+                relay(rig, "POST", f"orders/{x}/void", {"reason": "customer called back"}),
+                relay(rig, "POST", f"orders/{x}/payments", {"client_key": f"p-{uuid.uuid4()}", "tender": "manual_card", "amount_cents": 100}),
+                relay(rig, "PUT", "drafts/d-cc-lock-02", lock),
+                relay(rig, "PUT", "drafts/d-cc-lock-02", {**lock, "take_over": True})):
+        assert got["status"] == 409 and got["body"]["code"] == "open_elsewhere" and got["body"]["holder"]["device_name"] == "Till 1", got
+    after = term.get(f"{base}/api/terminal/orders/{x}", timeout=5).json()
+    assert len(after["order"]["order"]["items"]) == 2 and after["order"]["order"]["money"]["total_cents"] == total and after["payments"] == []
+    assert after["order"]["status"]["state"] == "accepted"
+
+    # T1 sends its change and lets go; the seat can lock X again.
+    r = term.put(f"{base}/api/terminal/orders/{x}/cart", json={"draft_id": "d-till-edit1", "cart": {"lines": [pizza_line()]}}, timeout=10)
+    assert r.status_code == 200 and r.json()["removed"] == ["Soda"], r.text
+    assert relay(rig, "PUT", "drafts/d-cc-lock-02", lock)["status"] == 200
+    assert term.get(f"{base}/api/terminal/drafts", timeout=5).json() == {"drafts": []}

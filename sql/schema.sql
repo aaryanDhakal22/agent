@@ -419,7 +419,10 @@ CREATE TABLE terminal_drafts (
     order_id           text    NOT NULL DEFAULT '',
     draft              text    NOT NULL DEFAULT '{}',
     created_at         text    NOT NULL,
-    updated_at         text    NOT NULL
+    updated_at         text    NOT NULL,
+    -- 00043_draft_origin: '' = a store terminal, 'callcenter' = a call-center seat (read with raw SQL,
+    -- repositories/terminal_draft_repo.go: the sqlc queries name their columns).
+    origin             text    NOT NULL DEFAULT ''
 );
 
 -- 00028_customers: the store's customers (main's feed + the terminals).

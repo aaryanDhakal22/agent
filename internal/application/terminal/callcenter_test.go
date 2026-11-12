@@ -507,9 +507,16 @@ func TestCallcenterTheStoreWins(t *testing.T) {
 		t.Fatalf("journal draft.take_over_refused: %+v", refused)
 	}
 
-	// 2. A seat holds it: the store takes over; the seat is told, with its seat id.
+	// 2. A seat holds it: the store takes over; the seat is told, with its seat id (through main only:
+	// a seat's draft events never go to the store's terminals).
+	seatEvents := seatTap(t)
+	storeEvents := r.pub.count(terminal.EventDraftChanged) + r.pub.count(terminal.EventDraftTaken)
 	if _, err := r.svc.PutDraft(r.ctx, seat, "d-seat-00001", draftIn(false)); err != nil {
 		t.Fatal(err)
+	}
+	if got := seatEvents.of(terminal.EventDraftChanged); len(got) != 1 || r.pub.count(terminal.EventDraftChanged)+r.pub.count(terminal.EventDraftTaken) != storeEvents {
+		t.Fatalf("a seat's draft.changed goes to main only: %d seat events, store events %d -> %d", len(got), storeEvents,
+			r.pub.count(terminal.EventDraftChanged)+r.pub.count(terminal.EventDraftTaken))
 	}
 	if _, err := r.svc.PutDraft(r.ctx, till, "d-seat-00001", draftIn(false)); !errors.As(err, &oe) || oe.Holder.DeviceID != seat.DeviceID {
 		t.Fatalf("open on the seat: %v", err)
@@ -518,9 +525,13 @@ func TestCallcenterTheStoreWins(t *testing.T) {
 	if err != nil || got.Draft.Holder == nil || got.Draft.Holder.DeviceID != till.DeviceID {
 		t.Fatalf("the store takes over the call center's: %+v %v", got, err)
 	}
-	ev, _ := r.pub.last(terminal.EventDraftTaken).(map[string]any)
-	if ev == nil || ev["device_id"] != seat.DeviceID || ev["id"] != "d-seat-00001" {
-		t.Fatalf("terminal.draft.taken carries the seat id in device_id: %+v", ev)
+	taken1 := seatEvents.of(terminal.EventDraftTaken)
+	if len(taken1) != 1 || taken1[0]["device_id"] != seat.DeviceID || taken1[0]["id"] != "d-seat-00001" || r.pub.count(terminal.EventDraftTaken) != taken {
+		t.Fatalf("terminal.draft.taken carries the seat id in device_id, to the seat only: %+v", taken1)
+	}
+	// It is the store's draft now: the terminals hear of it.
+	if last, _ := r.pub.last(terminal.EventDraftChanged).(map[string]any); last == nil || last["draft"].(terminal.Draft).ID != "d-seat-00001" {
+		t.Fatalf("draft.changed for the store after the take-over: %+v", last)
 	}
 
 	// 3. Two seats: the usual take-over.
@@ -957,5 +968,262 @@ func TestCallcenterPaymentOpensNoDrawer(t *testing.T) {
 		z.Reconcile.DrawersDifferences != 0 || typed == 0 {
 		t.Fatalf("z: drawers %d, flagged %v, difference %d, drawers difference %d, typed cards %d\n%+v", len(z.Drawers), z.Flagged,
 			z.Reconcile.DifferenceCents, z.Reconcile.DrawersDifferences, typed, z.Reconcile)
+	}
+}
+
+// seatTapT reads the seat events (what only the call center gets, through
+// main) for a test.
+type seatTapT struct {
+	t  *testing.T
+	ch <-chan RelayEvent
+}
+
+func seatTap(t *testing.T) *seatTapT {
+	t.Helper()
+	ch, cancel := tapSeat()
+	t.Cleanup(cancel)
+	return &seatTapT{t: t, ch: ch}
+}
+
+// of drains the tap and answers the events of typ (their data as maps).
+func (s *seatTapT) of(typ string) []map[string]any {
+	s.t.Helper()
+	var out []map[string]any
+	for {
+		select {
+		case ev := <-s.ch:
+			if ev.Event != typ {
+				continue
+			}
+			var m map[string]any
+			if err := json.Unmarshal(ev.Data, &m); err != nil {
+				s.t.Fatal(err)
+			}
+			out = append(out, m)
+		default:
+			return out
+		}
+	}
+}
+
+func lockDraft(orderID string) DraftIn {
+	return DraftIn{Type: terminal.TypePickup, Name: "Ada Test", OrderID: orderID, Draft: json.RawMessage(`{"cc":{"step":"menu"}}`)}
+}
+
+// The edit lock on a sent order (contract §2.10ab): a seat's draft is a lock
+// the store never lists or opens; a store terminal wins by opening the order
+// itself; a seat is refused while a store terminal has the order open.
+func TestCallcenterEditLockOnASentOrder(t *testing.T) {
+	r, seat := ccRig(t)
+	r.login(t, till, "1234")
+	x := ccPlace(t, r, seat, "pickup", nil, pizzaLine(), sodaLine(1)).Order.Order.ID
+	seatEvents := seatTap(t)
+	storeDraftEvents := func() int {
+		return r.pub.count(terminal.EventDraftChanged) + r.pub.count(terminal.EventDraftRemoved) + r.pub.count(terminal.EventDraftTaken)
+	}
+	before := storeDraftEvents()
+	ids := func(l *DraftList) []string {
+		out := []string{}
+		for _, d := range l.Drafts {
+			out = append(out, d.ID)
+		}
+		return out
+	}
+
+	// The seat locks X: a draft with order_id and the app's own body (no lines).
+	if _, err := r.svc.PutDraft(r.ctx, seat, "d-cc-lock-01", lockDraft(x)); err != nil {
+		t.Fatal(err)
+	}
+	// T1 doesn't list it (nor does the Pi web page); the seat and another seat do. No event reaches the store.
+	for _, a := range []Actor{till, {DeviceID: "web", DeviceName: "Pi web page"}} {
+		if l, err := r.svc.DraftsFor(r.ctx, a); err != nil || len(l.Drafts) != 0 {
+			t.Fatalf("%s lists a seat's draft: %v %v", a.DeviceID, ids(l), err)
+		}
+	}
+	for _, a := range []Actor{seat, CallcenterActor("desk-9", "", agentID)} {
+		if l, err := r.svc.DraftsFor(r.ctx, a); err != nil || len(l.Drafts) != 1 || l.Drafts[0].ID != "d-cc-lock-01" {
+			t.Fatalf("%s: %v %v", a.DeviceID, ids(l), err)
+		}
+	}
+	if storeDraftEvents() != before || len(seatEvents.of(terminal.EventDraftChanged)) != 1 {
+		t.Fatal("the lock's draft.changed goes to main only")
+	}
+	// T1 opens X for changes with its own draft (any id, no take_over): it wins.
+	mine := draftIn(false)
+	mine.OrderID, mine.Type = x, terminal.TypePickup
+	got, err := r.svc.PutDraft(r.ctx, till, "d-till-edit1", mine)
+	if err != nil || got.Draft.Holder == nil || got.Draft.Holder.DeviceID != till.DeviceID || string(got.Draft.Draft) != string(mine.Draft) {
+		t.Fatalf("the store opens X: %+v %v", got, err)
+	}
+	all, _ := r.svc.Drafts(r.ctx)
+	if got := ids(all); len(got) != 1 || got[0] != "d-till-edit1" {
+		t.Fatalf("the seat's draft is gone: %v", got)
+	}
+	taken := seatEvents.of(terminal.EventDraftTaken)
+	if len(taken) != 1 || taken[0]["id"] != "d-cc-lock-01" || taken[0]["order_id"] != x || taken[0]["device_id"] != seat.DeviceID ||
+		taken[0]["by"].(map[string]any)["device_id"] != till.DeviceID {
+		t.Fatalf("terminal.draft.taken for the seat: %+v", taken)
+	}
+	if r.pub.count(terminal.EventDraftTaken) != 0 || r.pub.count(terminal.EventDraftChanged) != 1 {
+		t.Fatalf("the store's terminals hear only of the store's draft: taken %d changed %d", r.pub.count(terminal.EventDraftTaken), r.pub.count(terminal.EventDraftChanged))
+	}
+	over := journalActions(t, r)[terminal.ActionDraftTakeOver]
+	if len(over) != 1 || over[0].DeviceID != till.DeviceID || over[0].OrderID != x || !strings.Contains(string(over[0].Detail), `"from_device_id":"callcenter:desk-2"`) {
+		t.Fatalf("journal draft.take_over {from_device_id}: %+v", over)
+	}
+	// The seat's late change, cancel, payment and lock: open_elsewhere; X is untouched.
+	var oe *terminal.OpenElsewhere
+	late := ChangeIn{ClientKey: tk(), Cart: cartOf(pizzaLine()), DraftID: "d-cc-lock-01"}
+	if _, err := r.svc.ChangeCart(r.ctx, seat, x, late); !errors.As(err, &oe) || oe.Holder.DeviceID != till.DeviceID {
+		t.Fatalf("the seat's late cart change: %v", err)
+	}
+	if _, err := r.svc.Void(r.ctx, seat, x, VoidIn{Reason: "customer called back"}); !errors.As(err, &oe) {
+		t.Fatalf("the seat's late cancel: %v", err)
+	}
+	if err := r.svc.StoreHolds(r.ctx, seat, x); !errors.As(err, &oe) {
+		t.Fatalf("a payment / time change asks StoreHolds: %v", err)
+	}
+	if err := r.svc.StoreHolds(r.ctx, till, x); err != nil {
+		t.Fatalf("a store terminal is never held off by this rule: %v", err)
+	}
+	for _, takeOver := range []bool{false, true} {
+		in := lockDraft(x)
+		in.TakeOver = takeOver
+		for _, id := range []string{"d-cc-lock-01", "d-cc-lock-02", "d-till-edit1"} {
+			if _, err := r.svc.PutDraft(r.ctx, seat, id, in); !errors.As(err, &oe) || oe.Holder.DeviceID != till.DeviceID {
+				t.Fatalf("the seat locks X again (%s, take_over %v): %v", id, takeOver, err)
+			}
+		}
+	}
+	if v, _ := r.svc.Order(r.ctx, x); len(v.Order.Order.Items) != 2 || v.Order.Status.State != order.StateAccepted {
+		t.Fatalf("X is untouched: %d lines, %s", len(v.Order.Order.Items), v.Order.Status.State)
+	}
+	if refused := journalActions(t, r)[terminal.ActionDraftTakeOverRefused]; len(refused) != 3 {
+		t.Fatalf("each refused take_over is journaled: %d", len(refused))
+	}
+	// T1 sends its change: its draft goes; the seat may lock X again.
+	if ch, err := r.svc.ChangeCart(r.ctx, till, x, ChangeIn{ClientKey: tk(), Cart: cartOf(pizzaLine(), sodaLine(2)), DraftID: "d-till-edit1"}); err != nil || !ch.Changed {
+		t.Fatalf("the store's change: %+v %v", ch, err)
+	}
+	if _, err := r.svc.PutDraft(r.ctx, seat, "d-cc-lock-02", lockDraft(x)); err != nil {
+		t.Fatalf("the seat locks X after the store let go: %v", err)
+	}
+	// A lock the seat's agent put aside (held) is the call center's too: hidden, and displaced when the store opens X.
+	heldLock := lockDraft(x)
+	heldLock.Held = true
+	if _, err := r.svc.PutDraft(r.ctx, seat, "d-cc-lock-02", heldLock); err != nil {
+		t.Fatal(err)
+	}
+	if l, _ := r.svc.DraftsFor(r.ctx, till); len(l.Drafts) != 0 {
+		t.Fatalf("a held call-center draft is hidden too: %v", ids(l))
+	}
+	seatEvents.of("")
+	if _, err := r.svc.PutDraft(r.ctx, till, "d-till-edit2", mine); err != nil {
+		t.Fatal(err)
+	}
+	if taken := seatEvents.of(terminal.EventDraftTaken); len(taken) != 1 || taken[0]["id"] != "d-cc-lock-02" {
+		t.Fatalf("the held lock is displaced: %+v", taken)
+	}
+	if err := r.svc.DeleteDraft(r.ctx, till, "d-till-edit2"); err != nil {
+		t.Fatal(err)
+	}
+	// A seat's draft taken over by id (take_over) by the store: the stored body is the terminal's, never the seat's.
+	y := ccPlace(t, r, seat, "pickup", nil, pizzaLine()).Order.Order.ID
+	if _, err := r.svc.PutDraft(r.ctx, seat, "d-cc-lock-03", lockDraft(y)); err != nil {
+		t.Fatal(err)
+	}
+	theirs := draftIn(false)
+	theirs.OrderID, theirs.Type, theirs.TakeOver = y, terminal.TypePickup, true
+	byID, err := r.svc.PutDraft(r.ctx, till, "d-cc-lock-03", theirs)
+	if err != nil || string(byID.Draft.Draft) != string(theirs.Draft) || strings.Contains(string(byID.Draft.Draft), `"cc"`) || byID.Draft.FromSeat() {
+		t.Fatalf("take-over by id: %+v %v", byID, err)
+	}
+	if l, _ := r.svc.DraftsFor(r.ctx, till); len(l.Drafts) != 1 || l.Drafts[0].ID != "d-cc-lock-03" || strings.Contains(string(l.Drafts[0].Draft), `"cc"`) {
+		t.Fatalf("the store lists it with its own body: %v", ids(l))
+	}
+	// A seat's SEND of a new order from its own draft: the draft's removal goes to main only.
+	if _, err := r.svc.PutDraft(r.ctx, seat, "d-cc-new-001", DraftIn{Type: terminal.TypePickup, Draft: json.RawMessage(`{"cc":1}`)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.svc.DeleteDraft(r.ctx, seat, "d-cc-new-001"); err != nil {
+		t.Fatal(err)
+	}
+	removed := r.pub.count(terminal.EventDraftRemoved)
+	if got := seatEvents.of(terminal.EventDraftRemoved); len(got) != 1 || got[0]["id"] != "d-cc-new-001" {
+		t.Fatalf("a seat's draft.removed: %+v", got)
+	}
+	if r.pub.count(terminal.EventDraftRemoved) != removed {
+		t.Fatal("no draft.removed for the store")
+	}
+}
+
+// A kept price (rung_cents) from a seat never sets a price: it must be
+// today's price of its line; the stored order's own lines keep theirs.
+func TestCallcenterRungIsNeverAPrice(t *testing.T) {
+	r, seat := ccRig(t)
+	q, err := r.svc.Quote(r.ctx, seat, QuoteIn{Type: "pickup", Cart: cartOf(pizzaLine(), sodaLine(1))})
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := rq(q).Lines
+	withRungs := func(pizza, soda int64) Cart {
+		c := cartOf(pizzaLine(), sodaLine(1))
+		c.Rungs = []Rung{{Cents: &pizza, Name: lines[0].Name}, {Cents: &soda, Name: lines[1].Name}}
+		return c
+	}
+	place := func(c Cart) (*PlaceResult, error) {
+		return r.svc.PlaceOrder(r.ctx, seat, OrderIn{ClientKey: tk(), Type: "pickup", Cart: c})
+	}
+	// The quote's own prices back: fine, and nothing is kept or changed.
+	ok, err := place(withRungs(lines[0].UnitCents, lines[1].UnitCents))
+	if err != nil {
+		t.Fatalf("rungs = today's prices: %v", err)
+	}
+	total := ok.Order.Order.Money.Total
+	// A made-up number, lower or higher: refused, nothing placed.
+	for name, c := range map[string]Cart{
+		"a 1-cent pizza":       withRungs(1, lines[1].UnitCents),
+		"a dearer soda":        withRungs(lines[0].UnitCents, lines[1].UnitCents+500),
+		"a free soda (rung 0)": withRungs(lines[0].UnitCents, 0),
+	} {
+		if _, err := place(c); whatOf(err) != terminal.NotAllowedPriceChange {
+			t.Errorf("%s: %s, want price_change", name, whatOf(err))
+		}
+	}
+	if list, _ := r.svc.Orders(r.ctx, false); len(list) != 1 {
+		t.Fatalf("nothing placed with a made-up rung: %d orders", len(list))
+	}
+	// A quote may carry any rung (it changes nothing).
+	if _, err := r.svc.Quote(r.ctx, seat, QuoteIn{Type: "pickup", Cart: withRungs(1, 1)}); err != nil {
+		t.Fatalf("a quote: %v", err)
+	}
+	// The menu moves: the placed order's own lines keep their price whatever rung the seat sends with
+	// them; a NEW line's rung must be today's price (the old price is refused: quote again).
+	id := ok.Order.Order.ID
+	r.editMenu(t, 13, raise(soda, 100))
+	kept := withRungs(1, 1) // ignored on lines the order holds: the Pi keeps its own copy's prices
+	same, err := r.svc.ChangeCart(r.ctx, seat, id, ChangeIn{ClientKey: tk(), Cart: kept})
+	if err != nil || same.Changed || same.Order.Order.Money.Total != total {
+		t.Fatalf("the order's own lines keep their price: %+v %v", same, err)
+	}
+	more := withRungs(1, 1)
+	more.Lines = append(more.Lines, sodaLine(1))
+	old := lines[1].UnitCents
+	more.Rungs = append(more.Rungs, Rung{Cents: &old, Name: lines[1].Name}) // yesterday's soda price on a new line
+	if _, err := r.svc.ChangeCart(r.ctx, seat, id, ChangeIn{ClientKey: tk(), Cart: more}); whatOf(err) != terminal.NotAllowedPriceChange {
+		t.Fatalf("a new line at the old price: %v", err)
+	}
+	now := old + 100
+	more.Rungs[2].Cents = &now
+	added, err := r.svc.ChangeCart(r.ctx, seat, id, ChangeIn{ClientKey: tk(), Cart: more})
+	if err != nil || len(added.Added) != 1 || added.Order.Order.Money.Total <= total {
+		t.Fatalf("a new line at today's price: %+v %v", added, err)
+	}
+	// An item that is gone can't be sold at the seat's number (a store terminal sells it as a custom line).
+	r.editMenu(t, 14, drop(soda))
+	gone := cartOf(pizzaLine(), sodaLine(1))
+	gone.Rungs = []Rung{{}, {Cents: &old, Name: lines[1].Name}}
+	if _, err := place(gone); whatOf(err) != terminal.NotAllowedPriceChange {
+		t.Fatalf("a gone item at the seat's rung: %v", err)
 	}
 }
