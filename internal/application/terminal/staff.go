@@ -196,13 +196,6 @@ func lockFor(n, free int) time.Duration {
 	return min(d, pinMaxLock)
 }
 
-// throttled is how long the device must wait before its next PIN (0 = none).
-func (b *staffBook) throttled(device string, now time.Time) time.Duration {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.waitLocked(device, now)
-}
-
 func (b *staffBook) waitLocked(device string, now time.Time) time.Duration {
 	var wait time.Duration
 	for _, l := range []struct {
