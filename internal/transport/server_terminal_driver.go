@@ -20,7 +20,7 @@ func (s *Server) driverError(w http.ResponseWriter, r *http.Request, err error) 
 	var tk *order.ErrTaken
 	switch {
 	case errors.As(err, &tk):
-		s.writeJSON(w, http.StatusConflict, map[string]any{"error": "someone else got these first, or they aren't ready any more",
+		s.writeJSON(w, http.StatusConflict, map[string]any{"error": "someone else got these first, or they can't be claimed (any more)",
 			"code": "taken", "order_ids": tk.IDs})
 	case errors.Is(err, terminal.ErrDriverOnly):
 		s.writeJSON(w, http.StatusForbidden, errCodeMap(err.Error(), "driver_only"))

@@ -12,8 +12,8 @@ import (
 )
 
 // The terminal's driver view (contract/agent.md §2.10b) and the batch
-// auto-close (§2.10c): a driver staff member's Pi driver, closing one of his
-// orders, a tip he got at the door, and the last auto-close slot.
+// auto-close (§2.10c): a driver staff member's Pi driver, claiming late
+// unassigned deliveries, closing one of his orders, a tip he got at the door, and the last auto-close slot.
 
 // TerminalDriverLink is the Pi driver a staff member is linked to ("" =
 // none yet).
@@ -98,6 +98,105 @@ func (r *OrderRepository) DeliverOne(ctx context.Context, driverID, orderID stri
 		return nil, false, err
 	}
 	return &fresh, returned, nil
+}
+
+// ClaimDelivered - see order.DriverViewRepository. Each order is MARK
+// DELIVERED (when it wasn't delivered yet) and then moved to him, like the
+// Drivers tab moving an Unassigned delivery to a driver, in one tx: one
+// order.status event per order (delivered, his name), the hub's
+// order.driver_changed for a POS check. His status never changes.
+func (r *OrderRepository) ClaimDelivered(ctx context.Context, driverID string, ids []string, cutoff time.Time, by order.MarkedBy) (claimed []order.StoredOrder, err error) {
+	ctx, _, end := dbSpan(ctx, "floor.claim_delivered")
+	defer end(&err)
+	ids = dedupe(ids)
+	if len(ids) == 0 {
+		return nil, order.ErrNoOrders
+	}
+	now := time.Now()
+	err = r.withTx(ctx, func(q *models.Queries) error {
+		d, err := q.GetDriver(ctx, driverID)
+		if err != nil || !d.Active {
+			return order.ErrDriverNotFound
+		}
+		b, err := q.GetOpenBatch(ctx)
+		if err != nil {
+			return fmt.Errorf("open batch: %w", err)
+		}
+		// All or nothing, first come first served: check every order first.
+		var todo []order.StoredOrder
+		var taken []string
+		for _, id := range ids {
+			so, err := loadOrder(ctx, q, id)
+			if err != nil {
+				return err
+			}
+			switch {
+			case so.Status.State == order.StateDelivered && so.Status.DriverID == d.ID:
+				// already his
+			case order.ClaimableLate(so, b.ID, cutoff):
+				todo = append(todo, so)
+			default:
+				taken = append(taken, id)
+			}
+		}
+		if len(taken) > 0 {
+			return &order.ErrTaken{IDs: taken}
+		}
+		var names []string
+		for _, so := range todo {
+			md := so.Status.MarkedDelivered
+			if so.Status.State != order.StateDelivered {
+				if names == nil {
+					if names, err = availableNames(ctx, q); err != nil {
+						return err
+					}
+				}
+				md = &order.MarkedDelivered{At: now.UTC(), By: by, PrevState: so.Status.State, Available: names}
+				raw, err := markedJSON(md)
+				if err != nil {
+					return err
+				}
+				n, err := q.MarkDeliveredNoDriver(ctx, models.MarkDeliveredNoDriverParams{At: nullTS(now), Marked: raw, ID: so.Order.ID})
+				if err != nil {
+					return fmt.Errorf("mark delivered: %w", err)
+				}
+				if n == 0 {
+					return &order.ErrTaken{IDs: []string{so.Order.ID}}
+				}
+			}
+			raw, err := markedJSON(md)
+			if err != nil {
+				return err
+			}
+			n, err := q.SetOrderDriver(ctx, models.SetOrderDriverParams{DriverID: sql.NullString{String: d.ID, Valid: true},
+				DriverName: d.Name, MarkedDelivered: raw, ID: so.Order.ID})
+			if err != nil {
+				return fmt.Errorf("set order driver: %w", err)
+			}
+			if n == 0 {
+				return &order.ErrTaken{IDs: []string{so.Order.ID}}
+			}
+			fresh, err := loadOrder(ctx, q, so.Order.ID)
+			if err != nil {
+				return err
+			}
+			if err := recordOrderStatus(ctx, q, fresh, false, now); err != nil {
+				return err
+			}
+			if fresh.IsPOS() {
+				if err := insertFeed(ctx, q, order.FeedOrderDriverChanged, now, order.OrderDriverChangedData{
+					FeedOrderRef: order.RefOf(fresh), To: feedDriver(&d), OutAt: fresh.Status.OutAt}); err != nil {
+					return err
+				}
+			}
+			claimed = append(claimed, fresh)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return claimed, nil
 }
 
 // SetDoorTip records a tip the driver got at the door (absolute cents) on a

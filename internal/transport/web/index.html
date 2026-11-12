@@ -735,6 +735,10 @@
                 <div class="lblcol"><div class="lbl" id="l-paper">Extra paper at the end</div><p class="help">Feed past the footer so the tear is clean.</p></div>
                 <button type="button" class="sw" role="switch" :class="{ on: rcptForm.extra_paper }" :aria-checked="!!rcptForm.extra_paper" aria-labelledby="l-paper" @click="rcptForm.extra_paper = !rcptForm.extra_paper"><span></span></button>
               </div>
+              <div class="srow">
+                <div class="lblcol"><div class="lbl" id="l-strike">Strike removed items through</div><p class="help">On a kitchen change ticket, a removed item prints crossed out as a small picture. Turn off for a printer that can't print pictures: it prints (VOID) in reverse instead.</p></div>
+                <button type="button" class="sw" role="switch" :class="{ on: rcptForm.strike_images !== false }" :aria-checked="rcptForm.strike_images !== false" aria-labelledby="l-strike" @click="rcptForm.strike_images = rcptForm.strike_images === false"><span></span></button>
+              </div>
               <div class="sfoot">
                 <button type="button" class="btn btn-p" :disabled="!rcptDirty || !!rcptBusy || !!footerError" @click="saveReceipt()" x-text="rcptBusy === 'save' ? 'Saving…' : 'Save'"></button>
                 <button type="button" class="btn" :disabled="!!rcptBusy" @click="printSample()" x-text="rcptBusy === 'sample' ? 'Printing…' : 'Print a sample' + (receiptPrinter ? ' on ' + receiptPrinter.name : '')"></button>

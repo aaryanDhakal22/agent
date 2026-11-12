@@ -405,6 +405,7 @@ func printable(so order.StoredOrder) order.Snapshot {
 	if n := so.Number(); n != nil {
 		snap.KitchenNumber = n
 	}
+	snap.MakeAt = makeAt(so)
 	return snap
 }
 

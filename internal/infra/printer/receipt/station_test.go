@@ -54,48 +54,34 @@ func TestBuildStation_Golden(t *testing.T) {
 func TestBuildStation_Content(t *testing.T) {
 	got := BuildStation(stationFixture())
 	for _, want := range []string{
-		" REROUTED from OVEN ", cmdQuadSz + "#1104\n", "ANA\n",
-		"2 Pepperoni Pizza\n", "  (Large)\n", "  - Extra cheese\n", "  - Note: well done",
-		"1 Mystery", " ** UNMATCHED ** ",
-		cmdNormalSz + cmdBoldOn + "ITEMS TO OTHER PRINTERS", "1 Fries",
+		"DELIVERY\n", cmdHugeSz + "1104\n", "ANA\n", "REROUTED FROM OVEN\n",
+		"2  PEPPERONI PIZZA\n   (LARGE)\n", "   - Extra cheese\n", "   - well done\n",
+		"1  MYSTERY\n", "** UNMATCHED **",
+		"Also on this order:\n   1 Fries\n",
 	} {
 		if !bytes.Contains(got, []byte(want)) {
 			t.Errorf("station ticket missing %q", want)
 		}
 	}
-	// The kitchen ticket is just the number, the name and the food; the
-	// order's notes are on the customer receipt only.
-	for _, gone := range []string{"Order #4417", "Delivery", " PIZZA ", "Ring the bell", "Order notes"} {
+	// The kitchen ticket is the type, the number, the name and the food; the
+	// order's notes are on the customer receipt only. No reverse print here
+	// (REROUTED included), no prices.
+	for _, gone := range []string{"Order #4417", "Ring the bell", "Order notes", cmdInvertOn, "$", "#1104"} {
 		if bytes.Contains(got, []byte(gone)) {
 			t.Errorf("station ticket should not carry %q", gone)
 		}
-	}
-	// Free modifiers carry no price.
-	if bytes.Contains(got, []byte("$")) {
-		t.Errorf("station ticket printed a price for a free modifier")
 	}
 	if n := bytes.Count(got, []byte("UNMATCHED")); n != 1 {
 		t.Errorf("UNMATCHED appears %d times, want 1", n)
 	}
 }
 
-func TestBuildStation_PaidModifierShowsPrice(t *testing.T) {
+func TestBuildStation_NoPrices(t *testing.T) {
 	snap, tk := stationFixture()
-	tk.Mine[0].Children = []order.LineItem{{Name: "Extra cheese", Quantity: 1, UnitPrice: 200}, {Name: "Well done", Quantity: 1}}
+	tk.Mine[0].Children = []order.LineItem{{Name: "Extra cheese", Quantity: 1, UnitPrice: 200}, {Name: "Ranch", Quantity: 2}}
 	got := string(BuildStation(snap, tk))
-	if !strings.Contains(got, "  - Extra cheese") || !strings.Contains(got, "$2.00") {
-		t.Fatalf("a paid modifier shows its price: %q", got)
-	}
-	if strings.Contains(got, "$0.00") {
-		t.Fatal("a free modifier shows no price")
-	}
-}
-
-func TestBuildStation_NoOtherItems(t *testing.T) {
-	snap, tk := stationFixture()
-	tk.Others = nil
-	if bytes.Contains(BuildStation(snap, tk), []byte("ITEMS TO OTHER PRINTERS")) {
-		t.Fatal("no heading when every item is on this ticket")
+	if !strings.Contains(got, "   - Extra cheese\n") || !strings.Contains(got, "   - (x2) Ranch\n") || strings.Contains(got, "$") {
+		t.Fatalf("modifiers without prices: %q", got)
 	}
 }
 
@@ -163,7 +149,7 @@ func TestTicketsUseTheLocationTimezone(t *testing.T) {
 	}
 	promised := time.Date(2026, 10, 15, 23, 30, 0, 0, time.UTC)
 	snap.Fulfillment.PromisedAt = &promised
-	if st := Build(snap, sc, tk, order.DefaultReceiptPrefs()); !bytes.Contains(st, []byte("FUTURE Oct 15  7:30 PM")) {
+	if st := Build(snap, sc, tk, order.DefaultReceiptPrefs()); !bytes.Contains(st, []byte("READY 7:30")) || !bytes.Contains(st, []byte("Printed 1:31 PM")) {
 		t.Errorf("a scheduled order's kitchen ticket says when it's for, in New York time: %q", st)
 	}
 	sc.Location.Timezone = "Not/AZone"
@@ -235,13 +221,13 @@ func TestDisplaySize(t *testing.T) {
 
 func TestBuildStation_HidesServingSize(t *testing.T) {
 	snap := order.Snapshot{ID: "o1", Items: []order.LineItem{
-		{Name: "Turkey Club Sandwich", Size: "Serving", Quantity: 1, Routing: order.RoutingMatched, PrinterID: "p1"},
+		{Name: "Turkey Club", Size: "Serving", Quantity: 1, Routing: order.RoutingMatched, PrinterID: "p1"},
 		{Name: "Wings", Size: "Serving (6 Piece)", Quantity: 1, Routing: order.RoutingMatched, PrinterID: "p2"},
 	}}
 	out := string(BuildStation(snap, printer.Ticket{
 		Kind: printer.TicketStation, TargetID: "p1", Station: "Kitchen", Mine: snap.Items[:1], Others: snap.Items[1:],
 	}))
-	if !strings.Contains(out, "1 Turkey Club Sandwich\n") || strings.Contains(out, "Serving") {
+	if !strings.Contains(out, "1  TURKEY CLUB\n") || strings.Contains(strings.ToLower(out), "serving") {
 		t.Errorf("single-size item should print without a size:\n%q", out)
 	}
 	if !strings.Contains(out, "1 Wings (6 Piece)") {
@@ -279,20 +265,21 @@ func TestBuildWith_PaymentWording(t *testing.T) {
 	}
 }
 
-// TestBuildStation_Void (00019): a void ticket has the VOID banner and every
-// line says VOID; nothing else on it.
+// TestBuildStation_Void (00019): a void ticket is a change ticket with only
+// REMOVE / QUITAR: every line "(VOID)" and struck through; nothing else.
 func TestBuildStation_Void(t *testing.T) {
 	snap, tk := stationFixture()
 	tk.Void, tk.Others, tk.ReroutedFrom = true, nil, ""
 	tk.Mine = tk.Mine[:1]
 	out := string(BuildStation(snap, tk))
-	for _, want := range []string{" VOID - REMOVED ", "VOID 2 Pepperoni Pizza"} {
+	for _, want := range []string{"REMOVE / QUITAR", "(VOID) " + strikeImage("2  PEPPERONI PIZZA (LARGE)") + "\n",
+		"          " + strikeImage("- Extra cheese") + "\n"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("void ticket lacks %q:\n%q", want, out)
 		}
 	}
-	if strings.Contains(out, "ITEMS TO OTHER PRINTERS") {
-		t.Fatal("void ticket lists other items")
+	if strings.Contains(out, "Also on this order") || strings.Contains(out, "ADD / AGREGAR") {
+		t.Fatal("void ticket lists other items or adds")
 	}
 }
 
@@ -301,33 +288,20 @@ func TestBuildStation_Void(t *testing.T) {
 func TestBuildStation_VoidGolden(t *testing.T) {
 	snap, tk := stationFixture()
 	tk.Void, tk.Others, tk.ReroutedFrom = true, nil, ""
-	got := BuildStation(snap, tk)
-	path := "testdata/station_void.golden"
-	if *update {
-		if err := os.WriteFile(path, got, 0o644); err != nil {
-			t.Fatal(err)
-		}
-	}
-	want, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("%v (run with -update to create)", err)
-	}
-	if !bytes.Equal(got, want) {
-		t.Fatalf("void ticket bytes changed (run with -update if intended)\ngot:  %q\nwant: %q", got, want)
-	}
+	golden(t, "testdata/station_void.golden", BuildStation(snap, tk))
 }
 
-// TestBuildStation_AddOn (terminal §2.10d): lines added after SEND print
-// under an ADD-ON banner with the order number, nothing else.
+// TestBuildStation_AddOn (terminal §2.10d, an older plan's ADD-ON ticket):
+// the added lines under ADD / AGREGAR, nothing else.
 func TestBuildStation_AddOn(t *testing.T) {
 	snap, tk := stationFixture()
 	tk.AddOn, tk.Others, tk.ReroutedFrom = true, nil, ""
 	tk.Mine = tk.Mine[:1]
 	out := string(BuildStation(snap, tk))
-	if !strings.Contains(out, " ADD-ON ") || !strings.Contains(out, "Pepperoni Pizza") {
+	if !strings.Contains(out, "ADD / AGREGAR") || !strings.Contains(out, "2  PEPPERONI PIZZA\n") {
 		t.Fatalf("add-on ticket:\n%q", out)
 	}
-	if strings.Contains(out, "ITEMS TO OTHER PRINTERS") || strings.Contains(out, "VOID") {
+	if strings.Contains(out, "Also on this order") || strings.Contains(out, "VOID") {
 		t.Fatal("add-on ticket lists other items or says VOID")
 	}
 }

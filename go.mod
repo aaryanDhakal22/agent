@@ -18,6 +18,7 @@ require (
 	go.opentelemetry.io/otel/sdk/metric v1.47.0
 	go.opentelemetry.io/otel/trace v1.47.0
 	golang.org/x/crypto v0.58.0
+	golang.org/x/image v0.32.0
 	gopkg.in/lumberjack.v2 v2.0.0
 	modernc.org/sqlite v1.60.1
 )

@@ -21,58 +21,110 @@ func ready(t *testing.T, r *OrderRepository, so order.StoredOrder) order.StoredO
 	return *got
 }
 
-func TestClaimSendsOutReadyUnassignedOnly(t *testing.T) {
+// The Dispatch claim: unassigned deliveries past the cutoff become his,
+// delivered; he never goes out. All or nothing, first come first served.
+func TestClaimDeliveredLateUnassignedOnly(t *testing.T) {
 	ctx := context.Background()
-	r, a, b, os := poolSetup(t, 5)
-	// os[0], os[1] ready + unassigned; os[2] ready in b's pool; os[3] cooking; os[4] cooking in a's own pool.
-	for _, so := range os[:3] {
-		ready(t, r, so)
-	}
-	if _, err := r.PoolOrders(ctx, ids(os[2]), b.ID); err != nil {
+	r, a, b, os := poolSetup(t, 6)
+	// os[0] cooking, os[1] ready, os[2] marked delivered (no driver): unassigned.
+	// os[3] ready in b's pool; os[4] out with b; os[5] arrived (never accepted).
+	ready(t, r, os[1])
+	if _, err := r.MarkDeliveredNoDriver(ctx, os[2].Order.ID, order.MarkedBy{Kind: order.ByTablet, Name: "Front"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := r.PoolOrders(ctx, ids(os[4]), a.ID); err != nil {
+	ready(t, r, os[3])
+	if _, err := r.PoolOrders(ctx, ids(os[3]), b.ID); err != nil {
 		t.Fatal(err)
 	}
-	claim := order.RunMeta{Claim: true}
+	ready(t, r, os[4])
+	off, _ := r.CreateDriver(ctx, "Cal", "") // never clocked in
+	if _, _, err := r.SendOut(ctx, b.ID, ids(os[4]), false, order.RunMeta{}); err != nil {
+		t.Fatal(err)
+	}
+	fresh := arrive(t, r, "delivery")
+	by := order.MarkedBy{Kind: order.ByTerminal, Name: "Ann", DeviceID: "dev-2"}
+	early := time.Now().Add(-45 * time.Minute) // nothing has waited 45 minutes yet
+	late := time.Now().Add(time.Minute)        // everything has
 
-	// Another driver's pool and a cooking order are taken: all or nothing.
-	_, _, err := r.SendOut(ctx, a.ID, ids(os[0], os[2], os[3]), false, claim)
 	var tk *order.ErrTaken
-	if !errors.As(err, &tk) || len(tk.IDs) != 2 || tk.IDs[0] != os[2].Order.ID || tk.IDs[1] != os[3].Order.ID {
-		t.Fatalf("want ErrTaken{os2, os3}, got %v", err)
+	if _, err := r.ClaimDelivered(ctx, a.ID, ids(os[0], os[1]), early, by); !errors.As(err, &tk) || len(tk.IDs) != 2 {
+		t.Fatalf("too new: want ErrTaken{os0, os1}, got %v", err)
 	}
-	if got := get(t, r, os[0].Order.ID); got.Status.State != order.StateReady || got.Status.PoolDriverID != "" {
-		t.Fatalf("a refused claim must change nothing: %+v", got.Status)
+	_, err := r.ClaimDelivered(ctx, a.ID, ids(os[0], os[3], os[4], fresh), late, by)
+	if !errors.As(err, &tk) || len(tk.IDs) != 3 || tk.IDs[0] != os[3].Order.ID || tk.IDs[1] != os[4].Order.ID || tk.IDs[2] != fresh.Order.ID {
+		t.Fatalf("pooled / out / unaccepted: want ErrTaken{os3, os4, fresh}, got %v", err)
 	}
-	if _, _, err := r.SendOut(ctx, a.ID, nil, false, claim); !errors.Is(err, order.ErrNoOrders) {
-		t.Fatalf("an empty claim: %v", err)
+	if got := get(t, r, os[0].Order.ID); got.Status.State != order.StateAccepted || got.Status.DriverID != "" {
+		t.Fatalf("a refused claim changes nothing: %+v", got.Status)
+	}
+	if _, err := r.ClaimDelivered(ctx, a.ID, []string{"00000000-0000-0000-0000-000000000000"}, late, by); !errors.Is(err, order.ErrNotFound) {
+		t.Fatalf("unknown id: %v", err)
+	}
+	if _, err := r.ClaimDelivered(ctx, a.ID, nil, late, by); !errors.Is(err, order.ErrNoOrders) {
+		t.Fatalf("empty claim: %v", err)
 	}
 
-	sent, readied, err := r.SendOut(ctx, a.ID, ids(os[0], os[1]), false, claim)
-	if err != nil || len(sent) != 2 || len(readied) != 0 {
-		t.Fatalf("claim: %v sent=%d readied=%d", err, len(sent), len(readied))
+	before := len(eventsOfType(t, r, order.FloorEventOrderStatus))
+	got, err := r.ClaimDelivered(ctx, a.ID, ids(os[0], os[1], os[2]), late, by)
+	if err != nil || len(got) != 3 {
+		t.Fatalf("claim: %v %d", err, len(got))
 	}
-	for _, so := range sent {
-		if so.Status.State != order.StateOnDelivery || so.Status.DriverID != a.ID {
-			t.Fatalf("claimed order: %+v", so.Status)
+	prev := []order.State{order.StateAccepted, order.StateReady, order.StateAccepted}
+	for i, so := range got {
+		st := so.Status
+		if st.State != order.StateDelivered || st.DriverID != a.ID || st.DriverName != "Ann" || st.DeliveredAt == nil || st.OutAt != nil || so.IsUnassigned() {
+			t.Fatalf("claimed %d: %+v", i, st)
+		}
+		if i < 2 && (st.MarkedDelivered == nil || st.MarkedDelivered.By.Kind != order.ByTerminal || st.MarkedDelivered.PrevState != prev[i]) {
+			t.Fatalf("marked by the terminal %d: %+v", i, st.MarkedDelivered)
 		}
 	}
-	// His own cooking pool order stayed behind, unassigned.
-	if got := get(t, r, os[4].Order.ID); got.Status.State != order.StateAccepted || got.Status.PoolDriverID != "" {
-		t.Fatalf("his cooking pool order: %+v", got.Status)
+	if got[2].Status.MarkedDelivered.By.Kind != order.ByTablet {
+		t.Fatalf("an Unassigned one keeps how it got there: %+v", got[2].Status.MarkedDelivered)
 	}
-	if n := len(eventsOfType(t, r, order.FloorEventDeliveryRun)); n != 1 {
-		t.Fatalf("delivery.run events = %d", n)
+	if n := len(eventsOfType(t, r, order.FloorEventOrderStatus)) - before; n != 3 {
+		t.Fatalf("order.status events = %d, want 3", n)
 	}
-	// He is out now: a second claim (b's order is b's anyway) is refused.
-	if _, _, err := r.SendOut(ctx, a.ID, ids(os[1]), false, claim); !errors.Is(err, order.ErrDriverNotAvailable) {
-		t.Fatalf("claim while out: %v", err)
+	if ev := lastStatusEvent(t, r, os[1].Order.ID); ev["status"] != "delivered" || ev["driver_name"] != "Ann" {
+		t.Fatalf("main hears delivered by him: %v", ev)
 	}
-	// An order claimed first is taken for the next driver.
-	_, _, err = r.SendOut(ctx, b.ID, ids(os[0]), false, claim)
-	if !errors.As(err, &tk) || tk.IDs[0] != os[0].Order.ID {
-		t.Fatalf("second driver: %v", err)
+	if len(eventsOfType(t, r, order.FloorEventDeliveryRun)) != 1 { // b's send-out only: a claim is no run
+		t.Fatal("a claim must not write a delivery.run")
+	}
+	ds, _ := r.ListDrivers(ctx)
+	for _, d := range ds {
+		if d.ID == a.ID && d.Status != order.DriverAvailable {
+			t.Fatalf("he never goes out: %+v", d)
+		}
+	}
+	// Again by him: nothing changes; by someone else: taken.
+	if again, err := r.ClaimDelivered(ctx, a.ID, ids(os[1]), late, by); err != nil || len(again) != 0 {
+		t.Fatalf("his own again: %v %d", err, len(again))
+	}
+	if _, err := r.ClaimDelivered(ctx, b.ID, ids(os[1]), late, by); !errors.As(err, &tk) {
+		t.Fatalf("someone else's: %v", err)
+	}
+	// A driver who is off may claim too and stays off; the orders are on his report.
+	extra := accept(t, r, arrive(t, r, "delivery"))
+	if _, err := r.ClaimDelivered(ctx, off.ID, ids(extra), late, by); err != nil {
+		t.Fatal(err)
+	}
+	reps, err := r.DriverReports(ctx, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	counts := map[string]int{}
+	for _, rep := range reps {
+		counts[rep.DriverID] = len(rep.Lines)
+	}
+	if counts[a.ID] != 3 || counts[off.ID] != 1 {
+		t.Fatalf("report lines: %v", counts)
+	}
+	ds, _ = r.ListDrivers(ctx)
+	for _, d := range ds {
+		if d.ID == off.ID && d.Status != order.DriverOff {
+			t.Fatalf("an off driver stays off: %+v", d)
+		}
 	}
 }
 
@@ -81,7 +133,7 @@ func TestDeliverOneReturnsTheDriverOnHisLastStop(t *testing.T) {
 	r, a, b, os := poolSetup(t, 2)
 	ready(t, r, os[0])
 	ready(t, r, os[1])
-	if _, _, err := r.SendOut(ctx, a.ID, ids(os[0], os[1]), false, order.RunMeta{Claim: true}); err != nil {
+	if _, _, err := r.SendOut(ctx, a.ID, ids(os[0], os[1]), false, order.RunMeta{}); err != nil {
 		t.Fatal(err)
 	}
 	if _, _, err := r.DeliverOne(ctx, b.ID, os[0].Order.ID); !errors.Is(err, order.ErrInvalidState) {

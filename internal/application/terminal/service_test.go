@@ -55,17 +55,13 @@ func (f *fakeOrders) PrintVoidSlip(_ context.Context, so order.StoredOrder) {
 	f.voids = append(f.voids, so)
 	f.mu.Unlock()
 }
-func (f *fakeOrders) PrintAddOn(_ context.Context, _ order.StoredOrder, items []order.LineItem) {
+func (f *fakeOrders) PrintChange(_ context.Context, _ order.StoredOrder, added, removed []order.LineItem) {
 	f.mu.Lock()
-	if len(items) > 0 {
-		f.addOns = append(f.addOns, items)
+	if len(added) > 0 {
+		f.addOns = append(f.addOns, added)
 	}
-	f.mu.Unlock()
-}
-func (f *fakeOrders) PrintVoidLines(_ context.Context, _ order.StoredOrder, items []order.LineItem) {
-	f.mu.Lock()
-	if len(items) > 0 {
-		f.voidLns = append(f.voidLns, items)
+	if len(removed) > 0 {
+		f.voidLns = append(f.voidLns, removed)
 	}
 	f.mu.Unlock()
 }

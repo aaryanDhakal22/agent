@@ -49,6 +49,11 @@ type Snapshot struct {
 	// check was on the tablet - struck through, red, REMOVED on Kitchen and in
 	// History. Never printed or counted (Items is what the order is now).
 	RemovedItems []LineItem `json:"removed_items,omitempty"`
+
+	// MakeAt (printing only, never on the wire): when the kitchen starts a
+	// future order - its re-ring time, else promised_at less its lead or
+	// prep minutes. The kitchen ticket's band says MAKE AT / READY.
+	MakeAt *time.Time `json:"-"`
 }
 
 type Money struct {

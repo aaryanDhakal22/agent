@@ -2,8 +2,12 @@
 
 A throwaway agent behind test_terminal's FAKE MAIN (dev main for everything
 else), fake printers only. A cashier places counter deliveries on one
-terminal; drivers log in with their own PIN on others and claim, see their
-tickets, tip, close and print their report. The batch auto-close (§2.10c) is
+terminal; drivers log in with their own PIN on others and claim (Dispatch:
+deliveries nobody took past the store's driver_claim_after_minutes become
+theirs, delivered), see their tickets, tip, close and print their report. The
+fixture sets driver_claim_after_minutes to 0 so fresh orders are listed; the
+45-minute default with a moved clock is covered by the Go tests
+(internal/application/terminal/driver_test.go). The batch auto-close (§2.10c) is
 covered by the Go tests with an injected clock
 (internal/application/order/autoclose_test.go).
 """
@@ -25,8 +29,10 @@ DRIVER_HASHES = {"5511": "$2a$04$YucRH1Wg.1UMR/8ccruyweBklSB5AW6T5DkOe9pnGX6aAN5
                  "6622": "$2a$04$TIEmQPTjtxNku3EImy1N4eN4VqYEl3cddctcFkazy.mN0vGacXlAa"}
 
 
-def driver_config() -> dict:
-    cfg = staff_config()
+def driver_config(version: int = 1, claim_after: int | None = 0) -> dict:
+    cfg = staff_config(version=version)
+    if claim_after is not None:
+        cfg["settings"]["driver_claim_after_minutes"] = claim_after
     cfg["staff"] += [{"id": "s-driver-1", "first_name": "Ali", "last_name": "Khan", "role": "driver", "pin_hash": DRIVER_HASHES["5511"]},
                      {"id": "s-driver-2", "first_name": "Sam", "last_name": "", "role": "driver", "pin_hash": DRIVER_HASHES["6622"]}]
     return cfg
@@ -110,31 +116,41 @@ def test_claim_mine_tip_close_report(drig):
     cooking = delivery(drig, ready=False)
     cash = delivery(drig)
     paid = delivery(drig, paid=True)
-    # The claim list: ready + unassigned only, oldest ready first, never a cooking one.
+    me = drig["logins"]["5511"]["driver"]["id"]
+    sam_id = drig["logins"]["6622"]["driver"]["id"]
+    # Dispatch: every delivery nobody took, cooking too, longest waiting first.
     avail = ali.get(f"{base}/api/terminal/driver/available", timeout=5).json()
-    assert [a["order_id"] for a in avail] == [cash, paid]
-    assert cooking not in [a["order_id"] for a in avail]
-    assert avail[0]["payment"] == "cash_due" and avail[0]["cash_due_cents"] > 0 and avail[0]["street"] == "12 Main St"
+    assert [a["order_id"] for a in avail] == [cooking, cash, paid]
+    assert [a["state"] for a in avail] == ["accepted", "ready", "ready"]
+    assert avail[1]["payment"] == "cash_due" and avail[1]["cash_due_cents"] > 0 and avail[1]["street"] == "12 Main St"
     # times compared as times: the agent trims trailing zeros ("…07.3Z" vs "…07.345Z" sorts wrong as text)
-    assert avail[1]["payment"] == "paid" and avail[1]["cash_due_cents"] == 0 and \
-        datetime.fromisoformat(avail[0]["ready_at"]) <= datetime.fromisoformat(avail[1]["ready_at"])
-    # A cooking order in a claim: 409 taken, nothing changes.
-    r = ali.post(f"{base}/api/terminal/driver/claim", json={"order_ids": [cash, cooking]}, timeout=10)
-    assert r.status_code == 409 and r.json()["code"] == "taken" and r.json()["order_ids"] == [cooking], r.text
-    assert len(ali.get(f"{base}/api/terminal/driver/available", timeout=5).json()) == 2
+    assert avail[2]["payment"] == "paid" and avail[2]["cash_due_cents"] == 0 and avail[0]["waiting_minutes"] >= 0 and \
+        datetime.fromisoformat(avail[0]["since"]) <= datetime.fromisoformat(avail[1]["since"])
+    # The manager sends "paid" out with Sam: it is taken, all or nothing.
+    assert agent.http.post(f"{base}/api/drivers/{sam_id}/clock-in", timeout=5).status_code == 200
+    r = agent.http.post(f"{base}/api/drivers/{sam_id}/send-out", json={"include_order_ids": [paid]}, timeout=10)
+    assert r.status_code == 200, r.text
+    wait_until(lambda: any(e.get("driver_id") == sam_id for e in fm.of_type("delivery.run")), what="Sam's run synced to main")
+    r = ali.post(f"{base}/api/terminal/driver/claim", json={"order_ids": [cash, paid]}, timeout=10)
+    assert r.status_code == 409 and r.json()["code"] == "taken" and r.json()["order_ids"] == [paid], r.text
     assert ali.post(f"{base}/api/terminal/driver/claim", json={"order_ids": []}, timeout=5).status_code == 400
 
-    r = ali.post(f"{base}/api/terminal/driver/claim", json={"order_ids": [cash, paid]}, timeout=10)
+    # Claim = his and delivered; not a send-out: he stays off, no run.
+    runs = len(fm.of_type("delivery.run"))
+    r = ali.post(f"{base}/api/terminal/driver/claim", json={"order_ids": [cash, cooking]}, timeout=10)
     assert r.status_code == 200, r.text
     res = r.json()
-    assert res["driver"]["status"] == "out" and {o["order"]["id"] for o in res["orders"]} == {cash, paid}
-    assert all(o["status"]["state"] == "on_delivery" for o in res["orders"])
-    me = res["driver"]["id"]
-    # He was off: the claim clocked him in and sent him out; Quibase sees it.
+    assert res["driver"]["id"] == me and res["driver"]["status"] == "off"
+    assert [o["order"]["id"] for o in res["orders"]] == [cash, cooking]
+    assert all(o["status"]["state"] == "delivered" and o["status"]["driver_id"] == me and not o["status"].get("out_at")
+               for o in res["orders"])
     drivers = {d["id"]: d for d in agent.http.get(f"{base}/api/drivers", timeout=5).json()}
-    assert drivers[me]["status"] == "out" and drivers[me]["clocked_in_at"]
-    wait_until(lambda: any(e.get("driver_id") == me for e in fm.of_type("delivery.run")), what="delivery.run to main")
-    # Gone from everyone's claim list; a second claim of the same order is taken.
+    assert drivers[me]["status"] == "off"
+    wait_until(lambda: {e["order_id"] for e in fm.of_type("order.status")
+                        if e.get("status") == "delivered" and e.get("driver_name") == "Ali K."} >= {cash, cooking},
+               what="order.status delivered by him to main")
+    assert len(fm.of_type("delivery.run")) == runs
+    # Gone from everyone's list; a second claim of the same order is taken.
     assert sam.get(f"{base}/api/terminal/driver/available", timeout=5).json() == []
     r = sam.post(f"{base}/api/terminal/driver/claim", json={"order_ids": [cash]}, timeout=5)
     assert r.status_code == 409 and r.json()["code"] == "taken"
@@ -142,8 +158,8 @@ def test_claim_mine_tip_close_report(drig):
     assert ali.post(f"{base}/api/terminal/driver/orders/{cash}/unassign", timeout=5).status_code in (404, 405)
 
     mine = ali.get(f"{base}/api/terminal/driver/mine", timeout=5).json()
-    assert [t["order_id"] for t in mine["out"]] and {t["order_id"] for t in mine["out"]} == {cash, paid} and mine["delivered"] == []
-    t = next(t for t in mine["out"] if t["order_id"] == cash)
+    assert mine["out"] == [] and {t["order_id"] for t in mine["delivered"]} == {cash, cooking}
+    t = next(t for t in mine["delivered"] if t["order_id"] == cash)
     assert t["name"] == "Erik Davis" and t["phone"] == "4105550101" and t["address"]["line1"] == "12 Main St, Apt 3"
     assert t["address"]["notes"] == "ring twice" and t["payment"] == "cash_due" and t["tip_kind"] == "door" and "geo" in t
     # Someone else's order: 403.
@@ -153,16 +169,12 @@ def test_claim_mine_tip_close_report(drig):
     r = ali.post(f"{base}/api/terminal/driver/orders/{cash}/tip", json={"tip_cents": 400}, timeout=5)
     assert r.status_code == 200 and r.json()["kind"] == "door" and r.json()["ticket"]["door_tip_cents"] == 400, r.text
     assert ali.post(f"{base}/api/terminal/driver/orders/{cash}/tip", json={"tip_cents": -1}, timeout=5).status_code == 400
-
-    # Close: the first stays out; the last puts him back in the queue.
-    r = ali.post(f"{base}/api/terminal/driver/orders/{cash}/close", timeout=10)
-    assert r.status_code == 200 and not r.json()["returned"] and r.json()["ticket"]["state"] == "delivered", r.text
+    # A claimed order is closed already.
     r = ali.post(f"{base}/api/terminal/driver/orders/{cash}/close", timeout=5)
     assert r.status_code == 409 and r.json()["code"] == "invalid_state"
-    r = ali.post(f"{base}/api/terminal/driver/orders/{paid}/close", timeout=10).json()
-    assert r["returned"] and r["driver"]["status"] == "available"
-    mine = ali.get(f"{base}/api/terminal/driver/mine", timeout=5).json()
-    assert mine["out"] == [] and {t["order_id"] for t in mine["delivered"]} == {cash, paid}
+    # Close still works for an order he was sent out with: Sam's last stop returns him.
+    r = sam.post(f"{base}/api/terminal/driver/orders/{paid}/close", timeout=10).json()
+    assert r["returned"] and r["driver"]["status"] == "available" and r["ticket"]["state"] == "delivered"
 
     rep = ali.get(f"{base}/api/terminal/driver/report", timeout=5).json()
     assert rep["driver_id"] == me and rep["deliveries"] == 2 and rep["door_tip_cents"] == 400 and rep["cash_cents"] > 0
@@ -174,10 +186,29 @@ def test_claim_mine_tip_close_report(drig):
 
     # Journaled, and the journal reaches main.
     actions = [e["action"] for e in ali.get(f"{base}/api/terminal/journal", timeout=5).json()]
-    for a in ("driver.linked", "driver.claim", "driver.tip", "driver.close", "driver.report"):
+    for a in ("driver.linked", "driver.claim", "driver.tip", "driver.report"):
         assert a in actions, a
-    wait_until(lambda: any(e["action"] == "driver.claim" for ev in fm.of_type("journal.entries") for e in ev["entries"]),
+    wait_until(lambda: any(e["action"] == "driver.claim" and e["detail"]["delivered"] == [cash, cooking]
+                           for ev in fm.of_type("journal.entries") for e in ev["entries"]),
                what="driver journal synced")
+
+
+def test_claim_waits_for_the_store_setting(drig):
+    """driver_claim_after_minutes from main's terminal config: at 45 a fresh delivery isn't listed or claimable;
+    back to 0 it is."""
+    agent, ali, fm = drig["agent"], drig["ali"], drig["fm"]
+    base = agent.base
+    oid = delivery(drig)
+    assert [a["order_id"] for a in ali.get(f"{base}/api/terminal/driver/available", timeout=5).json()] == [oid]
+    fm.terminal_config = driver_config(version=2, claim_after=None)  # missing = 45
+    fm.command("terminal.changed", {"version": 2})
+    wait_until(lambda: ali.get(f"{base}/api/terminal/driver/available", timeout=5).json() == [], what="45-minute rule")
+    r = ali.post(f"{base}/api/terminal/driver/claim", json={"order_ids": [oid]}, timeout=5)
+    assert r.status_code == 409 and r.json()["code"] == "taken" and r.json()["order_ids"] == [oid], r.text
+    fm.terminal_config = driver_config(version=3, claim_after=0)
+    fm.command("terminal.changed", {"version": 3})
+    wait_until(lambda: len(ali.get(f"{base}/api/terminal/driver/available", timeout=5).json()) == 1, what="0-minute rule")
+    assert ali.post(f"{base}/api/terminal/driver/claim", json={"order_ids": [oid]}, timeout=5).status_code == 200
 
 
 def test_claim_race_one_wins(drig):
@@ -201,7 +232,7 @@ def test_claim_race_one_wins(drig):
     assert lost.json()["code"] == "taken" and lost.json()["order_ids"] == [oid]
     so = agent.http.get(f"{agent.base}/api/orders/{oid}", timeout=5).json()
     winner = next(r for r in out.values() if r.status_code == 200).json()["driver"]["id"]
-    assert so["status"]["state"] == "on_delivery" and so["status"]["driver_id"] == winner
+    assert so["status"]["state"] == "delivered" and so["status"]["driver_id"] == winner
 
 
 def test_live_main_terminal_settings_carry_auto_close(admin, main_store):

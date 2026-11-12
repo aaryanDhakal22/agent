@@ -161,14 +161,6 @@ func (r *OrderRepository) SendOut(ctx context.Context, driverID string, include 
 		if err != nil {
 			return err
 		}
-		if meta.Claim {
-			if len(include) == 0 {
-				return order.ErrNoOrders
-			}
-			if err := claimable(ctx, q, include, d.ID); err != nil {
-				return err
-			}
-		}
 		if len(include) > 0 {
 			if _, err := poolInTx(ctx, q, include, d.ID, now); err != nil {
 				return err
@@ -186,24 +178,6 @@ func (r *OrderRepository) SendOut(ctx context.Context, driverID string, include 
 			}
 			if _, err := setPool(ctx, q, so, "", "", now); err != nil {
 				return err
-			}
-		}
-		if meta.Claim { // a claim never waits on the kitchen: his cooking pool orders stay behind
-			rows, err := q.ListPoolByDriver(ctx, sql.NullString{String: d.ID, Valid: true})
-			if err != nil {
-				return err
-			}
-			for _, row := range rows {
-				if row.State != string(order.StateAccepted) {
-					continue
-				}
-				so, err := loadOrder(ctx, q, row.ID)
-				if err != nil {
-					return err
-				}
-				if _, err := setPool(ctx, q, so, "", "", now); err != nil {
-					return err
-				}
 			}
 		}
 		rows, err := q.ListPoolByDriver(ctx, sql.NullString{String: d.ID, Valid: true})
@@ -261,33 +235,6 @@ func (r *OrderRepository) SendOut(ctx context.Context, driverID string, include 
 		return nil, nil, err
 	}
 	return sent, readied, nil
-}
-
-// claimable checks a driver's claim (terminal driver view): every order is a
-// ready delivery of the open batch, not held after coming back, and in no
-// other driver's pool (unassigned, or already his). Otherwise *ErrTaken with
-// the ids that failed; an unknown id is ErrNotFound.
-func claimable(ctx context.Context, q *models.Queries, ids []string, driverID string) error {
-	b, err := q.GetOpenBatch(ctx)
-	if err != nil {
-		return fmt.Errorf("open batch: %w", err)
-	}
-	var taken []string
-	for _, id := range ids {
-		so, err := loadOrder(ctx, q, id)
-		if err != nil {
-			return err
-		}
-		st := so.Status
-		if !so.IsDelivery() || st.BatchID != b.ID || st.State != order.StateReady || st.CameBack ||
-			(st.PoolDriverID != "" && st.PoolDriverID != driverID) {
-			taken = append(taken, id)
-		}
-	}
-	if len(taken) > 0 {
-		return &order.ErrTaken{IDs: taken}
-	}
-	return nil
 }
 
 // sendRun is the shared tail of AssignDriver and SendOut: the orders go out

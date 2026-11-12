@@ -18,9 +18,10 @@ import (
 )
 
 // The driver view (contract/agent.md §2.10b): a staff member with the role
-// driver, logged in on a terminal, claims ready unassigned deliveries (he is
-// sent out with them at once), sees his tickets, adds a tip, "closes" an
-// order (delivered) and prints his report. He is a Pi driver on the roster,
+// driver, logged in on a terminal, assigns himself deliveries nobody took
+// (Dispatch: unassigned past the store's driver_claim_after_minutes; they
+// become his and delivered, he never goes out), sees his tickets, adds a
+// tip, "closes" an order (delivered) and prints his report. He is a Pi driver on the roster,
 // linked at his first login by staff id. Every action is journaled and
 // announced as terminal.driver.* on /api/events; the floor changes go
 // through the same transitions as Quibase's (order.updated, drivers.*).
@@ -41,11 +42,11 @@ const MaxClaim = 20
 type Floor interface {
 	ListDrivers(ctx context.Context) ([]order.Driver, error)
 	CreateDriver(ctx context.Context, name, posNumber string) (*order.Driver, error)
-	ClockInForClaim(ctx context.Context, id string) (*order.Driver, error)
 	OpenDeliveries(ctx context.Context) ([]order.StoredOrder, error)
+	UnassignedDelivered(ctx context.Context) ([]order.StoredOrder, error)
 	ListByBatch(ctx context.Context, batchID int64, offset, limit int) ([]order.StoredOrder, error)
 	GetOrder(ctx context.Context, id string) (*order.StoredOrder, error)
-	ClaimRun(ctx context.Context, driverID string, ids []string) ([]order.StoredOrder, error)
+	ClaimDelivered(ctx context.Context, driverID string, ids []string, cutoff time.Time, by order.MarkedBy) ([]order.StoredOrder, error)
 	DeliverOne(ctx context.Context, driverID, orderID string) (*order.StoredOrder, bool, error)
 	SetTip(ctx context.Context, id string, cents int64) (*order.StoredOrder, error)
 	SetDoorTip(ctx context.Context, id string, cents int64) (*order.StoredOrder, error)
@@ -235,31 +236,35 @@ func addressOf(so order.StoredOrder) (*DriverAddress, string) {
 
 // AvailableOrder is one entry of the claim list.
 type AvailableOrder struct {
-	OrderID      string         `json:"order_id"`
-	Number       *int64         `json:"number"`
-	Street       string         `json:"street"`
-	Address      *DriverAddress `json:"address"`
-	ReadyAt      *time.Time     `json:"ready_at"`
-	Payment      string         `json:"payment"`
-	CashDueCents int64          `json:"cash_due_cents"`
-	TotalCents   int64          `json:"total_cents"`
+	OrderID string `json:"order_id"`
+	Number  *int64 `json:"number"`
+	// State: accepted (cooking), ready, or delivered (marked delivered
+	// with no driver).
+	State   string         `json:"state"`
+	Street  string         `json:"street"`
+	Address *DriverAddress `json:"address"`
+	// Since: the clock the rule counts from (order.ClaimSince: accepted,
+	// else arrived); WaitingMinutes = whole minutes since then.
+	Since          time.Time  `json:"since"`
+	WaitingMinutes int64      `json:"waiting_minutes"`
+	ReadyAt        *time.Time `json:"ready_at"`
+	Payment        string     `json:"payment"`
+	CashDueCents   int64      `json:"cash_due_cents"`
+	TotalCents     int64      `json:"total_cents"`
 }
 
-func readyAt(so order.StoredOrder) time.Time {
-	if so.Status.ReadyAt != nil {
-		return *so.Status.ReadyAt
-	}
-	return so.Status.ArrivalDate
+// claimCutoff: an order waiting since at or before this may be claimed
+// (now - the store's driver_claim_after_minutes, default 45).
+func (s *Service) claimCutoff(now time.Time) time.Time {
+	cfg, _ := s.store.Config()
+	return now.Add(-time.Duration(cfg.DriverClaimAfterMinutes()) * time.Minute)
 }
 
-// ClaimableNow: a delivery a driver may claim - ready, in nobody's pool, not
-// held after coming back. Never a cooking one.
-func ClaimableNow(so order.StoredOrder) bool {
-	return so.IsDelivery() && so.Status.State == order.StateReady && so.Status.PoolDriverID == "" && !so.Status.CameBack
-}
-
-// Available is GET /api/terminal/driver/available: the ready, unassigned
-// deliveries, oldest ready first (first come, first served).
+// Available is GET /api/terminal/driver/available: the Dispatch list -
+// deliveries of the open batch nobody took (no driver, in no pool; cooking,
+// ready, or delivered with no driver) waiting longer than the store's
+// driver_claim_after_minutes, longest waiting first (first come, first
+// served).
 func (s *Service) Available(ctx context.Context, a Actor) ([]AvailableOrder, error) {
 	if _, _, err := s.driverOf(ctx, a); err != nil {
 		return nil, err
@@ -268,18 +273,26 @@ func (s *Service) Available(ctx context.Context, a Actor) ([]AvailableOrder, err
 	if err != nil {
 		return nil, err
 	}
+	done, err := s.drv.floor.UnassignedDelivered(ctx)
+	if err != nil {
+		return nil, err
+	}
+	now := s.now()
+	cutoff := s.claimCutoff(now)
 	var list []order.StoredOrder
-	for _, so := range open {
-		if ClaimableNow(so) {
+	for _, so := range append(open, done...) {
+		if order.ClaimableLate(so, so.Status.BatchID, cutoff) {
 			list = append(list, so)
 		}
 	}
-	sort.SliceStable(list, func(i, j int) bool { return readyAt(list[i]).Before(readyAt(list[j])) })
+	sort.SliceStable(list, func(i, j int) bool { return order.ClaimSince(list[i]).Before(order.ClaimSince(list[j])) })
 	out := make([]AvailableOrder, 0, len(list))
 	for _, so := range list {
 		addr, street := addressOf(so)
-		out = append(out, AvailableOrder{OrderID: so.Order.ID, Number: so.Number(), Street: street, Address: addr,
-			ReadyAt: so.Status.ReadyAt, Payment: paymentOf(so), CashDueCents: so.Status.CashDueCents, TotalCents: so.Order.Money.Total})
+		since := order.ClaimSince(so)
+		out = append(out, AvailableOrder{OrderID: so.Order.ID, Number: so.Number(), State: string(so.Status.State), Street: street,
+			Address: addr, Since: since, WaitingMinutes: int64(now.Sub(since) / time.Minute), ReadyAt: so.Status.ReadyAt,
+			Payment: paymentOf(so), CashDueCents: so.Status.CashDueCents, TotalCents: so.Order.Money.Total})
 	}
 	return out, nil
 }
@@ -391,15 +404,17 @@ type ClaimIn struct {
 	OrderIDs []string `json:"order_ids"`
 }
 
-// ClaimResult is the claim's answer: he is out with these orders.
+// ClaimResult is the claim's answer: the orders are his, delivered.
 type ClaimResult struct {
 	Driver *DriverPublic       `json:"driver"`
 	Orders []order.StoredOrder `json:"orders"`
 }
 
-// Claim pools the orders to him and sends him out with them (SEND OUT),
-// all or nothing; clocks him in first when he's off. An order someone else
-// got first: *order.ErrTaken (409 taken).
+// Claim assigns the orders to him and marks them delivered (when they
+// weren't): all or nothing, first come first served (*order.ErrTaken, 409
+// taken, for an order someone got first or that isn't claimable). He does
+// not go out and his status doesn't change; the orders count on his driver
+// report. A driver can never unassign.
 func (s *Service) Claim(ctx context.Context, a Actor, in ClaimIn) (*ClaimResult, error) {
 	st, d, err := s.driverOf(ctx, a)
 	if err != nil {
@@ -419,16 +434,8 @@ func (s *Service) Claim(ctx context.Context, a Actor, in ClaimIn) (*ClaimResult,
 	if len(ids) == 0 || len(ids) > MaxClaim {
 		return nil, badRequest(fmt.Sprintf("order_ids: 1-%d orders", MaxClaim))
 	}
-	switch d.Status {
-	case order.DriverOut:
-		return nil, terminal.ErrDriverOut
-	case order.DriverOff:
-		if d, err = s.drv.floor.ClockInForClaim(ctx, d.ID); err != nil {
-			return nil, err
-		}
-		s.logger.Info().Ctx(ctx).Str("driver_id", d.ID).Msg("Driver clocked in by his claim")
-	}
-	sent, err := s.drv.floor.ClaimRun(ctx, d.ID, ids)
+	by := order.MarkedBy{Kind: order.ByTerminal, Name: d.Name, DeviceID: a.DeviceID}
+	got, err := s.drv.floor.ClaimDelivered(ctx, d.ID, ids, s.claimCutoff(s.now()), by)
 	if err != nil {
 		var tk *order.ErrTaken
 		if errors.As(err, &tk) {
@@ -436,23 +443,28 @@ func (s *Service) Claim(ctx context.Context, a Actor, in ClaimIn) (*ClaimResult,
 		}
 		return nil, err
 	}
-	sentIDs := make([]string, 0, len(sent))
-	numbers := make([]int64, 0, len(sent))
-	for _, so := range sent {
-		sentIDs = append(sentIDs, so.Order.ID)
+	claimed := make([]string, 0, len(got))
+	numbers := make([]int64, 0, len(got))
+	for _, so := range got {
+		claimed = append(claimed, so.Order.ID)
 		if n := so.Number(); n != nil {
 			numbers = append(numbers, *n)
 		}
 	}
 	s.journal(ctx, terminal.Entry{StaffID: st.ID, DeviceID: a.DeviceID, Action: terminal.ActionDriverClaim,
-		Detail: detail(map[string]any{"driver_id": d.ID, "claimed": ids, "sent": sentIDs, "numbers": numbers})})
-	s.publish(EventDriverClaimed, map[string]any{"staff_id": st.ID, "driver_id": d.ID, "driver_name": d.Name, "order_ids": sentIDs})
-	s.orders.DevEvent(fmt.Sprintf("%s claimed %d deliveries on a terminal", d.Name, len(ids)))
-	d.Status = order.DriverOut
-	if sent == nil {
-		sent = []order.StoredOrder{}
+		Detail: detail(map[string]any{"driver_id": d.ID, "order_ids": ids, "delivered": claimed, "numbers": numbers})})
+	s.publish(EventDriverClaimed, map[string]any{"staff_id": st.ID, "driver_id": d.ID, "driver_name": d.Name, "order_ids": ids,
+		"delivered": claimed})
+	s.orders.DevEvent(fmt.Sprintf("%s claimed %d unassigned deliveries on a terminal", d.Name, len(ids)))
+	orders := make([]order.StoredOrder, 0, len(ids))
+	for _, id := range ids { // the request's order; already-his ones too
+		so, err := s.drv.floor.GetOrder(ctx, id)
+		if err != nil {
+			return nil, err
+		}
+		orders = append(orders, *so)
 	}
-	return &ClaimResult{Driver: driverPublic(*d), Orders: sent}, nil
+	return &ClaimResult{Driver: driverPublic(*d), Orders: orders}, nil
 }
 
 // his loads one of his orders (out or delivered by him in the open batch).

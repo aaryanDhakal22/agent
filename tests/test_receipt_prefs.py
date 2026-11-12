@@ -27,6 +27,7 @@ DEFAULTS = {
     "driver_report_size": "normal",
     "spacing": {"item_mod": 0, "mod_mod": 0, "item_item": 0},
     "format": "expanded",  # 2.4.0
+    "strike_images": True,  # kitchen change tickets (2026-11-11)
 }
 
 
@@ -97,6 +98,13 @@ def test_get_defaults_put_and_reject(store) -> None:
     # A rejected PUT changes nothing.
     assert requests.get(f"{a.base}/api/settings/receipt", headers=tab, timeout=5).json()["prefs"] == want
 
+    # strike_images (kitchen change tickets): off sticks, and a tablet that
+    # doesn't send it yet keeps the store's.
+    off = {**DEFAULTS, "strike_images": False}
+    assert requests.put(f"{a.base}/api/settings/receipt", headers=tab, json=off, timeout=5).json()["prefs"] == off
+    older = {k: v for k, v in DEFAULTS.items() if k != "strike_images"}
+    assert requests.put(f"{a.base}/api/settings/receipt", headers=tab, json=older, timeout=5).json()["prefs"]["strike_images"] is False
+
     # Reset to defaults (the tablet sends the defaults object back).
     r = requests.put(f"{a.base}/api/settings/receipt", headers=tab, json=DEFAULTS, timeout=5)
     assert r.status_code == 200 and r.json()["prefs"] == DEFAULTS
@@ -119,7 +127,7 @@ def test_print_sample(store, fakes) -> None:
     assert job.count(b"CUSTOMER, SAMPLE") == 3, "two receipt copies + the kitchen ticket"
     assert job.count(b"THANK YOU") == 2
     assert job.count(CUT) == 5, "2 copies x (cut, feed, cut) + the kitchen ticket's cut"
-    for want in (b"#1234", b"Note: extra ranch please", b"SAMPLE - not a real order", b"PAID - CARD"):
+    for want in (b"#1234", b"   - extra ranch please", b"SAMPLE - not a real order", b"PAID - CARD"):
         assert want in job, want
 
     # A chosen printer; the settings in force are the saved ones.

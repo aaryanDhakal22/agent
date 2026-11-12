@@ -112,23 +112,23 @@ func TestHeaderOrder(t *testing.T) {
 		t.Errorf("receipt sizes: %q", rc)
 	}
 	kt := string(Build(snap, previewStore(), stationTicket(), order.DefaultReceiptPrefs()))
-	typ, num, name := strings.Index(kt, "DELIVERY\n"), strings.Index(kt, "#1123\n"), strings.Index(kt, "GONZALEZ, MARIA")
+	typ, num, name := strings.Index(kt, "DELIVERY\n"), strings.Index(kt, cmdHugeSz+"1123\n"), strings.Index(kt, "GONZALEZ, MARIA")
 	if !(typ >= 0 && typ < num && num < name) {
 		t.Errorf("kitchen header order type %d, number %d, name %d:\n%q", typ, num, name, kt)
 	}
 }
 
-// 2.4.0: a future order's early kitchen ticket says DO NOT MAKE on top and
-// at the bottom, and when it is due on the second line; its early receipt
-// has FUTURE on the very top.
+// A future order's early kitchen ticket carries its one reverse band (MAKE
+// AT / READY, the day under it when it isn't today); its early receipt has
+// FUTURE on the very top.
 func TestFutureEarlyTickets(t *testing.T) {
-	at := time.Date(2026, 10, 31, 18, 30, 0, 0, time.UTC)
+	at := printedAt
 	kt := string(BuildFutureSample(previewStore(), order.DefaultReceiptPrefs(), at, true))
-	if strings.Count(kt, "--- DO NOT MAKE ---") != 2 {
-		t.Fatalf("DO NOT MAKE twice: %q", kt)
+	if strings.Count(kt, cmdInvertOn) != 1 || !strings.Contains(kt, "MAKE AT ") || !strings.Contains(kt, " READY ") || strings.Contains(kt, "DO NOT MAKE") {
+		t.Fatalf("band: %q", kt)
 	}
-	first, when, num := strings.Index(kt, "DO NOT MAKE"), strings.Index(kt, "DELIVERY AT "), strings.Index(kt, "#1234")
-	if !(first < when && when < num) || strings.Contains(kt, " FUTURE ") {
+	num, band := strings.Index(kt, cmdHugeSz+"1234"), strings.Index(kt, "MAKE AT ")
+	if !(num < band) {
 		t.Fatalf("order: %q", kt)
 	}
 	rc := string(BuildFutureSample(previewStore(), order.DefaultReceiptPrefs(), at, false))
@@ -136,13 +136,14 @@ func TestFutureEarlyTickets(t *testing.T) {
 	if fut < 0 || store < 0 || fut > store || !strings.HasPrefix(rc, cmdInit+cmdBaseSz+cmdCenter) {
 		t.Fatalf("receipt: %q", rc)
 	}
-	// A pickup says PICKUP AT, a later day shows the day.
+	// A pickup a day later shows the day.
 	snap := SampleOrder(at)
 	snap.Fulfillment.Type = "pickup"
 	due := at.Add(26 * time.Hour)
 	snap.Fulfillment.PromisedAt = &due
 	got := string(Build(snap, previewStore(), printer.Ticket{Kind: printer.TicketStation, TargetID: "sample", Mine: snap.Items, Future: true}, order.DefaultReceiptPrefs()))
-	if !strings.Contains(got, "PICKUP AT ") || !strings.Contains(got, strings.ToUpper(due.In(time.Local).Format("Mon Jan 2"))[:3]) {
+	loc, _ := time.LoadLocation(previewStore().Location.Timezone)
+	if !strings.HasPrefix(got, cmdInit+cmdCenter+cmdBoldOn+cmdDoubleSz+"PICKUP\n") || !strings.Contains(got, strings.ToUpper(due.In(loc).Format("Mon Jan 2"))) {
 		t.Fatalf("pickup: %q", got)
 	}
 }

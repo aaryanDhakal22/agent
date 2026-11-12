@@ -11,9 +11,9 @@ import (
 	"quiccpos/agent/internal/domain/printer"
 )
 
-// Half and half (TERMINAL-HALVES.md): the station ticket's summary + HALF &
-// HALF + WHOLE PIE / 1ST HALF / 2ND HALF, the receipt's compact list and the
-// condensed receipt's summary. Goldens: testdata/half_*.golden (-update).
+// Half and half (TERMINAL-HALVES.md): the kitchen ticket's WHOLE: / 1ST
+// HALF: / 2ND HALF: lines, the receipt's compact list and the condensed
+// receipt's summary. Goldens: testdata/half_*.golden (-update).
 
 func mod(name, portion, mode string, price int64) order.LineItem {
 	return order.LineItem{Name: name, Portion: portion, Mode: mode, Quantity: 1, UnitPrice: price}
@@ -24,36 +24,36 @@ func halfPizza(name string, unit int64, kids ...order.LineItem) order.LineItem {
 		Children: kids}
 }
 
-// The format's five cases as main sends them (names keep their readable text).
+// The format's cases as main sends them (names keep their readable text):
+// the condensed receipt's summary and the kitchen ticket's lines under the item.
 var halfCases = []struct {
 	slug    string
 	item    order.LineItem
 	summary string
-	has     []string
+	lines   string
 }{
 	{"a_add_on_a_half", halfPizza("Hawaiian", 1999, mod("Pepperoni (1st half)", "first", "add", 225)),
-		"1x 16 X-LARGE HAWAIIAN + " + halfSign + " PEPPERONI",
-		[]string{"WHOLE PIE   HAWAIIAN\n", "1ST HALF    + PEPPERONI\n", "2ND HALF    nothing added\n"}},
+		"HAWAIIAN + " + halfSign + " PEPPERONI",
+		"   1ST HALF:\n   - Pepperoni\n   2ND HALF:\n   - nothing added\n"},
 	{"b_only_on_a_half", halfPizza("Cheese Pizza", 1999, mod("Hawaiian (2nd half)", "second", "specialty", 0),
 		mod("ONLY Pepperoni (1st half)", "first", "only", 225)),
-		"1x 16 X-LARGE " + halfSign + " PEPPERONI | " + halfSign + " HAWAIIAN",
-		[]string{cmdInvertOn + " HALF & HALF " + cmdInvertOff, "WHOLE PIE   (no toppings all over)\n", "1ST HALF    PEPPERONI\n", "2ND HALF    HAWAIIAN\n"}},
+		halfSign + " PEPPERONI | " + halfSign + " HAWAIIAN",
+		"   1ST HALF:\n   - Pepperoni ONLY\n   2ND HALF:\n   - Hawaiian\n"},
 	{"c_two_specialties", halfPizza("Cheese Pizza", 2899, mod("Supreme (1st half)", "first", "specialty", 0),
 		mod("Veggie (2nd half)", "second", "specialty", 0), mod("Extra Cheese", "", "add", 200)),
-		"1x 16 X-LARGE " + halfSign + " SUPREME | " + halfSign + " VEGGIE",
-		[]string{" HALF & HALF ", "WHOLE PIE   + EXTRA CHEESE\n", "1ST HALF    SUPREME\n", "2ND HALF    VEGGIE\n"}},
+		halfSign + " SUPREME | " + halfSign + " VEGGIE",
+		"   WHOLE:\n   - Extra Cheese\n   1ST HALF:\n   - Supreme\n   2ND HALF:\n   - Veggie\n"},
 	{"d_no_on_a_half", halfPizza("Hawaiian", 1999, mod("NO Pineapple (2nd half)", "second", "no", 0)),
-		"1x 16 X-LARGE HAWAIIAN (" + halfSign + " NO PINEAPPLE)",
-		[]string{"WHOLE PIE   HAWAIIAN\n", "1ST HALF    nothing added\n", "2ND HALF    " + cmdInvertOn + " NO PINEAPPLE " + cmdInvertOff + "\n"}},
+		"HAWAIIAN (" + halfSign + " NO PINEAPPLE)",
+		"   1ST HALF:\n   - nothing added\n   2ND HALF:\n   - NO Pineapple\n"},
 	{"e_both_halves_added", halfPizza("Cheese Pizza", 1299, mod("Mushrooms (1st half)", "first", "add", 225),
 		mod("Sausage (2nd half)", "second", "add", 225), mod("Onion (2nd half)", "second", "add", 175)),
-		"1x 16 X-LARGE CHEESE PIZZA " + halfSign + " MUSHROOMS | " + halfSign + " SAUSAGE, ONION",
-		[]string{"WHOLE PIE   CHEESE PIZZA\n", "1ST HALF    + MUSHROOMS\n", "2ND HALF    + SAUSAGE, ONION\n"}},
+		"CHEESE PIZZA " + halfSign + " MUSHROOMS | " + halfSign + " SAUSAGE, ONION",
+		"   1ST HALF:\n   - Mushrooms\n   2ND HALF:\n   - Sausage\n   - Onion\n"},
 	{"f_specialty_with_adds_and_whole_no", halfPizza("Cheese Pizza", 1999, mod("Hawaiian (2nd half)", "second", "specialty", 0),
 		mod("Onion (2nd half)", "second", "add", 175), mod("Pepperoni (1st half)", "first", "add", 225), mod("NO Oregano", "", "no", 0)),
-		"1x 16 X-LARGE " + halfSign + " CHEESE PIZZA + PEPPERONI | " + halfSign + " HAWAIIAN + ONION (NO OREGANO)",
-		[]string{"WHOLE PIE   (no toppings all over)\n", halfIndent + cmdInvertOn + " NO OREGANO " + cmdInvertOff, "1ST HALF    CHEESE PIZZA\n",
-			halfIndent + "+ PEPPERONI\n", "2ND HALF    HAWAIIAN\n", halfIndent + "+ ONION\n"}},
+		halfSign + " CHEESE PIZZA + PEPPERONI | " + halfSign + " HAWAIIAN + ONION (NO OREGANO)",
+		"   WHOLE:\n   - NO Oregano\n   1ST HALF:\n   - Pepperoni\n   2ND HALF:\n   - Hawaiian\n   - Onion\n"},
 }
 
 func halfSnap(items ...order.LineItem) order.Snapshot {
@@ -86,25 +86,19 @@ func TestHalves_StationGoldens(t *testing.T) {
 			if !c.item.HasHalves() {
 				t.Fatal("fixture has no halves")
 			}
-			if got := halfSummary(c.item); got != c.summary {
+			if got := halfText(c.item); got != c.summary {
 				t.Errorf("summary\n got %q\nwant %q", got, c.summary)
 			}
 			snap := halfSnap(c.item)
 			got := BuildStation(snap, printer.Ticket{Kind: printer.TicketStation, TargetID: "p-pizza", Station: "Pizza", Mine: snap.Items})
-			for _, want := range append([]string{cmdBoldOn, "1x 16 X-LARGE"}, c.has...) {
-				want = printable(want)
-				if !bytes.Contains(got, []byte(want)) {
-					t.Errorf("ticket missing %q\n%q", want, got)
-				}
+			head, lines := cmdBoldOn+cmdDoubleSz+"1  "+strings.ToUpper(c.item.Name), "\n"+cmdSizeReset+cmdBaseSz+cmdBoldOff+c.lines
+			if !bytes.Contains(got, []byte(head)) || !bytes.Contains(got, []byte(lines)) {
+				t.Errorf("ticket lacks\n%q\n%q\n%q", head, lines, got)
 			}
-			for _, gone := range []string{"LEFT", "RIGHT", "left half", "right half", "$"} {
+			for _, gone := range []string{"LEFT", "RIGHT", "left half", "right half", "$", cmdInvertOn, "HALF & HALF", "\xab"} {
 				if bytes.Contains(got, []byte(gone)) {
 					t.Errorf("ticket carries %q", gone)
 				}
-			}
-			split := strings.Contains(c.summary, " | ") && !strings.HasPrefix(c.slug, "e_")
-			if bytes.Contains(got, []byte("HALF & HALF")) != split {
-				t.Errorf("HALF & HALF banner: want %v", split)
 			}
 			golden(t, "testdata/half_station_"+c.slug+".golden", got)
 		})

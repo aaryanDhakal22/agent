@@ -70,6 +70,10 @@ func (s *Server) handleSetReceiptPrefs(w http.ResponseWriter, r *http.Request) {
 		if _, ok := keys["format"]; !ok {
 			p.Format = s.service.ReceiptPrefs(r.Context()).Format
 		}
+		// A tablet that doesn't know strike_images yet keeps the store's.
+		if _, ok := keys["strike_images"]; !ok {
+			p.StrikeImages = s.service.ReceiptPrefs(r.Context()).StrikeImages
+		}
 	}
 	saved, err := s.service.SetReceiptPrefs(r.Context(), p)
 	if errors.Is(err, orderApp.ErrBadRequest) {

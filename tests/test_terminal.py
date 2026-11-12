@@ -400,8 +400,9 @@ def test_live_main_terminal_routes(admin, main_store):
 
 
 def test_kitchen_change_after_send(rig):
-    """§2.10d: PUT the whole new cart → ADD-ON ticket for added lines, VOID
-    for removed ones, order.changed to main; idempotent by client_key."""
+    """§2.10d: PUT the whole new cart → a change ticket (ADD / AGREGAR for added
+    lines, REMOVE / QUITAR with "(VOID)" + struck lines for removed ones),
+    order.changed to main; idempotent by client_key."""
     agent, term, fm, fakes = rig["agent"], rig["term"], rig["fm"], rig["fakes"]
     base = agent.base
     placed = place(rig).json()["order"]
@@ -415,7 +416,7 @@ def test_kitchen_change_after_send(rig):
     assert r.status_code == 200, r.text
     res = r.json()
     assert res["changed"] and res["added"] == ["2× Soda"] and res["removed"] == [] and res["balance_cents"] == res["order"]["order"]["money"]["total_cents"]
-    wait_until(lambda: any("ADD-ON" in j.decode("latin-1") for j in fakes["Pizza"].jobs[jobs:]), what="ADD-ON ticket")
+    wait_until(lambda: any("ADD / AGREGAR" in j.decode("latin-1") for j in fakes["Pizza"].jobs[jobs:]), what="change ticket (ADD)")
     wait_until(lambda: fm.of_type("order.changed"), what="order.changed synced")
     ev = fm.of_type("order.changed")[0]
     assert ev["order_id"] == oid and len(ev["snapshot"]["items"]) == 2 and ev["snapshot"]["fulfillment"]["type"] == "counter"
@@ -423,10 +424,11 @@ def test_kitchen_change_after_send(rig):
     n = len(fakes["Pizza"].jobs)
     again = term.put(f"{base}/api/terminal/orders/{oid}/cart", json=body, timeout=10).json()
     assert again["duplicate"] and again["added"] == ["2× Soda"]
-    # Take the pizza off: a VOID ticket.
+    # Take the pizza off: a change ticket with REMOVE / QUITAR.
     r = term.put(f"{base}/api/terminal/orders/{oid}/cart", json={"cart": {"lines": [soda]}}, timeout=10).json()
     assert r["removed"] and r["removed"][0].startswith("Cheese Pizza")
-    wait_until(lambda: any("VOID" in j.decode("latin-1") for j in fakes["Pizza"].jobs[n:]), what="VOID ticket")
+    wait_until(lambda: any("REMOVE / QUITAR" in j.decode("latin-1") and "(VOID) " in j.decode("latin-1") for j in fakes["Pizza"].jobs[n:]),
+               what="change ticket (REMOVE)")
     # Paid in full, then a smaller cart: refund first.
     total = r["order"]["order"]["money"]["total_cents"]
     assert term.post(f"{base}/api/terminal/orders/{oid}/payments", json={"tender": "cash", "amount_cents": total}, timeout=5).status_code == 200

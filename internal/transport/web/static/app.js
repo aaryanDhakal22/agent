@@ -65,7 +65,7 @@ const FOOT_SIZES = [['normal', 'Normal'], ['large', 'Large'], ['xlarge', 'X-Larg
 const FOOT_MODES = [['default', 'Store default'], ['custom', 'Custom'], ['none', 'None']];
 const MAX_FOOTER = 32;
 const SIZE_PX = { normal: '12px', large: '16px', xlarge: '22px', huge: '34px' };
-const PREF_KEYS = ['kitchen_item_size', 'kitchen_number_size', 'footer_text', 'footer_size', 'copies', 'show_store_address', 'show_phone', 'extra_paper'];
+const PREF_KEYS = ['kitchen_item_size', 'kitchen_number_size', 'footer_text', 'footer_size', 'copies', 'show_store_address', 'show_phone', 'extra_paper', 'strike_images'];
 
 // --- icons (Lucide, ISC) ---------------------------------------------------
 const ICON_PATHS = {
@@ -1479,6 +1479,7 @@ function agentApp() {
         kitchen_item_size: f.kitchen_item_size, kitchen_number_size: f.kitchen_number_size, footer_text: footer,
         footer_size: f.footer_size, copies: Number(f.copies) || 1,
         show_store_address: !!f.show_store_address, show_phone: !!f.show_phone, extra_paper: !!f.extra_paper,
+        strike_images: f.strike_images !== false,
         // Set on the tablet (driver-report size, line spacing): kept as they are.
         driver_report_size: f.driver_report_size, spacing: f.spacing,
       };

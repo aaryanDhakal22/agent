@@ -121,7 +121,7 @@ def test_channel_order_prints_stations_and_receipt_with_switches_off(web, fakes)
         _ok(post(a, f"/api/orders/{o['id']}/accept", {"prep_minutes": 15}))
         wait_jobs(fakes["Pizza"], 1)
         wait_jobs(fakes["Front"], 1)
-        assert "1 Cheese Pizza" in fakes["Pizza"].text(), fakes["Pizza"].text()
+        assert "1  CHEESE PIZZA" in fakes["Pizza"].text(), fakes["Pizza"].text()
         assert "Total:" in fakes["Front"].text()
     # The same switches leave a vendor card order receipt-only.
     for f in fakes.values():
@@ -211,7 +211,8 @@ def test_cancel_order_after_accept_voids_and_main_cancels(admin, web, fakes) -> 
     so = _ok(post(a, f"/api/orders/{o['id']}/cancel-order", {"reason": "customer_asked", "note": "Called to cancel"}))
     assert so["status"]["state"] == "cancelled" and so["status"]["cancel_reason"] == "customer_asked"
     wait_jobs(fakes["Pizza"], 1)
-    assert "VOID" in fakes["Pizza"].text() and "1 Cheese Pizza" in fakes["Pizza"].text(), fakes["Pizza"].text()
+    # The VOID slip: REMOVE / QUITAR, each line "(VOID)" + the item struck through (a picture).
+    assert "REMOVE / QUITAR" in fakes["Pizza"].text() and "(VOID) \x1b*!" in fakes["Pizza"].text(), fakes["Pizza"].text()
     intentional_sleep(1.0, "absence: no receipt for a cancel")
     assert fakes["Front"].jobs == []
     # main: cancelled (after accept, by the reason), the card hold released.

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"sync"
 	"testing"
+	"time"
 
 	orderApp "quiccpos/agent/internal/application/order"
 	"quiccpos/agent/internal/domain/order"
@@ -114,35 +115,71 @@ func TestDriverLinkAtLogin(t *testing.T) {
 	}
 }
 
+// later moves the service's clock (the claim rule's clock is injectable).
+func (r *driverRig) later(d time.Duration) {
+	r.svc.now = func() time.Time { return time.Now().Add(d) }
+}
+
 func TestDriverClaimMineTipCloseReport(t *testing.T) {
 	r := newDriverRig(t)
 	cooking := r.delivery(t, "k-cooking-1", false, false)
 	cash := r.delivery(t, "k-cash-0001", false, true)
 	paid := r.delivery(t, "k-paid-0001", true, true)
-	if _, err := r.svc.Login(r.ctx, till2, "77"); err != nil {
+	res, err := r.svc.Login(r.ctx, till2, "77")
+	if err != nil {
 		t.Fatal(err)
 	}
-	list, err := r.svc.Available(r.ctx, till2)
-	if err != nil || len(list) != 2 || list[0].OrderID != cash || list[1].OrderID != paid {
-		t.Fatalf("available (oldest ready first, no cooking): %+v %v", list, err)
+	me := res.Driver.ID
+	// Nothing has waited 45 minutes (the default) yet.
+	if list, err := r.svc.Available(r.ctx, till2); err != nil || len(list) != 0 {
+		t.Fatalf("available before 45 min: %+v %v", list, err)
 	}
-	if list[0].Payment != PayCashDue || list[0].CashDueCents == 0 || list[0].Street != "12 Main St" || list[1].Payment != PayPaid {
+	var tk *order.ErrTaken
+	if _, err := r.svc.Claim(r.ctx, till2, ClaimIn{OrderIDs: []string{cash}}); !errors.As(err, &tk) {
+		t.Fatalf("claim before 45 min: %v", err)
+	}
+	// 46 minutes later: every unassigned one, cooking too, longest waiting first.
+	r.later(46 * time.Minute)
+	list, err := r.svc.Available(r.ctx, till2)
+	if err != nil || len(list) != 3 || list[0].OrderID != cooking || list[1].OrderID != cash || list[2].OrderID != paid {
+		t.Fatalf("available after 45 min: %+v %v", list, err)
+	}
+	if list[0].State != string(order.StateAccepted) || list[1].State != string(order.StateReady) || list[0].WaitingMinutes < 45 ||
+		list[1].Payment != PayCashDue || list[1].CashDueCents == 0 || list[1].Street != "12 Main St" || list[2].Payment != PayPaid {
 		t.Fatalf("entries: %+v", list)
 	}
-	// A cooking order can't be claimed (409 taken), all or nothing.
-	var tk *order.ErrTaken
-	if _, err := r.svc.Claim(r.ctx, till2, ClaimIn{OrderIDs: []string{cash, cooking}}); !errors.As(err, &tk) || tk.IDs[0] != cooking {
-		t.Fatalf("cooking claim: %v", err)
+	// A manager sent "paid" out with the other driver meanwhile: it is taken, all or nothing.
+	sam, err := r.svc.Login(r.ctx, till3, "88")
+	if err != nil {
+		t.Fatal(err)
 	}
-	res, err := r.svc.Claim(r.ctx, till2, ClaimIn{OrderIDs: []string{cash, paid}})
-	if err != nil || len(res.Orders) != 2 || res.Driver.Status != order.DriverOut {
-		t.Fatalf("claim: %+v %v", res, err)
+	if _, err := r.floor.ClockIn(r.ctx, sam.Driver.ID); err != nil {
+		t.Fatal(err)
 	}
-	if _, err := r.svc.Claim(r.ctx, till2, ClaimIn{OrderIDs: []string{cash}}); !errors.Is(err, terminal.ErrDriverOut) {
-		t.Fatalf("claim while out: %v", err)
+	if _, err := r.floor.SendOut(r.ctx, sam.Driver.ID, orderApp.SendOutRequest{Include: []string{paid}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.svc.Claim(r.ctx, till2, ClaimIn{OrderIDs: []string{cash, paid}}); !errors.As(err, &tk) || len(tk.IDs) != 1 || tk.IDs[0] != paid {
+		t.Fatalf("taken: %v", err)
+	}
+	// Claim = his and delivered; he never goes out (he stays off).
+	cl, err := r.svc.Claim(r.ctx, till2, ClaimIn{OrderIDs: []string{cash, cooking}})
+	if err != nil || len(cl.Orders) != 2 || cl.Driver.Status != order.DriverOff {
+		t.Fatalf("claim: %+v %v", cl, err)
+	}
+	for _, so := range cl.Orders {
+		if so.Status.State != order.StateDelivered || so.Status.DriverID != me || so.Status.OutAt != nil {
+			t.Fatalf("claimed: %+v", so.Status)
+		}
+	}
+	if list, _ := r.svc.Available(r.ctx, till3); len(list) != 0 {
+		t.Fatalf("gone from the list: %+v", list)
+	}
+	if _, err := r.svc.Claim(r.ctx, till3, ClaimIn{OrderIDs: []string{cash}}); !errors.As(err, &tk) {
+		t.Fatalf("second driver: %v", err)
 	}
 	mine, err := r.svc.Mine(r.ctx, till2)
-	if err != nil || len(mine.Out) != 2 || mine.Out[0].Phone != "4105550101" || mine.Out[0].Address.Notes != "ring twice" || mine.Out[0].TipKind != "door" {
+	if err != nil || len(mine.Out) != 0 || len(mine.Delivered) != 2 || mine.Delivered[0].TipKind != "door" || mine.Delivered[0].Phone != "4105550101" {
 		t.Fatalf("mine: %+v %v", mine, err)
 	}
 	// Tip: a counter order's is a door tip on his report.
@@ -151,24 +188,17 @@ func TestDriverClaimMineTipCloseReport(t *testing.T) {
 	if err != nil || tr.Kind != "door" || tr.Ticket.DoorTipCents != 400 {
 		t.Fatalf("tip: %+v %v", tr, err)
 	}
-	// Another driver can't touch his orders.
-	if _, err := r.svc.Login(r.ctx, till3, "88"); err != nil {
-		t.Fatal(err)
-	}
+	// Another driver can't touch his orders; a claimed order is closed already.
 	if _, err := r.svc.CloseOrder(r.ctx, till3, cash); !errors.Is(err, terminal.ErrNotYourOrder) {
 		t.Fatalf("not his: %v", err)
 	}
-	// Close: the first stays out, the last returns him.
-	c1, err := r.svc.CloseOrder(r.ctx, till2, cash)
-	if err != nil || c1.Returned || c1.Ticket.State != string(order.StateDelivered) {
-		t.Fatalf("close 1: %+v %v", c1, err)
-	}
 	if _, err := r.svc.CloseOrder(r.ctx, till2, cash); !errors.Is(err, order.ErrInvalidState) {
-		t.Fatalf("close twice: %v", err)
+		t.Fatalf("close a claimed one: %v", err)
 	}
-	c2, err := r.svc.CloseOrder(r.ctx, till2, paid)
-	if err != nil || !c2.Returned || c2.Driver.Status != order.DriverAvailable {
-		t.Fatalf("close 2: %+v %v", c2, err)
+	// Close still works for an order he was sent out with: Sam's last stop returns him.
+	c, err := r.svc.CloseOrder(r.ctx, till3, paid)
+	if err != nil || !c.Returned || c.Driver.Status != order.DriverAvailable || c.Ticket.State != string(order.StateDelivered) {
+		t.Fatalf("close: %+v %v", c, err)
 	}
 	rep, err := r.svc.Report(r.ctx, till2)
 	if err != nil || rep.Deliveries != 2 || rep.DoorTipCents != 400 || rep.CashCents == 0 {
@@ -177,17 +207,55 @@ func TestDriverClaimMineTipCloseReport(t *testing.T) {
 	if _, err := r.svc.PrintReport(r.ctx, till2); !errors.Is(err, orderApp.ErrPrintingUnavailable) {
 		t.Fatalf("no printer wired: %v", err)
 	}
-	// Journal: link, claim, tip, close x2.
+	// Journal: link x2, claim, tip, close.
 	j, _ := r.svc.Journal(r.ctx, 100)
 	seen := map[string]int{}
 	for _, e := range j {
 		seen[e.Action]++
 	}
-	if seen[terminal.ActionDriverClaim] != 1 || seen[terminal.ActionDriverTip] != 1 || seen[terminal.ActionDriverClose] != 2 || seen[terminal.ActionDriverLinked] != 2 {
+	if seen[terminal.ActionDriverClaim] != 1 || seen[terminal.ActionDriverTip] != 1 || seen[terminal.ActionDriverClose] != 1 || seen[terminal.ActionDriverLinked] != 2 {
 		t.Fatalf("journal: %v", seen)
 	}
-	if r.pub.count(EventDriverClaimed) != 1 || r.pub.count(EventDriverClosed) != 2 || r.pub.count(EventDriverTip) != 1 {
+	if r.pub.count(EventDriverClaimed) != 1 || r.pub.count(EventDriverClosed) != 1 || r.pub.count(EventDriverTip) != 1 {
 		t.Fatalf("events: %v", r.pub.events)
+	}
+}
+
+// The store's driver_claim_after_minutes (main's terminal setting).
+func TestDriverClaimAfterSetting(t *testing.T) {
+	var nilCfg *terminal.Config
+	if nilCfg.DriverClaimAfterMinutes() != 45 {
+		t.Fatal("no config = 45")
+	}
+	for body, want := range map[string]int{
+		`{"version":1,"staff":[],"settings":{}}`:                                 45,
+		`{"version":1,"staff":[],"settings":{"driver_claim_after_minutes":20}}`:  20,
+		`{"version":1,"staff":[],"settings":{"driver_claim_after_minutes":0}}`:   0,
+		`{"version":1,"staff":[],"settings":{"driver_claim_after_minutes":900}}`: terminal.MaxDriverClaimAfterMinutes,
+	} {
+		c, err := terminal.ParseConfig([]byte(body))
+		if err != nil || c.DriverClaimAfterMinutes() != want {
+			t.Fatalf("%s: %d %v", body, c.DriverClaimAfterMinutes(), err)
+		}
+	}
+	r := newDriverRig(t)
+	id := r.delivery(t, "k-set-00001", false, true)
+	cfg := staffConfig(t, 3, terminal.Staff{ID: "drv-1", FirstName: "Ali", LastName: "Khan", Role: terminal.RoleDriver, PinHash: hash(t, "77")})
+	cfg["settings"].(map[string]any)["driver_claim_after_minutes"] = 10
+	r.main.set(PathTerminalConfig, cfg)
+	if _, err := r.svc.store.Refresh(r.ctx, terminal.KindTerminalConfig); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.svc.Login(r.ctx, till2, "77"); err != nil {
+		t.Fatal(err)
+	}
+	r.later(9 * time.Minute)
+	if list, _ := r.svc.Available(r.ctx, till2); len(list) != 0 {
+		t.Fatalf("9 of 10 minutes: %+v", list)
+	}
+	r.later(11 * time.Minute)
+	if list, _ := r.svc.Available(r.ctx, till2); len(list) != 1 || list[0].OrderID != id {
+		t.Fatalf("11 of 10 minutes: %+v", list)
 	}
 }
 
@@ -195,6 +263,7 @@ func TestDriverClaimMineTipCloseReport(t *testing.T) {
 func TestDriverClaimRace(t *testing.T) {
 	r := newDriverRig(t)
 	id := r.delivery(t, "k-race-0001", false, true)
+	r.later(time.Hour)
 	for _, a := range []struct {
 		actor Actor
 		pin   string

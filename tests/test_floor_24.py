@@ -5,8 +5,8 @@
     UNASSIGNED slip after the driver reports;
   * READY held on the tablet (callout false) rides the hub feed; a POS
     delivery moved between drivers writes order.driver_changed;
-  * a future order's early tickets (the two switches): DO NOT MAKE on the
-    stations, FUTURE on the receipt, and the CONFIRM without the receipt;
+  * a future order's early tickets (the two switches): the MAKE AT / READY
+    band on the stations, FUTURE on the receipt, and the CONFIRM without the receipt;
   * kitchen tickets list no receipt-only items under "other printers", and
     say the order type above the number.
 """
@@ -120,7 +120,7 @@ def test_future_early_tickets(kitchen, fakes) -> None:  # noqa: F811
     assert r.status_code == 200, r.text
     wait_until(lambda: fakes["Pizza"].jobs and fakes["Front"].jobs, timeout=10, what="the early tickets")
     pizza = fakes["Pizza"].text()
-    assert pizza.count("--- DO NOT MAKE ---") == 2 and "PICKUP AT " in pizza
+    assert pizza.count("MAKE AT ") == 1 and " READY " in pizza and "\x1d!\x11PICKUP\n" in pizza
     assert "Can Coke" not in pizza, "a receipt-only item isn't listed for the cooks"
     assert "FUTURE" in fakes["Front"].text()
     wait_until(lambda: _order(a, later["id"])["status"].get("early_receipt") is True, timeout=5, what="early flags")
@@ -130,7 +130,7 @@ def test_future_early_tickets(kitchen, fakes) -> None:  # noqa: F811
     assert len(fakes["Pizza"].jobs) + len(fakes["Front"].jobs) == n
 
     # The TEST PRINTs.
-    for kind, want in [("future_kitchen", "DO NOT MAKE"), ("future_receipt", "FUTURE")]:
+    for kind, want in [("future_kitchen", "MAKE AT "), ("future_receipt", "FUTURE")]:
         r = a.http.post(f"{a.base}/api/printers/sample", json={"printer_id": ids["Front"], "kind": kind}, timeout=15)
         assert r.status_code == 200 and r.json()["results"][0]["ok"], r.text
         wait_until(lambda: want in fakes["Front"].text(), timeout=5, what=f"the {kind} test print")
@@ -145,7 +145,7 @@ def test_kitchen_ticket_header_and_others(kitchen, fakes) -> None:  # noqa: F811
     assert a.http.post(f"{a.base}/api/orders/{snap['id']}/accept", json={"prep_minutes": 20}, timeout=30).status_code == 200
     wait_until(lambda: fakes["Pizza"].jobs and fakes["Front"].jobs, timeout=10, what="tickets")
     pizza = fakes["Pizza"].text()
-    assert pizza.index("DELIVERY") < pizza.index("#"), "the type above the number"
+    assert pizza.index("DELIVERY") < pizza.index("\x1d!31100\n"), "the type above the number"
     assert "Wings" in pizza and "Can Coke" not in pizza
     receipt = fakes["Front"].text()
     assert receipt.index("#") < receipt.index("DELIVERY"), "the receipt: number, then the type"

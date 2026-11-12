@@ -3,6 +3,7 @@ package order
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"quiccpos/agent/internal/application/devlog"
 	"quiccpos/agent/internal/domain/order"
@@ -32,29 +33,33 @@ func (s *Service) GetOrder(ctx context.Context, id string) (*order.StoredOrder, 
 	return s.repo.GetByID(ctx, uid)
 }
 
-// ClaimRun is a driver claiming ready, unassigned deliveries himself: they
-// join his pool and he is sent out with it at once (SEND OUT with those ids:
-// delivery.run, drivers.dispatched, his route). All or nothing: an order
-// someone else got first, or that isn't ready, is *order.ErrTaken. His own
-// pool's cooking orders go back to unassigned.
-func (s *Service) ClaimRun(ctx context.Context, driverID string, ids []string) ([]order.StoredOrder, error) {
-	ids = dedupeIDs(ids)
-	var cooking []string
-	for _, so := range s.poolOf(ctx, driverID) {
-		if so.Status.State == order.StateAccepted {
-			cooking = append(cooking, so.Order.ID)
-		}
-	}
-	sent, err := s.SendOut(ctx, driverID, SendOutRequest{Include: ids, claim: true})
+// UnassignedDelivered is the open batch's deliveries delivered with no
+// driver (MARK DELIVERED; the Drivers tab's Unassigned).
+func (s *Service) UnassignedDelivered(ctx context.Context) ([]order.StoredOrder, error) {
+	return s.repo.ListUnassigned(ctx, 0)
+}
+
+// ClaimDelivered is a driver assigning himself deliveries nobody took (the
+// Dispatch section): they become his and delivered (delivered now when they
+// weren't), in one transaction, all or nothing (*order.ErrTaken). Not a
+// send-out: he never goes out, nothing is printed and no route is sent. The
+// orders count on his driver report (cash, tips) like any delivery of his.
+func (s *Service) ClaimDelivered(ctx context.Context, driverID string, ids []string, cutoff time.Time, by order.MarkedBy) ([]order.StoredOrder, error) {
+	ctx, span := s.span(ctx, "delivery.claim_delivered", attribute.String("driver.id", driverID), attribute.Int("orders", len(ids)))
+	defer span.End()
+	claimed, err := s.repo.ClaimDelivered(ctx, driverID, dedupeIDs(ids), cutoff, by)
 	if err != nil {
-		return nil, err
+		return nil, spanErr(span, err)
 	}
-	for _, id := range cooking { // left behind, unassigned now
-		if so, err := s.GetOrder(ctx, id); err == nil && so.Status.PoolDriverID == "" {
-			s.publishUpdated(*so)
-		}
+	if len(claimed) == 0 {
+		return claimed, nil
 	}
-	return sent, nil
+	s.floorChanged()
+	s.publishAll(claimed)
+	for _, so := range claimed {
+		s.devEvent(devlog.Info, devlog.KindOrder, "%s claimed as delivered by %s on a terminal", label(so), so.Status.DriverName)
+	}
+	return claimed, nil
 }
 
 // DeliverOne is the driver's "close" on one of his out orders: delivered (it
@@ -101,16 +106,4 @@ func (s *Service) SetDoorTip(ctx context.Context, id string, cents int64) (*orde
 	s.publishUpdated(*so)
 	s.devEvent(devlog.Info, devlog.KindOrder, "%s door tip recorded: %s", label(*so), cents2(cents))
 	return so, nil
-}
-
-// ClockInForClaim clocks a driver in for his own claim: like ClockIn but
-// without the simple auto-assign, which could pool other orders to him
-// between the clock-in and his claim.
-func (s *Service) ClockInForClaim(ctx context.Context, id string) (*order.Driver, error) {
-	d, err := s.repo.ClockIn(ctx, id)
-	if err != nil {
-		return nil, err
-	}
-	s.driversChanged(ctx)
-	return d, nil
 }

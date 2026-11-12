@@ -376,3 +376,27 @@ func TestPlanAddOn(t *testing.T) {
 		t.Fatalf("tickets = %+v", tickets)
 	}
 }
+
+// ModeChange: added (Items) and removed (RemovedItems) lines merged into one
+// change ticket per station, roster order; a station with only removals
+// still gets one; nothing else on them.
+func TestPlanChange(t *testing.T) {
+	snap := order.Snapshot{Source: order.SourceCounter, Fulfillment: order.Fulfillment{Type: "dine_in"},
+		Items:        []order.LineItem{item("Cheese Pizza", order.RoutingMatched, "p-pizza")},
+		RemovedItems: []order.LineItem{item("Garlic Knots", order.RoutingMatched, "p-pizza"), item("Hot Wings", order.RoutingMatched, "p-wings")}}
+	tickets, unrouted := PlanWith(snap, []RosterEntry{front, pizza, wings}, printer.ModeChange, DefaultRules())
+	if len(tickets) != 2 || len(unrouted) != 0 {
+		t.Fatalf("tickets = %+v unrouted %v", tickets, unrouted)
+	}
+	p, w := tickets[0], tickets[1]
+	if p.TargetID != "p-pizza" || !p.Change || len(p.Mine) != 1 || p.Mine[0].Name != "Cheese Pizza" || len(p.Removed) != 1 ||
+		p.Removed[0].Name != "Garlic Knots" || len(p.Others) != 0 || p.Kind != printer.TicketStation {
+		t.Fatalf("pizza: %+v", p)
+	}
+	if w.TargetID != "p-wings" || !w.Change || len(w.Mine) != 0 || len(w.Removed) != 1 || w.Removed[0].Name != "Hot Wings" {
+		t.Fatalf("wings: %+v", w)
+	}
+	if tk, _ := PlanWith(order.Snapshot{Source: order.SourceCounter}, []RosterEntry{front, pizza}, printer.ModeChange, DefaultRules()); len(tk) != 0 {
+		t.Fatalf("nothing changed: %+v", tk)
+	}
+}

@@ -8,20 +8,22 @@ import (
 )
 
 // Half and half (TERMINAL-PLAN Stage 0b, TERMINAL-HALVES.md). A pizza line
-// whose modifier children carry a portion prints on the kitchen ticket as
+// whose modifier children carry a portion prints on the kitchen ticket
+// (station.go halfLines) as
 //
-//	1x 16 X-LARGE ½ PEPPERONI | ½ HAWAIIAN   (the summary, item size)
-//	 HALF & HALF                             (inverse, when the halves differ)
-//	WHOLE PIE   (no toppings all over)
-//	1ST HALF    PEPPERONI
-//	2ND HALF    HAWAIIAN
+//	1  CHEESE PIZZA (X-LARGE)
+//	   WHOLE:
+//	   - Extra cheese
+//	   1ST HALF:
+//	   - Pepperoni ONLY
+//	   2ND HALF:
+//	   - Hawaiian
 //
-// "+ ½" in the summary = added on top, "|" = two different halves. A split
-// pie always prints both halves; NO prints in inverse on its own half; 1st /
-// 2nd, never left / right. Specialties print by name (recipes come with the
-// menu editor). The customer receipt keeps one line per modifier, grouped
-// whole → 1st → 2nd with a "1st:" / "2nd:" prefix; the condensed receipt
-// shows the summary. Lines without portions print as before.
+// 1st / 2nd, never left / right; ONLY after its topping; a half with
+// nothing on it says "- nothing added". The customer receipt keeps one line
+// per modifier, grouped whole -> 1st -> 2nd with a "1st:" / "2nd:" prefix;
+// the condensed receipt shows the summary (halfText). Lines without
+// portions print as before.
 
 // halfSign is ½ while a line is built and wrapped (one rune); printable
 // turns it into ½ in the printers' code page (PC437 0xAB, what ESC @
@@ -33,8 +35,6 @@ var printer437 = strings.NewReplacer("½", "\xab", "\x1f", " ")
 func printable(s string) string { return printer437.Replace(s) }
 
 func glue(s string) string { return strings.ReplaceAll(s, halfSign+" ", halfSign+"\x1f") }
-
-const halfIndent = "            " // under the 12-wide WHOLE PIE / 1ST HALF column
 
 // pie is a half-and-half line read from its children: [0] = the whole pie,
 // [1] / [2] = the halves.
@@ -123,18 +123,9 @@ func plus(name string, adds []string) string {
 	return name + " + " + strings.Join(adds, ", ")
 }
 
-// halfSummary is the line's summary: "1x 16 X-LARGE HAWAIIAN + ½ PEPPERONI",
-// "1x 16 X-LARGE ½ PEPPERONI | ½ HAWAIIAN", "... CHEESE PIZZA ½ MUSHROOMS |
-// ½ SAUSAGE, ONION", "... HAWAIIAN (½ NO PINEAPPLE)".
-func halfSummary(it order.LineItem) string {
-	head := fmt.Sprintf("%dx", it.Quantity)
-	if sz := displaySize(it.Size); sz != "" {
-		head += " " + strings.ToUpper(sz)
-	}
-	return head + " " + halfText(it)
-}
-
-// halfText is the summary without its quantity and size.
+// halfText is a half-and-half line's summary (the condensed receipt):
+// "HAWAIIAN + ½ PEPPERONI", "½ PEPPERONI | ½ HAWAIIAN", "CHEESE PIZZA ½
+// MUSHROOMS | ½ SAUSAGE, ONION", "HAWAIIAN (½ NO PINEAPPLE)".
 func halfText(it order.LineItem) string {
 	p := pieOf(it)
 	var s string
@@ -166,78 +157,6 @@ func halfText(it order.LineItem) string {
 		s += " (" + strings.Join(nos, ", ") + ")"
 	}
 	return s
-}
-
-// writeHalves prints the HALF & HALF banner (a split pie) and the WHOLE PIE /
-// 1ST HALF / 2ND HALF blocks at the base size.
-func writeHalves(w func(string), nl func(), it order.LineItem) {
-	p := pieOf(it)
-	block := func(label, text string) {
-		for i, line := range wordWrap(glue(text), stationWidth-len(halfIndent), "") {
-			if i == 0 {
-				w(fmt.Sprintf("%-12s", label))
-			} else {
-				w(halfIndent)
-			}
-			w(printable(line))
-			nl()
-		}
-	}
-	// nos prints a part's NOs in inverse, the first beside its label when
-	// nothing else is on that line yet.
-	nos := func(label string, k int, wrote bool) bool {
-		for _, n := range p.no[k] {
-			if wrote {
-				w(halfIndent)
-			} else {
-				w(fmt.Sprintf("%-12s", label))
-				wrote = true
-			}
-			w(cmdInvertOn)
-			w(" NO " + n + " ")
-			w(cmdInvertOff)
-			nl()
-		}
-		return wrote
-	}
-	if p.split() {
-		w(cmdBoldOn)
-		w(cmdInvertOn)
-		w(" HALF & HALF ")
-		w(cmdInvertOff)
-		w(cmdBoldOff)
-		nl()
-		if len(p.add[0]) > 0 {
-			block("WHOLE PIE", "+ "+strings.Join(p.add[0], ", "))
-		} else {
-			block("WHOLE PIE", "(no toppings all over)")
-		}
-	} else {
-		block("WHOLE PIE", p.base)
-		if len(p.add[0]) > 0 {
-			block("", "+ "+strings.Join(p.add[0], ", "))
-		}
-	}
-	nos("", 0, true)
-	for k := 1; k <= 2; k++ {
-		label := []string{"", "1ST HALF", "2ND HALF"}[k]
-		name, adds := p.half(k)
-		wrote := false
-		switch {
-		case p.split():
-			block(label, name)
-			wrote = true
-			if len(adds) > 0 {
-				block("", "+ "+strings.Join(adds, ", "))
-			}
-		case len(adds) > 0:
-			block(label, "+ "+strings.Join(adds, ", "))
-			wrote = true
-		}
-		if !nos(label, k, wrote) {
-			block(label, "nothing added") // a split pie always shows both halves
-		}
-	}
 }
 
 // receiptHalfMods is the customer receipt's compact list for a half-and-half

@@ -53,11 +53,11 @@ func SampleOrder(at time.Time) order.Snapshot {
 
 // BuildFutureSample is the TEST PRINT of a future-order switch (2.4.0): the
 // sample delivery due an hour from now, as its early kitchen ticket
-// (kitchen, DO NOT MAKE) or its early customer receipt (FUTURE on top).
+// (its MAKE AT / READY band) or its early customer receipt (FUTURE on top).
 func BuildFutureSample(sc storeconfig.StoreContext, prefs order.ReceiptPrefs, at time.Time, kitchen bool) []byte {
 	snap := SampleOrder(at)
-	due := at.Add(time.Hour)
-	snap.Fulfillment.PromisedAt = &due
+	due, start := at.Add(time.Hour), at.Add(40*time.Minute)
+	snap.Fulfillment.PromisedAt, snap.MakeAt = &due, &start
 	if kitchen {
 		return Build(snap, sc, printer.Ticket{
 			Kind: printer.TicketStation, TargetID: samplePrinter, Station: "Sample",

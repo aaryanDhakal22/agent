@@ -230,6 +230,13 @@ type DriverViewRepository interface {
 	// SetDoorTip records a tip the driver got at the door (absolute) on an
 	// out / delivered delivery of the open batch; ErrNotTippable otherwise.
 	SetDoorTip(ctx context.Context, id string, cents int64) (*StoredOrder, error)
+	// ClaimDelivered is a driver claiming deliveries nobody took (the
+	// Dispatch section): each must be ClaimableLate(cutoff) in the open batch
+	// (one already his and delivered is left as it is), else *ErrTaken with
+	// the ones that failed, all or nothing; an unknown id is ErrNotFound. Each
+	// becomes his and delivered (delivered now when it wasn't), order.status
+	// to main; he does not go out. claimed = the orders that changed.
+	ClaimDelivered(ctx context.Context, driverID string, ids []string, cutoff time.Time, by MarkedBy) (claimed []StoredOrder, err error)
 	// AutoCloseLast / SetAutoCloseLast: the last auto-close slot handled
 	// (zero = none yet).
 	AutoCloseLast(ctx context.Context) (time.Time, error)

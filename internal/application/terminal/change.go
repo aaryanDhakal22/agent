@@ -153,7 +153,7 @@ func (s *Service) ChangeCart(ctx context.Context, a Actor, id string, in ChangeI
 
 	var added, removed []terminal.LineDelta
 	var dup *editRecord
-	so, prev, changed, err := s.repo.ChangeCounterOrder(ctx, id, st.ID, a.DeviceID, func(cur order.StoredOrder, paid []terminal.Payment) (*order.Snapshot, []terminal.Entry, error) {
+	so, _, changed, err := s.repo.ChangeCounterOrder(ctx, id, st.ID, a.DeviceID, func(cur order.StoredOrder, paid []terminal.Payment) (*order.Snapshot, []terminal.Entry, error) {
 		if e := findEdit(cur.Order, in.ClientKey); e != nil { // a retry raced the first one
 			dup = e
 			return nil, nil, nil
@@ -218,8 +218,7 @@ func (s *Service) ChangeCart(ctx context.Context, a Actor, id string, in ChangeI
 	if !changed {
 		return res, nil
 	}
-	s.orders.PrintAddOn(ctx, so, terminal.Lines(added))
-	s.orders.PrintVoidLines(ctx, prev, terminal.Lines(removed))
+	s.orders.PrintChange(ctx, so, terminal.Lines(added), terminal.Lines(removed))
 	s.orders.CounterOrderChanged(ctx, so, nil, false)
 	s.publish(EventOrderChanged, map[string]any{"order": so, "added": res.Added, "removed": res.Removed, "device_id": a.DeviceID})
 	s.orders.DevEvent(fmt.Sprintf("Counter order #%d changed (+%d / -%d lines)", numberOf(so), len(added), len(removed)))

@@ -53,6 +53,11 @@ const (
 	// SEND, as station tickets under an ADD-ON banner (only the new lines,
 	// no "other printers" list, no receipt).
 	ModeAddOn Mode = "add_on"
+	// ModeChange (terminal §2.10d): a counter order changed after SEND, one
+	// change ticket per station: the snapshot's Items are the added lines
+	// (under ADD / AGREGAR), its RemovedItems the removed ones (under
+	// REMOVE / QUITAR, struck through). No "also on this order", no receipt.
+	ModeChange Mode = "change"
 )
 
 // Ticket is one thing to print for an order. A planned order is a set of
@@ -75,6 +80,10 @@ type Ticket struct {
 	Void bool
 	// AddOn: an ADD-ON ticket (ModeAddOn) - the items were added after SEND.
 	AddOn bool
+	// Change (ModeChange): a change ticket - Mine were added, Removed were
+	// removed (a Void ticket prints its Mine as removed the same way).
+	Change  bool
+	Removed []order.LineItem
 	// Future (ModeFutureEarly): printed early for a future order - a
 	// kitchen ticket says DO NOT MAKE and when it is due, a receipt has a
 	// FUTURE bar on top.

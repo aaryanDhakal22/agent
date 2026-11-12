@@ -253,8 +253,6 @@ type SendOutRequest struct {
 	// Exclude (2.2.1): pool orders that stay behind, back to unassigned
 	// (staff took the send-check's hold advice).
 	Exclude []string `json:"exclude_order_ids"`
-	// claim: the terminal driver view's claim (order.RunMeta.Claim).
-	claim bool
 }
 
 // SendOut sends the driver out with their pool (plus Include), like
@@ -265,7 +263,7 @@ func (s *Service) SendOut(ctx context.Context, driverID string, req SendOutReque
 		attribute.Bool("mark_ready", req.MarkReady), attribute.String("plan.id", req.PlanID))
 	defer span.End()
 
-	meta := order.RunMeta{PlanID: req.PlanID, Exclude: req.Exclude, Claim: req.claim}
+	meta := order.RunMeta{PlanID: req.PlanID, Exclude: req.Exclude}
 	pool := s.poolOf(ctx, driverID)
 	if req.PlanID != "" { // Send Out while AUTO's yellow stops show
 		if plan, err := s.loadPlan(ctx, req.PlanID); err == nil {

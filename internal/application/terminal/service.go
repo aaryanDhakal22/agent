@@ -38,8 +38,7 @@ type Repo interface {
 type Orders interface {
 	PrintCounterTickets(ctx context.Context, so order.StoredOrder)
 	PrintVoidSlip(ctx context.Context, so order.StoredOrder)
-	PrintAddOn(ctx context.Context, so order.StoredOrder, items []order.LineItem)
-	PrintVoidLines(ctx context.Context, so order.StoredOrder, items []order.LineItem)
+	PrintChange(ctx context.Context, so order.StoredOrder, added, removed []order.LineItem)
 	CounterOrderChanged(ctx context.Context, so order.StoredOrder, prev *order.StoredOrder, driverReturned bool)
 	JournalWritten()
 	PrepMinutesFor(fulfillment string) int64

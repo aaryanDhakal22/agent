@@ -148,6 +148,8 @@ func PlanWith(snap order.Snapshot, roster []RosterEntry, mode printer.Mode, rule
 			tickets[i].AddOn, tickets[i].Others = true, nil
 		}
 		return tickets, unrouted
+	case printer.ModeChange:
+		return changeTickets(snap, roster, receipt)
 	}
 
 	if isPOS(snap) {
@@ -164,6 +166,35 @@ func PlanWith(snap order.Snapshot, roster []RosterEntry, mode printer.Mode, rule
 	}
 	tickets, unrouted = stationTickets(snap, roster, receipt)
 	return append(tickets, receiptTicket), unrouted
+}
+
+// changeTickets is ModeChange: the added lines (snap.Items) and the removed
+// ones (snap.RemovedItems) routed like station tickets, merged into one
+// change ticket per station (roster order). Empty when neither has a line.
+func changeTickets(snap order.Snapshot, roster []RosterEntry, receipt RosterEntry) (tickets []printer.Ticket, unrouted []string) {
+	added, un1 := stationTickets(snap, roster, receipt)
+	gone := snap
+	gone.Items, gone.RemovedItems = snap.RemovedItems, nil
+	removed, un2 := stationTickets(gone, roster, receipt)
+	byID := map[string]*printer.Ticket{}
+	for _, t := range added {
+		t.Change, t.Others = true, nil
+		byID[t.TargetID] = &t
+	}
+	for _, t := range removed {
+		if cur, ok := byID[t.TargetID]; ok {
+			cur.Removed = t.Mine
+			continue
+		}
+		t.Change, t.Others, t.Removed, t.Mine = true, nil, t.Mine, nil
+		byID[t.TargetID] = &t
+	}
+	for _, p := range roster {
+		if t, ok := byID[p.ID]; ok {
+			tickets = append(tickets, *t)
+		}
+	}
+	return tickets, append(un1, un2...)
 }
 
 // stationTickets builds the kitchen station tickets (see PlanFor).

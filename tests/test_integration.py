@@ -121,7 +121,7 @@ def test_pos_order_lifecycle_and_printing(kitchen, fakes) -> None:  # noqa: F811
     wait_until(lambda: len(fakes["Pizza"].jobs) == 1, timeout=10, what="POS station ticket")
     time.sleep(1)
     assert not fakes["Front"].jobs and not fakes["Wings"].jobs, "no receipt, no soda ticket"
-    assert "#99" in fakes["Pizza"].text() and "Cheese Pizza" in fakes["Pizza"].text()
+    assert "\x1d!399\n" in fakes["Pizza"].text() and "CHEESE PIZZA" in fakes["Pizza"].text()
     _put(a, hub, "1276238", _pos(ids, "pickup", "h3"))
     time.sleep(1)
     assert len(fakes["Pizza"].jobs) == 1, "a changed check doesn't reprint"
@@ -350,13 +350,13 @@ def test_future_order_actions(kitchen, fakes) -> None:  # noqa: F811
         assert r.status_code == 200, r.text
         return snap
 
-    # PRINT NOW: the kitchen's DO NOT MAKE ticket only.
+    # PRINT NOW: the kitchen's early ticket only (its MAKE AT / READY band).
     one = future(20)
     r = a.http.post(f"{a.base}/api/orders/{one['id']}/print-now", json={"kitchen": True, "receipt": False}, timeout=30)
     assert r.status_code == 200, r.text
     assert r.json()["printed"] == ["Pizza"] and r.json()["order"]["status"]["early_kitchen"] is True
     wait_until(lambda: len(fakes["Pizza"].jobs) >= 1, timeout=10, what="the early kitchen ticket")
-    assert b"DO NOT MAKE" in fakes["Pizza"].jobs[-1]
+    assert b"MAKE AT " in fakes["Pizza"].jobs[-1]
     assert a.http.post(f"{a.base}/api/orders/{one['id']}/print-now", json={}, timeout=5).status_code == 400
 
     # CHANGE DUE TIME: the ring time follows.
@@ -377,7 +377,7 @@ def test_future_order_actions(kitchen, fakes) -> None:  # noqa: F811
     assert st["state"] == "accepted" and st["kitchen_number"] and st.get("made_now") is True and not st.get("future")
     wait_until(lambda: len(fakes["Pizza"].jobs) > pizza_before, timeout=10, what="the make-now kitchen ticket")
     made = fakes["Pizza"].jobs[pizza_before]
-    assert b"FUTURE" not in made and b"DO NOT MAKE" not in made
+    assert b"FUTURE" not in made and b"MAKE AT" not in made and b"READY " not in made
     r = a.http.post(f"{a.base}/api/orders/{one['id']}/make-now", json={"prep_minutes": 20}, timeout=5)
     assert r.status_code == 409
 

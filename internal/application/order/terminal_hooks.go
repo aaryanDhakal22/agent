@@ -11,7 +11,8 @@ import (
 )
 
 // Terminal stage 0d: what the terminal service (application/terminal) needs
-// from the floor - printing a counter order's station tickets, the VOID slip,
+// from the floor - printing a counter order's station tickets, the VOID slip, the change
+// tickets,
 // telling the tablets and main about a change, the default times.
 
 // PrintCounterTickets prints a new counter order's station tickets in the
@@ -42,36 +43,30 @@ func (s *Service) PrintVoidSlip(ctx context.Context, so order.StoredOrder) {
 	}
 }
 
-// PrintAddOn prints an ADD-ON ticket for lines added to a counter order
-// after SEND, on the stations they route to (background, terminal §2.10d).
-func (s *Service) PrintAddOn(ctx context.Context, so order.StoredOrder, items []order.LineItem) {
-	if len(items) == 0 {
+// PrintChange prints the change tickets of a counter order changed after
+// SEND (background, terminal §2.10d): one per station with the lines added
+// there under ADD / AGREGAR and the lines removed there under REMOVE /
+// QUITAR (struck through). so is the order now; added / removed are the
+// changed lines with their stations.
+func (s *Service) PrintChange(ctx context.Context, so order.StoredOrder, added, removed []order.LineItem) {
+	if len(added) == 0 && len(removed) == 0 {
 		return
 	}
 	snap := printable(so)
-	snap.Items = append([]order.LineItem(nil), items...)
-	snap.RemovedItems = nil
+	snap.Items = append([]order.LineItem(nil), added...)
+	snap.RemovedItems = append([]order.LineItem(nil), removed...)
 	s.background(ctx, func(ctx context.Context) {
-		out, err := s.print(ctx, snap, printer.ModeAddOn)
+		out, err := s.print(ctx, snap, printer.ModeChange)
 		if errors.Is(err, printer.ErrNoTickets) {
 			return
 		}
 		s.alertPrintIssues(ctx, so, out, false)
 		if err != nil {
-			s.logger.Warn().Ctx(ctx).Err(err).Str("order_id", so.Order.ID).Msg("Counter ADD-ON ticket not printed")
+			s.logger.Warn().Ctx(ctx).Err(err).Str("order_id", so.Order.ID).Msg("Counter change ticket not printed")
 			return
 		}
-		s.printEvents(label(so)+" ADD-ON (counter)", out)
+		s.printEvents(label(so)+" change (counter)", out)
 	})
-}
-
-// PrintVoidLines prints a VOID ticket for lines removed from a counter
-// order after SEND, on the stations they printed on (background).
-func (s *Service) PrintVoidLines(ctx context.Context, so order.StoredOrder, items []order.LineItem) {
-	if len(items) == 0 {
-		return
-	}
-	s.printVoid(ctx, so, items)
 }
 
 // CounterOrderChanged tells main (floor sync) and the tablets about a counter
