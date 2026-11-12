@@ -148,7 +148,7 @@ func (s *Server) routes() []routeDef {
 		{"GET", "/api/app/latest", "device", "Newest Quibase release cached for tablets (204 none)", s.handleAppLatest},
 		{"GET", "/api/app/apk", "device", "Download the cached Quibase APK", s.handleAppAPK},
 		{"GET", "/api/update/status", "device", "Pi update state: versions, latest, pending request, last result, can_update_now/blocked_reason", s.handleUpdateStatus},
-		{"GET", "/api/events", "device", "SSE: order.arrived|updated|escalated, drivers.updated|dispatched, driver.route, batch.closed, floor.updated, settings.updated, integration.status, terminal.menu.changed|config.changed|order.placed|order.paid|order.voided|order.changed|order.picked_up|draft.changed|draft.removed|draft.taken|customer.changed|customers.synced|driver.linked|driver.claimed|driver.tip|driver.closed|driver.report|drawer.changed|z.report, sync.parked, routing.updated", s.handleEvents},
+		{"GET", "/api/events", "device", "SSE: order.arrived|updated|escalated, drivers.updated|dispatched, driver.route, batch.closed, floor.updated, settings.updated, integration.status, terminal.menu.changed|config.changed|order.placed|order.paid|order.voided|order.changed|order.picked_up|draft.changed|draft.removed|draft.taken|customer.changed|customers.synced|driver.linked|driver.claimed|driver.tip|driver.closed|driver.report|drawer.changed|z.report, sync.parked", s.handleEvents},
 
 		// Quibase setup + diagnostics — paired tablet (or web-UI session).
 		{"POST", "/api/pairing/code", "device", "Show a 6-digit tablet pairing code (5 min) — web UI or a paired tablet (Pair another tablet)", s.handlePairingCode},
@@ -161,9 +161,6 @@ func (s *Server) routes() []routeDef {
 		// Receipt settings (Quibase Settings -> Receipts) — paired tablet (or web-UI session).
 		{"GET", "/api/settings/receipt", "device", "Receipt settings {prefs, defaults, footer_effective, footer_store_default, location_footer}", s.handleGetReceiptPrefs},
 		{"PUT", "/api/settings/receipt", "device", "Save the receipt settings (full prefs; missing keys = defaults) -> {prefs, footer_effective, footer_store_default, location_footer}", s.audited("receipt", s.readReceipt, s.handleSetReceiptPrefs)},
-		// Routing & emergency reroute (2026-11-12, contract §2.3c) — the Pi web UI's Settings › Routing.
-		{"GET", "/api/settings/routing", "device", "Printer routing + emergency reroute {routing: {mode none|one|per_printer, emergency_printer_id, targets}, printers: [{id, name, is_receipt, status, fallbacks: [{id, name, by rule|auto, status}]}], modes}", s.handleGetRouting},
-		{"PUT", "/api/settings/routing", "device", "Save the routing setting {mode, emergency_printer_id, targets: {printer id: [ids in order]}} -> the GET body | 400 bad_mode / no_emergency_printer / unknown_printer / too_many_targets; SSE routing.updated", s.audited("routing", s.readRouting, s.handleSetRouting)},
 		{"POST", "/api/printers/sample", "device", "Print a sample receipt + kitchen ticket with the current settings {printer_id?} (default the receipt printer), never fails over (409 while a test runs)", s.handlePrinterSample},
 
 		// The store hub — its integration key only (tablet keys / sessions get 403).
