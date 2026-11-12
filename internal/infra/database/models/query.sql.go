@@ -929,6 +929,17 @@ func (q *Queries) FrontDriverPosition(ctx context.Context) (int64, error) {
 	return front_position, err
 }
 
+const getAdminPair = `-- name: GetAdminPair :one
+SELECT admin_pair FROM settings WHERE id = 1
+`
+
+func (q *Queries) GetAdminPair(ctx context.Context) (string, error) {
+	row := q.db.QueryRowContext(ctx, getAdminPair)
+	var admin_pair string
+	err := row.Scan(&admin_pair)
+	return admin_pair, err
+}
+
 const getAppRelease = `-- name: GetAppRelease :one
 SELECT app_release FROM settings WHERE id = 1
 `
@@ -1106,6 +1117,17 @@ func (q *Queries) GetDeliveryPrefs(ctx context.Context) (GetDeliveryPrefsRow, er
 		&i.AutoAssign,
 	)
 	return i, err
+}
+
+const getDeviceSetups = `-- name: GetDeviceSetups :one
+SELECT device_setups FROM settings WHERE id = 1
+`
+
+func (q *Queries) GetDeviceSetups(ctx context.Context) (string, error) {
+	row := q.db.QueryRowContext(ctx, getDeviceSetups)
+	var device_setups string
+	err := row.Scan(&device_setups)
+	return device_setups, err
 }
 
 const getDrawerMovementByKey = `-- name: GetDrawerMovementByKey :one
@@ -6028,6 +6050,15 @@ func (q *Queries) SetAddedTip(ctx context.Context, arg SetAddedTipParams) (int64
 	return result.RowsAffected()
 }
 
+const setAdminPair = `-- name: SetAdminPair :exec
+UPDATE settings SET admin_pair = ? WHERE id = 1
+`
+
+func (q *Queries) SetAdminPair(ctx context.Context, adminPair string) error {
+	_, err := q.db.ExecContext(ctx, setAdminPair, adminPair)
+	return err
+}
+
 const setAppRelease = `-- name: SetAppRelease :exec
 UPDATE settings SET app_release = ? WHERE id = 1
 `
@@ -6145,6 +6176,15 @@ func (q *Queries) SetDeliveryPrefs(ctx context.Context, arg SetDeliveryPrefsPara
 		arg.NearbyDistanceMi,
 		arg.AutoAssign,
 	)
+	return err
+}
+
+const setDeviceSetups = `-- name: SetDeviceSetups :exec
+UPDATE settings SET device_setups = ? WHERE id = 1
+`
+
+func (q *Queries) SetDeviceSetups(ctx context.Context, deviceSetups string) error {
+	_, err := q.db.ExecContext(ctx, setDeviceSetups, deviceSetups)
 	return err
 }
 

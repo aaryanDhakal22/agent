@@ -93,6 +93,7 @@ type Querier interface {
 	FinishOrder(ctx context.Context, arg FinishOrderParams) error
 	// 2.4.1: a recalled driver is next in the queue.
 	FrontDriverPosition(ctx context.Context) (int64, error)
+	GetAdminPair(ctx context.Context) (string, error)
 	GetAppRelease(ctx context.Context) (string, error)
 	// Settings -----------------------------------------------------------------
 	GetAutoAccept(ctx context.Context) (bool, error)
@@ -107,6 +108,7 @@ type Querier interface {
 	GetCustomerSync(ctx context.Context) (GetCustomerSyncRow, error)
 	// Delivery settings + store map (2.0.9) -------------------------------------------
 	GetDeliveryPrefs(ctx context.Context) (GetDeliveryPrefsRow, error)
+	GetDeviceSetups(ctx context.Context) (string, error)
 	GetDrawerMovementByKey(ctx context.Context, arg GetDrawerMovementByKeyParams) (DrawerMovement, error)
 	GetDrawerSession(ctx context.Context, id string) (DrawerSession, error)
 	GetDriver(ctx context.Context, id string) (Driver, error)
@@ -335,6 +337,7 @@ type Querier interface {
 	// 2.5.0 ADD TIP: the whole tip added after the order (absolute). Only an
 	// order of the given (open) batch that isn't cancelled, POS or locked (0 rows).
 	SetAddedTip(ctx context.Context, arg SetAddedTipParams) (int64, error)
+	SetAdminPair(ctx context.Context, adminPair string) error
 	SetAppRelease(ctx context.Context, appRelease string) error
 	SetAutoAccept(ctx context.Context, autoAccept bool) error
 	SetAutoCloseLast(ctx context.Context, autoCloseLast string) error
@@ -345,6 +348,7 @@ type Querier interface {
 	SetCounterNext(ctx context.Context, counterNext int64) error
 	SetCustomerAddressPoint(ctx context.Context, arg SetCustomerAddressPointParams) error
 	SetDeliveryPrefs(ctx context.Context, arg SetDeliveryPrefsParams) error
+	SetDeviceSetups(ctx context.Context, deviceSetups string) error
 	// A tip the driver got at the door (absolute). Only a delivery of the given
 	// (open) batch that is out or delivered, not a POS check.
 	SetDoorTip(ctx context.Context, arg SetDoorTipParams) (int64, error)

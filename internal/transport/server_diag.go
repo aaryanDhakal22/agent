@@ -151,6 +151,10 @@ type diagResponse struct {
 	// Tablets (2.2.0): the paired tablets, their Quibase version and
 	// whether they are on /api/events now.
 	Tablets []TabletInfo `json:"tablets"`
+	// Terminals (contract 2.10y): the paired POS terminals, their
+	// Centurion version, whether they are on /api/events and their last
+	// setup result.
+	Terminals []TabletInfo `json:"terminals"`
 	// DBTrouble (hardening F-15): readonly | full | ioerr while the SD card
 	// is in trouble ("" = fine).
 	DBTrouble string `json:"db_trouble,omitempty"`
@@ -247,7 +251,8 @@ func (s *Server) handleDiag(w http.ResponseWriter, r *http.Request) {
 		out.OpenNow = &open
 	}
 
-	out.Tablets = s.Tablets(ctx)
+	out.Tablets = s.devicesOfKind(ctx, device.KindTablet, true)
+	out.Terminals = s.Terminals(ctx)
 	if s.dbHealth != nil {
 		out.DBTrouble = s.dbHealth().Trouble
 	}
@@ -494,6 +499,9 @@ func (s *Server) handleDiagReport(w http.ResponseWriter, r *http.Request) {
 		s.writeJSON(w, http.StatusBadRequest, errCodeMap("The report must be a JSON object.", "bad_request"))
 		return
 	}
+	// A setup / full-check result is kept here first (contract 2.10y): the
+	// Pi page and the next terminal's setup see it even when main is down.
+	s.noteSetupReport(r.Context(), d, raw)
 	key, err := s.settings.GetStoreAPIKey(r.Context())
 	if err != nil {
 		s.writeError(w, r, http.StatusInternalServerError, err)
@@ -507,7 +515,11 @@ func (s *Server) handleDiagReport(w http.ResponseWriter, r *http.Request) {
 	if s.diag.Health != nil {
 		pi["health"] = s.diag.Health.Snapshot(r.Context())
 	}
-	payload := map[string]any{"tablet_id": d.ID, "tablet_name": d.Name, "report": json.RawMessage(raw), "pi": pi}
+	kind := device.KindTablet
+	if d.Kind == device.KindTerminal {
+		kind = device.KindTerminal
+	}
+	payload := map[string]any{"tablet_id": d.ID, "tablet_name": d.Name, "device_kind": kind, "report": json.RawMessage(raw), "pi": pi}
 
 	ctx, cancel := context.WithTimeout(r.Context(), diagReportWait)
 	defer cancel()

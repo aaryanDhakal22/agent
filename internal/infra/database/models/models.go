@@ -339,6 +339,8 @@ type Setting struct {
 	PinThrottle                string  `json:"pin_throttle"`
 	TerminalAppRelease         string  `json:"terminal_app_release"`
 	PrintRouting               string  `json:"print_routing"`
+	AdminPair                  string  `json:"admin_pair"`
+	DeviceSetups               string  `json:"device_setups"`
 }
 
 type SettingsLog struct {

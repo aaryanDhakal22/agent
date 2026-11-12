@@ -169,6 +169,8 @@ func (s *Server) deviceFromRequest(r *http.Request) (*device.Device, bool, error
 	s.touchDevice(d.ID)
 	if v := r.Header.Get(quibaseVersionHeader); v != "" {
 		s.noteAppVersion(d, v)
+	} else if v := r.Header.Get(terminalVersionHeader); v != "" && d.Kind == device.KindTerminal {
+		s.noteAppVersion(d, v) // Centurion's build (contract 2.10y)
 	}
 	return d, true, nil
 }
@@ -236,12 +238,18 @@ func integrationMayRead(r *http.Request) bool {
 
 // terminalMayUse: the floor routes a POS terminal's key may call besides
 // /api/terminal/* - the event stream, the floor summary, renaming or
-// unpairing itself.
+// unpairing itself, and the setup wizard's diagnostics (2.10y).
 func terminalMayUse(r *http.Request) bool {
 	switch p := r.URL.Path; {
 	case r.Method == http.MethodGet && (p == "/api/events" || p == "/api/floor" || p == "/api/printers"):
 		return true // GET /api/printers: the terminal's printer alert (read only)
 	case r.Method == http.MethodPatch && p == "/api/device/self", r.Method == http.MethodPost && p == "/api/device/unpair":
+		return true
+	// The setup wizard (contract 2.10y): Pi health, network printers, test
+	// slips with no failover, its setup report.
+	case r.Method == http.MethodGet && (p == "/api/diag" || p == "/api/printers/found"):
+		return true
+	case r.Method == http.MethodPost && (p == "/api/printers/test" || p == "/api/diag/report"):
 		return true
 	}
 	return false
@@ -298,6 +306,10 @@ func (s *Server) integration(h http.HandlerFunc) http.HandlerFunc {
 func (s *Server) handlePairingCode(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Kind string `json:"kind"`
+		// Username / Password (contract 2.10y): a tablet may show a terminal
+		// code when the store manager login is typed with it.
+		Username string `json:"username"`
+		Password string `json:"password"`
 	}
 	if r.Body != nil && r.ContentLength != 0 {
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
@@ -312,18 +324,26 @@ func (s *Server) handlePairingCode(w http.ResponseWriter, r *http.Request) {
 		s.writeJSON(w, http.StatusBadRequest, errCodeMap("kind must be tablet, integration or terminal", "bad_request"))
 		return
 	}
-	minter, name := "web", "Pi web page"
+	minter, name, via := "web", "Pi web page", ""
 	if d, ok := r.Context().Value(deviceCtxKey{}).(*device.Device); ok {
 		minter, name = d.ID, d.Name
 		if d.Kind != device.KindTablet {
 			s.writeJSON(w, http.StatusForbidden, errCodeMap("only a tablet or the Pi web page can show a pairing code", "kind_not_allowed"))
 			return
 		}
-		if kind != "" && kind != device.KindTablet {
-			s.writeJSON(w, http.StatusForbidden, errCodeMap("a tablet's code pairs tablets only - pair a terminal or the hub from the Pi web page or with the manager login", "kind_not_allowed"))
+		switch {
+		case kind == device.KindTerminal && strings.TrimSpace(body.Username) != "" && body.Password != "":
+			// Quibase's "Pair a counter terminal" (2.10y): the manager login.
+			if !s.managerLoginOK(w, r, body.Username, body.Password) {
+				return
+			}
+			via = "manager_login"
+		case kind != "" && kind != device.KindTablet:
+			s.writeJSON(w, http.StatusForbidden, errCodeMap("a tablet's code pairs tablets only - a terminal code needs the store manager login; the hub pairs from the Pi web page", "kind_not_allowed"))
 			return
+		default:
+			kind = device.KindTablet
 		}
-		kind = device.KindTablet
 	}
 	code, exp, err := s.pairing.issueFor(minter, kind, time.Now())
 	var many *errTooManyCodes
@@ -342,7 +362,11 @@ func (s *Server) handlePairingCode(w http.ResponseWriter, r *http.Request) {
 	}
 	s.logger.Info().Ctx(r.Context()).Str("device_id", minter).Str("kind", shown).Msg("Pairing code shown")
 	if s.terminalSvc != nil {
-		s.terminalSvc.RecordPi(r.Context(), minter, terminal.ActionPairingCode, map[string]any{"device_id": minter, "device_name": name, "kind": shown})
+		d := map[string]any{"device_id": minter, "device_name": name, "kind": shown}
+		if via != "" {
+			d["via"] = via
+		}
+		s.terminalSvc.RecordPi(r.Context(), minter, terminal.ActionPairingCode, d)
 	}
 	s.writeJSON(w, http.StatusOK, map[string]any{"code": code, "expires_at": exp.UTC(), "kind": shown})
 }
@@ -401,6 +425,7 @@ func (s *Server) pairDevice(w http.ResponseWriter, r *http.Request, name, kind, 
 		return
 	}
 	s.logger.Info().Ctx(r.Context()).Str("device_id", id).Str("name", name).Str("kind", kind).Str("with", how).Msg("Device paired")
+	s.journalPaired(r.Context(), id, name, how)
 	if kind == device.KindIntegration && s.broker != nil {
 		s.broker.PublishFloorChanged() // the web UI shows the POS switches now
 	}
@@ -464,21 +489,51 @@ func (s *Server) handlePairManager(w http.ResponseWriter, r *http.Request) {
 		s.writeJSON(w, http.StatusBadRequest, errCodeMap("kind must be tablet, integration or terminal", "bad_request"))
 		return
 	}
+	if !s.checkManagerLogin(w, r, hash, body.Username, body.Password) {
+		return
+	}
+	s.pairDevice(w, r, name, kind, "manager_login")
+}
+
+// checkManagerLogin checks the store manager login against hash under the
+// per-IP login throttle (shared with /api/login): false = answered (429 /
+// 401 bad_login).
+func (s *Server) checkManagerLogin(w http.ResponseWriter, r *http.Request, hash, username, password string) bool {
 	ip := clientIP(r)
 	release, wait := s.logins.begin(ip, time.Now())
 	if wait > 0 {
 		w.Header().Set("Retry-After", strconv.Itoa(int(wait.Seconds())+1))
 		s.writeJSON(w, http.StatusTooManyRequests, errCodeMap("Too many wrong passwords — wait a minute and try again.", "too_many_attempts"))
-		return
+		return false
 	}
 	defer release()
-	if !s.passwordOK(r, hash, body.Username, body.Password) {
+	if !s.passwordOK(r, hash, username, password) {
 		s.logins.fail(ip, time.Now())
 		s.writeJSON(w, http.StatusUnauthorized, errCodeMap("Wrong manager username or password.", "bad_login"))
-		return
+		return false
 	}
 	s.logins.ok(ip)
-	s.pairDevice(w, r, name, kind, "manager_login")
+	return true
+}
+
+// managerLoginOK is checkManagerLogin on a linked Pi that uses the manager
+// login (409 manager_login_unavailable otherwise).
+func (s *Server) managerLoginOK(w http.ResponseWriter, r *http.Request, username, password string) bool {
+	li, err := s.settings.GetLinkInfo(r.Context())
+	if err != nil {
+		s.writeError(w, r, http.StatusInternalServerError, err)
+		return false
+	}
+	hash, _, err := s.settings.GetUIPassword(r.Context())
+	if err != nil {
+		s.writeError(w, r, http.StatusInternalServerError, err)
+		return false
+	}
+	if li.ManagerUsername == "" || hash == "" {
+		s.writeJSON(w, http.StatusConflict, errCodeMap("This Pi doesn't use the manager login — get a pairing code on its web page.", "manager_login_unavailable"))
+		return false
+	}
+	return s.checkManagerLogin(w, r, hash, username, password)
 }
 
 // GET /api/devices (session).
@@ -488,7 +543,15 @@ func (s *Server) handleListDevices(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, r, http.StatusInternalServerError, err)
 		return
 	}
-	s.writeJSON(w, http.StatusOK, ds)
+	setups := s.deviceSetups(r.Context()) // + each device's last setup (2.10y)
+	out := make([]deviceView, len(ds))
+	for i, d := range ds {
+		out[i] = deviceView{Device: d}
+		if res, ok := setups[d.ID]; ok {
+			out[i].Setup = &res
+		}
+	}
+	s.writeJSON(w, http.StatusOK, out)
 }
 
 // POST /api/devices/{id}/revoke (session).

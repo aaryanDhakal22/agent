@@ -108,6 +108,10 @@ type Server struct {
 	floorSyncWake func()
 	// terminalSvc: the POS terminals' API (terminal stage 0d).
 	terminalSvc *terminalApp.Service
+	// setups: the admin pairing code + each device's last setup result
+	// (contract 2.10y, SetSetup); adminCodes throttles admin-code guesses.
+	setups     device.SetupStore
+	adminCodes adminCodeThrottle
 }
 
 // SetAppUpdater wires the tablet-app release cache (/api/app/*).

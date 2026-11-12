@@ -48,7 +48,7 @@ func (s *Server) routes() []routeDef {
 		// (setup/token only when unconfigured, setup/password only when
 		// needs_password) so they can't be driven out of order.
 		{"POST", "/api/setup/token", "none", "Provision: verify + link an admin-minted token", s.handleSetupToken},
-		{"POST", "/api/setup/link", "none", "Provision: link a blank Pi with the store manager login (restores the open batch, pairs the calling tablet)", s.handleSetupLink},
+		{"POST", "/api/setup/link", "none", "Provision: link a blank Pi with the store manager login (restores the open batch, pairs the calling tablet, or terminal with kind: terminal)", s.handleSetupLink},
 		{"POST", "/api/setup/password", "none", "Provision: set the local UI password (+optional hint), issue a session", s.handleSetupPassword},
 		{"POST", "/api/login", "none", "Unlock the web UI with the local password (or the manager login on a linked Pi)", s.handleLogin},
 		{"POST", "/api/logout", "none", "Clear the web-UI session cookie", s.handleLogout},
@@ -57,6 +57,7 @@ func (s *Server) routes() []routeDef {
 
 		// Tablet pairing — open (needs a live 6-digit code from the web UI).
 		{"POST", "/api/pair/manager", "none", "Join a linked Pi with the store manager login (2.4.2; no other tablet to get a code from) {username, password, tablet_name} -> 201 {device_id, name, kind, key, device_key} | 400 name_required | 401 bad_login | 409 not_linked/manager_login_unavailable | 429 too_many_attempts", s.handlePairManager},
+		{"POST", "/api/pair/admin", "none", "Pair a counter terminal with the store's admin pairing code (2.10y) {code, name, kind?: terminal} -> 201 as /api/pair | 400 | 401 wrong_admin_code | 403 admin_code_off | 409 not_linked | 429 too_many_attempts (Retry-After)", s.handlePairAdmin},
 		{"POST", "/api/pair", "none", "Pair a tablet, the store hub or a POS terminal: {code, name, kind?: tablet|integration|terminal} -> {device_id, name, kind, key, device_key} (shown once)", s.handlePair},
 
 		// Floor — paired tablet (X-Agent-Device-Key) or web-UI session.
@@ -143,7 +144,7 @@ func (s *Server) routes() []routeDef {
 		{"POST", "/api/batches/{id}/driver-reports/print", "device", "Print one driver-report slip per driver (receipt printer)", s.handlePrintDriverReports},
 		{"GET", "/api/batches/{id}/z", "device", "A closed batch's Z report (contract §2.10l) -> {report} | 404 not_found (open, not built yet, or no longer kept)", s.handleBatchZ},
 		{"GET", "/api/printers", "device", "Printer reachability snapshot (a POS terminal's key may read it too)", s.handleListPrinters},
-		{"GET", "/api/printers/found", "device", "Printers seen on the LAN (TCP 9100) {scanned_at, scanning, printers:[{ip, mac, known, printer_name}]}; ?refresh=1 scans now", s.handlePrintersFound},
+		{"GET", "/api/printers/found", "device", "Printers seen on the LAN (TCP 9100) {scanned_at, scanning, printers:[{ip, mac, known, printer_name}]}; ?refresh=1 scans now (a terminal key may read it, 2.10y)", s.handlePrintersFound},
 		{"POST", "/api/printers/add", "device", "Add a found printer {name, ip, mac} -> RPC printer.add -> 201 {id, name, ip} | 409 name_taken | 400 | 503 main_offline", s.handlePrinterAdd},
 		{"GET", "/api/app/latest", "device", "Newest Quibase release cached for tablets (204 none)", s.handleAppLatest},
 		{"GET", "/api/app/apk", "device", "Download the cached Quibase APK", s.handleAppAPK},
@@ -151,12 +152,12 @@ func (s *Server) routes() []routeDef {
 		{"GET", "/api/events", "device", "SSE: order.arrived|updated|escalated, drivers.updated|dispatched, driver.route, batch.closed, floor.updated, settings.updated, integration.status, terminal.menu.changed|config.changed|order.placed|order.paid|order.voided|order.changed|order.picked_up|draft.changed|draft.removed|draft.taken|customer.changed|customers.synced|driver.linked|driver.claimed|driver.tip|driver.closed|driver.report|drawer.changed|z.report, sync.parked, routing.updated", s.handleEvents},
 
 		// Quibase setup + diagnostics — paired tablet (or web-UI session).
-		{"POST", "/api/pairing/code", "device", "Show a 6-digit tablet pairing code (5 min) — web UI or a paired tablet (Pair another tablet)", s.handlePairingCode},
+		{"POST", "/api/pairing/code", "device", "Show a 6-digit pairing code (5 min) {kind?, username?, password?} — web UI (any kind) or a paired tablet (tablets; a terminal with the store manager login, 2.10y)", s.handlePairingCode},
 		{"PATCH", "/api/device/self", "device", "A paired tablet renames itself {name} (1-40) -> {id, name}", s.handleRenameSelf},
 		{"POST", "/api/device/report-token", "device", "Mint this tablet's diagnostics report token on main -> {token, main_url} (never stored here)", s.handleReportToken},
-		{"GET", "/api/diag", "device", "Diagnostics snapshot: main link, Pi health, printers, orders, open_now, problems", s.handleDiag},
-		{"POST", "/api/diag/report", "device", "Relay a tablet's diagnostics report (v1, <=256 KB) to main as RPC diag.report", s.handleDiagReport},
-		{"POST", "/api/printers/test", "device", "Test print {printer_id?, probe_only?}: per-printer results, never fails over (409 while one runs)", s.handlePrinterTest},
+		{"GET", "/api/diag", "device", "Diagnostics snapshot: main link, Pi health, printers, orders, open_now, problems, tablets[], terminals[] (a terminal key may read it, 2.10y)", s.handleDiag},
+		{"POST", "/api/diag/report", "device", "Relay a tablet's or terminal's diagnostics report (v1, <=256 KB) to main as RPC diag.report (+ device_kind); a setup / full_check result is kept per device first", s.handleDiagReport},
+		{"POST", "/api/printers/test", "device", "Test print {printer_id?, probe_only?}: per-printer results, never fails over (409 while one runs; a terminal key may too, 2.10y)", s.handlePrinterTest},
 
 		// Receipt settings (Quibase Settings -> Receipts) — paired tablet (or web-UI session).
 		{"GET", "/api/settings/receipt", "device", "Receipt settings {prefs, defaults, footer_effective, footer_store_default, location_footer}", s.handleGetReceiptPrefs},
@@ -211,7 +212,7 @@ func (s *Server) routes() []routeDef {
 		{"GET", "/api/terminal/checks", "terminal", "All Checks Overview (contract §2.10o): every order the Pi holds, filtered ?batch=<id>|current|all&from&to&type&source&state&paid&staff_id&device_id&tender&min_cents&max_cents&q&limit&offset -> {checks, total, limit, offset, batch_ids} | 400 | 401 | 403 driver_not_allowed", s.handleTerminalChecks},
 		{"GET", "/api/terminal/checks/{id}", "terminal", "One order in full {check, order, payments, adjustments, journal} | 404 not_found", s.handleTerminalCheck},
 		{"POST", "/api/terminal/close", "terminal", "The day's close (Close batch) from a terminal {force?, manager_pin?}: a manager logged in or a manager's PIN -> {closed, opened, auto_finished, unsettled: {count, due_cents, checks}} (the terminal prints the list; unpaid pickups are carried, still payable) | 401 | 403 manager_required {action: close_batch} / manager_pin_invalid | 409 unsettled_checks {checks} (an unpaid counter check: pay or void it) / batch_has_leftovers", s.handleTerminalClose},
-		{"POST", "/api/terminal/journal", "terminal", "Journal a terminal-only action {action (not a Pi one), order_id?, detail?: object <= 4 KB} -> 201 the entry (journal.entries to main) | 400 | 401 login_required", s.handleTerminalJournalPost},
+		{"POST", "/api/terminal/journal", "terminal", "Journal a terminal-only action {action (not a Pi one), order_id?, detail?: object <= 4 KB} -> 201 the entry (journal.entries to main) | 400 | 401 login_required (admin_mode, admin_drawer_test, drawer_kick and setup.* need no login, 2.10y)", s.handleTerminalJournalPost},
 		// The store's customers (terminal 1d, contract §2.10j): a copy of main's, kept by its change feed.
 		{"GET", "/api/terminal/customers", "terminal", "Look a caller up by phone (works offline) ?phone=<digits>: 10 digits = that number, 3-9 = numbers starting or ending with them (the last 4) -> {customers: [{id, phone, first_name, last_name, name, notes, source, last_order_at?, pending, addresses: [{id, label, line1, line2, city, state, zip, notes, default, area?: {state: in|near|out|unknown, distance_mi?}}]}], area: {radius_mi, margin_mi}|null, count, synced_at} (fewer than 3 digits: no customers) | 400", s.handleTerminalCustomers},
 		{"POST", "/api/terminal/customers", "terminal", "Add a customer {phone, first_name, last_name?, notes?, address?: {line1, line2?, city, state?, zip?, notes?, label?}} -> 201 {customer, created: true, address_id?, area} | 200 created: false (the phone's customer: address added, only an empty name / notes filled); saved at once, customer.upsert to main, SSE terminal.customer.changed | 400 | 401 login_required | 409 too_many_addresses", s.handleTerminalAddCustomer},
@@ -224,6 +225,9 @@ func (s *Server) routes() []routeDef {
 		{"POST", "/api/terminal/deliveries/send-out", "terminal", "Dispatch bar: send a driver out {driver_id, order_ids (pooled with him first), mark_ready} with those + his pool, as the tablet's SEND OUT (journal delivery.send_out) -> {orders} | 400 | 401 login_required | 404 not_found/driver_not_found | 409 not_ready {order_ids}/driver_not_available/invalid_state", s.handleTerminalSendOut},
 		{"POST", "/api/terminal/drivers/{id}/returned", "terminal", "Dispatch bar: the driver is back (his run delivered, back of the queue; journal driver.returned) -> {orders, auto_assigned_order_ids} | 401 | 404 driver_not_found | 409", s.handleTerminalDriverReturned},
 		{"POST", "/api/terminal/orders/{id}/time", "terminal", "Pickup / Dispatch bar: move a cooking or ready order's ready time (a pickup's ready time, a delivery's time) {ready_at: RFC 3339, at most 24 h ahead}: order.status to main, order.updated to the tablets, SSE terminal.order.time, journal order.time -> {order, from, to} | 400 | 401 | 404 | 409 invalid_state", s.handleTerminalOrderTime},
+		{"GET", "/api/terminal/setup", "terminal", "The setup wizard's readiness summary (2.10y): {store, menu, routes, staff (counts), printers, app, setups[], at}", s.handleTerminalSetup},
+		{"POST", "/api/terminal/print", "terminal", "Raw ESC/POS to one Pi printer, no failover (2.10y) {printer?|printer_id?, bytes_b64 (<= 256 KB), kind: receipt|reprint|test, order_id?} -> {ok, printer} | 400 | 404 unknown_printer | 413 | 502 print_failed", s.handleTerminalPrint},
+		{"POST", "/api/terminal/square/test-refund", "terminal", "Refund the setup's test charge (2.10y) {square_payment_id, amount_cents 1-100, idempotency_key} -> RPC square.test_refund -> {ok, refund_id, status} | 400 | 502 main_unsupported/main_unreachable | main's refusal", s.handleTerminalTestRefund},
 		{"GET", "/api/terminal/app/latest", "terminal", "Terminal self-update (contract 2.10w): the newest terminal APK the Pi has cached {app, version_code, version_name, sha256, size, created_at, install_window} | 204 none", s.handleTerminalAppLatest},
 		{"GET", "/api/terminal/app/apk", "terminal", "Download the cached terminal APK (Range; X-Sha256) | 404 not_found", s.handleTerminalAppAPK},
 		{"GET", "/api/terminal/journal", "terminal", "The action journal, newest first ?limit=N (default 100, max 500)", s.handleTerminalJournal},
@@ -237,7 +241,9 @@ func (s *Server) routes() []routeDef {
 		{"POST", "/api/terminal/driver/report", "terminal", "Print his driver report on the receipt printer -> {driver_id, driver_name, printed_on, report} | 502 nothing_printed | 503 printing_unavailable", s.handleDriverReportPrint},
 
 		// Web-UI-only — session-gated.
-		{"GET", "/api/devices", "session", "Paired tablets", s.handleListDevices},
+		{"GET", "/api/devices", "session", "Paired devices (+ setup: each one's last setup result, 2.10y)", s.handleListDevices},
+		{"GET", "/api/settings/admin-code", "session", "The admin pairing code for counter terminals (2.10y): {enabled, is_default, length} (never the code)", s.handleGetAdminCode},
+		{"PUT", "/api/settings/admin-code", "session", "Change / turn off the admin pairing code {code?: 4-8 digits | \"\" = 1024, enabled?} -> {enabled, is_default, length} | 400 bad_code", s.audited("admin-code", s.readAdminCode, s.handleSetAdminCode)},
 		{"POST", "/api/devices/{id}/revoke", "session", "Revoke a paired tablet", s.handleRevokeDevice},
 		{"POST", "/api/orders/{id}/resend", "session", "Re-run the full arrival pipeline for a local order", s.handleResendByID},
 		{"GET", "/api/history", "session", "Full order history, proxied from main/", s.handleHistory},

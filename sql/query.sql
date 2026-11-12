@@ -358,6 +358,18 @@ SELECT print_routing FROM settings WHERE id = 1;
 -- name: SetPrintRouting :exec
 UPDATE settings SET print_routing = ? WHERE id = 1;
 
+-- name: GetAdminPair :one
+SELECT admin_pair FROM settings WHERE id = 1;
+
+-- name: SetAdminPair :exec
+UPDATE settings SET admin_pair = ? WHERE id = 1;
+
+-- name: GetDeviceSetups :one
+SELECT device_setups FROM settings WHERE id = 1;
+
+-- name: SetDeviceSetups :exec
+UPDATE settings SET device_setups = ? WHERE id = 1;
+
 -- name: SetLastReturn :exec
 UPDATE settings SET last_return_driver_id = ?, last_return_position = ?, last_return_at = ? WHERE id = 1;
 

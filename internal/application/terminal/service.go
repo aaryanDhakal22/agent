@@ -423,6 +423,14 @@ func (s *Service) PostJournal(ctx context.Context, a Actor, in JournalIn) (*term
 // terminal journals it with nobody logged in (contract 2.10s §9).
 const ActionAdminMode = "admin_mode"
 
+// deviceLevelActions are what a terminal journals with nobody logged in
+// (contract 2.10s §9, 2.10y): admin mode and its drawer tests, the setup
+// wizard's steps (setup is done logged out). The row has no staff.
+var deviceLevelActions = map[string]bool{
+	ActionAdminMode: true, "admin_drawer_test": true, "drawer_kick": true,
+	"setup.started": true, "setup.finished": true, "setup.skipped_by_admin": true, "setup.card_test": true,
+}
+
 // JournalKeyRepo finds a terminal's journal row by its client_key.
 type JournalKeyRepo interface {
 	JournalByClientKey(ctx context.Context, deviceID, action, key string) (*terminal.Entry, error)
@@ -430,11 +438,11 @@ type JournalKeyRepo interface {
 
 // PostJournalDedup is PostJournal answering whether the row came before: a
 // detail.client_key the terminal already sent for that action gives the
-// stored row back (dup true, nothing written; contract 2.10s §9). admin_mode
-// needs no staff login.
+// stored row back (dup true, nothing written; contract 2.10s §9). A
+// device-level action (admin_mode, setup.*, ...) needs no staff login.
 func (s *Service) PostJournalDedup(ctx context.Context, a Actor, in JournalIn) (*terminal.Entry, bool, error) {
 	st, _, err := s.staffOf(a)
-	if err != nil && in.Action != ActionAdminMode {
+	if err != nil && !deviceLevelActions[in.Action] {
 		return nil, false, err
 	}
 	if err := terminal.CheckPostedAction(in.Action); err != nil {

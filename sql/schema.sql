@@ -259,6 +259,10 @@ CREATE TABLE settings (
     terminal_app_release      text    NOT NULL DEFAULT '',
     -- 00037_print_routing: routing + emergency reroute (JSON, '' = none).
     print_routing             text    NOT NULL DEFAULT '',
+    -- 00038_setup_wizard: the admin pairing code for terminals (JSON {code, off},
+    -- '' = 1024 on) + each device's last setup result (JSON {device id: result}).
+    admin_pair                text    NOT NULL DEFAULT '',
+    device_setups             text    NOT NULL DEFAULT '',
     CHECK (id = 1)
 );
 

@@ -796,6 +796,7 @@ func main() {
 	httpServer.SetTerminal(termSvc)
 	httpServer.SetDevLog(devRing)
 	httpServer.SetSettingsLog(repositories.NewSettingsLogRepository(db))
+	httpServer.SetSetup(repositories.NewSetupRepository(db)) // admin pairing code + setup results (2.10y)
 	httpRef.Store(httpServer)
 	httpServer.SetAppUpdater(appUpdater)
 	httpServer.SetTerminalAppUpdater(termAppUpdater, func(rc context.Context) bool {
