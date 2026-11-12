@@ -70,7 +70,7 @@ func TestStrikeRaster(t *testing.T) {
 	if strings.HasPrefix(strikeRaster("A", false), "\x1dv0\x02") {
 		t.Error("not tall = m 0")
 	}
-	if blank := strikeRaster("   ", false); strings.ContainsAny(blank[8:], "\xff") {
+	if blank := strikeRaster("   ", false); strings.IndexByte(blank[8:], 0xff) >= 0 {
 		t.Error("spaces only: nothing drawn")
 	}
 }

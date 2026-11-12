@@ -94,9 +94,11 @@ def test_void_refund_first_and_waste(rig):  # noqa: F811
     r = term.post(f"{base}/api/terminal/orders/{paid_id}/void", json={"reason": "left"}, timeout=5)
     assert r.status_code == 409 and r.json()["code"] == "refund_first" and r.json()["paid_cents"] == 500
 
-    before = len(fakes["Pizza"].jobs)
     made_id, made_total = _place(rig, "pickup")
-    wait_until(lambda: len(fakes["Pizza"].jobs) > before, what="the pickup's station ticket")
+    # Station tickets print after the commit, in the background: wait for this pickup's (and the paid
+    # counter order's, which may land later under load) before counting.
+    wait_until(lambda: any(b"PICKUP" in j for j in fakes["Pizza"].jobs) and any(b"COUNTER" in j for j in fakes["Pizza"].jobs),
+               what="the counter order's and the pickup's station tickets")
     r = term.post(f"{base}/api/terminal/orders/{made_id}/waste", json={"reason": "nope"}, timeout=5)
     assert r.status_code == 400 and r.json()["code"] == "bad_reason" and "Never picked up" in r.json()["reasons"]
     jobs = len(fakes["Pizza"].jobs)
