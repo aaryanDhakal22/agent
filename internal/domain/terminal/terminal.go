@@ -287,11 +287,16 @@ func ParseConfig(body []byte) (*Config, error) {
 
 // CounterStart is the counter sequence's start.
 func (c *Config) CounterStart() int64 {
-	if c == nil || c.parsed.CounterStart <= 0 {
+	if c == nil || c.parsed.CounterStart <= 0 || c.parsed.CounterStart >= MaxCounterStart {
+		// S-6: counter numbers stay below the online kitchen numbers (1100+).
 		return DefaultCounterStart
 	}
 	return c.parsed.CounterStart
 }
+
+// MaxCounterStart: a counter_start at or above it (the online kitchen
+// numbers start at 1100) falls back to the default (S-6).
+const MaxCounterStart = 1100
 
 // LimitsOf is a staff member's limits: a manager is unlimited; otherwise
 // their own, else the role's default, else none (0 / 0).

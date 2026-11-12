@@ -49,3 +49,15 @@ func TestFingerprintAndWasteReasons(t *testing.T) {
 		t.Fatalf("main's list: %v", r)
 	}
 }
+
+func TestCounterStartStaysBelowKitchenNumbers(t *testing.T) {
+	for raw, want := range map[string]int64{`{"counter_start": 500}`: 500, `{"counter_start": 1100}`: DefaultCounterStart, `{}`: DefaultCounterStart} {
+		cfg, err := ParseConfig([]byte(`{"version":1,"staff":[],"settings":` + raw + `}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := cfg.CounterStart(); got != want {
+			t.Errorf("%s: %d, want %d", raw, got, want)
+		}
+	}
+}
