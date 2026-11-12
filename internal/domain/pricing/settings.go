@@ -6,6 +6,7 @@ import (
 	"regexp"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 // Fees are a fee set: the service (online) fee and delivery.
@@ -250,9 +251,59 @@ func (d *Deal) Validate() error {
 		if emptyEligible(d.Eligible) || d.MinSubtotalCents < 0 {
 			return badDeal("a free item needs items or categories and a minimum")
 		}
+	case DealCoupon:
+		return d.validCoupon()
 	default:
-		return badDeal("kind must be bundle, mix, nth, code or free_item")
+		return badDeal("kind must be bundle, mix, nth, code, free_item or coupon")
 	}
+	return nil
+}
+
+// Coupon limits.
+const (
+	MaxCouponParts     = 8
+	MaxCouponPartQty   = 10
+	MaxCouponFreeMods  = 20
+	MaxCouponCardLines = 6
+	MaxCouponCardLine  = 60
+)
+
+// validCoupon checks a coupon (the app checks its families and sizes are the
+// store's) and trims its card and labels.
+func (d *Deal) validCoupon() error {
+	if d.PriceCents < 0 || d.PriceCents > MaxOpenPriceCents {
+		return badDeal("a coupon needs a price ($0 to $10,000)")
+	}
+	if len(d.Parts) == 0 || len(d.Parts) > MaxCouponParts {
+		return badDeal("a coupon has 1–8 parts")
+	}
+	card := []string{}
+	for _, l := range d.Card {
+		if l = strings.TrimSpace(l); l != "" {
+			card = append(card, l)
+		}
+	}
+	if len(card) > MaxCouponCardLines {
+		return badDeal("a coupon's card has up to 6 lines")
+	}
+	for _, l := range card {
+		if utf8.RuneCountInString(l) > MaxCouponCardLine {
+			return badDeal("a card line is up to 60 characters")
+		}
+	}
+	d.Card = card
+	for i := range d.Parts {
+		p := &d.Parts[i]
+		p.Label = strings.TrimSpace(p.Label)
+		if utf8.RuneCountInString(p.Label) > 60 {
+			return badDeal("a part's label is up to 60 characters")
+		}
+		if len(p.Families) == 0 || p.Qty < 1 || p.Qty > MaxCouponPartQty || p.RegularModsIncluded < 0 || p.RegularModsIncluded > MaxCouponFreeMods {
+			return badDeal("every coupon part needs families, 1–10 items and 0–20 free regular mods")
+		}
+	}
+	// A coupon's own fields only (none of the other kinds').
+	d.Slots, d.Eligible, d.Qty, d.EachCents, d.N, d.Pct, d.Code, d.AmountCents, d.FirstOrderOnly, d.MinSubtotalCents = nil, nil, 0, 0, 0, 0, "", 0, false, 0
 	return nil
 }
 
@@ -270,6 +321,9 @@ type StoreDeal struct {
 func (d *StoreDeal) ValidKinds() error {
 	if d.ChannelKinds == nil {
 		d.ChannelKinds = []string{"web", "operator", "counter"}
+		if d.Kind == DealCoupon { // the counter's (the cashier applies it)
+			d.ChannelKinds = []string{"counter"}
+		}
 	}
 	for _, k := range d.ChannelKinds {
 		ok := false
