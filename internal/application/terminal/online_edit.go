@@ -193,7 +193,10 @@ func (s *Service) changeOnline(ctx context.Context, a Actor, st terminal.Staff, 
 		need = discountNeed(cfg, st, in.Cart.Discount, *pre.added)
 		priceNeed, compNeed = checkPrices(cfg, st, pre.added.changes, keptPrices(cur.Order))
 	}
-	approver, overrides, err := s.approve(ctx, a, st, cfg, in.ManagerPIN, id, need, priceNeed, compNeed)
+	// A line of the online order taken off (the check gets smaller): a void
+	// of what was sent, a manager's (as on a counter order).
+	voidNeed := removalNeed(a, cfg, st, cur.Order, pre.items, pre.money.Total)
+	approver, overrides, err := s.approve(ctx, a, st, cfg, in.ManagerPIN, id, need, priceNeed, compNeed, voidNeed)
 	if err != nil {
 		return nil, err
 	}

@@ -75,8 +75,13 @@ func TestCashierDefaultsAndComp(t *testing.T) {
 	}
 	m, _ := cfg.Find("m")
 	d, _ := cfg.Find("d")
-	if !cfg.MayComp(c) || !cfg.MayComp(m) || cfg.MayComp(d) {
-		t.Fatal("comp: cashier + manager yes, driver no")
+	// A comp and a void of a sent order are a manager's (the owner,
+	// 2026-11-12 evening).
+	if cfg.MayComp(c) || !cfg.MayComp(m) || cfg.MayComp(d) {
+		t.Fatal("comp: a manager yes, a cashier and a driver no")
+	}
+	if cfg.MayVoid(c) || !cfg.MayVoid(m) || cfg.MayVoid(d) || cfg.VoidNeed(c, 500) == nil || cfg.VoidNeed(m, 500) != nil {
+		t.Fatal("void of a sent order: a manager yes, a cashier and a driver no")
 	}
 }
 

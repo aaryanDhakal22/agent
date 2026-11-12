@@ -56,8 +56,10 @@ def test_online_delivery_placed_printed_and_edited(placed):
     view = term.get(f"{base}/api/terminal/orders/{oid}", timeout=5).json()
     cart = view["order"]["order"]["source_metadata"]["terminal"]["cart"]
     assert cart["lines"][0]["custom"] and cart["lines"][0]["price_cents"] == 1500, cart
-    r = term.put(f"{base}/api/terminal/orders/{oid}/cart", json={"cart": {"lines": [{"custom": True, "name": "Fries", "price_cents": 500, "qty": 1}]},
-                                                               "client_key": f"k-{uuid.uuid4()}"}, timeout=10)
+    swap = {"cart": {"lines": [{"custom": True, "name": "Fries", "price_cents": 500, "qty": 1}]}, "client_key": f"k-{uuid.uuid4()}"}
+    r = term.put(f"{base}/api/terminal/orders/{oid}/cart", json=swap, timeout=10)  # a sent line off, the check smaller: a manager's
+    assert r.status_code == 403 and r.json()["code"] == "manager_required" and r.json()["action"] == "void", r.text
+    r = term.put(f"{base}/api/terminal/orders/{oid}/cart", json=swap | {"manager_pin": "9876"}, timeout=10)
     assert r.status_code == 200, r.text
     ch = r.json()
     total = ch["order"]["order"]["money"]["total_cents"]

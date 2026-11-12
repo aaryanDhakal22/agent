@@ -1,6 +1,7 @@
 package terminal
 
 import (
+	"context"
 	"fmt"
 	"time"
 )
@@ -60,3 +61,20 @@ var (
 	// sent with a request.
 	ErrManagerPINShortInline = fmt.Errorf("%w: a manager's PIN is 4 digits - set a new one on the Staff page", ErrManagerPINWrong)
 )
+
+type voidApproverKey struct{}
+
+// WithVoidApprover carries the manager who approved a void into the
+// repository's transaction (the order.void event's approved_by).
+func WithVoidApprover(ctx context.Context, staffID string) context.Context {
+	if staffID == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, voidApproverKey{}, staffID)
+}
+
+// VoidApprover is the manager WithVoidApprover put on ctx ("" = none).
+func VoidApprover(ctx context.Context) string {
+	id, _ := ctx.Value(voidApproverKey{}).(string)
+	return id
+}

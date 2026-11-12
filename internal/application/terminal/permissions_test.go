@@ -82,10 +82,16 @@ func TestRefundPermissions(t *testing.T) {
 	if _, err := refund(mgrTill, "card", total-1000, ""); err != nil {
 		t.Fatal(err)
 	}
-	if v, err := r.svc.Void(r.ctx, till, id, VoidIn{Reason: "left"}); err != nil || v.RefundedCents != 0 {
+	// The void itself (of a sent order) is a manager's too: the cashier
+	// with a manager's PIN, one more override.
+	var vn *terminal.ManagerRequired
+	if _, err := r.svc.Void(r.ctx, till, id, VoidIn{Reason: "left"}); !errors.As(err, &vn) || vn.Action != terminal.ActionVoid {
+		t.Fatalf("cashier void without a manager: %v", err)
+	}
+	if v, err := r.svc.Void(r.ctx, till, id, VoidIn{Reason: "left", ManagerPIN: "9876"}); err != nil || v.RefundedCents != 0 {
 		t.Fatalf("cashier void after the refund: %+v %v", v, err)
 	}
-	if o := journalOf(t, r, terminal.ActionOverride); len(o) != 2 {
+	if o := journalOf(t, r, terminal.ActionOverride); len(o) != 3 {
 		t.Fatalf("overrides journaled: %v", o)
 	}
 	// The card's brand is kept on the payment.

@@ -102,7 +102,10 @@ def test_void_refund_first_and_waste(rig):  # noqa: F811
     r = term.post(f"{base}/api/terminal/orders/{made_id}/waste", json={"reason": "nope"}, timeout=5)
     assert r.status_code == 400 and r.json()["code"] == "bad_reason" and "Never picked up" in r.json()["reasons"]
     jobs = len(fakes["Pizza"].jobs)
+    # A waste is a void of a sent order: a manager's (the owner, 2026-11-12 evening).
     r = term.post(f"{base}/api/terminal/orders/{made_id}/waste", json={"reason": "Never picked up"}, timeout=5)
+    assert r.status_code == 403 and r.json()["code"] == "manager_required" and r.json()["action"] == "void", r.text
+    r = term.post(f"{base}/api/terminal/orders/{made_id}/waste", json={"reason": "Never picked up", "manager_pin": "9876"}, timeout=5)
     assert r.status_code == 200 and r.json()["order"]["status"]["state"] == "cancelled", r.text
     wait_until(lambda: any(e.get("kind") == "waste" for e in fm.of_type("order.void")), what="order.void kind waste")
     ev = [e for e in fm.of_type("order.void") if e.get("kind") == "waste"][0]

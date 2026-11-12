@@ -290,7 +290,7 @@ func runDay(t *testing.T, r *rig, rng *rand.Rand, day int) *model {
 			for _, pr := range refundAll(t, r, a, o.id) {
 				back = append(back, pr.Payment)
 			}
-			res, err := r.svc.Void(r.ctx, a, o.id, VoidIn{Reason: "property"})
+			res, err := r.svc.Void(r.ctx, a, o.id, VoidIn{Reason: "property", ManagerPIN: "9876"})
 			if err != nil {
 				t.Fatalf("void: %v", err)
 			}

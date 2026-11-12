@@ -169,10 +169,33 @@ func (c *Config) EmployeeMealPct() int {
 	return DefaultEmployeeMealPct
 }
 
-// MayComp: a cashier or a manager comps without anyone's PIN (the owner,
-// 2026-11-12: comp was manager-only); a driver needs a manager's PIN.
+// MayComp: a manager (or anyone main made unlimited) comps alone; a cashier
+// or a driver needs a manager's PIN / approval (the owner, 2026-11-12
+// evening: a comp is a manager's again; that morning a cashier comped
+// freely). Reversing a comp stays free.
 func (c *Config) MayComp(s Staff) bool {
-	return c.LimitsOf(s).Unlimited || s.Role == RoleCashier || s.Role == RoleManager
+	return s.Role == RoleManager || c.LimitsOf(s).Unlimited
+}
+
+// MayVoid: who voids (or wastes) an order that was sent to the kitchen, or
+// takes a sent line off it, without a manager's PIN / approval: a manager,
+// or anyone main made unlimited (the owner, 2026-11-12 evening). An order
+// not sent yet never reaches the Pi (the terminal's Cancel / Wipe is free).
+func (c *Config) MayVoid(s Staff) bool {
+	return s.Role == RoleManager || c.LimitsOf(s).Unlimited
+}
+
+// VoidNeed is what a void of a sent order (the whole order, a waste, or a
+// sent line taken off so that the check gets smaller) needs from a manager:
+// nil for a manager / anyone main made unlimited, and for a call-center
+// agent (no manager there: it cancels its own unpaid orders with a picked
+// reason, contract 2.10ab). cents = the order's total, or how much the check
+// goes down by.
+func (c *Config) VoidNeed(s Staff, cents int64) *ManagerRequired {
+	if s.Role == RoleCallcenter || c.MayVoid(s) {
+		return nil
+	}
+	return &ManagerRequired{Action: ActionVoid, Requested: cents}
 }
 
 // DefaultPriceDropPct is the cashier's price-drop limit when main's settings

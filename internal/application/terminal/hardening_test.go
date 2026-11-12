@@ -128,7 +128,11 @@ func TestWasteUnpaidOnlyWithAStoreReason(t *testing.T) {
 		t.Fatalf("bad reason: %v", err)
 	}
 	voidsBefore := len(r.orders.voids)
-	w, err := r.svc.Waste(r.ctx, till, id, WasteIn{Reason: "Never picked up"})
+	var vn *terminal.ManagerRequired
+	if _, err := r.svc.Waste(r.ctx, till, id, WasteIn{Reason: "Never picked up"}); !errors.As(err, &vn) || vn.Action != terminal.ActionVoid {
+		t.Fatalf("a cashier wastes a sent order without a manager: %v", err)
+	}
+	w, err := r.svc.Waste(r.ctx, till, id, WasteIn{Reason: "Never picked up", ManagerPIN: "9876"})
 	if err != nil || w.Order.Status.State != order.StateCancelled || w.Order.Status.CancelReason != terminal.WasteReason {
 		t.Fatalf("waste: %+v %v", w, err)
 	}
@@ -317,7 +321,7 @@ func TestMoneyActionsAreLogged(t *testing.T) {
 		ManagerPIN: "0000"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := r.svc.Void(r.ctx, till, id, VoidIn{Reason: "left"}); err != nil {
+	if _, err := r.svc.Void(r.ctx, till, id, VoidIn{Reason: "left", ManagerPIN: "9876"}); err != nil {
 		t.Fatal(err)
 	}
 	out := buf.String()

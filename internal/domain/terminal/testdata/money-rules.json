@@ -9,7 +9,8 @@
     "people: what main stores (role + their own limits) and the effective limits main computes and sends to the Pi (effective_limits; null = unlimited). A manager is always unlimited (their own limits are ignored, the Pi's rule). 'uma' is a cashier main sends effective_limits null for ('anyone main made unlimited', agent 2.10): Store > Staff can't make one today (main_makes false), the rule is kept so the three agree if it ever does.",
     "2026-11-12 (the owner, 'online orders = called-in orders'): a refund on an earlier day's order (not carried) is allowed with a manager (R24, R25, R33-R36: a cashier gets {manager: refund_earlier_day}; the refund lands in today's batch, drawer and Z); a tip is card only (section tips: a tip on a cash or comp payment is refused for anyone: tip_card_only when the payment is taken, not_tippable when set afterwards; main flags cash_tip if one arrives). The over-comp refusal (R14) and 'managers have no limits' stay.",
     "tips: each case is one payment taken with its tip (payment.tip), or with tip_after true a tip set afterwards on that payment (payment = the payment tipped, tip = the tip set); pi / main as in the other sections.",
-    "callcenter (CALLCENTER-PLAN.md, agent contract 2.10ab; 2026-11-12): the role `callcenter` (person 'cece': effective 0 / 0, never unlimited, their own limits ignored) works only through main's relay to the Pi, never on a store terminal. Each row is one thing the call-center app could send: action = what (the Pi's runner TestMoneyRulesCallcenter places a real order and tries it), pi = 'allow' | {refused: not_allowed_for_callcenter, what} (the Pi's 403, before any money or print) | {refused: paid_locked} / {refused: out_of_area} (the Pi's 409s). main never stores a refused one (no main flags); the terminal app never logs this role in (its runner skips the section)."
+    "callcenter (CALLCENTER-PLAN.md, agent contract 2.10ab; 2026-11-12): the role `callcenter` (person 'cece': effective 0 / 0, never unlimited, their own limits ignored) works only through main's relay to the Pi, never on a store terminal. Each row is one thing the call-center app could send: action = what (the Pi's runner TestMoneyRulesCallcenter places a real order and tries it), pi = 'allow' | {refused: not_allowed_for_callcenter, what} (the Pi's 403, before any money or print) | {refused: paid_locked} / {refused: out_of_area} (the Pi's 409s). main never stores a refused one (no main flags); the terminal app never logs this role in (its runner skips the section).",
+    "2026-11-12 evening (the owner): a comp, and a void of an order that was sent to the kitchen, are a manager's. comps: a cashier or a driver gets {manager: comp} (C01, C03, P04, P06); a manager or anyone main made unlimited comps alone; reversing a comp stays free (R12, R13, R32). voids: by voids (what: order = Void, waste = Void waste, line = a kitchen change that takes a sent line off and leaves the check smaller, cents = the order's total or how much the check goes down by) -> a cashier or a driver gets {manager: void} with requested = cents; main flags an order.void nobody approved by someone with limits: void_needs_manager (main null = it has nothing to check: a removed line reaches main only as order.changed). An order not sent yet never reaches the Pi (the terminal's Cancel / Wipe is free). The manager rule is the store seats' (terminals): the call center cancels its own unpaid orders and takes lines off unpaid orders without a manager, as its K rows say (V08, V09; paid lines stay locked, it never comps)."
   ],
   "version": 1,
   "settings": {"cashier_refund_cents": 2000, "cashier_discount_pct": 20, "cashier_price_drop_pct": 20, "employee_meal_pct": 20},
@@ -153,10 +154,22 @@
     {"id": "G06", "note": "a manager with his own (ignored) limits", "by": "max", "cents": 5000, "pi": "allow", "main": []}
   ],
   "comps": [
-    {"id": "C01", "note": "a cashier comps (was manager-only)", "by": "cara", "cents": 1377, "pi": "allow", "main": []},
+    {"id": "C01", "note": "a cashier's comp needs a manager (the owner, 2026-11-12 evening; that morning a cashier comped freely)", "by": "cara", "cents": 1377, "pi": {"manager": "comp", "limit": 0, "requested": 1377}, "main": ["comp_needs_manager"]},
     {"id": "C02", "note": "a manager comps", "by": "mia", "cents": 5000, "pi": "allow", "main": []},
     {"id": "C03", "note": "a driver needs a manager", "by": "dev", "cents": 500, "pi": {"manager": "comp", "limit": 0, "requested": 500}, "main": ["comp_needs_manager"]},
     {"id": "C04", "note": "a cashier main made unlimited", "by": "uma", "cents": 500, "pi": "allow", "main": []}
+  ],
+  "voids": [
+    {"id": "V01", "note": "a cashier voids an order that was sent to the kitchen: a manager", "by": "cara", "what": "order", "cents": 2357, "pi": {"manager": "void", "limit": 0, "requested": 2357}, "main": ["void_needs_manager"]},
+    {"id": "V02", "note": "a manager voids alone", "by": "mia", "what": "order", "cents": 2357, "pi": "allow", "main": []},
+    {"id": "V03", "note": "a driver needs a manager", "by": "dev", "what": "order", "cents": 900, "pi": {"manager": "void", "limit": 0, "requested": 900}, "main": ["void_needs_manager"]},
+    {"id": "V04", "note": "a cashier main made unlimited", "by": "uma", "what": "order", "cents": 900, "pi": "allow", "main": []},
+    {"id": "V05", "note": "Void waste is a void of a sent order too", "by": "cara", "what": "waste", "cents": 1377, "pi": {"manager": "void", "limit": 0, "requested": 1377}, "main": ["void_needs_manager"]},
+    {"id": "V06", "note": "a sent line taken off (the check gets smaller): cents = how much it goes down by; main sees only order.changed", "by": "cara", "what": "line", "cents": 269, "pi": {"manager": "void", "limit": 0, "requested": 269}, "main": null},
+    {"id": "V07", "note": "a manager takes a sent line off", "by": "max", "what": "line", "cents": 269, "pi": "allow", "main": null},
+    {"id": "V08", "note": "the call center cancels its own unpaid order with a picked reason: it has no manager (callcenter K16 says which orders)", "by": "cece", "what": "order", "cents": 2357, "pi": "allow", "main": []},
+    {"id": "V09", "note": "the call center takes a line off an unpaid order, an online one too (K19): no manager; the same removal by a store cashier is V06", "by": "cece", "what": "line", "cents": 269, "pi": "allow", "main": null},
+    {"id": "V10", "note": "a store driver takes a sent line off: a manager", "by": "dev", "what": "line", "cents": 500, "pi": {"manager": "void", "limit": 0, "requested": 500}, "main": null}
   ],
   "tips": [
     {"id": "T01", "note": "a cash payment with a tip: refused (tips are card only)", "by": "cara", "payment": {"tender": "cash", "cents": 1500, "tip": 300}, "pi": {"refused": "tip_card_only"}, "main": ["cash_tip"], "main_if_approved": ["cash_tip"]},
@@ -187,7 +200,7 @@
     {"id": "P01", "by": "cara", "from": 1000, "to": 800, "pi": "allow"},
     {"id": "P02", "by": "cara", "from": 1000, "to": 799, "pi": {"manager": "price_change", "limit": 20, "requested": 21}},
     {"id": "P03", "note": "raising is free", "by": "cara", "from": 1000, "to": 1200, "pi": "allow"},
-    {"id": "P04", "note": "$0 = a comp line: a cashier comps", "by": "cara", "from": 1000, "to": 0, "pi": "allow"},
+    {"id": "P04", "note": "$0 = a comp line: a cashier's comp needs a manager", "by": "cara", "from": 1000, "to": 0, "pi": {"manager": "comp", "limit": 0, "requested": 1000}},
     {"id": "P05", "note": "a driver may not lower a price", "by": "dev", "from": 1000, "to": 900, "pi": {"manager": "price_change", "limit": 0, "requested": 10}},
     {"id": "P06", "note": "a driver's comp line", "by": "dev", "from": 1000, "to": 0, "pi": {"manager": "comp", "limit": 0, "requested": 1000}},
     {"id": "P07", "by": "mia", "from": 1000, "to": 100, "pi": "allow"},

@@ -36,6 +36,7 @@ type RuleTable struct {
 	Refunds        []RuleCase `json:"refunds"`
 	GeneralRefunds []RuleCase `json:"general_refunds"`
 	Comps          []RuleCase `json:"comps"`
+	Voids          []RuleCase `json:"voids"`
 	Tips           []RuleCase `json:"tips"`
 	Discounts      []RuleCase `json:"discounts"`
 	PriceChanges   []RuleCase `json:"price_changes"`
@@ -54,12 +55,14 @@ type RulePay struct {
 
 // RuleCase is one row of the table.
 type RuleCase struct {
-	ID       string         `json:"id"`
-	Note     string         `json:"note"`
-	By       string         `json:"by"`
-	Cents    int64          `json:"cents"`
-	Pct      int            `json:"pct"`
-	Kind     string         `json:"kind"`
+	ID    string `json:"id"`
+	Note  string `json:"note"`
+	By    string `json:"by"`
+	Cents int64  `json:"cents"`
+	Pct   int    `json:"pct"`
+	Kind  string `json:"kind"`
+	// What: a voids case: order | waste | line.
+	What     string         `json:"what"`
 	From     int64          `json:"from"`
 	To       int64          `json:"to"`
 	Settings map[string]any `json:"settings"`

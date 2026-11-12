@@ -205,17 +205,24 @@ def test_comp_by_a_cashier_needs_no_manager(rig):  # noqa: F811
                   "cart": {"lines": [{"item_id": SODA, "qty": 1}]}}, timeout=10)
     assert r.status_code == 201, r.text
     oid, total = r.json()["order"]["order"]["id"], r.json()["order"]["order"]["money"]["total_cents"]
+    # A comp is a manager's (the owner, 2026-11-12 evening): the cashier is asked, the manager's PIN allows it.
     r = term.post(f"{base}/api/terminal/orders/{oid}/payments", json={"tender": "comp", "amount_cents": total}, timeout=5)
-    assert r.status_code == 200 and r.json()["payment"].get("approved_by") is None and r.json()["balance_cents"] == 0, r.text
-    # A comp line ($0 on a set-price item) too.
+    assert r.status_code == 403 and r.json()["code"] == "manager_required" and r.json()["action"] == "comp" and r.json()["requested"] == total, r.text
+    r = term.post(f"{base}/api/terminal/orders/{oid}/payments", json={"tender": "comp", "amount_cents": total, "manager_pin": "9876"}, timeout=5)
+    assert r.status_code == 200 and r.json()["payment"]["approved_by"] and r.json()["balance_cents"] == 0, r.text
+    # A comp line ($0 on a set-price item) too: with an approval for "comp".
     cart = {"lines": [{"item_id": SODA, "qty": 1, "price_cents": 0}]}
     q = term.post(f"{base}/api/terminal/quote", json={"cart": cart}, timeout=5).json()
-    assert not q["needs_manager"] and q["price_changes"][0]["comp"]
-    r = term.post(f"{base}/api/terminal/orders", json={"client_key": f"k-{uuid.uuid4()}", "type": "counter", "cart": cart}, timeout=10)
+    assert q["needs_manager"] and q["price_changes"][0]["comp"] and q["price_changes"][0]["needs_manager"]
+    body = {"client_key": f"k-{uuid.uuid4()}", "type": "counter", "cart": cart}
+    r = term.post(f"{base}/api/terminal/orders", json=body, timeout=10)
+    assert r.status_code == 403 and r.json()["action"] == "comp", r.text
+    ap = term.post(f"{base}/api/terminal/manager-check", json={"pin": "9876", "action": "comp"}, timeout=5).json()["approval_id"]
+    r = term.post(f"{base}/api/terminal/orders", json=body | {"approvals": [ap]}, timeout=10)
     assert r.status_code == 201, r.text
     entries = term.get(f"{base}/api/terminal/journal", timeout=5).json()
     assert any(e["action"] == "comp" and e["staff_id"] == "00000000-0000-4000-8000-0000000000c1" for e in entries)
-    assert not any(e["action"] == "override" for e in entries)
+    assert sum(e["action"] == "override" and e["detail"]["for"] == "comp" for e in entries) == 2
 
 
 def test_employee_meal_at_20_by_a_cashier(rig):  # noqa: F811

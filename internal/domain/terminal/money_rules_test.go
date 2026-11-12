@@ -90,4 +90,9 @@ func TestMoneyRules(t *testing.T) {
 		}
 		check(c, mr.Answer(need, nil))
 	}
+	// A void of a sent order (the whole order, a waste, a sent line taken
+	// off): the service's rule for all three (application void / removalNeed).
+	for _, c := range tab.Voids {
+		check(c, mr.Answer(cfg.VoidNeed(tab.Staff(cfg, c.By), c.Cents), nil))
+	}
 }

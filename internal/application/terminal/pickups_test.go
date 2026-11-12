@@ -177,8 +177,10 @@ func TestOnlineCashPickupPaidAtTheTerminalThenPickedUp(t *testing.T) {
 	}
 }
 
-func TestCompByACashierNeedsNoManager(t *testing.T) {
-	// The owner, 2026-11-12: comp was manager-only; a cashier comps alone now.
+func TestCompNeedsAManager(t *testing.T) {
+	// The owner, 2026-11-12 evening: a comp is a manager's (that morning a
+	// cashier comped alone): a cashier is asked for a manager's PIN /
+	// approval for the comp tender, at placing too, and for a comp line.
 	r := newRig(t)
 	r.login(t, till, "1234") // cashier
 	soda1 := pricing.Line{Qty: 1, Selection: pricing.Selection{ItemID: soda}}
@@ -188,30 +190,50 @@ func TestCompByACashierNeedsNoManager(t *testing.T) {
 		t.Fatal(err)
 	}
 	id, total := res.Order.Order.ID, res.Order.Order.Money.Total
-	pay, err := r.svc.AddPayment(r.ctx, till, id, PaymentIn{ClientKey: tk(), Tender: terminal.TenderComp, AmountCents: total})
-	if err != nil || pay.Payment.ApprovedBy != "" || pay.BalanceCents != 0 {
-		t.Fatalf("comp tender by a cashier: %+v %v", pay, err)
+	var mr *terminal.ManagerRequired
+	if _, err := r.svc.AddPayment(r.ctx, till, id, PaymentIn{ClientKey: tk(), Tender: terminal.TenderComp, AmountCents: total}); !errors.As(err, &mr) ||
+		mr.Action != terminal.ActionComp || mr.Requested != total {
+		t.Fatalf("comp tender by a cashier without a manager: %v", err)
 	}
-	if o := journalOf(t, r, terminal.ActionOverride); len(o) != 0 {
-		t.Fatalf("no override: %v", o)
+	pay, err := r.svc.AddPayment(r.ctx, till, id, PaymentIn{ClientKey: tk(), Tender: terminal.TenderComp, AmountCents: total, ManagerPIN: "9876"})
+	if err != nil || pay.Payment.ApprovedBy != "mgr-1" || pay.BalanceCents != 0 {
+		t.Fatalf("comp tender with the manager's PIN: %+v %v", pay, err)
+	}
+	if o := journalOf(t, r, terminal.ActionOverride); len(o) != 1 || o[0]["for"] != terminal.ActionComp {
+		t.Fatalf("the override: %v", o)
+	}
+	// Reversing the comp stays free for the cashier (money-rules R12).
+	if _, err := r.svc.AddPayment(r.ctx, till, id, PaymentIn{ClientKey: tk(), Tender: terminal.TenderComp, AmountCents: total, Refund: true, Reason: "rang wrong"}); err != nil {
+		t.Fatalf("a comp reversed: %v", err)
 	}
 	// A comp tender with the order, and a comp line ($0), the same.
 	if _, err := r.svc.PlaceOrder(r.ctx, till, OrderIn{ClientKey: "k-comp-0002", Cart: cart,
+		Payments: []PaymentIn{{Tender: terminal.TenderComp, AmountCents: total}}}); !errors.As(err, &mr) || mr.Action != terminal.ActionComp {
+		t.Fatalf("comp tender at placing without a manager: %v", err)
+	}
+	if _, err := r.svc.PlaceOrder(r.ctx, till, OrderIn{ClientKey: "k-comp-0002", Cart: cart, ManagerPIN: "9876",
 		Payments: []PaymentIn{{Tender: terminal.TenderComp, AmountCents: total}}}); err != nil {
 		t.Fatalf("comp tender at placing: %v", err)
 	}
 	compCart := Cart{Cart: pricing.Cart{Lines: []pricing.Line{atPrice(soda1, 0)}}}
 	q, err := r.svc.Quote(r.ctx, till, QuoteIn{Cart: compCart})
-	if err != nil || q.NeedsManager || !q.PriceChanges[0].Comp {
+	if err != nil || !q.NeedsManager || !q.PriceChanges[0].Comp || !q.PriceChanges[0].NeedsManager {
 		t.Fatalf("quote: %+v %v", q, err)
 	}
-	if _, err := r.svc.PlaceOrder(r.ctx, till, OrderIn{ClientKey: "k-comp-0003", Cart: compCart}); err != nil {
-		t.Fatalf("comp line: %v", err)
+	if _, err := r.svc.PlaceOrder(r.ctx, till, OrderIn{ClientKey: "k-comp-0003", Cart: compCart}); !errors.As(err, &mr) || mr.Action != terminal.ActionComp {
+		t.Fatalf("comp line without a manager: %v", err)
 	}
-	if c := journalOf(t, r, terminal.ActionComp); len(c) != 1 || c[0]["_staff"] != "cash-1" || c[0]["approved_by"] != nil {
+	ap, err := r.svc.ManagerCheck(r.ctx, till, ManagerCheckIn{PIN: "9876", Action: terminal.ActionComp})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.svc.PlaceOrder(r.ctx, till, OrderIn{ClientKey: "k-comp-0003", Cart: compCart, Approvals: []string{ap.ApprovalID}}); err != nil {
+		t.Fatalf("comp line with the approval: %v", err)
+	}
+	if c := journalOf(t, r, terminal.ActionComp); len(c) != 1 || c[0]["_staff"] != "cash-1" || c[0]["approved_by"] != "mgr-1" {
 		t.Fatalf("comp journaled: %v", c)
 	}
-	// A manager logged in, the same.
+	// A manager logged in comps alone.
 	mgrTill := Actor{DeviceID: "dev-2", DeviceName: "Till 2"}
 	r.login(t, mgrTill, "9876")
 	if _, err := r.svc.PlaceOrder(r.ctx, mgrTill, OrderIn{ClientKey: "k-comp-0004", Cart: compCart}); err != nil {

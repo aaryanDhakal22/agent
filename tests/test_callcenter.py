@@ -338,7 +338,9 @@ def test_edit_lock_on_a_sent_order(rig):
     assert after["order"]["status"]["state"] == "accepted"
 
     # T1 sends its change and lets go; the seat can lock X again.
-    r = term.put(f"{base}/api/terminal/orders/{x}/cart", json={"draft_id": "d-till-edit1", "cart": {"lines": [pizza_line()]}}, timeout=10)
+    # (A store cashier taking a sent line off needs a manager, contract 2.10ac §12: the PIN rides the change.)
+    r = term.put(f"{base}/api/terminal/orders/{x}/cart", json={"draft_id": "d-till-edit1", "cart": {"lines": [pizza_line()]},
+                                                             "manager_pin": "9876"}, timeout=10)
     assert r.status_code == 200 and r.json()["removed"] == ["Soda"], r.text
     assert relay(rig, "PUT", "drafts/d-cc-lock-02", lock)["status"] == 200
     assert term.get(f"{base}/api/terminal/drafts", timeout=5).json() == {"drafts": []}

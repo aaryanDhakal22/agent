@@ -110,7 +110,11 @@ func TestOnlineDeliveryEditedLikeOurs(t *testing.T) {
 		keep = append(keep, l)
 	}
 	rm.Lines = keep
-	res2, err := r.svc.ChangeCart(r.ctx, till, so.Order.ID, ChangeIn{Cart: rm, ClientKey: tk()})
+	var vn *terminal.ManagerRequired // a line of a sent order taken off: a manager's
+	if _, err := r.svc.ChangeCart(r.ctx, till, so.Order.ID, ChangeIn{Cart: rm, ClientKey: tk()}); !errors.As(err, &vn) || vn.Action != terminal.ActionVoid {
+		t.Fatalf("a cashier takes an online order's line off without a manager: %v", err)
+	}
+	res2, err := r.svc.ChangeCart(r.ctx, till, so.Order.ID, ChangeIn{Cart: rm, ClientKey: tk(), ManagerPIN: "9876"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -160,7 +164,7 @@ func TestOnlineCashPickupRemovalLowersTheBalance(t *testing.T) {
 	so := arriveOnline(t, r, "pickup", false)
 	c := onlineCartOf(t, r, so.Order.ID)
 	c.Lines[1].Qty = 1 // one of the two wings
-	res, err := r.svc.ChangeCart(r.ctx, till, so.Order.ID, ChangeIn{Cart: c, ClientKey: tk()})
+	res, err := r.svc.ChangeCart(r.ctx, till, so.Order.ID, ChangeIn{Cart: c, ClientKey: tk(), ManagerPIN: "9876"})
 	if err != nil {
 		t.Fatal(err)
 	}

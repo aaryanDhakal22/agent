@@ -485,7 +485,7 @@ func TestPaymentsRefundsAndVoid(t *testing.T) {
 	if back := refundAll(t, r, till, id); len(back) != 2 {
 		t.Fatalf("refunds by tender: %+v", back)
 	}
-	v, err := r.svc.Void(r.ctx, till, id, VoidIn{Reason: "customer left"})
+	v, err := r.svc.Void(r.ctx, till, id, VoidIn{Reason: "customer left", ManagerPIN: "9876"})
 	if err != nil || v.Already || v.RefundedCents != 0 || len(v.Refunds) != 0 || v.Order.Status.State != order.StateCancelled {
 		t.Fatalf("void: %+v %v", v, err)
 	}
@@ -496,10 +496,23 @@ func TestPaymentsRefundsAndVoid(t *testing.T) {
 	if err != nil || !again.Already {
 		t.Fatalf("again: %+v %v", again, err)
 	}
-	// An unpaid void is free for a cashier.
+	// An unpaid void takes no money, and a manager (the order was sent): the
+	// cashier with an approval for "void", the approver on the void.
 	res, _ = r.svc.PlaceOrder(r.ctx, till, OrderIn{ClientKey: "k-pay-00002", Cart: Cart{Cart: pricing.Cart{Lines: []pricing.Line{pizzaLine()}}}})
-	if v, err := r.svc.Void(r.ctx, till, res.Order.Order.ID, VoidIn{Reason: "mistake"}); err != nil || v.RefundedCents != 0 {
-		t.Fatalf("free void: %+v %v", v, err)
+	var vn *terminal.ManagerRequired
+	if _, err := r.svc.Void(r.ctx, till, res.Order.Order.ID, VoidIn{Reason: "mistake"}); !errors.As(err, &vn) || vn.Action != terminal.ActionVoid ||
+		vn.Requested != res.Order.Order.Money.Total {
+		t.Fatalf("a cashier's void without a manager: %v", err)
+	}
+	ap, err := r.svc.ManagerCheck(r.ctx, till, ManagerCheckIn{PIN: "9876", Action: terminal.ActionVoid})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v, err := r.svc.Void(r.ctx, till, res.Order.Order.ID, VoidIn{Reason: "mistake", Approvals: []string{ap.ApprovalID}}); err != nil || v.RefundedCents != 0 {
+		t.Fatalf("void with the approval: %+v %v", v, err)
+	}
+	if j := journalOf(t, r, terminal.ActionVoid); len(j) == 0 || j[0]["approved_by"] != "mgr-1" {
+		t.Fatalf("the void names its approver: %v", j)
 	}
 	// The journal: a terminal-only action, and a Pi-only one refused.
 	if _, err := r.svc.PostJournal(r.ctx, till, JournalIn{Action: "no_sale"}); err != nil {

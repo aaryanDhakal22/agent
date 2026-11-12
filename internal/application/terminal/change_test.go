@@ -64,9 +64,15 @@ func TestChangeCartAfterSend(t *testing.T) {
 	if _, err := r.svc.ChangeCart(r.ctx, till, id, ChangeIn{ClientKey: tk(), Cart: Cart{Cart: pricing.Cart{Lines: []pricing.Line{soda2}}}}); !errors.Is(err, terminal.ErrRefundFirst) {
 		t.Fatalf("refund first: %v", err)
 	}
-	// Drop one soda (unpaid part): a VOID ticket for it.
+	// Drop one soda (unpaid part): a void of a sent line, a manager's (the
+	// owner, 2026-11-12 evening); then a VOID ticket for it.
 	one := pricing.Line{Qty: 1, Selection: pricing.Selection{ItemID: soda}}
-	ch, err = r.svc.ChangeCart(r.ctx, till, id, ChangeIn{ClientKey: tk(), Cart: Cart{Cart: pricing.Cart{Lines: []pricing.Line{pizzaLine(), one}}}})
+	var vn *terminal.ManagerRequired
+	if _, err := r.svc.ChangeCart(r.ctx, till, id, ChangeIn{ClientKey: tk(), Cart: Cart{Cart: pricing.Cart{Lines: []pricing.Line{pizzaLine(), one}}}}); !errors.As(err, &vn) ||
+		vn.Action != terminal.ActionVoid || vn.Requested <= 0 {
+		t.Fatalf("a cashier takes a sent line off without a manager: %v", err)
+	}
+	ch, err = r.svc.ChangeCart(r.ctx, till, id, ChangeIn{ClientKey: tk(), Cart: Cart{Cart: pricing.Cart{Lines: []pricing.Line{pizzaLine(), one}}}, ManagerPIN: "9876"})
 	if err != nil || len(ch.Removed) != 1 || ch.Removed[0] != "Soda" || len(r.orders.voidLns) != 1 {
 		t.Fatalf("removed: %+v %v", ch, err)
 	}

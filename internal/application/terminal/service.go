@@ -939,7 +939,7 @@ func (s *Service) overrideUsed(ctx context.Context, a Actor, need *terminal.Mana
 	}
 	s.cm.Override(ctx, need.Action, how, cents)
 	s.logger.Info().Ctx(ctx).Str("action", need.Action).Str("approver_id", mgr.ID).Str("device_id", a.DeviceID).
-		Int64("limit", need.Limit).Int64("requested", need.Requested).Str("with", how).Msg("Manager override")
+		Int64("limit", need.Limit).Int64("requested", need.Requested).Bool("approval", how == "approval").Msg("Manager override")
 }
 
 // --- orders ------------------------------------------------------------------------------
@@ -1718,9 +1718,11 @@ func voidRefunds(paid []terminal.Payment, id, reason string, st terminal.Staff, 
 // VoidIn is POST /api/terminal/orders/{id}/void (and /waste).
 type VoidIn struct {
 	Reason string `json:"reason"`
-	// ManagerPIN: accepted for older terminals, not needed (a void takes no
-	// money since 2026-11-12).
-	ManagerPIN string `json:"manager_pin"`
+	// ManagerPIN / Approvals: a void of a sent order is a manager's (the
+	// owner, 2026-11-12 evening): a cashier or a driver sends a manager's
+	// PIN or an approval for "void"; a manager voids alone.
+	ManagerPIN string   `json:"manager_pin"`
+	Approvals  []string `json:"approvals,omitempty"`
 }
 
 // VoidResult is the voided (or wasted) order.
@@ -1747,8 +1749,11 @@ func heldBack(refunds []terminal.Payment) int64 {
 }
 
 // Void cancels an unpaid counter order of the open batch, or a carried one
-// (accepted, ready or out): any staff member, no manager (the owner,
-// 2026-11-12). An order that holds money answers 409 refund_first: refund it
+// (accepted, ready or out): a manager alone, anyone else with a manager's
+// PIN / approval for "void" (the owner, 2026-11-12 evening: every order here
+// was sent to the kitchen; that morning it was any staff member). The call
+// center cancels its own unpaid orders without one (2.10ab). An order that
+// holds money answers 409 refund_first: refund it
 // first under the refund rules. A comp on it is reversed for free. Every
 // station its tickets went to gets the VOID ticket (its lines under REMOVE /
 // QUITAR); main hears order.void {kind: void}.
@@ -1759,6 +1764,9 @@ func (s *Service) Void(ctx context.Context, a Actor, id string, in VoidIn) (*Voi
 // WasteIn is POST /api/terminal/orders/{id}/waste.
 type WasteIn struct {
 	Reason string `json:"reason"`
+	// ManagerPIN / Approvals: as VoidIn's (a waste is a void of a sent order).
+	ManagerPIN string   `json:"manager_pin"`
+	Approvals  []string `json:"approvals,omitempty"`
 }
 
 // BadWasteReason: the reason isn't on the store's list (400 bad_reason
@@ -1780,11 +1788,27 @@ func (s *Service) Waste(ctx context.Context, a Actor, id string, in WasteIn) (*V
 	if reason == "" {
 		return nil, &BadWasteReason{Reasons: cfg.WasteReasons()}
 	}
-	return s.void(ctx, a, id, VoidIn{Reason: reason}, reason)
+	return s.void(ctx, a, id, VoidIn{Reason: reason, ManagerPIN: in.ManagerPIN, Approvals: in.Approvals}, reason)
+}
+
+// voidNeed: voiding (or wasting) a sent order is a manager's (the owner,
+// 2026-11-12 evening): nil for a manager / anyone main made unlimited, for
+// the call center (it cancels its own unpaid orders with a picked reason and
+// has no manager, contract 2.10ab), and for an order that is voided already
+// or isn't there (the void's own answers come first).
+func (s *Service) voidNeed(ctx context.Context, a Actor, st terminal.Staff, cfg *terminal.Config, id string) *terminal.ManagerRequired {
+	if a.Callcenter || cfg.VoidNeed(st, 1) == nil {
+		return nil
+	}
+	cur, err := s.Order(ctx, id)
+	if err != nil || cur.Order.Status.State == order.StateCancelled {
+		return nil
+	}
+	return cfg.VoidNeed(st, cur.Order.Order.Money.Total)
 }
 
 func (s *Service) void(ctx context.Context, a Actor, id string, in VoidIn, waste string) (*VoidResult, error) {
-	st, _, err := s.staffOf(a)
+	st, cfg, err := s.staffOf(a)
 	if err != nil {
 		return nil, err
 	}
@@ -1807,6 +1831,16 @@ func (s *Service) void(ctx context.Context, a Actor, id string, in VoidIn, waste
 		s.cm.Void(ctx, st.Role, voidKind(waste), false)
 		return nil, &terminal.PaidFirst{PaidCents: held}
 	}
+	// A manager for a sent order (after refund_first: the money comes back
+	// under the refund rules first).
+	var approver *terminal.Staff
+	need := s.voidNeed(ctx, a, st, cfg, id)
+	if need != nil {
+		if approver, err = s.manager(WithApprovals(ctx, in.Approvals), a, cfg, in.ManagerPIN, need); err != nil {
+			return nil, err
+		}
+		ctx = terminal.WithVoidApprover(ctx, approver.ID)
+	}
 	so, prev, refunds, returned, err := s.repo.VoidCounterOrder(ctx, id, reason, waste, st.ID, a.DeviceID, func(cur order.StoredOrder, paid []terminal.Payment) ([]terminal.Payment, []terminal.Entry, error) {
 		refunds := voidRefunds(paid, id, reason, st, a, now, nil)
 		if held := heldBack(refunds); held > 0 {
@@ -1827,6 +1861,10 @@ func (s *Service) void(ctx context.Context, a Actor, id string, in VoidIn, waste
 				items = append(items, map[string]any{"qty": max(it.Quantity, 1), "name": it.Name})
 			}
 			d["items"] = items
+		}
+		if approver != nil {
+			d["approved_by"] = approver.ID
+			entries = append(entries, overrideEntry(a, st, approver, need, id))
 		}
 		entries = append([]terminal.Entry{{StaffID: st.ID, DeviceID: a.DeviceID, Action: action, OrderID: id, Detail: detail(d)}}, entries...)
 		return refunds, entries, nil

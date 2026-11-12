@@ -434,7 +434,8 @@ func TestCallcenterPaidLinesLocked(t *testing.T) {
 	}
 	// The store's own terminal still changes it under its rules (refund first when the total drops below what was paid).
 	r.login(t, till, "1234")
-	if ch, err := r.svc.ChangeCart(r.ctx, till, id, ChangeIn{ClientKey: tk(), Cart: cartOf(pizzaLine(), sodaLine(3))}); err != nil || len(ch.Removed) != 1 {
+	// (Taking a sent line off is a void of it: with a manager's PIN, security_test.go.)
+	if ch, err := r.svc.ChangeCart(r.ctx, till, id, ChangeIn{ClientKey: tk(), Cart: cartOf(pizzaLine(), sodaLine(3)), ManagerPIN: "9876"}); err != nil || len(ch.Removed) != 1 {
 		t.Fatalf("a cashier removes a line of a part-paid order: %+v %v", ch, err)
 	}
 	// Moving takeout <-> delivery stays as for a cashier.

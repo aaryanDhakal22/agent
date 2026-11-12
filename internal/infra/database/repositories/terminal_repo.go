@@ -563,6 +563,8 @@ func (r *OrderRepository) VoidCounterOrder(ctx context.Context, id, reason, wast
 		}
 		if len(refunds) > 0 && refunds[0].ApprovedBy != "" {
 			ev["approved_by"] = refunds[0].ApprovedBy
+		} else if ap := terminal.VoidApprover(ctx); ap != "" { // the manager who allowed the void (2.10ac §12)
+			ev["approved_by"] = ap
 		}
 		if err := insertEvent(ctx, q, evID, id, terminal.EventOrderVoid, now, ev); err != nil {
 			return err

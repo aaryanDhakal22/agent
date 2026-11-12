@@ -296,15 +296,27 @@ func (s *Service) changeCart(ctx context.Context, a Actor, id string, in ChangeI
 	// A price change (or comp line) the order had already (same item, size
 	// and price) was approved then: only new ones are checked and journaled.
 	priceNeed, compNeed := checkPrices(cfg, st, p.changes, keptPrices(cur.Order.Order))
-	approver, overrides, err := s.approve(ctx, a, st, cfg, in.ManagerPIN, id, need, priceNeed, compNeed)
-	if err != nil {
-		return nil, err
-	}
 	items, off, fees, err := buildItems(m, p)
 	if err != nil {
 		return nil, err
 	}
 	money := moneyOf(items, p, off, fees)
+	// A sent line taken off so that the check gets smaller is a void of what
+	// the kitchen got: a manager's (the owner, 2026-11-12 evening).
+	voidNeed := removalNeed(a, cfg, st, cur.Order.Order, items, money.Total)
+	if voidNeed != nil {
+		// The money comes back first (refund_first), before a manager is
+		// asked for anything: checked again in the transaction.
+		if paid, err := s.repo.OrderPayments(ctx, id); err != nil {
+			return nil, err
+		} else if amount, _ := netPaid(paid); money.Total < amount {
+			return nil, fmt.Errorf("%w (%d paid, the new total is %d)", terminal.ErrRefundFirst, amount, money.Total)
+		}
+	}
+	approver, overrides, err := s.approve(ctx, a, st, cfg, in.ManagerPIN, id, need, priceNeed, compNeed, voidNeed)
+	if err != nil {
+		return nil, err
+	}
 	if err := s.checkMoney(ctx, money, items); err != nil {
 		return nil, err
 	}
@@ -443,4 +455,23 @@ func sameMoney(a, b order.Money) bool {
 	ja, err1 := json.Marshal(a)
 	jb, err2 := json.Marshal(b)
 	return err1 == nil && err2 == nil && string(ja) == string(jb)
+}
+
+// removalNeed: a kitchen change that takes a sent line off the order (or
+// lowers its quantity) and leaves the check smaller than it was is a void of
+// what was sent: a manager's PIN / approval for "void" unless a manager (or
+// anyone main made unlimited) does it. Adding lines, or swapping a line for
+// one that costs as much or more, is free; the call center has no manager
+// (its paid lines are locked instead, contract 2.10ab). Requested = how much
+// the check goes down by.
+func removalNeed(a Actor, cfg *terminal.Config, st terminal.Staff, cur order.Snapshot, items []order.LineItem, total int64) *terminal.ManagerRequired {
+	if a.Callcenter || total >= cur.Money.Total || cfg.VoidNeed(st, 1) == nil {
+		return nil
+	}
+	lines := append([]order.LineItem(nil), items...)
+	terminal.KeepLineIDs(cur.Items, lines)
+	if _, removed := terminal.DiffLines(cur.Items, lines); len(removed) == 0 {
+		return nil
+	}
+	return cfg.VoidNeed(st, cur.Money.Total-total)
 }

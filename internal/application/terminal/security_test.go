@@ -265,3 +265,69 @@ func TestManagerCheckWithNobodyLoggedIn(t *testing.T) {
 		t.Fatalf("the default action with nobody logged in: %v", err)
 	}
 }
+
+// The owner, 2026-11-12 evening: taking a sent line off (the check gets
+// smaller) is a void of what the kitchen got: a manager's. Adding, or a
+// change that leaves the check as big or bigger, stays free; a manager does
+// it alone; the approval is for "void".
+func TestSentLineRemovalNeedsAManager(t *testing.T) {
+	r := newRig(t)
+	r.login(t, till, "1234")
+	soda := func(n int) pricing.Line { return pricing.Line{Qty: n, Selection: pricing.Selection{ItemID: soda}} }
+	cart := func(lines ...pricing.Line) Cart { return Cart{Cart: pricing.Cart{Lines: lines}} }
+	res, err := r.svc.PlaceOrder(r.ctx, till, OrderIn{ClientKey: tk(), Cart: cart(pizzaLine(), soda(2))})
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := res.Order.Order.ID
+	// One more soda: free.
+	ch, err := r.svc.ChangeCart(r.ctx, till, id, ChangeIn{ClientKey: tk(), Cart: cart(pizzaLine(), soda(3))})
+	if err != nil || len(ch.Added) != 1 {
+		t.Fatalf("adding to a sent order: %+v %v", ch, err)
+	}
+	more := ch.Order.Order.Money.Total
+	// The sodas swapped for a second pizza (a line goes, the check grows): free.
+	if ch, err = r.svc.ChangeCart(r.ctx, till, id, ChangeIn{ClientKey: tk(), Cart: cart(pizzaLine(), pizzaLine())}); err != nil || len(ch.Removed) == 0 ||
+		ch.Order.Order.Money.Total <= more {
+		t.Fatalf("a swap for more: %+v %v", ch, err)
+	}
+	big := ch.Order.Order.Money.Total
+	// A pizza off: the check gets smaller -> a manager, requested = the drop.
+	var mr *terminal.ManagerRequired
+	if _, err := r.svc.ChangeCart(r.ctx, till, id, ChangeIn{ClientKey: tk(), Cart: cart(pizzaLine())}); !errors.As(err, &mr) ||
+		mr.Action != terminal.ActionVoid || mr.Requested != big-mustTotal(t, r, cart(pizzaLine())) {
+		t.Fatalf("a sent line off without a manager: %v %+v", err, mr)
+	}
+	// An approval for another action doesn't cover it; one for "void" does.
+	wrong, _ := r.svc.ManagerCheck(r.ctx, till, ManagerCheckIn{PIN: "9876", Action: terminal.ActionDiscount})
+	if _, err := r.svc.ChangeCart(r.ctx, till, id, ChangeIn{ClientKey: tk(), Cart: cart(pizzaLine()), Approvals: []string{wrong.ApprovalID}}); !errors.As(err, &mr) {
+		t.Fatalf("a discount approval covered a void: %v", err)
+	}
+	ok, _ := r.svc.ManagerCheck(r.ctx, till, ManagerCheckIn{PIN: "9876", Action: terminal.ActionVoid})
+	ch, err = r.svc.ChangeCart(r.ctx, till, id, ChangeIn{ClientKey: tk(), Cart: cart(pizzaLine()), Approvals: []string{ok.ApprovalID}})
+	if err != nil || len(ch.Removed) != 1 {
+		t.Fatalf("with the void approval: %+v %v", ch, err)
+	}
+	if j := journalOf(t, r, terminal.ActionOverride); len(j) != 1 || j[0]["for"] != terminal.ActionVoid || j[0]["manager_id"] != "mgr-1" {
+		t.Fatalf("the override: %v", j)
+	}
+	// A manager takes a line off alone.
+	mgrTill := Actor{DeviceID: "dev-2", DeviceName: "Till 2"}
+	r.login(t, mgrTill, "9876")
+	res2, err := r.svc.PlaceOrder(r.ctx, mgrTill, OrderIn{ClientKey: tk(), Cart: cart(pizzaLine(), soda(2))})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ch, err := r.svc.ChangeCart(r.ctx, mgrTill, res2.Order.Order.ID, ChangeIn{ClientKey: tk(), Cart: cart(pizzaLine())}); err != nil || len(ch.Removed) != 1 {
+		t.Fatalf("a manager takes a sent line off: %+v %v", ch, err)
+	}
+}
+
+func mustTotal(t *testing.T, r *rig, c Cart) int64 {
+	t.Helper()
+	v, err := r.svc.Quote(r.ctx, till, QuoteIn{Type: "counter", Cart: c})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return v.Quote.(pricing.Quote).TotalCents
+}

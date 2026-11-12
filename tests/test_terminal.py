@@ -370,7 +370,7 @@ def test_pick_up_list_payment_void_limits(rig):
     assert reused.status_code == 409 and reused.json()["code"] == "key_reused"
     wait_until(lambda: fm.of_type("order.payment"), what="order.payment synced")
     # Void of a paid order: refund first (contract 2.10s §5); the card refund
-    # needs a manager, then any cashier voids.
+    # needs a manager, and so does the void of a sent order (2.10ac §12).
     r = term.post(f"{base}/api/terminal/orders/{oid}/void", json={"reason": "customer left"}, timeout=5)
     assert r.status_code == 409 and r.json()["code"] == "refund_first" and r.json()["paid_cents"] == total
     r = term.post(f"{base}/api/terminal/orders/{oid}/payments", json={"tender": "square_app", "amount_cents": total, "refund": True,
@@ -382,7 +382,9 @@ def test_pick_up_list_payment_void_limits(rig):
     r = term.post(f"{base}/api/terminal/orders/{oid}/payments", json={"tender": "square_app", "amount_cents": total, "refund": True,
                                                                      "reason": "customer left", "manager_pin": "9876"}, timeout=5)
     assert r.status_code == 200, r.text
-    r = term.post(f"{base}/api/terminal/orders/{oid}/void", json={"reason": "customer left"}, timeout=5).json()
+    r = term.post(f"{base}/api/terminal/orders/{oid}/void", json={"reason": "customer left"}, timeout=5)
+    assert r.status_code == 403 and r.json()["code"] == "manager_required" and r.json()["action"] == "void", r.text
+    r = term.post(f"{base}/api/terminal/orders/{oid}/void", json={"reason": "customer left", "manager_pin": "9876"}, timeout=5).json()
     assert r["refunded_cents"] == 0 and r["order"]["status"]["state"] == "cancelled"
     wait_until(lambda: any("VOID" in j.decode("latin-1") and "REMOVE / QUITAR" in j.decode("latin-1") for j in fakes["Pizza"].jobs),
                what="VOID ticket with the REMOVE band")
@@ -405,7 +407,7 @@ def test_counter_number_resets_at_close_batch(rig):
     first = place(rig).json()
     assert first["number"] == 500
     oid = first["order"]["order"]["id"]
-    assert rig["term"].post(f"{agent.base}/api/terminal/orders/{oid}/void", json={"reason": "test"}, timeout=5).status_code == 200
+    assert rig["term"].post(f"{agent.base}/api/terminal/orders/{oid}/void", json={"reason": "test", "manager_pin": "9876"}, timeout=5).status_code == 200
     r = agent.http.post(f"{agent.base}/api/batch/close", json={"force": True}, timeout=30)
     assert r.status_code == 200, r.text
     assert place(rig).json()["number"] == 500
@@ -476,8 +478,11 @@ def test_kitchen_change_after_send(rig):
     n = len(fakes["Pizza"].jobs)
     again = term.put(f"{base}/api/terminal/orders/{oid}/cart", json=body, timeout=10).json()
     assert again["duplicate"] and again["added"] == ["2× Soda"]
-    # Take the pizza off: a change ticket with REMOVE / QUITAR.
-    r = term.put(f"{base}/api/terminal/orders/{oid}/cart", json={"cart": {"lines": [soda]}}, timeout=10).json()
+    # Take the pizza off: a void of a sent line, a manager's; then a change ticket with REMOVE / QUITAR.
+    r = term.put(f"{base}/api/terminal/orders/{oid}/cart", json={"cart": {"lines": [soda]}}, timeout=10)
+    assert r.status_code == 403 and r.json()["code"] == "manager_required" and r.json()["action"] == "void", r.text
+    ap = term.post(f"{base}/api/terminal/manager-check", json={"pin": "9876", "action": "void"}, timeout=5).json()["approval_id"]
+    r = term.put(f"{base}/api/terminal/orders/{oid}/cart", json={"cart": {"lines": [soda]}, "approvals": [ap]}, timeout=10).json()
     assert r["removed"] and r["removed"][0].startswith("Cheese Pizza")
     wait_until(lambda: any("REMOVE / QUITAR" in j.decode("latin-1") and "(VOID) " in j.decode("latin-1") for j in fakes["Pizza"].jobs[n:]),
                what="change ticket (REMOVE)")
@@ -489,7 +494,7 @@ def test_kitchen_change_after_send(rig):
     # Voided (refunded first): not editable.
     assert term.post(f"{base}/api/terminal/orders/{oid}/payments", json={"tender": "cash", "amount_cents": total, "refund": True,
                                                                         "reason": "test", "manager_pin": "9876"}, timeout=5).status_code == 200
-    assert term.post(f"{base}/api/terminal/orders/{oid}/void", json={"reason": "test"}, timeout=5).status_code == 200
+    assert term.post(f"{base}/api/terminal/orders/{oid}/void", json={"reason": "test", "manager_pin": "9876"}, timeout=5).status_code == 200
     r = term.put(f"{base}/api/terminal/orders/{oid}/cart", json=body | {"client_key": "chg-key-00002"}, timeout=10)
     assert r.status_code == 409 and r.json()["code"] == "not_editable"
     actions = [e["action"] for e in term.get(f"{base}/api/terminal/journal", timeout=5).json()]
