@@ -154,6 +154,8 @@ type DrawerMoveIn struct {
 	Reason      string `json:"reason"`
 	ClientKey   string `json:"client_key"`
 	ManagerPIN  string `json:"manager_pin"`
+	// Approvals (X-5): single-use manager approvals instead of manager_pin.
+	Approvals []string `json:"approvals,omitempty"`
 }
 
 // DrawerMoveResult is a pay-in / pay-out's answer.
@@ -167,6 +169,7 @@ type DrawerMoveResult struct {
 // terminal's open drawer. A cashier's pay-out over cashier_payout_cents needs
 // a manager's PIN; a pay-out can't take more than the drawer holds.
 func (s *Service) MoveDrawer(ctx context.Context, a Actor, kind string, in DrawerMoveIn) (*DrawerMoveResult, error) {
+	ctx = WithApprovals(ctx, in.Approvals)
 	st, cfg, repo, err := s.drawerStaff(a)
 	if err != nil {
 		return nil, err
@@ -241,6 +244,8 @@ type DrawerCloseIn struct {
 	CountedCents  *int64                  `json:"counted_cents"`
 	Denominations []terminal.Denomination `json:"denominations"`
 	ManagerPIN    string                  `json:"manager_pin"`
+	// Approvals (X-5): single-use manager approvals instead of manager_pin.
+	Approvals []string `json:"approvals,omitempty"`
 }
 
 // CloseDrawer counts a drawer out: this terminal's open one, or drawer_id
@@ -248,6 +253,7 @@ type DrawerCloseIn struct {
 // left). Its own cashier or a manager closes it; anyone else needs a
 // manager's PIN. Answers expected vs counted (over / short).
 func (s *Service) CloseDrawer(ctx context.Context, a Actor, in DrawerCloseIn) (*terminal.Drawer, error) {
+	ctx = WithApprovals(ctx, in.Approvals)
 	st, cfg, repo, err := s.drawerStaff(a)
 	if err != nil {
 		return nil, err

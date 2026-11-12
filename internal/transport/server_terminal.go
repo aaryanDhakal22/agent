@@ -318,9 +318,13 @@ func (s *Server) handleTerminalJournalPost(w http.ResponseWriter, r *http.Reques
 	if !s.decodeTerminal(w, r, &in) {
 		return
 	}
-	e, err := s.terminalSvc.PostJournal(r.Context(), actor(r), in)
+	e, dup, err := s.terminalSvc.PostJournalDedup(r.Context(), actor(r), in)
 	if err != nil {
 		s.terminalError(w, r, err)
+		return
+	}
+	if dup { // the same detail.client_key again: the stored row (contract 2.10s §9)
+		s.writeJSON(w, http.StatusOK, e)
 		return
 	}
 	s.writeJSON(w, http.StatusCreated, e)

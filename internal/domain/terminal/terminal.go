@@ -633,7 +633,8 @@ var reserved = map[string]bool{ActionLogin: true, ActionLoginFailed: true, Actio
 	ActionDriverLinked:  true, ActionDriverClaim: true, ActionDriverTip: true, ActionDriverClose: true, ActionDriverReport: true,
 	ActionSyncParked: true, ActionSyncRetry: true, ActionDrawerOpen: true, ActionDrawerPayIn: true, ActionDrawerPayOut: true,
 	ActionDrawerClose: true, ActionDrawerHandover: true, ActionZReport: true, ActionCustomLine: true,
-	ActionReportPrint: true, ActionBatchClose: true, ActionDrawerKick: true, ActionPaymentTip: true}
+	ActionReportPrint: true, ActionBatchClose: true, ActionDrawerKick: true, ActionPaymentTip: true,
+	ActionVoidWaste: true, ActionUnsettled: true, ActionPairingCode: true, ActionPinLockout: true}
 
 var actionRe = regexp.MustCompile(`^[a-z][a-z0-9_.]{1,39}$`)
 

@@ -506,3 +506,7 @@ CREATE TABLE z_reports (
 -- the migration only (sqlc doesn't need them; the drift test compares tables
 -- and indexes).
 CREATE INDEX idx_orders_carried ON orders (carried) WHERE carried;
+
+-- 00034_journal_key: a terminal's journal rows deduplicated by detail.client_key.
+CREATE INDEX idx_journal_client_key ON journal (device_id, action, json_extract(detail, '$.client_key'))
+WHERE json_extract(detail, '$.client_key') IS NOT NULL;

@@ -116,6 +116,8 @@ type Querier interface {
 	// Integration settings (2.1.0) ---------------------------------------------------
 	GetIntegrationSettings(ctx context.Context) (GetIntegrationSettingsRow, error)
 	GetIntegrationStatus(ctx context.Context) (string, error)
+	// A terminal's journal row its offline replay sent before (00034).
+	GetJournalByClientKey(ctx context.Context, arg GetJournalByClientKeyParams) (Journal, error)
 	GetLastBackup(ctx context.Context) (string, error)
 	GetLastReturn(ctx context.Context) (GetLastReturnRow, error)
 	// Auto-assign waits while an AUTO preview may be on a tablet.

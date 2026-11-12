@@ -82,6 +82,8 @@ type Service struct {
 	pager Pager
 	// pinRepo keeps the PIN throttle across restarts (X-2).
 	pinRepo PinRepo
+	// approvals: single-use manager approvals (X-5).
+	approvals approvalBook
 }
 
 // NewService wires the terminal flow; the store's config changes reach the
@@ -221,6 +223,14 @@ func (s *Service) staffOf(a Actor) (terminal.Staff, *terminal.Config, error) {
 // manager checks a manager's PIN given to go over a limit (a wrong one
 // counts as a wrong PIN on the terminal).
 func (s *Service) manager(ctx context.Context, a Actor, cfg *terminal.Config, pin string, need *terminal.ManagerRequired) (*terminal.Staff, error) {
+	if mgr, ok := s.approvals.take(approvalsOf(ctx), a.DeviceID, need, s.now()); ok {
+		if cur, found := cfg.Find(mgr.ID); found && cur.Role == terminal.RoleManager {
+			s.cm.Override(ctx, need.Action, "approval", 0)
+			s.logger.Info().Ctx(ctx).Str("action", need.Action).Str("approver_id", mgr.ID).Str("device_id", a.DeviceID).
+				Int64("requested", need.Requested).Msg("Manager override")
+			return &cur, nil
+		}
+	}
 	if strings.TrimSpace(pin) == "" {
 		return nil, need
 	}
@@ -301,12 +311,19 @@ func (s *Service) savePins(ctx context.Context) {
 type ManagerCheckIn struct {
 	PIN    string `json:"pin"`
 	Action string `json:"action"`
+	// AmountCents (X-5): what the approval may cover (cents, or a percent
+	// for discount / price_change; 0 = any).
+	AmountCents int64 `json:"amount_cents"`
 }
 
 // ManagerCheckResult answers a manager's PIN.
 type ManagerCheckResult struct {
 	OK    bool            `json:"ok"`
 	Staff terminal.Public `json:"staff"`
+	// ApprovalID (X-5): single use, this terminal, this action, up to
+	// amount_cents, for ApprovalTTL - sent as approvals: [id].
+	ApprovalID string    `json:"approval_id"`
+	ExpiresAt  time.Time `json:"expires_at"`
 }
 
 var forRe = regexp.MustCompile(`^[a-z][a-z0-9_.]{0,39}$`)
@@ -346,7 +363,8 @@ func (s *Service) ManagerCheck(ctx context.Context, a Actor, in ManagerCheckIn) 
 	s.staff.hit(a.DeviceID)
 	s.journal(ctx, terminal.Entry{StaffID: st.ID, DeviceID: a.DeviceID, Action: terminal.ActionManagerCheck,
 		Detail: detail(map[string]any{"for": what, "ok": true, "manager_id": mgr.ID})})
-	return &ManagerCheckResult{OK: true, Staff: mgr.Public()}, nil
+	return &ManagerCheckResult{OK: true, Staff: mgr.Public(), ApprovalID: s.newApproval(a, mgr, what, in.AmountCents),
+		ExpiresAt: s.now().Add(ApprovalTTL).UTC()}, nil
 }
 
 func overrideEntry(a Actor, staff terminal.Staff, mgr *terminal.Staff, need *terminal.ManagerRequired, orderID string) terminal.Entry {
@@ -375,16 +393,34 @@ type JournalIn struct {
 
 // PostJournal stores a terminal's own journal row.
 func (s *Service) PostJournal(ctx context.Context, a Actor, in JournalIn) (*terminal.Entry, error) {
+	e, _, err := s.PostJournalDedup(ctx, a, in)
+	return e, err
+}
+
+// ActionAdminMode is the terminal's admin mode (the developer PIN): a
+// terminal journals it with nobody logged in (contract 2.10s §9).
+const ActionAdminMode = "admin_mode"
+
+// JournalKeyRepo finds a terminal's journal row by its client_key.
+type JournalKeyRepo interface {
+	JournalByClientKey(ctx context.Context, deviceID, action, key string) (*terminal.Entry, error)
+}
+
+// PostJournalDedup is PostJournal answering whether the row came before: a
+// detail.client_key the terminal already sent for that action gives the
+// stored row back (dup true, nothing written; contract 2.10s §9). admin_mode
+// needs no staff login.
+func (s *Service) PostJournalDedup(ctx context.Context, a Actor, in JournalIn) (*terminal.Entry, bool, error) {
 	st, _, err := s.staffOf(a)
-	if err != nil {
-		return nil, err
+	if err != nil && in.Action != ActionAdminMode {
+		return nil, false, err
 	}
 	if err := terminal.CheckPostedAction(in.Action); err != nil {
-		return nil, badRequest(err.Error())
+		return nil, false, badRequest(err.Error())
 	}
 	if in.OrderID != "" {
 		if _, err := uuid.Parse(in.OrderID); err != nil {
-			return nil, badRequest("order_id must be a uuid")
+			return nil, false, badRequest("order_id must be a uuid")
 		}
 	}
 	d := in.Detail
@@ -392,11 +428,20 @@ func (s *Service) PostJournal(ctx context.Context, a Actor, in JournalIn) (*term
 		d = json.RawMessage("{}")
 	}
 	if len(d) > 4096 {
-		return nil, badRequest("detail is at most 4 KB")
+		return nil, false, badRequest("detail is at most 4 KB")
 	}
 	var obj map[string]any
 	if err := json.Unmarshal(d, &obj); err != nil {
-		return nil, badRequest("detail must be a JSON object")
+		return nil, false, badRequest("detail must be a JSON object")
+	}
+	if key, _ := obj["client_key"].(string); key != "" {
+		if kr, ok := s.repo.(JournalKeyRepo); ok {
+			if prev, err := kr.JournalByClientKey(ctx, a.DeviceID, in.Action, key); err != nil {
+				return nil, false, err
+			} else if prev != nil {
+				return prev, true, nil
+			}
+		}
 	}
 	if in.Action == terminal.ActionNoSale {
 		d = s.noSaleDetail(ctx, a, d) // + the open drawer (contract 2.10k)
@@ -404,14 +449,14 @@ func (s *Service) PostJournal(ctx context.Context, a Actor, in JournalIn) (*term
 	e := terminal.Entry{ID: uuid.NewString(), At: s.now().UTC().Truncate(time.Millisecond), StaffID: st.ID, DeviceID: a.DeviceID,
 		Action: in.Action, OrderID: in.OrderID, Detail: d}
 	if err := s.repo.AddJournal(ctx, []terminal.Entry{e}); err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	if in.Action == terminal.ActionNoSale {
 		s.logger.Info().Ctx(ctx).Str("staff_id", st.ID).Str("staff_name", st.Name()).Str("device_id", a.DeviceID).
 			Str("reason", "no_sale").Msg("Drawer kicked")
 	}
 	s.orders.JournalWritten()
-	return &e, nil
+	return &e, false, nil
 }
 
 // Journal is the newest journal rows (the web page, tests).
@@ -443,6 +488,9 @@ func (s *Service) MenuView() (body []byte, etag string, err error) {
 type QuoteIn struct {
 	Type string `json:"type"`
 	Cart Cart   `json:"cart"`
+	// OrderID (contract 2.10s §9): a reopened order's cart, priced as PUT
+	// .../cart would (its lines keep their rung prices, M-15).
+	OrderID string `json:"order_id,omitempty"`
 }
 
 // QuoteView is the engine's quote (the manual discount applied) plus what
@@ -474,7 +522,7 @@ func checkType(t string) (string, error) {
 
 // Quote prices a cart (no login needed; needs_manager says whether the
 // manual discount is over the logged-in staff member's limit).
-func (s *Service) Quote(_ context.Context, a Actor, in QuoteIn) (*QuoteView, error) {
+func (s *Service) Quote(ctx context.Context, a Actor, in QuoteIn) (*QuoteView, error) {
 	typ, err := checkType(in.Type)
 	if err != nil {
 		return nil, err
@@ -483,8 +531,17 @@ func (s *Service) Quote(_ context.Context, a Actor, in QuoteIn) (*QuoteView, err
 	if m == nil {
 		return nil, terminal.ErrNoMenu
 	}
-	p, err := priceCart(m, s.orders.StoreLocation(), typ, in.Cart, s.now(), s.toppingMax())
-	if err != nil {
+	var p priced
+	if id := strings.TrimSpace(in.OrderID); id != "" {
+		cur, err := s.Order(ctx, id)
+		if err != nil {
+			return nil, err
+		}
+		p, _, err = keepRungPrices(m, s.orders.StoreLocation(), typ, cur.Order.Order, in.Cart, s.now(), s.toppingMax())
+		if err != nil {
+			return nil, badRequest(err.Error())
+		}
+	} else if p, err = priceCart(m, s.orders.StoreLocation(), typ, in.Cart, s.now(), s.toppingMax()); err != nil {
 		return nil, badRequest(err.Error())
 	}
 	v := &QuoteView{Quote: p.quote, MenuVersion: ms.Version, DiscountPct: p.manualPct, PriceChanges: p.changes}
@@ -673,6 +730,8 @@ type PaymentIn struct {
 	// manager already made in Square's dashboard, recorded here.
 	Goodwill bool `json:"goodwill"`
 	Outside  bool `json:"outside"`
+	// Approvals (X-5): single-use manager approvals instead of manager_pin.
+	Approvals []string `json:"approvals,omitempty"`
 }
 
 // payment checks a payment in and makes the stored one.
@@ -755,6 +814,11 @@ type OrderIn struct {
 	// terminal): the order's ready time = now + this (0-240). Absent: main's
 	// default_pickup_minutes for a pickup, else the Pi's default for the type.
 	PrepMinutes *int64 `json:"prep_minutes"`
+	// Approvals (X-5): single-use manager approvals instead of manager_pin.
+	Approvals []string `json:"approvals,omitempty"`
+	// DraftID: the shared draft this SEND came from, deleted in the order's
+	// transaction (contract 2.10s §9).
+	DraftID string `json:"draft_id,omitempty"`
 }
 
 // PlaceResult is the order a terminal placed (or the one its client_key
@@ -777,7 +841,11 @@ func numberOf(so order.StoredOrder) int64 {
 // counter number, prints its station tickets and syncs it to main
 // (order.placed). Idempotent by client_key.
 func (s *Service) PlaceOrder(ctx context.Context, a Actor, in OrderIn) (*PlaceResult, error) {
+	ctx = terminal.WithDraftID(WithApprovals(ctx, in.Approvals), strings.TrimSpace(in.DraftID))
 	res, err := s.placeOrder(ctx, a, in)
+	if err == nil && !res.Duplicate && in.DraftID != "" {
+		s.publish(terminal.EventDraftRemoved, map[string]any{"id": in.DraftID})
+	}
 	typ := in.Type
 	if typ == "" {
 		typ = terminal.TypeCounter
@@ -869,6 +937,9 @@ func (s *Service) placeOrder(ctx context.Context, a Actor, in OrderIn) (*PlaceRe
 		return nil, err
 	}
 	money := moneyOf(items, p, off, fees)
+	if err := s.checkMoney(ctx, money, items); err != nil {
+		return nil, err
+	}
 
 	id := uuid.Must(uuid.NewV7()).String()
 	var pays []terminal.Payment
@@ -1062,6 +1133,7 @@ func netPaid(pays []terminal.Payment) (amount, tip int64) {
 // past the cashier limit need manager_pin). Idempotent by the payment's
 // client_key.
 func (s *Service) AddPayment(ctx context.Context, a Actor, orderID string, in PaymentIn) (*PaymentResult, error) {
+	ctx = WithApprovals(ctx, in.Approvals)
 	res, err := s.addPayment(ctx, a, orderID, in)
 	kind := "sale"
 	if in.Refund {

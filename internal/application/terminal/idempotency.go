@@ -31,13 +31,13 @@ func orderFingerprint(in OrderIn) string {
 
 // paymentFingerprint: the payment without client_key / manager_pin.
 func paymentFingerprint(in PaymentIn) string {
-	in.ClientKey, in.ManagerPIN = "", ""
+	in.ClientKey, in.ManagerPIN, in.Approvals = "", "", nil
 	return terminal.Fingerprint(in)
 }
 
 // changeFingerprint: the cart change without client_key / manager_pin.
 func changeFingerprint(in ChangeIn) string {
-	in.ClientKey, in.ManagerPIN = "", ""
+	in.ClientKey, in.ManagerPIN, in.Approvals, in.DraftID = "", "", nil, ""
 	return terminal.Fingerprint(in)
 }
 

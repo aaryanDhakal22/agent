@@ -31,6 +31,9 @@ type ChangeIn struct {
 	// PrepMinutes: accepted for the shape of POST /orders; the order keeps
 	// its ready time (the kitchen's clock does not change with the type).
 	PrepMinutes *int `json:"prep_minutes"`
+	// Approvals (X-5) and DraftID (deleted in the change's transaction).
+	Approvals []string `json:"approvals,omitempty"`
+	DraftID   string   `json:"draft_id,omitempty"`
 }
 
 // typeChange checks a takeout <-> delivery move: "" = the type stays.
@@ -172,6 +175,15 @@ func nonNil(s []string) []string {
 // or ready; a total below what was paid needs a refund first. Idempotent by
 // client_key.
 func (s *Service) ChangeCart(ctx context.Context, a Actor, id string, in ChangeIn) (*ChangeResult, error) {
+	ctx = terminal.WithDraftID(WithApprovals(ctx, in.Approvals), strings.TrimSpace(in.DraftID))
+	res, err := s.changeCart(ctx, a, id, in)
+	if err == nil && !res.Duplicate && in.DraftID != "" {
+		s.publish(terminal.EventDraftRemoved, map[string]any{"id": in.DraftID})
+	}
+	return res, err
+}
+
+func (s *Service) changeCart(ctx context.Context, a Actor, id string, in ChangeIn) (*ChangeResult, error) {
 	st, cfg, err := s.staffOf(a)
 	if err != nil {
 		return nil, err
@@ -232,6 +244,9 @@ func (s *Service) ChangeCart(ctx context.Context, a Actor, id string, in ChangeI
 		return nil, err
 	}
 	money := moneyOf(items, p, off, fees)
+	if err := s.checkMoney(ctx, money, items); err != nil {
+		return nil, err
+	}
 
 	var added, removed []terminal.LineDelta
 	var dup *editRecord

@@ -146,13 +146,14 @@ func (s *Server) handleTerminalClose(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body struct {
-		Force      bool   `json:"force"`
-		ManagerPIN string `json:"manager_pin"`
+		Force      bool     `json:"force"`
+		ManagerPIN string   `json:"manager_pin"`
+		Approvals  []string `json:"approvals"`
 	}
 	if r.ContentLength != 0 && !s.decodeTerminal(w, r, &body) {
 		return
 	}
-	res, err := s.terminalSvc.CloseBatch(r.Context(), actor(r), body.Force, strings.TrimSpace(body.ManagerPIN))
+	res, err := s.terminalSvc.CloseBatch(terminalApp.WithApprovals(r.Context(), body.Approvals), actor(r), body.Force, strings.TrimSpace(body.ManagerPIN))
 	if err != nil {
 		var mgr *terminal.ManagerRequired
 		switch {

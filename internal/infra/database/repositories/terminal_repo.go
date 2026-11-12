@@ -119,6 +119,11 @@ func (r *OrderRepository) PlaceCounterOrder(ctx context.Context, in terminal.New
 		if err := insertEvent(ctx, q, ev["event_id"].(string), snap.ID, terminal.EventOrderPlaced, now, ev); err != nil {
 			return err
 		}
+		if d := terminal.DraftIDOf(ctx); d != "" { // the draft it came from (contract 2.10s §9)
+			if _, err := q.DeleteTerminalDraft(ctx, d); err != nil {
+				return fmt.Errorf("delete draft: %w", err)
+			}
+		}
 		return insertJournal(ctx, q, now, in.Journal)
 	})
 	return so, created, err
@@ -695,4 +700,24 @@ func (r *OrderRepository) SetPinThrottle(ctx context.Context, raw []byte) (err e
 	ctx, _, end := dbSpan(ctx, "terminal.pin_throttle_set")
 	defer end(&err)
 	return models.New(r.db).SetPinThrottle(ctx, string(raw))
+}
+
+// JournalByClientKey is a terminal's journal row with that detail.client_key
+// (nil = none; contract 2.10s §9).
+func (r *OrderRepository) JournalByClientKey(ctx context.Context, deviceID, action, key string) (e *terminal.Entry, err error) {
+	ctx, _, end := dbSpan(ctx, "terminal.journal_by_key")
+	defer end(&err)
+	row, err := models.New(r.db).GetJournalByClientKey(ctx, models.GetJournalByClientKeyParams{DeviceID: deviceID, Action: action, ClientKey: key})
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	at, err := parseTS(row.At)
+	if err != nil {
+		return nil, err
+	}
+	return &terminal.Entry{ID: row.ID, At: at, StaffID: row.StaffID, DeviceID: row.DeviceID, Action: row.Action, OrderID: row.OrderID,
+		Detail: json.RawMessage(row.Detail)}, nil
 }

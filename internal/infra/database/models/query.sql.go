@@ -1273,6 +1273,35 @@ func (q *Queries) GetIntegrationStatus(ctx context.Context) (string, error) {
 	return integration_status, err
 }
 
+const getJournalByClientKey = `-- name: GetJournalByClientKey :one
+SELECT id, at, staff_id, device_id, "action", order_id, detail FROM journal
+WHERE device_id = ?1 AND action = ?2
+  AND json_extract(detail, '$.client_key') = ?3
+LIMIT 1
+`
+
+type GetJournalByClientKeyParams struct {
+	DeviceID  string `json:"device_id"`
+	Action    string `json:"action"`
+	ClientKey string `json:"client_key"`
+}
+
+// A terminal's journal row its offline replay sent before (00034).
+func (q *Queries) GetJournalByClientKey(ctx context.Context, arg GetJournalByClientKeyParams) (Journal, error) {
+	row := q.db.QueryRowContext(ctx, getJournalByClientKey, arg.DeviceID, arg.Action, arg.ClientKey)
+	var i Journal
+	err := row.Scan(
+		&i.ID,
+		&i.At,
+		&i.StaffID,
+		&i.DeviceID,
+		&i.Action,
+		&i.OrderID,
+		&i.Detail,
+	)
+	return i, err
+}
+
 const getLastBackup = `-- name: GetLastBackup :one
 SELECT last_backup_at FROM settings WHERE id = 1
 `

@@ -19,6 +19,7 @@ import (
 	"unicode/utf8"
 
 	"quiccpos/agent/internal/domain/device"
+	"quiccpos/agent/internal/domain/terminal"
 
 	"github.com/google/uuid"
 )
@@ -45,44 +46,94 @@ const (
 	touchEvery       = time.Minute
 )
 
+// Codes a device may mint (X-1, contract 2.10s §8): at most
+// pairingCodesPerDevice per pairingCodesWindow per device ("web" = the
+// session).
+const (
+	pairingCodesPerDevice = 5
+	pairingCodesWindow    = 15 * time.Minute
+)
+
 type pairingCodes struct {
 	mu      sync.Mutex
 	code    string
 	expires time.Time
 	misses  int
+	// kind: what the live code pairs ("" = any kind: a web-session code
+	// minted without one). A tablet's code pairs tablets only.
+	kind   string
+	minted map[string][]time.Time // device id -> codes minted in the window
 }
 
+// errTooManyCodes: the device minted its pairingCodesPerDevice for the window.
+type errTooManyCodes struct{ wait time.Duration }
+
+func (e *errTooManyCodes) Error() string { return "too many pairing codes - wait a few minutes" }
+
 func (p *pairingCodes) issue(now time.Time) (string, time.Time, error) {
+	return p.issueFor("", "", now)
+}
+
+// issueFor mints the live code for device, bound to kind ("" = any).
+func (p *pairingCodes) issueFor(device, kind string, now time.Time) (string, time.Time, error) {
 	n, err := rand.Int(rand.Reader, big.NewInt(1_000_000))
 	if err != nil {
 		return "", time.Time{}, err
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	if device != "" {
+		if p.minted == nil {
+			p.minted = map[string][]time.Time{}
+		}
+		var keep []time.Time
+		for _, t := range p.minted[device] {
+			if now.Sub(t) < pairingCodesWindow {
+				keep = append(keep, t)
+			}
+		}
+		if len(keep) >= pairingCodesPerDevice {
+			p.minted[device] = keep
+			return "", time.Time{}, &errTooManyCodes{wait: keep[0].Add(pairingCodesWindow).Sub(now)}
+		}
+		p.minted[device] = append(keep, now)
+	}
 	p.code = fmt.Sprintf("%06d", n.Int64())
 	p.expires = now.Add(pairingTTL)
 	p.misses = 0
+	p.kind = kind
 	return p.code, p.expires, nil
 }
 
 // consume reports whether code is the live one; success or too many misses
 // burns it.
 func (p *pairingCodes) consume(code string, now time.Time) bool {
+	ok, _ := p.consumeKind(code, "", now)
+	return ok
+}
+
+// consumeKind: the live code for a device of kind (kind "" = don't check).
+// A right code bound to another kind is burned (wrongKind true).
+func (p *pairingCodes) consumeKind(code, kind string, now time.Time) (ok, wrongKind bool) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if p.code == "" || now.After(p.expires) {
 		p.code = ""
-		return false
+		return false, false
 	}
 	if subtle.ConstantTimeCompare([]byte(code), []byte(p.code)) == 1 {
-		p.code = ""
-		return true
+		bound := p.kind
+		p.code, p.kind = "", ""
+		if kind != "" && bound != "" && bound != kind {
+			return false, true
+		}
+		return true, false
 	}
 	p.misses++
 	if p.misses >= pairingMaxMisses {
 		p.code = ""
 	}
-	return false
+	return false, false
 }
 
 func hashDeviceKey(key string) string {
@@ -238,15 +289,62 @@ func (s *Server) integration(h http.HandlerFunc) http.HandlerFunc {
 	})
 }
 
-// POST /api/pairing/code (session or a paired tablet's key, so a tablet can
-// pair another one) — show a fresh 6-digit code.
-func (s *Server) handlePairingCode(w http.ResponseWriter, _ *http.Request) {
-	code, exp, err := s.pairing.issue(time.Now())
+// POST /api/pairing/code {kind?} (session or a paired tablet's key, so a
+// tablet can pair another one) — show a fresh 6-digit code. X-1 (contract
+// 2.10s §8): a tablet's code pairs tablets only (another kind asked = 403
+// kind_not_allowed); the session's pairs the kind asked for (none = any).
+// At most 5 codes per device per 15 min (429 too_many_codes); journaled
+// pairing.code.
+func (s *Server) handlePairingCode(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Kind string `json:"kind"`
+	}
+	if r.Body != nil && r.ContentLength != 0 {
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			s.writeJSON(w, http.StatusBadRequest, errCodeMap("invalid body", "bad_request"))
+			return
+		}
+	}
+	kind := strings.TrimSpace(body.Kind)
+	switch kind {
+	case "", device.KindTablet, device.KindIntegration, device.KindTerminal:
+	default:
+		s.writeJSON(w, http.StatusBadRequest, errCodeMap("kind must be tablet, integration or terminal", "bad_request"))
+		return
+	}
+	minter, name := "web", "Pi web page"
+	if d, ok := r.Context().Value(deviceCtxKey{}).(*device.Device); ok {
+		minter, name = d.ID, d.Name
+		if d.Kind != device.KindTablet {
+			s.writeJSON(w, http.StatusForbidden, errCodeMap("only a tablet or the Pi web page can show a pairing code", "kind_not_allowed"))
+			return
+		}
+		if kind != "" && kind != device.KindTablet {
+			s.writeJSON(w, http.StatusForbidden, errCodeMap("a tablet's code pairs tablets only - pair a terminal or the hub from the Pi web page or with the manager login", "kind_not_allowed"))
+			return
+		}
+		kind = device.KindTablet
+	}
+	code, exp, err := s.pairing.issueFor(minter, kind, time.Now())
+	var many *errTooManyCodes
+	if errors.As(err, &many) {
+		w.Header().Set("Retry-After", strconv.Itoa(int(many.wait.Seconds())+1))
+		s.writeJSON(w, http.StatusTooManyRequests, errCodeMap(err.Error(), "too_many_codes"))
+		return
+	}
 	if err != nil {
 		s.writeJSON(w, http.StatusInternalServerError, errCodeMap("could not generate a code", "internal"))
 		return
 	}
-	s.writeJSON(w, http.StatusOK, map[string]any{"code": code, "expires_at": exp.UTC()})
+	shown := kind
+	if shown == "" {
+		shown = "any"
+	}
+	s.logger.Info().Ctx(r.Context()).Str("device_id", minter).Str("kind", shown).Msg("Pairing code shown")
+	if s.terminalSvc != nil {
+		s.terminalSvc.RecordPi(r.Context(), minter, terminal.ActionPairingCode, map[string]any{"device_id": minter, "device_name": name, "kind": shown})
+	}
+	s.writeJSON(w, http.StatusOK, map[string]any{"code": code, "expires_at": exp.UTC(), "kind": shown})
 }
 
 // POST /api/pair {code, name, kind?} (open) — exchange a code for a device
@@ -276,7 +374,13 @@ func (s *Server) handlePair(w http.ResponseWriter, r *http.Request) {
 		s.writeJSON(w, http.StatusBadRequest, errCodeMap("kind must be tablet, integration or terminal", "bad_request"))
 		return
 	}
-	if !s.pairing.consume(strings.TrimSpace(req.Code), time.Now()) {
+	ok, wrongKind := s.pairing.consumeKind(strings.TrimSpace(req.Code), kind, time.Now())
+	if wrongKind {
+		s.logger.Warn().Ctx(r.Context()).Str("kind", kind).Msg("Pairing refused: the code was minted for another kind (burned)")
+		s.writeJSON(w, http.StatusForbidden, errCodeMap("this code pairs another kind of device (a tablet's code pairs tablets only); it is used up", "kind_not_allowed"))
+		return
+	}
+	if !ok {
 		s.writeJSON(w, http.StatusUnauthorized, errCodeMap("wrong or expired pairing code", "invalid_code"))
 		return
 	}
@@ -338,6 +442,9 @@ func (s *Server) handlePairManager(w http.ResponseWriter, r *http.Request) {
 		Username   string `json:"username"`
 		Password   string `json:"password"`
 		TabletName string `json:"tablet_name"`
+		// Kind (X-1): tablet (default), terminal or integration - a terminal
+		// or the hub pairs only with a web-session code or this login.
+		Kind string `json:"kind"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		s.writeJSON(w, http.StatusBadRequest, errCodeMap("invalid body", "bad_request"))
@@ -346,6 +453,15 @@ func (s *Server) handlePairManager(w http.ResponseWriter, r *http.Request) {
 	name := strings.TrimSpace(body.TabletName)
 	if name == "" || utf8.RuneCountInString(name) > 40 {
 		s.writeJSON(w, http.StatusBadRequest, errCodeMap("name must be 1-40 characters", "name_required"))
+		return
+	}
+	kind := strings.TrimSpace(body.Kind)
+	switch kind {
+	case "":
+		kind = device.KindTablet
+	case device.KindTablet, device.KindIntegration, device.KindTerminal:
+	default:
+		s.writeJSON(w, http.StatusBadRequest, errCodeMap("kind must be tablet, integration or terminal", "bad_request"))
 		return
 	}
 	ip := clientIP(r)
@@ -362,7 +478,7 @@ func (s *Server) handlePairManager(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.logins.ok(ip)
-	s.pairDevice(w, r, name, device.KindTablet, "manager_login")
+	s.pairDevice(w, r, name, kind, "manager_login")
 }
 
 // GET /api/devices (session).

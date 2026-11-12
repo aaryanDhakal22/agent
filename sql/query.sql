@@ -1309,3 +1309,10 @@ SELECT pin_throttle FROM settings WHERE id = 1;
 
 -- name: SetPinThrottle :exec
 UPDATE settings SET pin_throttle = ? WHERE id = 1;
+
+-- name: GetJournalByClientKey :one
+-- A terminal's journal row its offline replay sent before (00034).
+SELECT * FROM journal
+WHERE device_id = sqlc.arg(device_id) AND action = sqlc.arg(action)
+  AND json_extract(detail, '$.client_key') = sqlc.arg(client_key)
+LIMIT 1;

@@ -1,6 +1,7 @@
 package terminal
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -8,6 +9,8 @@ import (
 	"fmt"
 	"strings"
 	"unicode/utf8"
+
+	"quiccpos/agent/internal/domain/order"
 )
 
 // The hardening round (contract/agent.md §2.10s, HARDENING-PLAN A1).
@@ -112,4 +115,60 @@ func (c *Config) WasteReasonOf(reason string) string {
 		}
 	}
 	return ""
+}
+
+type draftKey struct{}
+
+// WithDraftID: the shared draft a SEND / cart change came from - deleted in
+// the order's transaction (contract 2.10s §9).
+func WithDraftID(ctx context.Context, id string) context.Context {
+	if id == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, draftKey{}, id)
+}
+
+// DraftIDOf is the draft on ctx ("" = none).
+func DraftIDOf(ctx context.Context) string {
+	id, _ := ctx.Value(draftKey{}).(string)
+	return id
+}
+
+// ErrMoneyIdentity: an order's money doesn't add up (HARDENING M-13): the
+// Pi refuses to store it (500) and pages the owner. Never expected.
+type ErrMoneyIdentity struct{ Diff int64 }
+
+func (e *ErrMoneyIdentity) Error() string {
+	return fmt.Sprintf("the order's money doesn't add up (off by %d cents): not stored", e.Diff)
+}
+
+// CheckMoney: every component >= 0, the lines add up to the subtotal and
+// total = subtotal + tax + tip + fees - discounts, exactly.
+func CheckMoney(m order.Money, items []order.LineItem) error {
+	var lines, fees, disc int64
+	for _, it := range items {
+		lines += it.LineTotal
+	}
+	for _, f := range m.Fees {
+		if f.Amount < 0 {
+			return &ErrMoneyIdentity{Diff: f.Amount}
+		}
+		fees += f.Amount
+	}
+	for _, d := range m.Discounts {
+		if d.Amount < 0 {
+			return &ErrMoneyIdentity{Diff: d.Amount}
+		}
+		disc += d.Amount
+	}
+	if m.Subtotal < 0 || m.Tax < 0 || m.Tip < 0 || m.Total < 0 {
+		return &ErrMoneyIdentity{Diff: min(m.Subtotal, m.Tax, m.Tip, m.Total)}
+	}
+	if lines != m.Subtotal {
+		return &ErrMoneyIdentity{Diff: lines - m.Subtotal}
+	}
+	if d := m.Subtotal + m.Tax + m.Tip + fees - disc - m.Total; d != 0 {
+		return &ErrMoneyIdentity{Diff: d}
+	}
+	return nil
 }

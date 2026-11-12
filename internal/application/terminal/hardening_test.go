@@ -353,3 +353,72 @@ func (s *syncBuf) String() string {
 	defer s.mu.Unlock()
 	return s.b.String()
 }
+
+// The terminal's B1 fields (contract 2.10s §9): single-use approvals, the
+// draft deleted with the SEND, a reopened order's quote, journal dedupe and
+// admin_mode without a login.
+func TestApprovalsDraftsQuoteAndJournalKeys(t *testing.T) {
+	r := newRig(t)
+	r.login(t, till, "1234")
+	res, err := r.svc.PlaceOrder(r.ctx, till, OrderIn{ClientKey: "k-appr-0001", Type: "counter", Cart: Cart{Cart: pricing.Cart{Lines: []pricing.Line{pizzaLine()}}},
+		Payments: []PaymentIn{{Tender: "card", AmountCents: 1000}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := res.Order.Order.ID
+	// A manager's PIN checked once gives a single-use approval for a card refund.
+	mc, err := r.svc.ManagerCheck(r.ctx, till, ManagerCheckIn{PIN: "9876", Action: terminal.NeedCardRefund, AmountCents: 500})
+	if err != nil || mc.ApprovalID == "" {
+		t.Fatalf("approval: %+v %v", mc, err)
+	}
+	ref := PaymentIn{ClientKey: tk(), Tender: "card", AmountCents: 400, Refund: true, Reason: "x", Approvals: []string{mc.ApprovalID}}
+	p, err := r.svc.AddPayment(r.ctx, till, id, ref)
+	if err != nil || p.Payment.ApprovedBy != "mgr-1" {
+		t.Fatalf("refund with the approval: %+v %v", p, err)
+	}
+	ref.ClientKey = tk()
+	var mr *terminal.ManagerRequired
+	if _, err := r.svc.AddPayment(r.ctx, till, id, ref); !errors.As(err, &mr) {
+		t.Fatalf("an approval is single use: %v", err)
+	}
+	// Bound to the amount: a bigger refund isn't covered.
+	mc, _ = r.svc.ManagerCheck(r.ctx, till, ManagerCheckIn{PIN: "9876", Action: terminal.NeedCardRefund, AmountCents: 100})
+	big := PaymentIn{ClientKey: tk(), Tender: "card", AmountCents: 300, Refund: true, Reason: "x", Approvals: []string{mc.ApprovalID}}
+	if _, err := r.svc.AddPayment(r.ctx, till, id, big); !errors.As(err, &mr) {
+		t.Fatalf("over the approved amount: %v", err)
+	}
+	// draft_id: the shared draft goes with the SEND.
+	if _, err := r.svc.PutDraft(r.ctx, till, "d-send-0001", draftIn(false)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.svc.PlaceOrder(r.ctx, till, OrderIn{ClientKey: "k-appr-0002", Type: "counter", DraftID: "d-send-0001",
+		Cart: Cart{Cart: pricing.Cart{Lines: []pricing.Line{pizzaLine()}}}}); err != nil {
+		t.Fatal(err)
+	}
+	if l, _ := r.svc.Drafts(r.ctx); len(l.Drafts) != 0 {
+		t.Fatalf("the draft is gone with the SEND: %+v", l.Drafts)
+	}
+	// A reopened order's quote: priced like PUT .../cart.
+	q, err := r.svc.Quote(r.ctx, till, QuoteIn{Type: "counter", OrderID: id, Cart: Cart{Cart: pricing.Cart{Lines: []pricing.Line{pizzaLine()}}}})
+	if err != nil || q.Quote.(pricing.Quote).TotalCents != res.Order.Order.Money.Total {
+		t.Fatalf("quote of a reopened order: %+v %v", q, err)
+	}
+	// Journal: the same detail.client_key twice is one row; drawer_kick ok.
+	in := JournalIn{Action: "drawer_kick", Detail: json.RawMessage(`{"client_key":"jr-0001","reason":"cash_tender"}`)}
+	e1, dup1, err := r.svc.PostJournalDedup(r.ctx, till, in)
+	if err != nil || dup1 {
+		t.Fatal(err)
+	}
+	e2, dup2, err := r.svc.PostJournalDedup(r.ctx, till, in)
+	if err != nil || !dup2 || e2.ID != e1.ID {
+		t.Fatalf("dedupe: %+v %v %v", e2, dup2, err)
+	}
+	// admin_mode with nobody logged in.
+	r.svc.Logout(r.ctx, till)
+	if _, err := r.svc.PostJournal(r.ctx, till, JournalIn{Action: "admin_mode"}); err != nil {
+		t.Fatalf("admin_mode without a login: %v", err)
+	}
+	if _, err := r.svc.PostJournal(r.ctx, till, JournalIn{Action: "no_sale"}); !errors.Is(err, terminal.ErrLoginRequired) {
+		t.Fatalf("other actions still need a login: %v", err)
+	}
+}

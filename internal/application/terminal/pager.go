@@ -4,6 +4,9 @@ import (
 	"context"
 	"fmt"
 	"time"
+
+	"quiccpos/agent/internal/domain/order"
+	"quiccpos/agent/internal/domain/terminal"
 )
 
 // Pager sends the owner a Pushover (notify.Notifier.Send).
@@ -58,4 +61,21 @@ func (s *Service) Problems(ctx context.Context) []string {
 		out = append(out, "pin_lockout")
 	}
 	return out
+}
+
+// RecordPi journals a Pi action outside a terminal request (the pairing
+// codes, X-1): device_id = the minter.
+func (s *Service) RecordPi(ctx context.Context, deviceID, action string, d map[string]any) {
+	s.journal(ctx, terminal.Entry{DeviceID: deviceID, Action: action, Detail: detail(d)})
+}
+
+// checkMoney is M-13's identity check before an order's money is stored: a
+// mismatch is refused (500) and paged.
+func (s *Service) checkMoney(ctx context.Context, m order.Money, items []order.LineItem) error {
+	err := terminal.CheckMoney(m, items)
+	if err != nil {
+		s.logger.Error().Ctx(ctx).Err(err).Int64("total_cents", m.Total).Msg("Counter order money doesn't add up: refused")
+		s.page(ctx, "A counter order was refused: its money didn't add up ("+err.Error()+"). Tell the developer.")
+	}
+	return err
 }

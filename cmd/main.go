@@ -39,6 +39,7 @@ import (
 	"quiccpos/agent/internal/application/printernet"
 	"quiccpos/agent/internal/application/recovery"
 	"quiccpos/agent/internal/application/retention"
+	"quiccpos/agent/internal/application/revoke"
 	ssecontroller "quiccpos/agent/internal/application/sseclient"
 	"quiccpos/agent/internal/application/statesync"
 	terminalApp "quiccpos/agent/internal/application/terminal"
@@ -651,7 +652,11 @@ func main() {
 		}
 		sseCtrl.SetKey("")
 	}
-	sseCtrl.OnRejected(wipeProvisioning)
+	// F-4 (contract 2.10s §2): a 401 alone never wipes. The guard asks
+	// main's whoami and wipes only on device_revoked confirmed twice a minute
+	// apart; anything else is retried (main_auth_failing on the Pi page).
+	revokeGuard := revoke.New(mainClient.WhoAmI, wipeProvisioning, notifier, logger)
+	sseCtrl.OnRejected(func(key string) { revokeGuard.Unauthorized(key, "") })
 	// Orders whose SSE frame was lost when the stream dropped: fetch them
 	// from main after every reconnect (OnArrival skips ones we already hold).
 	catchupHook := catchup.Hook(ctx, func(rc context.Context, path, rawQuery string) (int, []byte, error) {
@@ -677,6 +682,7 @@ func main() {
 	})
 	sseCtrl.OnConnected(func() {
 		devRing.Add(devlog.Info, devlog.KindSSE, "Connected to main")
+		revokeGuard.Accepted(sseCtrl.CurrentKey())
 		stateSync.Reset()
 		heartbeat.Wake()
 		appUpdater.Wake()
@@ -694,7 +700,7 @@ func main() {
 	go catchup.Reconcile(ctx, time.Minute, func(rc context.Context, path, rawQuery string) (int, []byte, error) {
 		return mainClient.Get(rc, sseCtrl.CurrentKey(), path, rawQuery)
 	}, orderService, orderRepo, func() bool { return sseCtrl.Status().Connected }, logger)
-	mainClient.SetOnUnauthorized(wipeProvisioning)
+	mainClient.SetOnUnauthorized(revokeGuard.Unauthorized)
 
 	// … and the agent pushes it proactively: on every store_config apply (the
 	// roster just changed) and on a periodic heartbeat.
@@ -748,7 +754,8 @@ func main() {
 		return settingsRepo.SetSessionSecret(context.Background(), hexSecret)
 	})
 	httpServer := transport.NewServer(orderService, broker, printerRegistry, settingsRepo, sseCtrl, mainClient, session, deviceRepo, cfg.HTTPPort, version, commit, logger)
-	httpServer.AddProblems(termSvc.Problems) // z_unbalanced, pin_lockout on the Pi page
+	httpServer.AddProblems(termSvc.Problems)     // z_unbalanced, pin_lockout on the Pi page
+	httpServer.AddProblems(revokeGuard.Problems) // main_auth_failing (F-4)
 	if quickCheck != "" {
 		httpServer.AddProblems(func(context.Context) []string { return []string{"db_quick_check"} })
 	}
