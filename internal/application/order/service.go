@@ -430,7 +430,19 @@ func printable(so order.StoredOrder) order.Snapshot {
 		snap.KitchenNumber = n
 	}
 	snap.MakeAt = makeAt(so)
+	if so.Status.State == order.StateCancelled {
+		snap.Voided = voidedLabel(snap)
+	}
 	return snap
+}
+
+// voidedLabel is a cancelled order's receipt banner: VOID for a terminal's
+// own order, CANCELLED for the rest.
+func voidedLabel(snap order.Snapshot) string {
+	if snap.Source == order.SourceCounter {
+		return "VOID"
+	}
+	return "CANCELLED"
 }
 
 func deref(p *int64) int64 {
@@ -454,6 +466,9 @@ func (s *Service) PrintSnapshot(ctx context.Context, snap order.Snapshot) error 
 		trace.WithAttributes(attribute.String("order.id", snap.ID)),
 	)
 	defer span.End()
+	if strings.EqualFold(snap.Status, "cancelled") || strings.EqualFold(snap.Status, "rejected") { // main's word
+		snap.Voided = voidedLabel(snap)
+	}
 	out, err := s.print(ctx, snap, printer.ModeReceipt)
 	s.alertPrintIssues(ctx, order.StoredOrder{Order: snap}, out, false)
 	if err != nil {

@@ -58,6 +58,11 @@ type Snapshot struct {
 	// moved takeout <-> delivery after SEND (contract §2.10d `type`): its
 	// change ticket says the new type and this old one.
 	TypeChangedFrom string `json:"-"`
+	// Voided (printing only, never on the wire): the order is voided /
+	// cancelled ("VOID" or "CANCELLED", the receipt's banner; "" = not):
+	// a reprint of it prints every line struck through (the owner,
+	// 2026-11-12: removed / voided items are struck through).
+	Voided string `json:"-"`
 }
 
 type Money struct {

@@ -130,6 +130,9 @@ func buildFull(snap order.Snapshot, sc storeconfig.StoreContext, reroutedFrom st
 	}
 	w(cmdBoldOff)
 	w(cmdBaseSz)
+	if snap.Voided != "" {
+		writeVoided(w, nl, snap.Voided)
+	}
 
 	// --- Promised-for-later flag ---------------------------------------
 	if snap.Fulfillment.PromisedAt != nil && !snap.Fulfillment.PromisedAt.IsZero() {
@@ -248,6 +251,25 @@ func buildFull(snap order.Snapshot, sc storeconfig.StoreContext, reroutedFrom st
 	nl()
 
 	sp := prefs.Spacing
+	// A voided / cancelled order's lines print struck through (strike.go),
+	// always in the expanded format; strike_images off: each item under a
+	// reversed VOID tag.
+	struck := snap.Voided != "" && prefs.StrikeImages
+	if snap.Voided != "" {
+		prefs.Format = order.FormatExpanded
+	}
+	line := func(s string) { // a struck line is a picture of its own: end() adds no line feed after it
+		if struck {
+			buf.WriteString(strikeRaster(margin(s), true))
+			return
+		}
+		w(s)
+	}
+	end := func() {
+		if !struck {
+			nl()
+		}
+	}
 	delivery := isDelivery(snap)
 	if delivery { // the driver's copy: $0 choices main keeps off it
 		snap.Items = driverItems(snap.Items)
@@ -270,18 +292,22 @@ func buildFull(snap order.Snapshot, sc storeconfig.StoreContext, reroutedFrom st
 		}
 		itemSum := int64(item.Quantity) * item.UnitPrice
 		size := strings.TrimSpace(item.Size)
+		if snap.Voided != "" && !struck {
+			w(cmdInvertOn + " " + snap.Voided + " " + cmdInvertOff)
+			nl()
+		}
 		w(cmdBoldOn)
 		if size != "" {
-			w(itemLine(item.Quantity, size, item.UnitPrice))
+			line(itemLine(item.Quantity, size, item.UnitPrice))
 		} else {
-			w(itemLine(item.Quantity, item.Name, item.UnitPrice))
+			line(itemLine(item.Quantity, item.Name, item.UnitPrice))
 		}
 		w(cmdBoldOff)
-		nl()
+		end()
 		if size != "" {
 			w(cmdLeft)
-			w("    " + item.Name)
-			nl()
+			line("    " + item.Name)
+			end()
 		}
 
 		mods := item.Children
@@ -303,16 +329,16 @@ func buildFull(snap order.Snapshot, sc storeconfig.StoreContext, reroutedFrom st
 			if side {
 				w(cmdBoldOn)
 			}
-			w(modifierLine(label, mod.UnitPrice))
+			line(modifierLine(label, mod.UnitPrice))
 			if side {
 				w(cmdBoldOff)
 			}
-			nl()
+			end()
 			itemSum += mod.UnitPrice * int64(max(mod.Quantity, 1))
 		}
 		if strings.TrimSpace(item.Notes) != "" {
-			w("    Note: " + item.Notes)
-			nl()
+			line("    Note: " + item.Notes)
+			end()
 		}
 		w(rightAlign("Sum: "+dollars(itemSum), lineWidth))
 		nl()
@@ -399,6 +425,22 @@ func buildFull(snap order.Snapshot, sc storeconfig.StoreContext, reroutedFrom st
 		w(cmdCut)
 	}
 	return buf.Bytes()
+}
+
+// writeVoided is a voided / cancelled order's banner under its number:
+// "VOID" (or "CANCELLED") reversed and double size, then a line saying
+// nothing on it is charged.
+func writeVoided(w func(string), nl func(), label string) {
+	nl()
+	w(cmdCenter)
+	w(cmdBoldOn)
+	w(cmdDoubleSz)
+	w(cmdInvertOn + "  " + label + "  " + cmdInvertOff)
+	w(cmdBaseSz)
+	w(cmdBoldOff)
+	nl()
+	w("Nothing on this order is charged")
+	nl()
 }
 
 // futureReceiptTop puts an inverted FUTURE bar at the very top of a

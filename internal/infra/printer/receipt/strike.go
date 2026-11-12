@@ -70,3 +70,56 @@ func inked(m image.Image, x, y int) bool {
 	_, _, _, a := m.At(x, y).RGBA()
 	return a > 0x7fff
 }
+
+// strikeRaster is a whole printed line as a GS v 0 raster picture: every
+// character drawn like strikeImage's (12 x 24 dots, spaces blank) and a line
+// through the text from its first to its last non-space character (an
+// indent stays clear). tall doubles its height (m = 2), for a line of the
+// customer receipt's double-height base font. The picture is a line of its
+// own: no line feed after it.
+func strikeRaster(line string, tall bool) string {
+	f := basicfont.Face7x13
+	runes := []rune(line)
+	cols := len(runes) * strikeCharDots
+	wb := (cols + 7) / 8
+	data := make([]byte, wb*strikeRows)
+	set := func(x, y int) { data[y*wb+x/8] |= 0x80 >> (x % 8) }
+	first, last := -1, -1
+	for i, r := range runes {
+		if r == ' ' {
+			continue
+		}
+		if first < 0 {
+			first = i
+		}
+		last = i
+		g, ok := glyphRow(f, r)
+		if !ok {
+			g, _ = glyphRow(f, '?')
+		}
+		for gx := 0; gx < f.Width; gx++ {
+			for gy := 1; gy < f.Height; gy++ {
+				if !inked(f.Mask, gx, g*f.Height+gy) {
+					continue
+				}
+				x, y := i*strikeCharDots+gx*2, (gy-1)*2
+				set(x, y)
+				set(x+1, y)
+				set(x, y+1)
+				set(x+1, y+1)
+			}
+		}
+	}
+	if first >= 0 {
+		for x := first * strikeCharDots; x < (last+1)*strikeCharDots; x++ {
+			for y := strikeTop; y <= strikeBottom; y++ {
+				set(x, y)
+			}
+		}
+	}
+	m := byte(0)
+	if tall {
+		m = 2
+	}
+	return "\x1d\x76\x30" + string([]byte{m, byte(wb % 256), byte(wb / 256), strikeRows, 0}) + string(data)
+}
