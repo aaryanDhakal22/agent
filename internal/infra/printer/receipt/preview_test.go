@@ -108,7 +108,7 @@ func previewDelivery() order.Snapshot {
 		Money: order.Money{
 			Subtotal: 5995, Tax: 360, Tip: 600,
 			Fees:      []order.Fee{{Type: "delivery", Label: "Delivery fee", Amount: 399}, {Type: "service", Label: "Service fee", Amount: 150}},
-			Discounts: []order.Discount{{Type: "coupon", Label: "10% off (WELCOME10)", Amount: 600}},
+			Discounts: []order.Discount{{Type: "promo", Code: "WELCOME10", Label: "10% off (WELCOME10)", Amount: 600}},
 			Total:     6904,
 		},
 		Payments: []order.PaymentSummary{{Method: "card", AmountCents: 6904, Last4: "4242", AuthCode: "A1B2C3"}},

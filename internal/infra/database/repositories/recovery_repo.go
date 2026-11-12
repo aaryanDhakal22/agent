@@ -8,7 +8,11 @@ import (
 	"time"
 
 	"quiccpos/agent/internal/domain/order"
+	"quiccpos/agent/internal/domain/printroute"
+	"quiccpos/agent/internal/domain/terminal"
 	"quiccpos/agent/internal/infra/database/models"
+
+	"github.com/google/uuid"
 )
 
 var _ order.RecoveryRepository = (*OrderRepository)(nil)
@@ -33,12 +37,20 @@ func (r *OrderRepository) AgentState(ctx context.Context) (st order.AgentState, 
 		return st, err
 	}
 	st.KitchenNext, st.LastPrepMinutes = fs.KitchenNext, fs.LastPrepMinutes
+	if st.CounterNext, err = q.GetCounterNext(ctx); err != nil {
+		return st, err
+	}
 	if p, err := q.GetFloorPrefs(ctx); err == nil {
 		st.Prefs = order.FloorPrefs{GreenTillMinutes: p.GreenTillMinutes, TipTaxBps: p.TipTaxBps}
 	}
 	if raw, err := q.GetReceiptPrefs(ctx); err == nil {
 		if rp, err := order.DecodeReceiptPrefs([]byte(raw)); err == nil {
 			st.ReceiptPrefs = &rp
+		}
+	}
+	if raw, err := q.GetPrintRouting(ctx); err == nil && raw != "" {
+		if pr, err := printroute.Decode([]byte(raw)); err == nil {
+			st.PrintRouting = &pr
 		}
 	}
 	if rs, err := q.GetDriverReset(ctx); err == nil {
@@ -60,7 +72,7 @@ func (r *OrderRepository) AgentState(ctx context.Context) (st order.AgentState, 
 		if err != nil {
 			return st, err
 		}
-		st.Drivers = append(st.Drivers, order.StateDriver{ID: d.ID, Name: d.Name, Position: d.Position, Status: d.Status, LastReturnedAt: ret, PosNumber: d.PosNumber})
+		st.Drivers = append(st.Drivers, order.StateDriver{ID: d.ID, Name: d.Name, Position: d.Position, Status: d.Status, LastReturnedAt: ret})
 	}
 	shifts, err := q.ListOpenShifts(ctx)
 	if err != nil {
@@ -133,9 +145,12 @@ func (r *OrderRepository) Restore(ctx context.Context, data order.RestoreData) (
 			batchID = b.ID
 		}
 		res.BatchID = batchID
+		if err := restoreDrawers(ctx, q, data.Drawers, batchID, &res); err != nil {
+			return err
+		}
 
 		// Orders.
-		maxKitchen := int64(0)
+		maxKitchen, maxCounter := int64(0), int64(0)
 		for _, ro := range data.Orders {
 			snap := ro.Order
 			var st order.Status
@@ -149,6 +164,9 @@ func (r *OrderRepository) Restore(ctx context.Context, data order.RestoreData) (
 			}
 			if st.ArrivalDate.IsZero() {
 				st.ArrivalDate = time.Now()
+			}
+			if snap.Source == order.SourceCounter && snap.Fulfillment.Type == "counter" {
+				snap.Fulfillment.Type = "dine_in" // main keeps "counter"; the tablets know dine_in
 			}
 			raw, err := json.Marshal(snap)
 			if err != nil {
@@ -176,6 +194,12 @@ func (r *OrderRepository) Restore(ctx context.Context, data order.RestoreData) (
 				PoolDriverID: poolID, PooledAt: pooledAt, PoolSeq: poolSeq, PoolPlanID: poolPlan,
 				ScheduledLeadMinutes: nullInt(st.ScheduledLeadMinutes), RingAt: nullTSPtr(st.RingAt), Rerung: st.Rerung,
 				CameBack: st.CameBack && st.State == order.StateReady, RunSeq: nullInt(st.RunSeq),
+				AddedTipCents: st.AddedTipCents, TipLocked: st.TipLocked, CancelReason: st.CancelReason,
+			}
+			if snap.Source == order.SourceCounter { // terminal stage 0d: paid state + the terminal's key
+				p.Paid, p.PaidAt = st.Paid, nullTSPtr(st.PaidAt)
+				p.TipCents = sql.NullInt64{Int64: snap.Money.Tip, Valid: true}
+				p.ClientKey = snap.SourceEventID
 			}
 			if nd := st.NotDelivered; nd != nil {
 				p.NotDeliveredAction, p.NotDeliveredAt, p.NotDeliveredDriverID = nd.Action, nullTSPtr(&nd.At), nd.DriverID
@@ -183,11 +207,18 @@ func (r *OrderRepository) Restore(ctx context.Context, data order.RestoreData) (
 			if err := q.RestoreOrder(ctx, p); err != nil {
 				return fmt.Errorf("restore order %s: %w", snap.ID, err)
 			}
+			if err := restorePayments(ctx, q, ro, batchID, &res); err != nil {
+				return err
+			}
 			res.Orders++
 			if st.State == order.StateArrived {
 				res.Waiting++
 			}
-			if st.KitchenNumber != nil && *st.KitchenNumber > maxKitchen {
+			switch {
+			case st.KitchenNumber == nil:
+			case snap.Source == order.SourceCounter: // the counter sequence is its own
+				maxCounter = max(maxCounter, *st.KitchenNumber)
+			case *st.KitchenNumber > maxKitchen:
 				maxKitchen = *st.KitchenNumber
 			}
 		}
@@ -209,6 +240,17 @@ func (r *OrderRepository) Restore(ctx context.Context, data order.RestoreData) (
 			return err
 		}
 		res.KitchenNext = next
+		var counter int64
+		if data.State != nil {
+			counter = data.State.CounterNext
+		}
+		if maxCounter > 0 && maxCounter >= counter {
+			counter = maxCounter + 1 // never hand out a counter number twice
+		}
+		if err := q.SetCounterNext(ctx, counter); err != nil {
+			return err
+		}
+		res.CounterNext = counter
 		if data.State != nil {
 			if p := data.State.Prefs; p.GreenTillMinutes > 0 {
 				if err := q.SetFloorPrefs(ctx, models.SetFloorPrefsParams{GreenTillMinutes: p.GreenTillMinutes, TipTaxBps: p.TipTaxBps}); err != nil {
@@ -223,6 +265,13 @@ func (r *OrderRepository) Restore(ctx context.Context, data order.RestoreData) (
 					if err := setReceiptPrefs(ctx, q, p); err != nil {
 						return err
 					}
+				}
+			}
+			// The routing setting comes back as it was (its printer ids are
+			// store_config's, the same store's); an unreadable one is dropped.
+			if pr := data.State.PrintRouting; pr != nil {
+				if err := setPrintRouting(ctx, q, pr.Normalize()); err != nil {
+					return err
 				}
 			}
 			if data.State.DriverResetTime != "" {
@@ -244,7 +293,7 @@ func (r *OrderRepository) Restore(ctx context.Context, data order.RestoreData) (
 		if data.State != nil && len(data.State.Drivers) > 0 {
 			for _, d := range data.State.Drivers {
 				if err := q.RestoreDriver(ctx, models.RestoreDriverParams{ID: d.ID, Name: d.Name, Position: d.Position,
-					Status: driverStatus(d.Status), LastReturnedAt: nullTSPtr(d.LastReturnedAt), PosNumber: d.PosNumber}); err != nil {
+					Status: driverStatus(d.Status), LastReturnedAt: nullTSPtr(d.LastReturnedAt)}); err != nil {
 					return fmt.Errorf("restore driver %s: %w", d.Name, err)
 				}
 				res.Drivers++
@@ -276,4 +325,91 @@ func driverStatus(s string) string {
 		return s
 	}
 	return order.DriverOff
+}
+
+// restorePayments brings a restored order's payments back (HARDENING F-9):
+// the refund / void / change checks and the Z read order_payments, so a Pi
+// swapped mid-batch must have them. main's payments when it sends them; else
+// rebuilt from the snapshot's payments (amounts only: no tips, no drawer).
+// Counter orders, and online orders a terminal took money on.
+func restorePayments(ctx context.Context, q *models.Queries, ro order.RestoreOrder, batchID int64, res *order.RestoreResult) error {
+	snap := ro.Order
+	insert := func(p terminal.Payment) error {
+		if p.AmountCents == 0 && p.TipCents == 0 {
+			return nil
+		}
+		if err := q.InsertOrderPayment(ctx, models.InsertOrderPaymentParams{ID: p.ID, OrderID: snap.ID, At: fmtTS(p.At), Tender: p.Tender,
+			AmountCents: p.AmountCents, TipCents: p.TipCents, Refund: p.Refund, Reason: p.Reason, Ref: p.Ref, Last4: p.Last4,
+			StaffID: p.StaffID, DeviceID: p.DeviceID, ApprovedBy: p.ApprovedBy, DrawerID: p.DrawerID, Brand: p.Brand,
+			RefundKind: p.RefundKind}); err != nil {
+			return fmt.Errorf("restore payment of %s: %w", snap.ID, err)
+		}
+		return nil
+	}
+	tenderOf := func(method string) string {
+		if terminal.ValidTender(method) {
+			return method
+		}
+		return terminal.TenderCard
+	}
+	if len(ro.Payments) > 0 {
+		for _, mp := range ro.Payments {
+			p := terminal.Payment{ID: mp.ID, At: mp.At, Tender: tenderOf(mp.Method), AmountCents: mp.AmountCents, TipCents: mp.TipCents,
+				Last4: mp.Last4, Ref: mp.Ref, StaffID: mp.StaffID, DeviceID: mp.DeviceID, DrawerID: mp.DrawerID, Brand: mp.Brand,
+				RefundKind: mp.RefundKind, Reason: mp.Reason, ApprovedBy: mp.ApprovedBy}
+			if p.ID == "" {
+				p.ID = uuid.NewString()
+			}
+			if p.AmountCents < 0 {
+				p.Refund, p.AmountCents = true, -p.AmountCents
+			}
+			if p.At.IsZero() {
+				p.At = time.Now()
+			}
+			if err := insert(p); err != nil {
+				return err
+			}
+			res.Payments++
+		}
+		return nil
+	}
+	if snap.Source != order.SourceCounter {
+		return nil // an online order's payments are main's (the cash rule)
+	}
+	for i, ps := range snap.Payments {
+		p := terminal.Payment{ID: uuid.NewSHA1(uuid.NameSpaceOID, []byte(fmt.Sprintf("%s/%d", snap.ID, i))).String(),
+			At: snap.PlacedAt, Tender: terminal.TenderOf(ps.Method), AmountCents: ps.AmountCents, Last4: ps.Last4,
+			Reason: "restored"}
+		if p.AmountCents < 0 {
+			p.Refund, p.AmountCents = true, -p.AmountCents
+		}
+		if p.At.IsZero() {
+			p.At = time.Now()
+		}
+		if err := insert(p); err != nil {
+			return err
+		}
+		res.RebuiltPayments++
+	}
+	return nil
+}
+
+// restoreDrawers brings the open batch's open drawer sessions back (F-9).
+func restoreDrawers(ctx context.Context, q *models.Queries, drawers []order.RestoreDrawer, batchID int64, res *order.RestoreResult) error {
+	for _, d := range drawers {
+		if d.Closed || d.ID == "" || d.DeviceID == "" {
+			continue
+		}
+		at := d.OpenedAt
+		if at.IsZero() {
+			at = time.Now()
+		}
+		if err := q.InsertDrawerSession(ctx, models.InsertDrawerSessionParams{ID: d.ID, DeviceID: d.DeviceID, DeviceName: d.DeviceName,
+			StaffID: d.StaffID, StaffName: d.StaffName, BatchID: batchID, OpenedAt: fmtTS(at), StartCents: max(d.StartCents, 0),
+			HandoverFrom: d.HandoverFrom, Auto: d.Auto}); err != nil {
+			return fmt.Errorf("restore drawer %s: %w", d.ID, err)
+		}
+		res.Drawers++
+	}
+	return nil
 }

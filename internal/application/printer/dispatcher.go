@@ -5,10 +5,12 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"quiccpos/agent/internal/domain/order"
 	"quiccpos/agent/internal/domain/printer"
+	"quiccpos/agent/internal/domain/printroute"
 	"quiccpos/agent/internal/domain/storeconfig"
 	"quiccpos/agent/internal/infra/notify"
 	"quiccpos/agent/internal/observability"
@@ -58,6 +60,23 @@ type Dispatcher struct {
 	statusHook func(up bool, msg string)
 	// rules (SetRules) are the store's print switches, read per job.
 	rules func() Rules
+	// downAfter (SetDownAfter): printer_down_after_seconds, read per probe.
+	downAfter func() time.Duration
+	// routing is the store's routing + emergency reroute setting
+	// (routing.go), read per ticket; nil = mode none.
+	routing atomic.Pointer[printroute.Routing]
+	// routingStore / routingChanged (SetRoutingStore): where the setting
+	// is saved and who hears it changed (state sync).
+	routingStore   RoutingStore
+	routingChanged func()
+}
+
+// SetDownAfter wires how long a printer must fail without a break before it
+// counts as down (printer_down_after_seconds; call before the first Apply).
+func (d *Dispatcher) SetDownAfter(f func() time.Duration) {
+	d.mu.Lock()
+	d.downAfter = f
+	d.mu.Unlock()
 }
 
 // SetRules wires the store's print switches (kitchen-ticket toggles + the
@@ -166,11 +185,12 @@ func (d *Dispatcher) Apply(ctx context.Context, printers []storeconfig.PrinterCo
 		dev := d.factory(p.Name, p.IP)
 		svc := NewService(dev, d.registry, d.logger, d.meters)
 		svc.onStatus = d.statusHook
+		svc.downAfter = d.downAfter
 		if hook := d.probeHook; hook != nil {
 			id := p.ID
 			svc.onProbe = func(ctx context.Context, ip string, up bool) { hook(ctx, id, ip, up) }
 		}
-		slot := rosterSlot{entry: RosterEntry{ID: p.ID, Name: p.Name, IsReceipt: p.IsReceipt}, svc: svc}
+		slot := rosterSlot{entry: RosterEntry{ID: p.ID, Name: p.Name, IsReceipt: p.IsReceipt, Cols: p.PrintColumns}, svc: svc}
 		d.roster = append(d.roster, slot)
 		d.byID[p.ID] = slot
 
@@ -211,7 +231,7 @@ func (d *Dispatcher) ExecuteMode(ctx context.Context, snap order.Snapshot, mode 
 	}
 
 	if len(roster) == 0 {
-		d.meters.OrdersPrintFailed.Add(ctx, 1, metric.WithAttributes(attribute.String("reason", "no_printer")))
+		d.meters.OrdersPrintFailed.Add(ctx, 1, metric.WithAttributes(attribute.String("reason", "no_printer"), attribute.String("source", sourceLabel(snap))))
 		return printer.Outcome{}, ErrNoPrintersAvailable
 	}
 	entries := make([]RosterEntry, len(roster))
@@ -223,7 +243,6 @@ func (d *Dispatcher) ExecuteMode(ctx context.Context, snap order.Snapshot, mode 
 
 	tickets, unrouted := PlanWith(snap, entries, mode, rules)
 	out := printer.Outcome{Unrouted: unrouted}
-	insertRule := (mode == printer.ModeAccept || mode == printer.ModeAcceptKitchen) && InsertsLive(snap, rules)
 	if len(tickets) == 0 {
 		return out, printer.ErrNoTickets
 	}
@@ -240,9 +259,6 @@ func (d *Dispatcher) ExecuteMode(ctx context.Context, snap order.Snapshot, mode 
 			continue
 		}
 		out.Printed = append(out.Printed, res)
-		if insertRule && (t.Kind == printer.TicketStation || t.Kind == printer.TicketFull) {
-			out.InsertExpected = true // the kitchen has it: the hub inserts it
-		}
 	}
 
 	if len(out.Failed) > 0 {
@@ -253,7 +269,7 @@ func (d *Dispatcher) ExecuteMode(ctx context.Context, snap order.Snapshot, mode 
 				reason = "no_printer"
 			}
 		}
-		d.meters.OrdersPrintFailed.Add(ctx, 1, metric.WithAttributes(attribute.String("reason", reason)))
+		d.meters.OrdersPrintFailed.Add(ctx, 1, metric.WithAttributes(attribute.String("reason", reason), attribute.String("source", sourceLabel(snap))))
 	}
 	if len(out.Printed) == 0 {
 		if lastErr == nil {
@@ -273,7 +289,7 @@ func (d *Dispatcher) printTicket(ctx context.Context, snap order.Snapshot, t pri
 		return res, ErrNoPrintersAvailable
 	}
 
-	candidates := d.candidates(target, roster)
+	candidates, rule := d.candidates(target, roster)
 
 	var lastErr error
 	for i, sl := range candidates {
@@ -282,6 +298,7 @@ func (d *Dispatcher) printTicket(ctx context.Context, snap order.Snapshot, t pri
 			break
 		}
 		tk := t
+		tk.Cols = sl.entry.Cols // laid out for the printer it prints on, a stand-in's on a reroute
 		if i > 0 {
 			tk.ReroutedFrom = target.entry.Name
 		}
@@ -290,8 +307,15 @@ func (d *Dispatcher) printTicket(ctx context.Context, snap order.Snapshot, t pri
 			res.PrintedOn = sl.entry.Name
 			res.ReroutedFrom = tk.ReroutedFrom
 			if i > 0 {
+				res.RerouteBy = rerouteBy(rule, sl.entry.ID)
+				if d.meters.TicketsRerouted != nil {
+					d.meters.TicketsRerouted.Add(ctx, 1, metric.WithAttributes(
+						attribute.String("source", sourceLabel(snap)), attribute.String("kind", ticketKindLabel(t)),
+						attribute.String("by", res.RerouteBy)))
+				}
 				d.logger.Warn().Ctx(ctx).Str("order_id", snap.ID).Str("intended", target.entry.Name).
-					Str("printed_on", sl.entry.Name).Str("kind", string(t.Kind)).Msg("ticket rerouted — intended printer failed")
+					Str("printed_on", sl.entry.Name).Str("kind", string(t.Kind)).Str("by", res.RerouteBy).
+					Msg("ticket rerouted — intended printer failed")
 			}
 			return res, nil
 		}
@@ -303,17 +327,65 @@ func (d *Dispatcher) printTicket(ctx context.Context, snap order.Snapshot, t pri
 	return res, lastErr
 }
 
-// candidates orders the printers to try for a job aimed at target: the
-// target, then the receipt printer, then the rest — with fallbacks the health
-// check last saw down moved to the very end (still tried: the probe may be
-// stale), so a dead station doesn't cost a dial timeout per ticket.
-func (d *Dispatcher) candidates(target rosterSlot, roster []rosterSlot) []rosterSlot {
+// sourceLabel is an order's metrics source (CM-12): counter | web | online.
+func sourceLabel(snap order.Snapshot) string {
+	return order.StoredOrder{Order: snap}.SourceLabel()
+}
+
+// ticketKindLabel is orders.tickets.rerouted's kind (CM-7): change (a change
+// or type-change ticket), void, receipt (the customer receipt or a full
+// legacy ticket) or station.
+func ticketKindLabel(t printer.Ticket) string {
+	switch {
+	case t.Void:
+		return "void"
+	case t.Change:
+		return "change"
+	case t.Kind == printer.TicketStation:
+		return "station"
+	}
+	return "receipt"
+}
+
+// candidates orders the printers to try for a job aimed at target (spec
+// §4.42): the target; then the store's routing rule for it (printroute:
+// the emergency printer, or the target's own ordered list); then the
+// automatic failover — the receipt printer, then the rest in roster order.
+// Fallbacks the health check last saw down are moved behind every one that
+// is up (rule targets still first among them; still tried: the probe may be
+// stale), so a dead stand-in doesn't cost a dial timeout per ticket. rule
+// holds the ids the rule put in (rerouteBy).
+func (d *Dispatcher) candidates(target rosterSlot, roster []rosterSlot) (out []rosterSlot, rule map[string]bool) {
+	isDown := func(sl rosterSlot) bool {
+		st, ok := d.registry.Get(sl.entry.Name)
+		return ok && st.LastChecked != nil && !st.Up
+	}
+	byID := make(map[string]rosterSlot, len(roster))
+	for _, sl := range roster {
+		byID[sl.entry.ID] = sl
+	}
+	used := map[string]bool{target.entry.ID: true}
+	rule = map[string]bool{}
+	var ruleUp, ruleDown []rosterSlot
+	for _, id := range d.Routing().RuleTargets(target.entry.ID) {
+		sl, ok := byID[id]
+		if !ok || used[id] {
+			continue // a printer the Pi no longer has
+		}
+		used[id] = true
+		rule[id] = true
+		if isDown(sl) {
+			ruleDown = append(ruleDown, sl)
+		} else {
+			ruleUp = append(ruleUp, sl)
+		}
+	}
 	var up, down []rosterSlot
 	for _, sl := range roster {
-		if sl.entry.ID == target.entry.ID {
+		if used[sl.entry.ID] {
 			continue
 		}
-		if st, ok := d.registry.Get(sl.entry.Name); ok && st.LastChecked != nil && !st.Up {
+		if isDown(sl) {
 			down = append(down, sl)
 		} else {
 			up = append(up, sl)
@@ -333,15 +405,27 @@ func (d *Dispatcher) candidates(target rosterSlot, roster []rosterSlot) []roster
 		}
 		return out
 	}
-	out := append([]rosterSlot{target}, receiptFirst(up)...)
-	return append(out, receiptFirst(down)...)
+	out = append([]rosterSlot{target}, ruleUp...)
+	out = append(out, receiptFirst(up)...)
+	out = append(out, ruleDown...)
+	return append(out, receiptFirst(down)...), rule
+}
+
+// rerouteBy names how a fallback was chosen: "rule" (the store's routing
+// setting named it) or "auto" (the automatic failover).
+func rerouteBy(rule map[string]bool, id string) string {
+	if rule[id] {
+		return "rule"
+	}
+	return "auto"
 }
 
 // PrintDocument prints a non-order slip (e.g. a driver report) on the receipt
 // printer (the first printer if none is flagged), failing over like a ticket.
-// build gets the name of the printer it was meant for when it printed on a
-// fallback ("" otherwise). label identifies the job in logs and spans.
-func (d *Dispatcher) PrintDocument(ctx context.Context, label string, build func(reroutedFrom string) []byte) (printer.TicketResult, error) {
+// build gets the paper it prints on: that printer's width and the name of
+// the printer it was meant for when it printed on a fallback ("" otherwise).
+// label identifies the job in logs and spans.
+func (d *Dispatcher) PrintDocument(ctx context.Context, label string, build func(on printer.Paper) []byte) (printer.TicketResult, error) {
 	ctx, cancel := context.WithTimeout(ctx, printBudget)
 	defer cancel()
 	d.mu.RLock()
@@ -360,7 +444,8 @@ func (d *Dispatcher) PrintDocument(ctx context.Context, label string, build func
 		}
 	}
 	var lastErr error
-	for i, sl := range d.candidates(target, roster) {
+	cands, rule := d.candidates(target, roster)
+	for i, sl := range cands {
 		if ctx.Err() != nil {
 			lastErr = fmt.Errorf("print time budget used up: %w", ctx.Err())
 			break
@@ -369,12 +454,15 @@ func (d *Dispatcher) PrintDocument(ctx context.Context, label string, build func
 		if i > 0 {
 			from = target.entry.Name
 		}
-		if err := sl.svc.PrintBytes(ctx, label, build(from)); err != nil {
+		if err := sl.svc.PrintBytes(ctx, label, build(printer.Paper{Cols: sl.entry.Cols, ReroutedFrom: from})); err != nil {
 			lastErr = err
 			d.logger.Warn().Ctx(ctx).Err(err).Str("job", label).Str("printer", sl.entry.Name).Msg("printer failed for document; trying next")
 			continue
 		}
 		res.PrintedOn, res.ReroutedFrom = sl.entry.Name, from
+		if from != "" {
+			res.RerouteBy = rerouteBy(rule, sl.entry.ID)
+		}
 		return res, nil
 	}
 	res.Err = lastErr.Error()

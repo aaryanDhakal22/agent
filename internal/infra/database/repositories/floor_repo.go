@@ -35,6 +35,13 @@ func (r *OrderRepository) withTx(ctx context.Context, fn func(q *models.Queries)
 
 // insertEvent marshals payload and appends it to floor_events.
 func insertEvent(ctx context.Context, q *models.Queries, id, orderID, typ string, at time.Time, payload any) error {
+	return insertSubjectEvent(ctx, q, id, orderID, orderID, typ, at, payload)
+}
+
+// insertSubjectEvent writes a floor event about a subject other than an
+// order ("customer:<id>", "drawer:<id>", "z:<batch>"): later events about
+// the same subject wait behind it while it is parked (contract 2.4e).
+func insertSubjectEvent(ctx context.Context, q *models.Queries, id, orderID, subject, typ string, at time.Time, payload any) error {
 	raw, err := json.Marshal(payload)
 	if err != nil {
 		return fmt.Errorf("marshal floor event: %w", err)
@@ -45,15 +52,13 @@ func insertEvent(ctx context.Context, q *models.Queries, id, orderID, typ string
 		Type:    typ,
 		Payload: string(raw),
 		At:      fmtTS(at),
+		Subject: subject,
 	})
 }
 
 // recordOrderStatus appends an order.status event built from the order's
-// current row. A local-only order (pulled from the POS) never reaches main.
+// current row.
 func recordOrderStatus(ctx context.Context, q *models.Queries, so order.StoredOrder, auto bool, at time.Time) error {
-	if so.Status.LocalOnly {
-		return nil
-	}
 	ev := order.OrderStatusEvent{
 		EventID:          uuid.NewString(),
 		Type:             order.FloorEventOrderStatus,
@@ -66,6 +71,9 @@ func recordOrderStatus(ctx context.Context, q *models.Queries, so order.StoredOr
 		Auto:             auto,
 		At:               at.UTC().Truncate(time.Millisecond),
 		BatchID:          so.Status.BatchID,
+	}
+	if so.Status.State == order.StateCancelled {
+		ev.Reason = so.Status.CancelReason // CANCEL ORDER (2.5.0): main cancels after accept too
 	}
 	st := so.Status
 	ev.AgentStatus = &st
@@ -114,9 +122,8 @@ func loadOrder(ctx context.Context, q *models.Queries, id string) (order.StoredO
 	return list[0], nil
 }
 
-// RecordAccepted writes the accepted event once the tickets printed;
-// insertExpected rides on the hub's order.accepted (see OrderAcceptedData).
-func (r *OrderRepository) RecordAccepted(ctx context.Context, so order.StoredOrder, insertExpected bool) (err error) {
+// RecordAccepted writes the accepted event once the tickets printed.
+func (r *OrderRepository) RecordAccepted(ctx context.Context, so order.StoredOrder) (err error) {
 	ctx, _, end := dbSpan(ctx, "floor.record_accepted")
 	defer end(&err)
 	at := time.Now()
@@ -126,11 +133,6 @@ func (r *OrderRepository) RecordAccepted(ctx context.Context, so order.StoredOrd
 	return r.withTx(ctx, func(q *models.Queries) error {
 		if err := recordOrderStatus(ctx, q, so, false, at); err != nil {
 			return err
-		}
-		if !so.IsPOS() { // the hub inserts online cash pickups from it
-			if err := insertFeed(ctx, q, order.FeedOrderAccepted, at, order.OrderAcceptedData{Order: so, InsertExpected: insertExpected}); err != nil {
-				return err
-			}
 		}
 		return q.ClearAcceptPending(ctx, so.Order.ID)
 	})
@@ -163,19 +165,7 @@ func (r *OrderRepository) MarkReady(ctx context.Context, id string, callout bool
 		if err := recordOrderStatus(ctx, q, so, false, now); err != nil {
 			return err
 		}
-		if err := feedReady(ctx, q, so, now, callout); err != nil {
-			return err
-		}
-		// A POS pickup / counter check the POS already closed is done with
-		// the moment it is ready (00019).
-		if so.IsPOS() && so.Status.PosClosed && !so.IsDelivery() {
-			if _, err := q.SetOrderFinished(ctx, models.SetOrderFinishedParams{FinishedAt: nullTS(now), FinishedBy: order.FinishedByPOS, ID: id}); err != nil {
-				return err
-			}
-			so, err = loadOrder(ctx, q, id)
-			return err
-		}
-		return nil
+		return feedReady(ctx, q, so, now, callout)
 	})
 	if err != nil {
 		return nil, err
@@ -297,11 +287,29 @@ func (r *OrderRepository) CloseBatch(ctx context.Context, force bool) (closed *o
 	ctx, _, end := dbSpan(ctx, "floor.close_batch")
 	defer end(&err)
 	now := time.Now()
+	var clearedDrafts, closedDrawers []string
+	var unsettled *order.UnsettledList
+	defer func() {
+		if err == nil && closed != nil {
+			closed.ClearedDrafts = clearedDrafts
+			closed.ClosedDrawers = closedDrawers
+			closed.ZPending = true
+			closed.Unsettled = unsettled
+		}
+	}()
 	err = r.withTx(ctx, func(q *models.Queries) error {
 		b, err := q.GetOpenBatch(ctx)
 		if err != nil {
 			return fmt.Errorf("open batch: %w", err)
 		}
+		// Unsettled checks (contract 2.10s §4): a manual close is refused
+		// while an unpaid counter check is open; unpaid pickups (every
+		// non-delivery check at an auto-close) are carried, still payable.
+		list, carry, err := closeUnsettled(ctx, q, b.ID, order.CloseKindOf(ctx) == order.CloseAuto, now)
+		if err != nil {
+			return err
+		}
+		unsettled = list
 		rows, err := q.ListBatchLeftovers(ctx, b.ID)
 		if err != nil {
 			return err
@@ -313,16 +321,17 @@ func (r *OrderRepository) CloseBatch(ctx context.Context, force bool) (closed *o
 		if err := markFuture(ctx, q, left, now); err != nil {
 			return err
 		}
-		// Only online orders that would be lost block a plain close: POS
-		// checks are the POS's (cancelled or finished below) and a future
+		// Every order that would be lost blocks a plain close; a future
 		// order still waiting for its time moves on with the scheduled ones.
 		var blocking []order.StoredOrder
 		var waiting []string
 		for _, so := range left {
+			// A carried check still blocks a plain close while it isn't
+			// finished (still cooking): only force moves past it.
 			switch {
 			case waitsForLater(so, now):
 				waiting = append(waiting, so.Order.ID)
-			case !so.IsPOS():
+			default:
 				blocking = append(blocking, so)
 			}
 		}
@@ -332,24 +341,8 @@ func (r *OrderRepository) CloseBatch(ctx context.Context, force bool) (closed *o
 		ts := nullTS(now)
 		for i, so := range left {
 			row := rows[i] // mapRows keeps row order
-			if waitsForLater(so, now) {
-				continue // moved to the next batch below
-			}
-			if so.IsPOS() && so.Status.State != order.StateOnDelivery {
-				// The POS owns its checks: an unfinished one is cancelled
-				// (local only, nothing goes to main).
-				if _, err := q.CancelExternalOrder(ctx, models.CancelExternalOrderParams{CancelledAt: ts, ID: row.ID}); err != nil {
-					return err
-				}
-				fresh, err := loadOrder(ctx, q, row.ID)
-				if err != nil {
-					return err
-				}
-				if err := feedCancelled(ctx, q, fresh, now); err != nil {
-					return err
-				}
-				finished = append(finished, fresh)
-				continue
+			if waitsForLater(so, now) || carry[so.Order.ID] {
+				continue // moved to the next batch below / carried
 			}
 			if so.Status.CameBack {
 				// Came back with its driver and nobody took it out again: it
@@ -413,11 +406,6 @@ func (r *OrderRepository) CloseBatch(ctx context.Context, force bool) (closed *o
 			}
 			finished = append(finished, fresh)
 		}
-		// POS customer data never outlives the day: name, phone and address
-		// are wiped (items, money, number, driver and times stay).
-		if err := wipePOS(ctx, q, b.ID); err != nil {
-			return err
-		}
 		if err := q.CloseBatch(ctx, models.CloseBatchParams{ClosedAt: ts, ID: b.ID}); err != nil {
 			return err
 		}
@@ -436,11 +424,39 @@ func (r *OrderRepository) CloseBatch(ctx context.Context, force bool) (closed *o
 				return err
 			}
 		}
-		if err := insertFeed(ctx, q, order.FeedBatchClosed, now, order.BatchClosedData{BatchID: b.ID, ClosedAt: now.UTC().Truncate(time.Millisecond)}); err != nil {
+		// 2.5.0: main charges every card hold left in the batch - tips are
+		// final, and batch.closed goes after the batch's own order events.
+		if err := q.LockBatchTips(ctx, b.ID); err != nil {
+			return err
+		}
+		if err := recordBatchClosed(ctx, q, b.ID, now); err != nil {
 			return err
 		}
 		if err := q.ResetKitchenNumber(ctx); err != nil {
 			return err
+		}
+		if err := q.ResetCounterNumber(ctx); err != nil { // terminal stage 0d: counter orders start again too
+			return err
+		}
+		// The terminals' shared drafts never outlive the batch (contract 2.10i).
+		cleared, err := q.ClearTerminalDrafts(ctx)
+		if err != nil {
+			return err
+		}
+		clearedDrafts = cleared
+		// Terminal drawers (contract 2.10k): every open session closes with
+		// the batch, not counted (flagged); then the batch's Z report is
+		// queued (built right after the transaction, contract 2.10l).
+		drawers, err := closeOpenDrawers(ctx, q, now)
+		if err != nil {
+			return err
+		}
+		for _, d := range drawers {
+			closedDrawers = append(closedDrawers, d.ID)
+		}
+		if err := q.InsertPendingZReport(ctx, models.InsertPendingZReportParams{BatchID: b.ID, ID: uuid.NewString(),
+			CloseKind: order.CloseKindOf(ctx), Forced: force, CreatedAt: fmtTS(now)}); err != nil {
+			return fmt.Errorf("queue z report: %w", err)
 		}
 		outDrivers, err := q.ListActiveDrivers(ctx)
 		if err != nil {
@@ -474,38 +490,11 @@ func (r *OrderRepository) CloseBatch(ctx context.Context, force bool) (closed *o
 // Close batch it moves into the next batch like a scheduled one; a past-due
 // one is a leftover as before.
 func waitsForLater(so order.StoredOrder, now time.Time) bool {
-	if so.IsPOS() || so.Status.State != order.StateArrived || !(so.Status.Future || so.Status.Rerung) {
+	if so.Status.State != order.StateArrived || !(so.Status.Future || so.Status.Rerung) {
 		return false
 	}
 	p := so.Order.Fulfillment.PromisedAt
 	return p != nil && p.After(now)
-}
-
-// wipePOS clears the customer name, phone and address of every POS order in
-// the batch, and drops their located points.
-func wipePOS(ctx context.Context, q *models.Queries, batchID int64) error {
-	rows, err := q.ListLocalOnlyByBatch(ctx, batchID)
-	if err != nil {
-		return err
-	}
-	for _, row := range rows {
-		var snap order.Snapshot
-		if err := json.Unmarshal([]byte(row.Snapshot), &snap); err != nil {
-			return fmt.Errorf("unmarshal snapshot for order %s: %w", row.ID, err)
-		}
-		snap.WipePII()
-		raw, err := json.Marshal(snap)
-		if err != nil {
-			return err
-		}
-		if err := q.SetOrderSnapshot(ctx, models.SetOrderSnapshotParams{Snapshot: string(raw), ID: row.ID}); err != nil {
-			return err
-		}
-		if err := q.DeleteOrderGeo(ctx, row.ID); err != nil {
-			return err
-		}
-	}
-	return nil
 }
 
 func (r *OrderRepository) OpenBatch(ctx context.Context) (b *order.Batch, err error) {
@@ -613,7 +602,7 @@ func (r *OrderRepository) ListDrivers(ctx context.Context) (out []order.Driver, 
 			return nil, err
 		}
 		dr := order.Driver{ID: d.ID, Name: d.Name, Position: d.Position, Status: d.Status,
-			LastReturnedAt: ret, Deliveries: counts[d.ID], ClockedInAt: in, PosNumber: d.PosNumber,
+			LastReturnedAt: ret, Deliveries: counts[d.ID], ClockedInAt: in,
 			PushoverDevice: d.PushoverDevice}
 		if d.Status == order.DriverOut {
 			dr.RunOrderIDs = runs[d.ID]
@@ -623,7 +612,7 @@ func (r *OrderRepository) ListDrivers(ctx context.Context) (out []order.Driver, 
 	return out, nil
 }
 
-func (r *OrderRepository) CreateDriver(ctx context.Context, name, posNumber string) (d *order.Driver, err error) {
+func (r *OrderRepository) CreateDriver(ctx context.Context, name string) (d *order.Driver, err error) {
 	ctx, _, end := dbSpan(ctx, "drivers.create")
 	defer end(&err)
 	id := uuid.NewString()
@@ -632,29 +621,15 @@ func (r *OrderRepository) CreateDriver(ctx context.Context, name, posNumber stri
 		if pos, err = q.NextDriverPosition(ctx); err != nil {
 			return err
 		}
-		if err := q.CreateDriver(ctx, models.CreateDriverParams{ID: id, Name: name, Position: pos, PosNumber: posNumber}); err != nil {
-			return posNumberErr(err)
+		if err := q.CreateDriver(ctx, models.CreateDriverParams{ID: id, Name: name, Position: pos}); err != nil {
+			return err
 		}
 		return recordRoster(ctx, q, time.Now())
 	})
 	if err != nil {
 		return nil, err
 	}
-	return &order.Driver{ID: id, Name: name, Position: pos, Status: order.DriverOff, PosNumber: posNumber}, nil
-}
-
-// SetDriverPosNumber — see order.FloorRepository.
-func (r *OrderRepository) SetDriverPosNumber(ctx context.Context, id, posNumber string) (err error) {
-	ctx, _, end := dbSpan(ctx, "drivers.set_pos_number")
-	defer end(&err)
-	n, err := models.New(r.db).SetDriverPosNumber(ctx, models.SetDriverPosNumberParams{PosNumber: posNumber, ID: id})
-	if err != nil {
-		return posNumberErr(err)
-	}
-	if n == 0 {
-		return order.ErrDriverNotFound
-	}
-	return nil
+	return &order.Driver{ID: id, Name: name, Position: pos, Status: order.DriverOff}, nil
 }
 
 // SetDriverPushoverDevice — see order.FloorRepository.
@@ -669,15 +644,6 @@ func (r *OrderRepository) SetDriverPushoverDevice(ctx context.Context, id, devic
 		return order.ErrDriverNotFound
 	}
 	return nil
-}
-
-// posNumberErr maps the unique index on drivers.pos_number to
-// ErrPosNumberTaken.
-func posNumberErr(err error) error {
-	if err != nil && strings.Contains(err.Error(), "UNIQUE constraint failed") && strings.Contains(err.Error(), "pos_number") {
-		return order.ErrPosNumberTaken
-	}
-	return err
 }
 
 func (r *OrderRepository) RenameDriver(ctx context.Context, id, name string) (err error) {
@@ -718,7 +684,7 @@ func (r *OrderRepository) RemoveDriver(ctx context.Context, id string) (unpooled
 				return err
 			}
 			if sh, err := q.GetOpenShift(ctx, id); err == nil {
-				if err := closeShift(ctx, q, sh, false, now); err != nil {
+				if _, err := closeShift(ctx, q, sh, false, now); err != nil {
 					return err
 				}
 			}
@@ -805,15 +771,23 @@ func clockOutIfResetPassed(ctx context.Context, q *models.Queries, driverID stri
 	if _, err := clearDriverPool(ctx, q, driverID, now); err != nil {
 		return err
 	}
-	return closeShift(ctx, q, sh, true, now)
+	_, err = closeShift(ctx, q, sh, true, now)
+	return err
 }
 
-func closeShift(ctx context.Context, q *models.Queries, sh models.DriverShift, auto bool, at time.Time) error {
+// closeShift ends a shift and writes its driver.shift event. main charges
+// the card deliveries the driver took out during it at that moment, so their
+// tips lock here too (2.5.0); returns the orders locked.
+func closeShift(ctx context.Context, q *models.Queries, sh models.DriverShift, auto bool, at time.Time) ([]string, error) {
 	if err := q.CloseShift(ctx, models.CloseShiftParams{ClockOut: nullTS(at), AutoOut: auto, ID: sh.ID}); err != nil {
-		return err
+		return nil, err
 	}
 	sh.ClockOut, sh.AutoOut = nullTS(at), auto
-	return recordShift(ctx, q, sh, at)
+	locked, err := lockShiftTips(ctx, q, sh)
+	if err != nil {
+		return nil, err
+	}
+	return locked, recordShift(ctx, q, sh, at)
 }
 
 func (r *OrderRepository) driverByID(ctx context.Context, id string) (*order.Driver, error) {
@@ -889,7 +863,11 @@ func (r *OrderRepository) ClockOut(ctx context.Context, id string) (d *order.Dri
 			return err
 		}
 		if sh, err := q.GetOpenShift(ctx, id); err == nil {
-			if err := closeShift(ctx, q, sh, false, now); err != nil {
+			ids, err := closeShift(ctx, q, sh, false, now)
+			if err != nil {
+				return err
+			}
+			if unpooled, err = appendLocked(ctx, q, unpooled, ids); err != nil {
 				return err
 			}
 		}
@@ -921,7 +899,11 @@ func (r *OrderRepository) AutoClockOut(ctx context.Context, at time.Time) (n int
 			}
 			unpooled = append(unpooled, cleared...)
 			if sh, err := q.GetOpenShift(ctx, d.ID); err == nil {
-				if err := closeShift(ctx, q, sh, true, at); err != nil {
+				ids, err := closeShift(ctx, q, sh, true, at)
+				if err != nil {
+					return err
+				}
+				if unpooled, err = appendLocked(ctx, q, unpooled, ids); err != nil {
 					return err
 				}
 			}
@@ -1018,7 +1000,35 @@ func (r *OrderRepository) ListUnsyncedEvents(ctx context.Context, limit int) (ou
 			return nil, err
 		}
 		out = append(out, order.FloorEvent{ID: row.ID, OrderID: row.OrderID.String, Type: row.Type,
-			Payload: json.RawMessage(row.Payload), At: at, Attempts: row.Attempts})
+			Payload: json.RawMessage(row.Payload), At: at, Attempts: row.Attempts, Subject: row.Subject, Refusals: row.Refusals})
+	}
+	return out, nil
+}
+
+// MarkEventsSynced marks a flush's events synced in one statement (S-7).
+func (r *OrderRepository) MarkEventsSynced(ctx context.Context, ids []string, at time.Time) (err error) {
+	ctx, _, end := dbSpan(ctx, "floor_events.mark_synced_many")
+	defer end(&err)
+	if len(ids) == 0 {
+		return nil
+	}
+	return models.New(r.db).MarkFloorEventsSyncedAt(ctx, models.MarkFloorEventsSyncedAtParams{
+		SyncedAt: sql.NullString{String: fmtTS(at), Valid: true}, Ids: ids})
+}
+
+// OldestUnsynced is the oldest unsynced, unparked event's time per type (CM-9).
+func (r *OrderRepository) OldestUnsynced(ctx context.Context) (out map[string]time.Time, err error) {
+	ctx, _, end := dbSpan(ctx, "floor_events.oldest")
+	defer end(&err)
+	rows, err := models.New(r.db).OldestUnsyncedByType(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out = make(map[string]time.Time, len(rows))
+	for _, row := range rows {
+		if t, err := parseTS(row.Oldest); err == nil {
+			out[row.Type] = t
+		}
 	}
 	return out, nil
 }
@@ -1066,6 +1076,31 @@ func (r *OrderRepository) TrimBatches(ctx context.Context, keepClosed int, synce
 			return err
 		}
 		if err := q.DeleteOrphanOrderTimes(ctx); err != nil {
+			return err
+		}
+		// Terminal stage 0d: payments of trimmed counter orders; the journal
+		// is kept 30 days (main keeps it all).
+		if err := q.DeleteOrphanOrderPayments(ctx); err != nil {
+			return err
+		}
+		if err := deleteOrphanCards(ctx, q); err != nil { // 00040, after the payments
+			return err
+		}
+		if _, err := q.PruneJournal(ctx, fmtTS(time.Now().Add(-order.JournalRetention))); err != nil {
+			return err
+		}
+		// Stage 2: drawers and Z reports go with their batch (main keeps
+		// them); dead letters with their event.
+		if err := q.DeleteOrphanDrawerMovements(ctx); err != nil {
+			return err
+		}
+		if err := q.DeleteOrphanDrawerSessions(ctx); err != nil {
+			return err
+		}
+		if err := q.DeleteOrphanZReports(ctx); err != nil {
+			return err
+		}
+		if err := q.DeleteOrphanDeadLetters(ctx); err != nil {
 			return err
 		}
 		return q.DeleteOldAutoPlans(ctx, fmtTS(syncedBefore))
@@ -1240,4 +1275,16 @@ func (r *OrderRepository) GetAppRelease(ctx context.Context) (string, error) {
 
 func (r *OrderRepository) SetAppRelease(ctx context.Context, raw string) error {
 	return models.New(r.db).SetAppRelease(ctx, raw)
+}
+
+// TerminalAppStore persists the cached counter-terminal release (JSON,
+// settings.terminal_app_release): the terminal app's appupdate.Store.
+type TerminalAppStore struct{ R *OrderRepository }
+
+func (s TerminalAppStore) GetAppRelease(ctx context.Context) (string, error) {
+	return models.New(s.R.db).GetTerminalAppRelease(ctx)
+}
+
+func (s TerminalAppStore) SetAppRelease(ctx context.Context, raw string) error {
+	return models.New(s.R.db).SetTerminalAppRelease(ctx, raw)
 }

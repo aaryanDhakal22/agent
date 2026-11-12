@@ -31,10 +31,13 @@ type setupLinkDTO struct {
 	Username   string `json:"username"`
 	Password   string `json:"password"`
 	TabletName string `json:"tablet_name"`
+	// Kind (contract 2.10y): tablet (default) | terminal - Centurion sets a
+	// brand-new Pi up and is paired as a terminal.
+	Kind string `json:"kind"`
 }
 
-// POST /api/setup/link {username, password, tablet_name?} — only while
-// unconfigured. 200 {tenant, location, restored, device_key?}; 401
+// POST /api/setup/link {username, password, tablet_name?, kind?: tablet|
+// terminal} — only while unconfigured. 200 {tenant, location, restored, device_key?}; 401
 // invalid_credentials; 429 too_many_attempts; 502 needs_internet.
 func (s *Server) handleSetupLink(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
@@ -49,6 +52,15 @@ func (s *Server) handleSetupLink(w http.ResponseWriter, r *http.Request) {
 	}
 	if strings.TrimSpace(body.Username) == "" || body.Password == "" {
 		s.writeJSON(w, http.StatusBadRequest, errCodeMap("Type the store manager username and password.", "credentials_required"))
+		return
+	}
+	kind := strings.TrimSpace(body.Kind)
+	switch kind {
+	case "":
+		kind = device.KindTablet
+	case device.KindTablet, device.KindTerminal:
+	default:
+		s.writeJSON(w, http.StatusBadRequest, errCodeMap("kind must be tablet or terminal", "bad_request"))
 		return
 	}
 	tablet := strings.TrimSpace(body.TabletName)
@@ -100,9 +112,9 @@ func (s *Server) handleSetupLink(w http.ResponseWriter, r *http.Request) {
 		key, err := newDeviceKey()
 		if err == nil {
 			id := uuid.NewString()
-			if err = s.devices.Create(ctx, id, tablet, device.KindTablet, hashDeviceKey(key), key[:len(deviceKeyPrefix)+6]); err == nil {
-				resp["device_id"], resp["device_key"], resp["device_name"] = id, key, tablet
-				s.logger.Info().Ctx(ctx).Str("device_id", id).Str("name", tablet).Msg("Tablet paired by the manager-login link")
+			if err = s.devices.Create(ctx, id, tablet, kind, hashDeviceKey(key), key[:len(deviceKeyPrefix)+6]); err == nil {
+				resp["device_id"], resp["device_key"], resp["device_name"], resp["device_kind"] = id, key, tablet, kind
+				s.logger.Info().Ctx(ctx).Str("device_id", id).Str("name", tablet).Str("kind", kind).Msg("Device paired by the manager-login link")
 			}
 		}
 		if err != nil {
@@ -111,6 +123,7 @@ func (s *Server) handleSetupLink(w http.ResponseWriter, r *http.Request) {
 	} else {
 		s.session.issue(w) // linked from the web UI: that browser is signed in
 	}
+	s.ensureCallcenterDevice(ctx) // the store's call-center device (contract 2.10ab)
 	if s.onLinked != nil {
 		go s.onLinked(out)
 	}

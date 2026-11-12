@@ -144,29 +144,29 @@ func TestPlan_SolePrinterStillGetsStationTicketForItsItems(t *testing.T) {
 	}
 }
 
-func TestPlan_PickupCashPrintsOnlyTheReceipt(t *testing.T) {
+func TestPlan_PickupCashPrintsLikeAnyOrder(t *testing.T) {
 	items := []order.LineItem{item("Pepperoni", order.RoutingMatched, pizza.ID), item("Wings", order.RoutingMatched, wings.ID)}
 	roster := []RosterEntry{front, pizza, wings}
 	snap := func(kind string, pays ...order.PaymentSummary) order.Snapshot {
 		return order.Snapshot{Items: items, Fulfillment: order.Fulfillment{Type: kind}, Money: order.Money{Total: 2500}, Payments: pays}
 	}
-
-	// Pickup with no payments (= cash) or a cash payment: just the receipt.
-	for _, s := range []order.Snapshot{snap("pickup"), snap("Pickup", order.PaymentSummary{Method: "cash", AmountCents: 2500})} {
-		tk, un := Plan(s, roster)
-		if len(un) != 0 || len(tk) != 1 || tk[0].Kind != printer.TicketReceipt || tk[0].TargetID != front.ID {
-			t.Fatalf("pickup cash: want only the receipt on Front, got %+v", tk)
-		}
-	}
-	// Even on a single-printer store.
-	if tk, _ := Plan(snap("pickup"), []RosterEntry{front}); len(tk) != 1 || tk[0].Kind != printer.TicketReceipt {
-		t.Fatalf("single printer pickup cash: %+v", tk)
-	}
-	// Pickup paid by card, and cash delivery: kitchen tickets as usual.
-	for _, s := range []order.Snapshot{snap("pickup", order.PaymentSummary{Method: "card", AmountCents: 2500}), snap("delivery")} {
+	// H3: with the default switches every online order prints its station
+	// tickets + the receipt - a cash pickup too (no POS keys it any more).
+	for _, s := range []order.Snapshot{snap("pickup"), snap("Pickup", order.PaymentSummary{Method: "cash", AmountCents: 2500}),
+		snap("pickup", order.PaymentSummary{Method: "card", AmountCents: 2500}), snap("delivery")} {
 		if tk, _ := Plan(s, roster); len(tk) != 3 {
 			t.Fatalf("%s: want 2 stations + receipt, got %+v", s.Fulfillment.Type, tk)
 		}
+	}
+	// The online_cash_pickup switch off: just the receipt, also on a
+	// single-printer store.
+	off := Rules{Tickets: order.DefaultTicketToggles()}
+	off.Tickets.OnlineCashPickup = false
+	if tk, un := PlanWith(snap("pickup"), roster, printer.ModeAccept, off); len(un) != 0 || len(tk) != 1 || tk[0].Kind != printer.TicketReceipt || tk[0].TargetID != front.ID {
+		t.Fatalf("pickup cash, switch off: want only the receipt on Front, got %+v", tk)
+	}
+	if tk, _ := PlanWith(snap("pickup"), []RosterEntry{front}, printer.ModeAccept, off); len(tk) != 1 || tk[0].Kind != printer.TicketReceipt {
+		t.Fatalf("single printer pickup cash: %+v", tk)
 	}
 }
 
@@ -226,8 +226,10 @@ func TestPlanKitchen_PickupCashStillPrintsStations(t *testing.T) {
 	snap := order.Snapshot{Fulfillment: order.Fulfillment{Type: "pickup"}, Money: order.Money{Total: 2500},
 		Items: []order.LineItem{item("Pepperoni", order.RoutingMatched, pizza.ID), item("Hot Wings", order.RoutingMatched, wings.ID)}}
 	roster := []RosterEntry{front, pizza, wings}
-	if tk, _ := Plan(snap, roster); !reflect.DeepEqual(kinds(tk), []string{"receipt:p-front"}) {
-		t.Fatalf("accept of pickup cash should be receipt only: %v", kinds(tk))
+	off := Rules{Tickets: order.DefaultTicketToggles()}
+	off.Tickets.OnlineCashPickup = false
+	if tk, _ := PlanWith(snap, roster, printer.ModeAccept, off); !reflect.DeepEqual(kinds(tk), []string{"receipt:p-front"}) {
+		t.Fatalf("accept of pickup cash with its switch off should be receipt only: %v", kinds(tk))
 	}
 	if tk, _ := PlanFor(snap, roster, printer.ModeKitchen); !reflect.DeepEqual(kinds(tk), []string{"station:p-pizza", "station:p-wings"}) {
 		t.Fatalf("kitchen resend of pickup cash: %v", kinds(tk))
@@ -285,7 +287,7 @@ func TestPlanKitchen_UnroutedGoesToEveryStation(t *testing.T) {
 // TestPlanVoid (00019): station tickets for the voided lines only, flagged
 // Void, no receipt, no "other printers" list.
 func TestPlanVoid(t *testing.T) {
-	snap := order.Snapshot{Source: order.SourcePOS, Fulfillment: order.Fulfillment{Type: "pickup"},
+	snap := order.Snapshot{Source: order.SourceCounter, Fulfillment: order.Fulfillment{Type: "pickup"},
 		Items: []order.LineItem{item("Garlic Knots", order.RoutingMatched, "p-pizza"), item("Wings", order.RoutingMatched, "p-wings")}}
 	tickets, _ := PlanWith(snap, []RosterEntry{front, pizza, wings}, printer.ModeVoid, DefaultRules())
 	if len(tickets) != 2 {
@@ -364,5 +366,144 @@ func TestPlan_FuturePrintNow(t *testing.T) {
 				t.Fatalf("%s: not marked future", mode)
 			}
 		}
+	}
+}
+
+func TestPlanAddOn(t *testing.T) {
+	snap := order.Snapshot{Source: order.SourceCounter, Fulfillment: order.Fulfillment{Type: "dine_in"},
+		Items: []order.LineItem{item("Garlic Knots", order.RoutingMatched, "p-pizza")}}
+	tickets, _ := PlanWith(snap, []RosterEntry{front, pizza, wings}, printer.ModeAddOn, DefaultRules())
+	if len(tickets) != 1 || !tickets[0].AddOn || tickets[0].Void || tickets[0].Kind != printer.TicketStation ||
+		tickets[0].TargetID != "p-pizza" || len(tickets[0].Others) != 0 {
+		t.Fatalf("tickets = %+v", tickets)
+	}
+}
+
+// ModeChange: added (Items) and removed (RemovedItems) lines merged into one
+// change ticket per station, roster order; a station with only removals
+// still gets one; nothing else on them.
+func TestPlanChange(t *testing.T) {
+	snap := order.Snapshot{Source: order.SourceCounter, Fulfillment: order.Fulfillment{Type: "dine_in"},
+		Items:        []order.LineItem{item("Cheese Pizza", order.RoutingMatched, "p-pizza")},
+		RemovedItems: []order.LineItem{item("Garlic Knots", order.RoutingMatched, "p-pizza"), item("Hot Wings", order.RoutingMatched, "p-wings")}}
+	tickets, unrouted := PlanWith(snap, []RosterEntry{front, pizza, wings}, printer.ModeChange, DefaultRules())
+	if len(tickets) != 2 || len(unrouted) != 0 {
+		t.Fatalf("tickets = %+v unrouted %v", tickets, unrouted)
+	}
+	p, w := tickets[0], tickets[1]
+	if p.TargetID != "p-pizza" || !p.Change || len(p.Mine) != 1 || p.Mine[0].Name != "Cheese Pizza" || len(p.Removed) != 1 ||
+		p.Removed[0].Name != "Garlic Knots" || len(p.Others) != 0 || p.Kind != printer.TicketStation {
+		t.Fatalf("pizza: %+v", p)
+	}
+	if w.TargetID != "p-wings" || !w.Change || len(w.Mine) != 0 || len(w.Removed) != 1 || w.Removed[0].Name != "Hot Wings" {
+		t.Fatalf("wings: %+v", w)
+	}
+	if tk, _ := PlanWith(order.Snapshot{Source: order.SourceCounter}, []RosterEntry{front, pizza}, printer.ModeChange, DefaultRules()); len(tk) != 0 {
+		t.Fatalf("nothing changed: %+v", tk)
+	}
+}
+
+// A type change with no line changed: every station with lines of the order, the station's lines,
+// TypeOnly + WasType; a change with lines carries WasType too.
+func TestPlanTypeChange(t *testing.T) {
+	snap := order.Snapshot{Source: order.SourceCounter, Fulfillment: order.Fulfillment{Type: "delivery"}, TypeChangedFrom: "pickup",
+		Items: []order.LineItem{item("Cheese Pizza", order.RoutingMatched, "p-pizza"), item("Hot Wings", order.RoutingMatched, "p-wings")}}
+	tickets, _ := PlanWith(snap, []RosterEntry{front, pizza, wings}, printer.ModeTypeChange, DefaultRules())
+	if len(tickets) != 2 {
+		t.Fatalf("tickets = %+v", tickets)
+	}
+	for _, tk := range tickets {
+		if !tk.Change || !tk.TypeOnly || tk.WasType != "pickup" || len(tk.Mine) != 1 || len(tk.Others) != 0 || tk.Kind != printer.TicketStation {
+			t.Fatalf("ticket: %+v", tk)
+		}
+	}
+	snap.RemovedItems = []order.LineItem{item("Garlic Knots", order.RoutingMatched, "p-pizza")}
+	tickets, _ = PlanWith(snap, []RosterEntry{front, pizza, wings}, printer.ModeChange, DefaultRules())
+	if len(tickets) == 0 || tickets[0].WasType != "pickup" || tickets[0].TypeOnly {
+		t.Fatalf("change with lines: %+v", tickets)
+	}
+}
+
+// "No kitchen ticket" (main's item flag, routing none; the owner 2026-11-12):
+// no station ticket of its own, never in "Also on this order", not unrouted;
+// still on the customer receipt. An order of only such lines prints just the
+// receipt (and nothing on a kitchen resend).
+func TestPlan_NoKitchenTicket(t *testing.T) {
+	snap := order.Snapshot{Items: []order.LineItem{
+		item("Pepperoni", order.RoutingMatched, pizza.ID),
+		item("Coke", order.RoutingNone, ""),
+		item("Ranch", order.RoutingMatched, wings.ID),
+		item("Cannoli", order.RoutingNone, ""),
+	}}
+	tk, un := Plan(snap, []RosterEntry{front, pizza, wings})
+	if un != nil || len(tk) != 3 {
+		t.Fatalf("want 2 stations + receipt, no unrouted: %+v %v", tk, un)
+	}
+	if !reflect.DeepEqual(names(tk[0].Mine), []string{"Pepperoni"}) || !reflect.DeepEqual(names(tk[0].Others), []string{"Ranch"}) {
+		t.Fatalf("pizza ticket: %+v", tk[0])
+	}
+	if !reflect.DeepEqual(names(tk[1].Mine), []string{"Ranch"}) || !reflect.DeepEqual(names(tk[1].Others), []string{"Pepperoni"}) {
+		t.Fatalf("wings ticket: %+v", tk[1])
+	}
+	if tk[2].Kind != printer.TicketReceipt {
+		t.Fatalf("receipt: %+v", tk[2])
+	}
+	only := order.Snapshot{Items: []order.LineItem{item("Coke", order.RoutingNone, "")}}
+	tk, un = Plan(only, []RosterEntry{front, pizza, wings})
+	if un != nil || len(tk) != 1 || tk[0].Kind != printer.TicketReceipt {
+		t.Fatalf("only no-kitchen lines: just the receipt: %+v %v", tk, un)
+	}
+	if tk, _ := PlanFor(only, []RosterEntry{front, pizza, wings}, printer.ModeKitchen); len(tk) != 0 {
+		t.Fatalf("kitchen resend: nothing: %+v", tk)
+	}
+	// The sole printer (the receipt printer is the kitchen too): still no station ticket for them.
+	tk, _ = Plan(only, []RosterEntry{front})
+	if len(tk) != 1 || tk[0].Kind != printer.TicketReceipt {
+		t.Fatalf("sole printer: %+v", tk)
+	}
+}
+
+// §2.10aa: an online order placed on arrival prints like a SEND - the
+// stations (whatever the online ticket switches say), and for a delivery the
+// Merchant + Customer Copy on the receipt printer; a pickup no receipt.
+func TestPlanPlaced_StationsAndDeliveryCopies(t *testing.T) {
+	roster := []RosterEntry{front, pizza, wings}
+	off := Rules{Tickets: order.DefaultTicketToggles()}
+	off.Tickets.OnlineCashPickup, off.Tickets.OnlineCashDelivery, off.Tickets.OnlineCard = false, false, false
+	items := []order.LineItem{item("Pepperoni", order.RoutingMatched, pizza.ID), item("Hot Wings", order.RoutingMatched, wings.ID)}
+	deliv := order.Snapshot{Source: "online", Fulfillment: order.Fulfillment{Type: "delivery"}, Money: order.Money{Total: 2500}, Items: items}
+	if tk, _ := PlanWith(deliv, roster, printer.ModePlaced, off); !reflect.DeepEqual(kinds(tk),
+		[]string{"station:p-pizza", "station:p-wings", "delivery_copies:p-front"}) {
+		t.Fatalf("placed delivery: %v", kinds(tk))
+	}
+	pick := deliv
+	pick.Fulfillment.Type = "pickup"
+	if tk, _ := PlanWith(pick, roster, printer.ModePlaced, off); !reflect.DeepEqual(kinds(tk), []string{"station:p-pizza", "station:p-wings"}) {
+		t.Fatalf("placed pickup: %v", kinds(tk))
+	}
+}
+
+// ModeOrderReceipt (contract 2.10ab: a call-center order has no terminal
+// printer): a delivery's Merchant + Customer Copy, anything else's customer
+// receipt, on the receipt printer; never a station ticket.
+func TestPlan_OrderReceipt(t *testing.T) {
+	roster := []RosterEntry{front, pizza, wings}
+	snap := order.Snapshot{Fulfillment: order.Fulfillment{Type: "pickup"}, Items: []order.LineItem{
+		item("Pepperoni", order.RoutingMatched, pizza.ID), item("Ranch", order.RoutingMatched, wings.ID)}}
+	tk, un := PlanFor(snap, roster, printer.ModeOrderReceipt)
+	if un != nil || len(tk) != 1 || tk[0].Kind != printer.TicketReceipt || tk[0].TargetID != front.ID {
+		t.Fatalf("a pickup: the customer receipt on the receipt printer: %+v %v", tk, un)
+	}
+	snap.Fulfillment.Type = "delivery"
+	tk, _ = PlanFor(snap, roster, printer.ModeOrderReceipt)
+	if len(tk) != 1 || tk[0].Kind != printer.TicketDeliveryCopies || tk[0].TargetID != front.ID {
+		t.Fatalf("a delivery: the delivery ticket: %+v", tk)
+	}
+	legacy := order.Snapshot{Fulfillment: order.Fulfillment{Type: "pickup"}, Items: []order.LineItem{item("Pepperoni", "", "")}}
+	if tk, _ = PlanFor(legacy, roster, printer.ModeOrderReceipt); len(tk) != 1 || tk[0].Kind != printer.TicketFull {
+		t.Fatalf("an unrouted order: the full receipt: %+v", tk)
+	}
+	if tk, _ = PlanFor(snap, nil, printer.ModeOrderReceipt); len(tk) != 0 {
+		t.Fatalf("no printers: nothing: %+v", tk)
 	}
 }

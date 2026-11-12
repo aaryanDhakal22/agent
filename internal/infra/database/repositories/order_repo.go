@@ -230,11 +230,11 @@ func toStored(row models.Order) (order.StoredOrder, error) {
 		v := row.PoolSeq.Int64
 		st.PoolSeq = &v
 	}
-	// 2.1.0: POS orders, hub flags, future orders.
-	st.ExtSource, st.ExtRef = row.ExtSource, row.ExtRef
-	st.DisplayNumber = optInt(row.DisplayNumber)
-	st.Paid, st.BoardHidden, st.LocalOnly, st.Rerung = row.Paid, row.BoardHidden, row.LocalOnly, row.Rerung
+	// 2.1.0: paid (a terminal's payments), future orders.
+	st.Paid, st.Rerung = row.Paid, row.Rerung
+	st.Carried = row.Carried
 	st.AutoAccepted = row.AutoAccepted
+	st.PlacedDirect, st.RefundOwedCents = s.PlacedDirect(), s.RefundOwedCents()
 	st.CameBack = row.CameBack
 	st.RunSeq = optInt(row.RunSeq)
 	if row.NotDeliveredAction != "" {
@@ -248,35 +248,23 @@ func toStored(row models.Order) (order.StoredOrder, error) {
 		}
 		st.NotDelivered = nd
 	}
-	st.PosCheckNumber = optInt(row.PosCheckNumber)
-	st.PosDriverNote = row.PosDriverNote
 	st.ScheduledLeadMinutes = optInt(row.ScheduledLeadMinutes)
-	if row.ExtSource != "" {
+	st.CashDueCents = s.CashDue() // the one cash rule
+	if row.Source == order.SourceCounter {
+		st.TipCents = row.TipCents.Int64 // tips taken at the terminal
+	} else if row.CashDueCents.Valid {
+		// An online pickup a terminal took money on (contract 2.10i): the
+		// balance left after those payments (the snapshot stays main's).
 		st.CashDueCents, st.TipCents = row.CashDueCents.Int64, row.TipCents.Int64
-	} else {
-		st.CashDueCents = s.CashDue() // the one cash rule
 	}
-	if row.Flag != "" {
-		var f order.Flag
-		if json.Unmarshal([]byte(row.Flag), &f) == nil && f.Text != "" {
-			st.Flag = &f
-		}
-	}
-	// 00019: finishing + terminal changes.
+	// 00019: finishing.
 	if st.FinishedAt, err = optTS(row.FinishedAt); err != nil {
 		return order.StoredOrder{}, fmt.Errorf("parse finished_at for order %s: %w", row.ID, err)
 	}
 	if st.FinishedAt != nil {
 		st.FinishedBy = row.FinishedBy
 	}
-	st.PosClosed = row.PosClosed
-	if row.PosChange != "" {
-		var c order.PosChange
-		if json.Unmarshal([]byte(row.PosChange), &c) == nil && c.ID != "" {
-			st.PosChange = &c
-		}
-	}
-	// 00022: delivered with no driver, when the check was last paid.
+	// 00022: delivered with no driver, when the order was last paid.
 	if row.MarkedDelivered != "" {
 		var md order.MarkedDelivered
 		if json.Unmarshal([]byte(row.MarkedDelivered), &md) == nil {
@@ -302,6 +290,8 @@ func toStored(row models.Order) (order.StoredOrder, error) {
 		st.MadeNow = true
 		s.Fulfillment.PromisedAt = nil
 	}
+	// 00024: ADD TIP, the tip lock, CANCEL ORDER's reason.
+	st.AddedTipCents, st.TipLocked, st.CancelReason = row.AddedTipCents, row.TipLocked, row.CancelReason
 	return order.StoredOrder{Order: s, Status: st}, nil
 }
 
@@ -379,7 +369,7 @@ func attachGeo(ctx context.Context, q *models.Queries, list []order.StoredOrder)
 func markFuture(ctx context.Context, q *models.Queries, list []order.StoredOrder, now time.Time) error {
 	need := false
 	for _, so := range list {
-		need = need || (!so.IsPOS() && (so.Status.State == order.StateArrived || so.Status.State == order.StateScheduled))
+		need = need || so.Status.State == order.StateArrived || so.Status.State == order.StateScheduled
 	}
 	if !need {
 		return nil

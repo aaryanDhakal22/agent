@@ -7,6 +7,7 @@ import (
 	"errors"
 	"net/http"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -42,7 +43,7 @@ func setup(t *testing.T) (*repositories.OrderRepository, observability.Meters) {
 // seed produces n floor events (driver roster changes).
 func seed(t *testing.T, r *repositories.OrderRepository, n int) {
 	for i := 0; i < n; i++ {
-		if _, err := r.CreateDriver(context.Background(), "D"+uuid.NewString()[:4], ""); err != nil {
+		if _, err := r.CreateDriver(context.Background(), "D"+uuid.NewString()[:4]); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -210,4 +211,171 @@ func TestPoisonEventIsIsolated(t *testing.T) {
 	if len(posts) != 2 {
 		t.Fatalf("good events sent one by one: %d posts", len(posts))
 	}
+}
+
+// memFloor is an in-memory outbox (only what the sender uses).
+type memFloor struct {
+	events []order.FloorEvent
+	synced map[string]bool
+	failed map[string]int
+}
+
+func (m *memFloor) ListUnsyncedEvents(_ context.Context, limit int) ([]order.FloorEvent, error) {
+	var out []order.FloorEvent
+	for _, e := range m.events {
+		if !m.synced[e.ID] && len(out) < limit {
+			out = append(out, e)
+		}
+	}
+	return out, nil
+}
+func (m *memFloor) MarkEventSynced(_ context.Context, id string, _ time.Time) error {
+	m.synced[id] = true
+	return nil
+}
+func (m *memFloor) MarkEventsSynced(ctx context.Context, ids []string, at time.Time) error {
+	for _, id := range ids {
+		m.MarkEventSynced(ctx, id, at)
+	}
+	return nil
+}
+func (m *memFloor) OldestUnsynced(context.Context) (map[string]time.Time, error) { return nil, nil }
+func (m *memFloor) MarkEventFailed(_ context.Context, id, _ string) error        { m.failed[id]++; return nil }
+func (m *memFloor) RefuseEvent(_ context.Context, id, _ string, at time.Time) (order.Refusal, error) {
+	m.failed[id]++
+	for i := range m.events {
+		if m.events[i].ID == id {
+			m.events[i].Refusals++
+		}
+	}
+	return order.Refusal{EventID: id, Refusals: int64(m.failed[id]), FirstAt: at}, nil
+}
+func (m *memFloor) ParkEvent(context.Context, order.Refusal, string, time.Time) (bool, error) {
+	return false, nil
+}
+func (m *memFloor) SyncParkSettings(context.Context) (order.SyncPark, error) {
+	return order.SyncPark{Refusals: 1000, Hours: 1000}, nil
+}
+func (m *memFloor) SetSyncParkAlertedAt(context.Context, time.Time) error { return nil }
+func (m *memFloor) CountParkedEvents(context.Context) (int64, error)      { return 0, nil }
+func (m *memFloor) CountUnsyncedEvents(_ context.Context) (int64, error) {
+	n := int64(0)
+	for _, e := range m.events {
+		if !m.synced[e.ID] {
+			n++
+		}
+	}
+	return n, nil
+}
+
+// TestRefusedMoneyAndCustomersStayQueued: a payment or a counter customer
+// main refuses is kept (retried), like a counter order; other refusals are
+// final.
+func TestRefusedMoneyAndCustomersStayQueued(t *testing.T) {
+	_, m := setup(t)
+	answer := map[string]string{}
+	mem := &memFloor{synced: map[string]bool{}, failed: map[string]int{}}
+	add := func(typ, result string) string {
+		id := uuid.NewString()
+		raw, _ := json.Marshal(map[string]any{"event_id": id, "type": typ})
+		mem.events = append(mem.events, order.FloorEvent{ID: id, Type: typ, Payload: raw})
+		answer[id] = result
+		return id
+	}
+	payInvalid := add("order.payment", "invalid")
+	payNotFound := add("order.payment", "not_found")
+	custInvalid := add("customer.upsert", "invalid")
+	placedInvalid := add("order.placed", "invalid")
+	statusNotFound := add("order.status", "not_found")
+	tipInvalid := add("order.tip", "invalid")
+	payApplied := add("order.payment", "applied")
+	post := func(_ context.Context, body []byte) (int, []byte, error) {
+		var env envelope
+		var p struct {
+			Events []struct {
+				EventID string `json:"event_id"`
+			} `json:"events"`
+		}
+		json.Unmarshal(body, &env)
+		json.Unmarshal(env.Payload, &p)
+		var res []Result
+		for _, e := range p.Events {
+			res = append(res, Result{EventID: e.EventID, Result: answer[e.EventID]})
+		}
+		inner, _ := json.Marshal(map[string]any{"results": res})
+		out, _ := json.Marshal(envelope{Payload: inner})
+		return http.StatusOK, out, nil
+	}
+	s := New(mem, post, zerolog.Nop(), m)
+	clock := time.Now()
+	s.now = func() time.Time { return clock }
+	// Kept events wait on their own retry time; the flush itself is fine.
+	if err := s.Flush(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{payInvalid, payNotFound, custInvalid, placedInvalid} {
+		if mem.synced[id] || mem.failed[id] != 1 {
+			t.Errorf("%s: synced %v failed %d, want kept", id, mem.synced[id], mem.failed[id])
+		}
+	}
+	for _, id := range []string{statusNotFound, tipInvalid, payApplied} {
+		if !mem.synced[id] {
+			t.Errorf("%s: want synced", id)
+		}
+	}
+	// Main takes them later (a newer main looks at a refused event again).
+	for _, id := range []string{payInvalid, payNotFound, custInvalid, placedInvalid} {
+		answer[id] = "applied"
+	}
+	clock = clock.Add(time.Minute) // past their retry time
+	if err := s.Flush(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if n, _ := mem.CountUnsyncedEvents(context.Background()); n != 0 {
+		t.Fatalf("unsynced = %d", n)
+	}
+	if KeepRefused("order.payment", "stale") || KeepRefused("order.status", "invalid") || !KeepRefused("customer.upsert", "invalid") {
+		t.Fatal("KeepRefused")
+	}
+}
+
+// The soak (2026-11-12): after a dead link the queue waited out its backoff (30 s after a 45 s outage,
+// up to 5 min at the ceiling) although main was back. Reconnected ends the backoff at once.
+func TestReconnectedEndsTheBackoff(t *testing.T) {
+	r, m := setup(t)
+	var posts [][]json.RawMessage
+	var down atomic.Bool
+	down.Store(true)
+	ok := mainStub(&posts)
+	s := New(r, func(ctx context.Context, body []byte) (int, []byte, error) {
+		if down.Load() {
+			return 0, nil, errors.New("dial tcp: connection refused")
+		}
+		return ok(ctx, body)
+	}, zerolog.Nop(), m)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	seed(t, r, 1)
+	go s.Run(ctx)
+	// main down: the first flush fails; three more wakes grow the backoff past 5 s (5, 10, 20 s waits).
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) && len(posts) == 0 {
+		s.Wake()
+		time.Sleep(20 * time.Millisecond)
+	}
+	down.Store(false)
+	s.Wake() // a wake alone still waits out the backoff (≥ 5 s): hammering a down main helps nobody
+	time.Sleep(200 * time.Millisecond)
+	if n, _ := r.CountUnsyncedEvents(context.Background()); n == 0 {
+		t.Fatal("a plain wake skipped the backoff")
+	}
+	s.Reconnected()
+	deadline = time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if n, _ := r.CountUnsyncedEvents(context.Background()); n == 0 {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatal("Reconnected did not flush within 2 s")
 }

@@ -15,6 +15,10 @@ const (
 	// TicketStation is a kitchen ticket: only the station's own items in full,
 	// then the rest of the order listed small below a rule.
 	TicketStation TicketKind = "station"
+	// TicketDeliveryCopies (agent §2.10aa): an online delivery's Merchant
+	// Copy + Customer Copy in the terminal's delivery layout, one job on the
+	// receipt printer (receipt.BuildDeliveryCopies).
+	TicketDeliveryCopies TicketKind = "delivery_copies"
 )
 
 // Mode is which of an order's tickets a print job produces
@@ -49,6 +53,31 @@ const (
 	ModeFutureKitchen Mode = "future_kitchen"
 	ModeFutureReceipt Mode = "future_receipt"
 	ModeFutureBoth    Mode = "future_both"
+	// ModeAddOn (terminal §2.10d): lines added to a counter order after
+	// SEND, as station tickets under an ADD-ON banner (only the new lines,
+	// no "other printers" list, no receipt).
+	ModeAddOn Mode = "add_on"
+	// ModeChange (terminal §2.10d): a counter order changed after SEND, one
+	// change ticket per station: the snapshot's Items are the added lines
+	// (under ADD / AGREGAR), its RemovedItems the removed ones (under
+	// REMOVE / QUITAR, struck through). No "also on this order", no receipt.
+	ModeChange Mode = "change"
+	// ModeTypeChange (terminal §2.10d `type`): a counter order moved takeout
+	// <-> delivery after SEND with no line changed: one ticket per station
+	// with lines on it, its new type on top, a NOW <TYPE> / WAS <TYPE> band
+	// and the station's lines (to find the bag). No receipt.
+	ModeTypeChange Mode = "type_change"
+	// ModePlaced (agent §2.10aa, the owner 2026-11-12: online orders =
+	// called-in orders): an online / website order placed on arrival prints
+	// like a terminal SEND - the station tickets (ModeKitchen's, no ticket
+	// switches) and, for a delivery, the Merchant + Customer Copy on the
+	// receipt printer. A pickup prints no customer receipt then.
+	ModePlaced Mode = "placed"
+	// ModeOrderReceipt (agent §2.10ab): the customer's paper of an order
+	// with no terminal printer (a call-center order) - a delivery's
+	// Merchant + Customer Copy, anything else's customer receipt, on the
+	// receipt printer. No station tickets (they print as a terminal SEND's).
+	ModeOrderReceipt Mode = "order_receipt"
 )
 
 // Ticket is one thing to print for an order. A planned order is a set of
@@ -65,14 +94,40 @@ type Ticket struct {
 	Mine   []order.LineItem
 	Others []order.LineItem
 	// ReroutedFrom is set when the ticket printed on a fallback printer
-	// because TargetID was unreachable — rendered as a "REROUTED from X" banner.
+	// because TargetID was unreachable — rendered as the inverted
+	// "REROUTED FROM X" / "REDIRIGIDO DE X" bands (receipt.writeRerouted).
 	ReroutedFrom string
+	// Cols is the print width (font A characters: 48 / 42 / 32) of the
+	// printer the ticket is printing on - the stand-in's on a reroute - so
+	// it is laid out for that printer (main's printers.print_columns,
+	// contract §2.3c "Paper width"); 0 = 48.
+	Cols int
 	// Void: a VOID ticket (ModeVoid) - the items are what was voided.
 	Void bool
+	// AddOn: an ADD-ON ticket (ModeAddOn) - the items were added after SEND.
+	AddOn bool
+	// Change (ModeChange): a change ticket - Mine were added, Removed were
+	// removed (a Void ticket prints its Mine as removed the same way).
+	Change  bool
+	Removed []order.LineItem
+	// WasType (a change ticket, terminal §2.10d `type`): the order's type
+	// before it moved takeout <-> delivery: a NOW <TYPE> / WAS <TYPE> band.
+	WasType string
+	// TypeOnly (ModeTypeChange): only the type changed; Mine are the
+	// station's lines, printed plain under the band.
+	TypeOnly bool
 	// Future (ModeFutureEarly): printed early for a future order - a
 	// kitchen ticket says DO NOT MAKE and when it is due, a receipt has a
 	// FUTURE bar on top.
 	Future bool
+}
+
+// Paper is the printer a non-order slip (a driver report, the unsettled
+// list) is printing on: its print width and, on a stand-in, the name of the
+// printer it was meant for.
+type Paper struct {
+	Cols         int    // 48 / 42 / 32 font A characters; 0 = 48
+	ReroutedFrom string // non-empty on a stand-in printer
 }
 
 // TicketResult records where one ticket printed (or why it didn't).
@@ -81,7 +136,11 @@ type TicketResult struct {
 	Station      string // intended printer's name
 	PrintedOn    string // actual printer's name ("" if it didn't print)
 	ReroutedFrom string // non-empty when PrintedOn != the intended printer
-	Err          string // non-empty when it printed nowhere
+	// RerouteBy (with ReroutedFrom): "rule" when the store's routing +
+	// emergency reroute setting picked the printer, "auto" when the
+	// automatic failover did (printroute, spec §4.42).
+	RerouteBy string
+	Err       string // non-empty when it printed nowhere
 }
 
 // Outcome is the result of printing an order's tickets.
@@ -92,10 +151,4 @@ type Outcome struct {
 	// no printer assigned, or a printer this agent doesn't know) — they were
 	// sent to every station; worth an alert so the menu can be fixed.
 	Unrouted []string
-	// InsertExpected (accept only): an online cash pickup whose kitchen
-	// tickets this accept printed because the hub inserts it into the POS
-	// live (the insert_live rule, from the same rules snapshot as the
-	// print). The feed's order.accepted carries it: the hub inserts only
-	// when it is true.
-	InsertExpected bool
 }

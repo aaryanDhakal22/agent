@@ -194,6 +194,7 @@ func (s *Server) handleSetupToken(w http.ResponseWriter, r *http.Request) {
 	if s.sseController != nil {
 		s.sseController.SetKey(token)
 	}
+	s.ensureCallcenterDevice(ctx) // the store's call-center device (contract 2.10ab)
 	s.writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
@@ -572,17 +573,36 @@ func (s *Server) ResetAccess(ctx context.Context) {
 		if err := s.devices.RevokeAll(ctx, time.Now()); err != nil {
 			s.logger.Warn().Ctx(ctx).Err(err).Msg("revoking paired tablets failed")
 		}
+		s.forgetCallcenterDevice() // made again at the next link
+
 	}
 }
 
 // loginThrottle slows password guessing on the LAN: after 5 wrong passwords
 // from one address, that address waits 30 s, doubling per further miss (max
 // 15 min). A correct password clears it.
+//
+// Store-wide too (the security round, M5: the per-address count alone let a
+// guesser start over from every new address): loginStoreMisses wrong
+// passwords from any addresses in loginStoreWindow pause every address for
+// loginStoreBasePause, doubling per further miss up to loginStoreMaxPause
+// (the admin code's rule). A right password clears its own address only;
+// the store's count ages out.
 type loginThrottle struct {
-	mu     sync.Mutex
-	fails  map[string]*loginFails
-	active map[string]bool // an attempt from this IP is being checked
+	mu       sync.Mutex
+	fails    map[string]*loginFails
+	active   map[string]bool // an attempt from this IP is being checked
+	all      []time.Time     // every wrong password in the window
+	allUntil time.Time       // every address waits until then
+	allOver  int             // misses past the store's limit
 }
+
+const (
+	loginStoreMisses    = 10
+	loginStoreWindow    = 15 * time.Minute
+	loginStoreBasePause = time.Minute
+	loginStoreMaxPause  = time.Hour
+)
 
 type loginFails struct {
 	n     int
@@ -592,10 +612,14 @@ type loginFails struct {
 func (t *loginThrottle) blockedFor(ip string, now time.Time) time.Duration {
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	var wait time.Duration
 	if f := t.fails[ip]; f != nil && now.Before(f.until) {
-		return f.until.Sub(now)
+		wait = f.until.Sub(now)
 	}
-	return 0
+	if now.Before(t.allUntil) && t.allUntil.Sub(now) > wait {
+		wait = t.allUntil.Sub(now)
+	}
+	return wait
 }
 
 // begin reserves ip's single in-flight attempt; the caller must call the
@@ -641,6 +665,24 @@ func (t *loginThrottle) fail(ip string, now time.Time) {
 		}
 		f.until = now.Add(d)
 	}
+	// The store's count, whatever the address.
+	keep := t.all[:0:0]
+	for _, at := range t.all {
+		if now.Sub(at) < loginStoreWindow {
+			keep = append(keep, at)
+		}
+	}
+	t.all = append(keep, now)
+	if len(t.all) < loginStoreMisses {
+		t.allOver = 0
+		return
+	}
+	d := loginStoreBasePause << min(t.allOver, 6)
+	if d > loginStoreMaxPause {
+		d = loginStoreMaxPause
+	}
+	t.allOver++
+	t.allUntil = now.Add(d)
 }
 
 func (t *loginThrottle) ok(ip string) {

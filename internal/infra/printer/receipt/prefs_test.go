@@ -75,10 +75,10 @@ func TestBuild_DefaultsMatchTheDefaultBuilders(t *testing.T) {
 func TestBuild_KitchenItemSize(t *testing.T) {
 	snap := previewDelivery()
 	for size, want := range map[string]string{
-		order.SizeNormal: cmdBoldOn + cmdBaseSz + "1 Pepperoni Pizza (Large)\n",
-		order.SizeLarge:  cmdBoldOn + cmdDoubleSz + "1 Pepperoni Pizza\n  (Large)\n",
+		order.SizeNormal: cmdBoldOn + cmdBaseSz + "1  PEPPERONI PIZZA (LARGE)\n",
+		order.SizeLarge:  cmdBoldOn + cmdDoubleSz + "1  PEPPERONI PIZZA\n   (LARGE)\n",
 		// 16 characters a line at quad size.
-		order.SizeXLarge: cmdBoldOn + cmdQuadSz + "1 Pepperoni\n  Pizza (Large)\n",
+		order.SizeXLarge: cmdBoldOn + cmdQuadSz + "1  PEPPERONI\n   PIZZA (LARGE)\n",
 	} {
 		got := string(Build(snap, previewStore(), stationTicket(), prefsWith(func(p *order.ReceiptPrefs) { p.KitchenItemSize = size })))
 		if !strings.Contains(got, want) {
@@ -87,13 +87,14 @@ func TestBuild_KitchenItemSize(t *testing.T) {
 	}
 }
 
+// The owner's 2026-11-11 design: the kitchen number always prints at the
+// largest size that fits (4 x 4), whatever kitchen_number_size says.
 func TestBuild_KitchenNumberSize(t *testing.T) {
 	snap := previewDelivery()
-	for size, cmd := range map[string]string{order.SizeLarge: cmdDoubleSz, order.SizeXLarge: cmdQuadSz, order.SizeHuge: cmdHugeSz} {
+	for _, size := range []string{order.SizeLarge, order.SizeXLarge, order.SizeHuge} {
 		got := Build(snap, previewStore(), stationTicket(), prefsWith(func(p *order.ReceiptPrefs) { p.KitchenNumberSize = size }))
-		// 2.4.0: the order type prints on top, then the number at its size.
-		if !bytes.Contains(got, []byte(cmdBoldOn+cmdDoubleSz+"DELIVERY\n"+cmd+"#1123\n")) {
-			t.Errorf("%s: kitchen number should print with %q: %q", size, cmd, got)
+		if !bytes.Contains(got, []byte("\n\n"+cmdBoldOn+cmdHugeSz+"1123\n")) {
+			t.Errorf("%s: kitchen number should print with %q: %q", size, cmdHugeSz, got)
 		}
 	}
 	// The number size is a kitchen-ticket setting: the receipt keeps quad.
@@ -129,7 +130,7 @@ func TestBuild_FooterFallbackChain(t *testing.T) {
 			}
 			continue
 		}
-		if !strings.Contains(end, cmdBoldOn+cmdQuadSz+cmdCenter+c.want+cmdBoldOff) {
+		if !strings.Contains(end, cmdBoldOn+cmdQuadSz+cmdCenter+wrapJoin(c.want, defaultLayout.xl(), "")+cmdBoldOff) {
 			t.Errorf("%s: footer %q missing: %q", c.name, c.want, end)
 		}
 	}
@@ -188,8 +189,8 @@ func TestBuild_NoExtraPaper(t *testing.T) {
 	if n := bytes.Count(got, []byte(cmdCut)); n != 1 {
 		t.Fatalf("one cut without extra paper, got %d", n)
 	}
-	if !bytes.HasSuffix(got, []byte("ONLINE ORDER"+cmdBoldOff+cmdBaseSz+"\n\n\n"+cmdCut)) {
-		t.Errorf("footer, 3 line feeds, one cut: %q", got[len(got)-40:])
+	if !bytes.HasSuffix(got, []byte("ONLINE ORDER"+cmdBoldOff+cmdBaseSz+poweredByFooter(defaultLayout)+"\n\n\n"+cmdCut)) {
+		t.Errorf("footer, powered by, 3 line feeds, one cut: %q", got[len(got)-40:])
 	}
 	def := Build(previewDelivery(), previewStore(), receiptTicket(), order.DefaultReceiptPrefs())
 	if !bytes.HasSuffix(def, []byte(cmdCut+"\n\n\n\n\n"+cmdCut)) {
@@ -200,14 +201,14 @@ func TestBuild_NoExtraPaper(t *testing.T) {
 func TestBuildSample(t *testing.T) {
 	at := time.Date(2026, 10, 21, 22, 0, 0, 0, time.UTC)
 	p := prefsWith(func(p *order.ReceiptPrefs) { p.Copies = 2; p.FooterText = strPtr("THANK YOU") })
-	got := string(BuildSample(previewStore(), p, at))
+	got := string(BuildSample(previewStore(), p, at, 0))
 	if n := strings.Count(got, "THANK YOU"); n != 2 {
 		t.Errorf("footer on both receipt copies, got %d", n)
 	}
 	if n := strings.Count(got, " CUSTOMER, SAMPLE "); n != 2 {
 		t.Errorf("two receipt copies, got %d", n)
 	}
-	for _, want := range []string{"#1234\n", "CUSTOMER, SAMPLE\n", "  - Note: extra ranch please", "ITEMS TO OTHER PRINTERS", "SAMPLE - not a real order", "PAID - CARD"} {
+	for _, want := range []string{"#1234\n", cmdHugeSz + "1234\n", "CUSTOMER, SAMPLE\n", "   - extra ranch please\n", "Also on this order:", "SAMPLE - not a real order", "PAID - CARD"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("sample missing %q", want)
 		}

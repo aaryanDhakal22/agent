@@ -36,24 +36,3 @@ func TestUndoReady(t *testing.T) {
 		t.Fatalf("unknown order: %v", err)
 	}
 }
-
-// A counter check the POS already closed is finished the moment it is READY
-// (ticket 232, 2026-10-27): UNDO brings it back to Kitchen, not finished.
-func TestUndoReadyOfAClosedPOSCheck(t *testing.T) {
-	ctx := context.Background()
-	svc, _, _, _, _ := newIntegService(t)
-	e := extOrder("dine_in", "a")
-	e.Paid, e.CashDueCents = true, 0
-	res := mustUpsert(t, svc, "232", e)
-	e.Hash, e.Closed = "b", true
-	mustUpsert(t, svc, "232", e)
-	id := res.OrderID
-	so, err := svc.Ready(ctx, id)
-	if err != nil || so.Status.FinishedAt == nil {
-		t.Fatalf("ready finishes a closed check: %v %+v", err, so.Status)
-	}
-	so, err = svc.UndoReady(ctx, id)
-	if err != nil || so.Status.State != order.StateAccepted || so.Status.FinishedAt != nil || so.Status.FinishedBy != "" {
-		t.Fatalf("undo: %v %+v", err, so.Status)
-	}
-}

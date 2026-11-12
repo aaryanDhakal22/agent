@@ -38,7 +38,7 @@ func (s *Service) waitingFuture(ctx context.Context, id string) (*order.StoredOr
 	if so.Status.State != order.StateArrived && so.Status.State != order.StateScheduled {
 		return nil, uid, fmt.Errorf("%w (state %s)", order.ErrInvalidState, so.Status.State)
 	}
-	if !so.Status.Future || so.IsPOS() {
+	if !so.Status.Future {
 		return nil, uid, ErrNotFuture
 	}
 	return so, uid, nil

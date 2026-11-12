@@ -54,7 +54,7 @@ tasks:
   test:
     desc: "Run the agent/ pytest suite (dev main must be up), 3 xdist workers. Spawns its own throwaway agents (temp DB, spare port) — the roster agents are untouched."
     cmds:
-      - DOPPLER_TOKEN=$(cat {{.DOPPLER_TOKEN_FILE}}) doppler run -- uv run --directory tests pytest -v -n 3 --dist loadgroup
+      - DOPPLER_TOKEN=$(cat {{.DOPPLER_TOKEN_FILE}}) doppler run -- uv run --directory tests pytest -v -n ${AGENT_PYTEST_WORKERS:-3} --dist loadgroup
 
   test-quick:
     desc: "agent/ pytest minus the slow tests (e.g. the ~30s revoke-detection wait)"

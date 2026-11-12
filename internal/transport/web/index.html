@@ -6,6 +6,8 @@
   <meta name="color-scheme" content="light dark" />
   <title>Quicc POS — Agent</title>
   <link rel="stylesheet" href="/static/app.css" />
+  <link rel="icon" href="/static/favicon.ico" sizes="48x48" />
+  <link rel="icon" href="/static/quiccpos-icon.svg" type="image/svg+xml" />
   <!-- app.js registers the Alpine component on alpine:init, so it loads first;
        both are deferred and run in order. Icons: Lucide (ISC), see static/LICENSES.md. -->
   <script defer src="/static/app.js"></script>
@@ -18,7 +20,7 @@
 <!-- Loading (visible until the first /api/session answer)                  -->
 <!-- ===================================================================== -->
 <div class="auth" x-show="state === 'loading'">
-  <div class="auth-mid"><div class="auth-head"><div class="brand-tile lg" aria-hidden="true">q</div><p>Loading…</p></div></div>
+  <div class="auth-mid"><div class="auth-head"><img class="brand-tile lg" src="/static/quiccpos-icon.svg" alt="" aria-hidden="true" /><p>Loading…</p></div></div>
 </div>
 
 <!-- ===================================================================== -->
@@ -33,7 +35,7 @@
   <main class="auth-mid">
     <div class="auth-col">
       <div class="auth-head">
-        <div class="brand-tile lg" aria-hidden="true">q</div>
+        <img class="brand-tile lg" src="/static/quiccpos-icon.svg" alt="" aria-hidden="true" />
         <div x-show="state === 'unconfigured'">
           <h1>Set up this Pi</h1>
           <p x-show="session.link_available !== false">Sign in with the store manager login. The Pi links itself to your store and brings back the open batch, drivers and settings.</p>
@@ -103,7 +105,7 @@
   <header class="topbar">
     <button type="button" class="btn btn-g icon-btn" @click="navOpen = true" aria-label="Open menu" :aria-expanded="navOpen" aria-controls="side" x-html="icon('menu', 20)"></button>
     <div class="brand">
-      <div class="brand-tile" aria-hidden="true">q</div>
+      <img class="brand-tile" src="/static/quiccpos-icon.svg" alt="" aria-hidden="true" />
       <div style="min-width:0"><div class="brand-name" x-text="storeName"></div>
         <div class="conn" :class="connTone" :title="connTitle"><span class="dot"></span><span x-text="connLabel"></span></div></div>
     </div>
@@ -114,7 +116,7 @@
 
   <aside id="side" class="side" :class="{ open: navOpen }" aria-label="Main menu">
     <div class="brand">
-      <div class="brand-tile" aria-hidden="true">q</div>
+      <img class="brand-tile" src="/static/quiccpos-icon.svg" alt="" aria-hidden="true" />
       <div style="min-width:0;flex:1">
         <div class="brand-name" x-text="storeName"></div>
         <div class="conn" :class="connTone" :title="connTitle"><span class="dot"></span><span x-text="connLabel"></span><span class="sr-only" x-text="connTitle"></span></div>
@@ -204,6 +206,33 @@
           </div>
         </section>
       </div>
+
+      <section class="card card-pad stack" style="gap:10px" x-show="parked && (parked.count > 0 || parkFormOpen)" x-cloak aria-labelledby="h-parked">
+        <div class="hrow" style="justify-content:space-between">
+          <span class="eyebrow" id="h-parked">Not synced to main</span>
+          <div class="hrow">
+            <button type="button" class="btn btn-sm" @click="parkFormOpen = !parkFormOpen" x-text="parkFormOpen ? 'Close' : 'When to park'"></button>
+            <button type="button" class="btn btn-sm btn-p" :disabled="!!parkBusy || !(parked && parked.count)" @click="retryParked('')" x-text="parkBusy === 'all' ? 'Sending…' : 'Retry all'"></button>
+          </div>
+        </div>
+        <p class="help" x-text="parked ? ('Main refused ' + parked.count + ' change' + (parked.count === 1 ? '' : 's') + ' for good, so they were parked and everything else kept syncing.' + (parked.held ? ' ' + parked.held + ' later change' + (parked.held === 1 ? '' : 's') + ' about the same order wait behind them.' : '') + ' Retry once main is fixed or updated.') : ''"></p>
+        <template x-for="d in (parked ? parked.parked : [])" :key="d.event_id">
+          <div class="attn bad">
+            <div class="grow" style="min-width:0">
+              <b x-text="parkedWhat(d)"></b>
+              <span class="small muted" x-text="' · main said ' + d.result + ', ' + d.refusals + ' time' + (d.refusals === 1 ? '' : 's') + ' · parked ' + clock(d.parked_at)"></span>
+            </div>
+            <button type="button" class="btn btn-sm" :disabled="!!parkBusy" @click="retryParked(d.event_id)" x-text="parkBusy === d.event_id ? 'Sending…' : 'Retry'"></button>
+          </div>
+        </template>
+        <form class="hrow" style="flex-wrap:wrap;gap:10px" x-show="parkFormOpen" @submit.prevent="saveParkSettings()">
+          <label class="lbl" for="park-ref">Park after (refusals)</label>
+          <input class="field field-sm" id="park-ref" style="width:90px" inputmode="numeric" x-model="parkForm.refusals" />
+          <label class="lbl" for="park-hrs">or after (hours)</label>
+          <input class="field field-sm" id="park-hrs" style="width:90px" inputmode="numeric" x-model="parkForm.hours" />
+          <button type="submit" class="btn btn-sm btn-p" :disabled="!!parkBusy">Save</button>
+        </form>
+      </section>
 
       <section class="card" style="overflow:hidden" aria-labelledby="h-drvtbl">
         <div class="hrow" style="padding:14px 18px;justify-content:space-between">
@@ -315,8 +344,7 @@
         <div class="tickets">
           <template x-for="so in kitchen" :key="so.order.id">
             <article class="tk" :style="toneStyle(so) + ';' + barStyle(so)" :aria-label="'Ticket ' + displayNumber(so) + ', ' + custName(so.order)">
-              <div class="hrow" style="justify-content:space-between"><span class="num" x-text="displayNumber(so)"></span><span class="hrow" style="gap:6px"><span class="tag pos" x-show="isPOS(so)">POS</span><span class="tag paid" x-show="so.status.paid">PAID</span><span class="tag" :class="{ delivery: ftype(so.order) === 'delivery' }" x-text="ftype(so.order).toUpperCase()"></span></span></div>
-              <div class="flagline" :class="so.status.flag ? so.status.flag.severity : ''" x-show="so.status.flag || so.status.pos_driver_note" x-text="(so.status.flag ? so.status.flag.text : '') + (so.status.flag && so.status.pos_driver_note ? ' · ' : '') + (so.status.pos_driver_note || '')"></div>
+              <div class="hrow" style="justify-content:space-between"><span class="num" x-text="displayNumber(so)"></span><span class="hrow" style="gap:6px"><span class="tag paid" x-show="so.status.paid">PAID</span><span class="tag" :class="{ delivery: ftype(so.order) === 'delivery' }" x-text="ftype(so.order).toUpperCase()"></span></span></div>
               <div class="hrow" style="align-items:baseline"><span class="age" x-text="sinceText(so)"></span><span class="due" :class="{ late: isLate(so) }" x-text="dueText(so)"></span></div>
               <div class="who" x-text="custName(so.order)"></div>
               <div class="lines">
@@ -360,7 +388,6 @@
             <template x-for="so in unassignedDeliveries" :key="so.order.id">
               <div class="dlv" role="listitem" :class="{ cooking: so.status.state === 'accepted' }">
                 <span class="num mono" x-text="displayNumber(so)"></span>
-                <span class="tag pos" x-show="isPOS(so)">POS</span>
                 <span class="tag" x-show="!!so.status.came_back" title="Came back with its driver. Release it on the tablet to send it again.">CAME BACK</span>
                 <span class="grow" style="min-width:0"><span style="font-weight:600;display:block" x-text="custName(so.order)"></span><span class="small muted" style="display:block;overflow-wrap:anywhere" x-show="addrLine(so.order)" x-text="addrLine(so.order)"></span></span>
                 <span class="small muted" x-show="so.status.state === 'accepted'">cooking</span>
@@ -423,7 +450,7 @@
     <section class="stack" x-show="page === 'drivers'" aria-labelledby="h-drivers">
       <div class="page-head"><div>
         <h1 id="h-drivers">Drivers</h1>
-        <p>Clock a driver in to put them in the queue — the first available driver is next up; a driver who returns goes to the back. <b>Driver #</b> is the driver's login number on the store's POS (how POS checks find the driver). <b>Phone</b> is the driver's phone in Pushover: Send Out pushes them the route. Everyone is clocked out daily at <b x-text="wallTime(reset.time || '10:00')"></b> (<button type="button" class="link-btn" @click="goSettings('clockout')">change</button>).</p>
+        <p>Clock a driver in to put them in the queue — the first available driver is next up; a driver who returns goes to the back. <b>Phone</b> is the driver's phone in Pushover: Send Out pushes them the route. Everyone is clocked out daily at <b x-text="wallTime(reset.time || '10:00')"></b> (<button type="button" class="link-btn" @click="goSettings('clockout')">change</button>).</p>
       </div></div>
       <section class="card card-pad">
         <div class="list">
@@ -434,9 +461,6 @@
                 <label class="sr-only" :for="'dn-' + d.id" x-text="'Name of driver ' + (i + 1)"></label>
                 <input class="field field-sm name-input" :id="'dn-' + d.id" x-model="names[d.id]" maxlength="40" @keydown.enter.prevent="renameDriver(d)" />
                 <button type="button" class="btn btn-sm" x-show="(names[d.id] || '').trim() && (names[d.id] || '').trim() !== d.name" @click="renameDriver(d)">Save</button>
-                <label class="small muted" :for="'dnum-' + d.id">Driver #</label>
-                <input class="field field-sm mono" style="width:5.5em" :id="'dnum-' + d.id" x-model="nums[d.id]" maxlength="12" inputmode="numeric" placeholder="—" :title="'POS login number of ' + d.name" @keydown.enter.prevent="saveDriverNum(d)" />
-                <button type="button" class="btn btn-sm" x-show="(nums[d.id] || '').trim() !== (d.pos_number || '')" @click="saveDriverNum(d)">Save #</button>
                 <label class="small muted" :for="'ddev-' + d.id">Phone</label>
                 <input class="field field-sm mono" style="width:8em" :id="'ddev-' + d.id" x-model="devs[d.id]" maxlength="25" placeholder="—" :title="'Pushover device name of ' + d.name" @keydown.enter.prevent="saveDriverDevice(d)" />
                 <button type="button" class="btn btn-sm" x-show="(devs[d.id] || '').trim() !== (d.pushover_device || '')" @click="saveDriverDevice(d)">Save phone</button>
@@ -458,8 +482,6 @@
         <form class="hrow" style="margin-top:14px" @submit.prevent="addDriver()">
           <label class="sr-only" for="new-driver">New driver name</label>
           <input id="new-driver" class="field" style="flex:1 1 200px;width:auto" placeholder="Driver name" maxlength="40" x-model="newDriver" />
-          <label class="sr-only" for="new-driver-num">Driver number (their POS login #)</label>
-          <input id="new-driver-num" class="field mono" style="flex:0 0 8em;width:auto" placeholder="Driver #" maxlength="12" inputmode="numeric" x-model="newDriverNum" />
           <label class="sr-only" for="new-driver-dev">Phone (Pushover device name)</label>
           <input id="new-driver-dev" class="field mono" style="flex:0 0 10em;width:auto" placeholder="Phone (Pushover)" maxlength="25" x-model="newDriverDev" />
           <button type="submit" class="btn btn-p btn-lg">Add driver</button>
@@ -537,15 +559,29 @@
                   <span class="badge" :class="p.is_receipt ? 'b-brand' : 'b-mute'" x-text="p.is_receipt ? 'Receipt printer' : 'Kitchen station'"></span>
                   <span class="badge" :class="printerTone(p)"><span class="dot"></span><span x-text="printerState(p)"></span></span>
                 </div>
+                <div class="small muted"><span title="Every slip on this printer is laid out for this width. Run the width test if long lines wrap." x-text="'Paper: ' + widthLabel(p.print_columns)"></span></div>
                 <div class="small muted">
                   <span class="mono" x-text="p.ip || '—'"></span><span class="mono" x-show="p.mac" x-text="' · ' + p.mac" title="MAC address (hardware) — the Pi finds the printer by it if its address changes"></span><span x-show="p.last_checked" x-text="' · checked ' + ago(p.last_checked)"></span><span x-show="p.up === false && p.down_since" x-text="' · down since ' + clock(p.down_since)"></span><span x-show="p.up === true && p.up_since" x-text="' · up since ' + clock(p.up_since)"></span>
                 </div>
                 <div class="err-text small" x-show="p.up === false && p.last_error" x-text="p.last_error"></div>
                 <div role="status" :class="resultFor(p) && resultFor(p).ok ? 'ok-text' : 'err-text'" x-show="resultFor(p)" x-text="resultFor(p) ? resultFor(p).text : ''"></div>
+                <div class="stack" style="gap:6px;margin-top:8px" x-show="widthFor === p.id" :aria-label="'Width test answer for ' + p.name">
+                  <p class="help"><b>Look at the slip that just printed.</b> Which letter (or number) is LAST on the first line of the ruler? Tap it.</p>
+                  <div class="hrow" style="flex-wrap:wrap;gap:4px">
+                    <template x-for="c in rulerSymbols" :key="c">
+                      <button type="button" class="btn btn-sm mono" style="min-width:34px" :disabled="widthBusy" @click="saveWidth(p, c)" x-text="c"></button>
+                    </template>
+                  </div>
+                  <div class="hrow" style="gap:6px">
+                    <button type="button" class="btn btn-sm" :disabled="widthBusy" @click="saveWidth(p, '9')">The line didn't wrap</button>
+                    <button type="button" class="btn btn-sm" :disabled="widthBusy" @click="widthFor = ''">Cancel</button>
+                  </div>
+                </div>
               </div>
               <div class="hrow">
                 <button type="button" class="btn" :disabled="!!printerBusy || !p.id" @click="printerAction('test', p)" x-text="printerBusy === 'test' + p.id ? 'Printing…' : 'Test print'"></button>
                 <button type="button" class="btn" :disabled="!!printerBusy || !p.id" @click="printerAction('sample', p)" x-text="printerBusy === 'sample' + p.id ? 'Printing…' : 'Print sample'"></button>
+                <button type="button" class="btn" :disabled="!!printerBusy || !p.id" @click="widthTest(p)" title="Prints a letter ruler: the last letter on its first line tells the Pi how wide this printer prints" x-text="printerBusy === 'width' + p.id ? 'Printing…' : 'Width test'"></button>
               </div>
             </div>
           </template>
@@ -595,7 +631,7 @@
           </div>
           <form @submit.prevent="saveTimes()" aria-labelledby="h-s-times">
             <h3 id="h-s-times" style="margin-top:18px">Default times</h3>
-            <p class="help">What the tablet offers first when an order is accepted (X, X+5, X+10), and the prep given to POS orders from when the cashier sent them.</p>
+            <p class="help">What the tablet offers first when an order is accepted (X, X+5, X+10), and the store's default pickup / delivery times.</p>
             <div class="srow" style="margin-top:10px">
               <div class="lblcol"><label class="lbl" for="set-pickup">Pickup</label><p class="help">Pickup and counter orders (1-240).</p></div>
               <div class="hrow"><input id="set-pickup" class="field field-sm mono" style="width:6em" type="number" min="1" max="240" x-model="timesForm.pickup" /><span class="muted">min</span></div>
@@ -650,14 +686,13 @@
         </form>
         <section class="card sbody" x-show="settingsTab === 'kitchen'" aria-labelledby="h-s-tswitch">
           <h2 id="h-s-tswitch">Which orders print kitchen tickets</h2>
-          <p class="help">Off: only the customer receipt prints for that kind of order (POS orders never print a receipt by themselves). Saved on tap; Reprint and Resend always work.</p>
-          <template x-for="f in (hasPOS ? ticketsPOS : []).concat(ticketsOnline)" :key="f[0]">
+          <p class="help">Off: only the customer receipt prints for that kind of order Saved on tap; Reprint and Resend always work.</p>
+          <template x-for="f in ticketsOnline" :key="f[0]">
             <div class="srow">
               <div class="lblcol"><div class="lbl" :id="'tk-' + f[0]" x-text="f[1]"></div><p class="help" x-text="f[2]"></p></div>
               <button type="button" class="sw" :class="{ on: settingOn('tickets', f[0]) }" role="switch" :aria-checked="settingOn('tickets', f[0])" :aria-labelledby="'tk-' + f[0]" :disabled="!settingsAll || !!busy['set' + f[0]]" @click="toggleSetting('tickets', f[0])"><span></span></button>
             </div>
           </template>
-          <p class="help" style="margin-top:8px" x-show="ticketsOnline[0] && settingOn('tickets', 'online_cash_pickup') && !(integ && integ.insert_live)">Online cash pickups print only the receipt right now: the store hub isn't keying them into the POS live.</p>
         </section>
 
         <!-- Receipts -->
@@ -705,6 +740,10 @@
               <div class="srow">
                 <div class="lblcol"><div class="lbl" id="l-paper">Extra paper at the end</div><p class="help">Feed past the footer so the tear is clean.</p></div>
                 <button type="button" class="sw" role="switch" :class="{ on: rcptForm.extra_paper }" :aria-checked="!!rcptForm.extra_paper" aria-labelledby="l-paper" @click="rcptForm.extra_paper = !rcptForm.extra_paper"><span></span></button>
+              </div>
+              <div class="srow">
+                <div class="lblcol"><div class="lbl" id="l-strike">Strike removed items through</div><p class="help">On a kitchen change ticket, a removed item prints crossed out as a small picture. Turn off for a printer that can't print pictures: it prints (VOID) in reverse instead.</p></div>
+                <button type="button" class="sw" role="switch" :class="{ on: rcptForm.strike_images !== false }" :aria-checked="rcptForm.strike_images !== false" aria-labelledby="l-strike" @click="rcptForm.strike_images = rcptForm.strike_images === false"><span></span></button>
               </div>
               <div class="sfoot">
                 <button type="button" class="btn btn-p" :disabled="!rcptDirty || !!rcptBusy || !!footerError" @click="saveReceipt()" x-text="rcptBusy === 'save' ? 'Saving…' : 'Save'"></button>
@@ -755,6 +794,52 @@
           </template>
         </section>
 
+        <!-- Routing & emergency reroute (contract 2.3c) -->
+        <form class="card sbody" x-show="settingsTab === 'routing'" @submit.prevent="saveRouting()" aria-labelledby="h-s-route">
+          <h2 id="h-s-route">Routing &amp; emergency reroute</h2>
+          <p class="help">Where a ticket goes when its printer can't print. A rerouted ticket says so on top, white on black: <b class="mono">REROUTED FROM PIZZA</b> / <b class="mono">REDIRIGIDO DE PIZZA</b>. When every stand-in is down too, the automatic order takes over.</p>
+          <p class="err-text" role="alert" x-show="routeErr" x-text="routeErr"></p>
+          <template x-if="routeForm">
+            <div>
+              <div class="srow" style="margin-top:10px">
+                <div class="lblcol"><div class="lbl" id="l-rmode">When a printer can't print</div><p class="help" x-text="(routeModes.find(m => m[0] === routeForm.mode) || routeModes[0])[2]"></p></div>
+                <div class="seg" role="radiogroup" aria-labelledby="l-rmode"><template x-for="m in routeModes" :key="m[0]"><button type="button" role="radio" :aria-checked="routeForm.mode === m[0]" :class="{ on: routeForm.mode === m[0] }" @click="routeForm.mode = m[0]" x-text="m[1]"></button></template></div>
+              </div>
+              <div class="srow" x-show="routeForm.mode === 'one'">
+                <div class="lblcol"><label class="lbl" for="route-one">Emergency printer</label><p class="help">Every other printer's tickets go here when it can't print (best on Ethernet).</p></div>
+                <select id="route-one" class="field field-sm" style="width:auto;max-width:100%" x-model="routeForm.emergency_printer_id">
+                  <option value="">Choose…</option>
+                  <template x-for="p in routePrinters" :key="p.id"><option :value="p.id" x-text="p.name + ' (' + routeState(p.status).toLowerCase() + ')'" :selected="p.id === routeForm.emergency_printer_id"></option></template>
+                </select>
+              </div>
+              <template x-for="p in routePrinters" :key="p.id">
+                <div class="srow">
+                  <div class="lblcol">
+                    <div class="lbl"><span x-text="p.name"></span> <span class="badge" :class="routeTone(p.status)"><span class="dot"></span><span x-text="routeState(p.status)"></span></span> <span class="badge b-brand" x-show="p.is_receipt">Receipt printer</span></div>
+                    <p class="help"><span class="muted">If it can't print, now:</span> <template x-for="(f, i) in p.fallbacks" :key="f.id"><span><span x-show="i > 0"> → </span><span :style="f.by === 'rule' ? 'font-weight:700' : ''" :title="f.by === 'rule' ? 'Your setting' : 'Automatic'" x-text="f.name"></span><span class="muted" x-show="f.status === 'down'"> (down)</span></span></template><span class="muted" x-show="!p.fallbacks.length">nowhere else (the only printer)</span></p>
+                  </div>
+                  <div class="hrow" style="flex-wrap:wrap;gap:6px" x-show="routeForm.mode === 'per_printer'">
+                    <template x-for="(id, i) in routeList(p.id)" :key="p.id + ':' + i">
+                      <select class="field field-sm" style="width:auto" :aria-label="'Stand-in ' + (i + 1) + ' for ' + p.name" @change="setRouteTarget(p.id, i, $event.target.value)">
+                        <option value="">(remove)</option>
+                        <template x-for="c in routeChoices(p.id, id)" :key="c.id"><option :value="c.id" :selected="c.id === id" x-text="(i + 1) + '. ' + c.name"></option></template>
+                      </select>
+                    </template>
+                    <select class="field field-sm" style="width:auto" :aria-label="'Add a stand-in for ' + p.name" x-show="routeChoices(p.id, '').length" @change="addRouteTarget(p.id, $event.target.value); $event.target.value = ''">
+                      <option value="" selected x-text="routeList(p.id).length ? 'Then…' : 'Reroute to…'"></option>
+                      <template x-for="c in routeChoices(p.id, '')" :key="c.id"><option :value="c.id" x-text="c.name"></option></template>
+                    </select>
+                  </div>
+                </div>
+              </template>
+              <p class="help" x-show="!routePrinters.length">No printers yet: add them in the Store pages on main.</p>
+              <p class="help" style="margin-top:8px">The "now" lines show the saved setting with each printer's live status: printers the health check saw down are tried last.</p>
+              <div class="sfoot"><button type="submit" class="btn btn-p" :disabled="!routeDirty || routeBusy">Save</button></div>
+              <p class="help" style="margin-top:8px" x-show="routeDirty">Unsaved changes.</p>
+            </div>
+          </template>
+        </form>
+
         <!-- Daily clock-out -->
         <form class="card sbody" x-show="settingsTab === 'clockout'" @submit.prevent="saveReset()" aria-labelledby="h-s-reset">
           <h2 id="h-s-reset">Daily clock-out</h2>
@@ -769,11 +854,11 @@
 
         <!-- Tablets -->
         <section class="card sbody" x-show="settingsTab === 'tablets'" aria-labelledby="h-s-tab">
-          <h2 id="h-s-tab">Counter tablets</h2>
-          <p class="help">Pair the Quibase app: tap <b>Pair tablet</b>, then type this Pi's address and the 6-digit code into the app. A code works once, for 5 minutes.</p>
+          <h2 id="h-s-tab">Tablets and terminals</h2>
+          <p class="help">Pair a Quibase tablet or a counter terminal: tap <b>Pair a tablet or terminal</b>, then type the 6-digit code into the tablet or terminal. A code works once, for 5 minutes.</p>
           <div class="pi-addr"><span class="muted">This Pi's address</span> <b class="mono" x-text="piAddress"></b><span class="muted" x-show="session.hostname" x-text="' · or ' + session.hostname"></span></div>
           <div class="srow" style="margin-top:10px">
-            <button type="button" class="btn btn-p btn-lg" @click="pairCode()">Pair tablet</button>
+            <button type="button" class="btn btn-p btn-lg" @click="pairCode()">Pair a tablet or terminal</button>
             <div class="hrow" x-show="pair && pairLeft > 0" aria-live="polite">
               <span class="paircode" x-text="pair ? pair.code : ''"></span>
               <span class="muted" x-text="pair ? 'valid for ' + dur(pairLeft) + ' · until ' + clock(pair.expires_at) : ''"></span>
@@ -781,17 +866,41 @@
             <span class="muted" x-show="pair && pairLeft <= 0">That code expired — make a new one.</span>
           </div>
           <div class="srow top" style="flex-direction:column;align-items:stretch;gap:0">
-            <div class="lbl">Paired tablets</div>
+            <div class="lbl">Paired devices</div>
             <div class="list">
               <template x-for="d in devices" :key="d.id">
                 <div class="li">
                   <div class="main"><b x-text="d.name"></b>
-                    <div class="small muted"><span class="mono" x-text="d.key_prefix + '…'"></span> · <span x-text="d.revoked_at ? 'revoked ' + dateTime(d.revoked_at) : (d.last_seen_at ? 'seen ' + ago(d.last_seen_at) : 'never used')"></span><template x-if="d.app_version"><span> · <span class="mono" x-text="'Quibase ' + d.app_version"></span></span></template></div>
+                    <div class="small muted"><span x-text="({tablet: 'Tablet', integration: 'Store hub', terminal: 'POS terminal', phone: 'Cashier phone', callcenter: 'Call center (through the server, no key)'})[d.kind] || d.kind"></span> · <span class="mono" x-show="d.kind !== 'callcenter'" x-text="d.key_prefix + '… · '"></span><span x-text="d.revoked_at ? 'revoked ' + dateTime(d.revoked_at) : (d.last_seen_at ? 'seen ' + ago(d.last_seen_at) : 'never used')"></span><template x-if="d.app_version"><span> · <span class="mono" x-text="(d.kind === 'terminal' ? 'Centurion ' : 'Quibase ') + d.app_version"></span></span></template><template x-if="d.setup"><span> · <span :style="d.setup.outcome === 'ok' ? '' : 'color:var(--warn)'" x-text="setupLine(d.setup)"></span></span></template></div>
                   </div>
-                  <button type="button" class="btn" x-show="!d.revoked_at" @click="revokeDevice(d)">Revoke</button>
+                  <button type="button" class="btn" x-show="!d.revoked_at && d.kind !== 'callcenter'" @click="revokeDevice(d)">Revoke</button>
                 </div>
               </template>
-              <p class="muted" x-show="devicesLoaded && !devices.length">No tablets paired yet.</p>
+              <p class="muted" x-show="devicesLoaded && !devices.length">No tablets or terminals paired yet.</p>
+            </div>
+          </div>
+          <div class="srow top" style="flex-direction:column;align-items:stretch">
+            <div class="lblcol"><div class="lbl">Admin pairing code for counter terminals</div>
+              <p class="help">A new counter terminal can also pair with this code (its setup's "Admin code"), but only while pairing is open: tap <b>Open pairing</b> here (or in Quibase: Help, Pair a counter terminal), then type the code on the terminal. Too many wrong tries pause it.</p>
+              <p class="help" x-show="adminCode && adminCode.window && adminCode.enabled" aria-live="polite"><b x-text="pairWindowLine"></b></p>
+              <p class="help" x-show="adminCode" x-text="adminCode ? (adminCode.enabled ? (adminCode.is_default ? 'On: the standard code 1024.' : 'On: the store\'s own ' + adminCode.length + '-digit code.') : 'Off: terminals pair with the manager login or a code from this page.') : ''"></p></div>
+            <div class="hrow" style="margin-top:8px;gap:8px;flex-wrap:wrap">
+              <button type="button" class="btn btn-p" x-show="adminCode && adminCode.enabled && adminCode.window && !pairWindowOpen" @click="openPairing()">Open pairing</button>
+              <button type="button" class="btn" x-show="pairWindowOpen" @click="closePairing()">Close pairing</button>
+              <button type="button" class="btn" x-show="adminCode && adminCode.window" @click="changePairMinutes()" x-text="'Open for ' + (adminCode ? adminCode.window_minutes : 15) + ' min'"></button>
+              <button type="button" class="btn" @click="changeAdminCode()">Change code</button>
+              <button type="button" class="btn" x-show="adminCode && !adminCode.is_default" @click="saveAdminCode({code: ''})">Back to 1024</button>
+              <button type="button" class="btn" x-show="adminCode && adminCode.enabled" @click="saveAdminCode({enabled: false})">Turn off</button>
+              <button type="button" class="btn" x-show="adminCode && !adminCode.enabled" @click="saveAdminCode({enabled: true})">Turn on</button>
+            </div>
+          </div>
+          <div class="srow top" style="flex-direction:column;align-items:stretch" x-show="pinGuard">
+            <div class="lblcol"><div class="lbl">Terminal PIN pads</div>
+              <p class="help">Too many wrong PINs in a day lock every terminal's PIN pad until a manager unlocks it here (or in Quibase: Help). Staff already logged in keep working.</p>
+              <p class="help" aria-live="polite"><b x-text="pinGuardLine" :style="pinGuard && pinGuard.locked ? 'color:var(--bad, #c0392b)' : ''"></b></p></div>
+            <div class="hrow" style="margin-top:8px;gap:8px;flex-wrap:wrap">
+              <button type="button" class="btn btn-p" x-show="pinGuard && pinGuard.locked" @click="unlockPins()">Unlock the PIN pads</button>
+              <button type="button" class="btn" @click="changePinCeiling()">Change the limit</button>
             </div>
           </div>
           <div class="srow">

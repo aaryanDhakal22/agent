@@ -15,6 +15,7 @@ import (
 	"quiccpos/agent/internal/infra/notify"
 	"quiccpos/agent/internal/infra/ssebroker"
 	"quiccpos/agent/internal/observability"
+	"quiccpos/agent/internal/safego"
 
 	"github.com/google/uuid"
 	"github.com/rs/zerolog"
@@ -63,6 +64,8 @@ type Service struct {
 	onFloorEvent atomic.Pointer[func()]
 	storeTZ      atomic.Pointer[func() *time.Location] // unset → time.Local
 	onStored     func(orderID string)
+	// onCustomerOrder: a new order's customer phone (terminal 1d).
+	onCustomerOrder func(ctx context.Context, phone string, at time.Time)
 	// Driver-report printing (SetDocumentPrinting).
 	printDoc    DocPrinter
 	buildReport ReportBuilder
@@ -83,13 +86,36 @@ type Service struct {
 	dev atomic.Pointer[devlog.Ring]
 	// onBatchClosed runs after a Close batch (OnBatchClosed).
 	onBatchClosed atomic.Pointer[func(ctx context.Context)]
+	// onClosed runs right after a successful Close batch, in the background
+	// (the terminals: closed drawers announced + the Z report built).
+	onClosed atomic.Pointer[func(ctx context.Context, closed order.Batch)]
 	// autoMu: one auto-assign at a time (autoassign.go).
 	autoMu sync.Mutex
-	// ledger: the POS driver ledger from the store hub (2.3.0, ledger.go).
-	ledger ledgerState
 	// preview: the callout PREVIEW "on this tablet" audio (2.3.2,
 	// callout_preview.go), in memory only.
 	preview previewState
+	// acceptQ: the auto-accept worker's queue (accept_worker.go; nil =
+	// accept inline).
+	acceptQ  atomic.Pointer[chan acceptJob]
+	acceptWG sync.WaitGroup
+	// stamp: stamps an arriving order's lines before it is stored (the
+	// terminal store's show_on_driver_ticket flags; SetArrivalStamp).
+	stamp atomic.Pointer[func(*order.Snapshot)]
+	// prepSource: a placed order's default prep (SetPrepSource, §2.10aa).
+	prepSource atomic.Pointer[func(fulfillment string) int64]
+	placeOnce  sync.Once
+	// legacyArrival (Go tests of the kept accept path only): an arrival
+	// with the auto-accept setting off waits arrived, as before §2.10aa.
+	legacyArrival bool
+}
+
+// waitsArrived: only the tests' legacy mode keeps an order arrived.
+func (s *Service) waitsArrived(ctx context.Context) bool {
+	if !s.legacyArrival {
+		return false
+	}
+	auto, err := s.settings.GetAutoAccept(ctx)
+	return err != nil || !auto
 }
 
 func NewService(
@@ -127,23 +153,29 @@ func (s *Service) floorChanged() {
 // OnArrival is called by the SSE listener when a new order lands from main/.
 func (s *Service) OnArrival(ctx context.Context, snap order.Snapshot) error {
 	id := snap.MustParseID()
-	customerName := snap.Customer.DisplayName
+	if fn := s.stamp.Load(); fn != nil && *fn != nil {
+		(*fn)(&snap)
+	}
+	wait := s.waitsArrived(ctx) // only the tests' kept accept path waits
+	if !wait {
+		placedDirectMeta(&snap) // status.placed_direct (§2.10aa)
+	}
 
 	ctx, span := s.tracer.Start(ctx, "order.on_arrival",
 		trace.WithAttributes(
 			attribute.String("order.id", id.String()),
 			attribute.String("order.source_event_id", snap.SourceEventID),
 			attribute.String("order.fulfillment_type", snap.Fulfillment.Type),
-			attribute.String("order.customer_name", customerName),
 			attribute.Int("order.item_count", len(snap.Items)),
 			attribute.Int64("order.total_cents", snap.Money.Total),
 		),
 	)
 	defer span.End()
 
+	// No customer data in logs or spans (hardening L-4): the order id only.
 	s.logger.Info().Ctx(ctx).
 		Str("order_id", id.String()).
-		Str("customer_name", customerName).
+		Str("source", snap.Source).
 		Msg("Order arrived from main/, persisting as 'arrived'")
 
 	inserted, err := s.storeArrived(ctx, snap)
@@ -162,41 +194,23 @@ func (s *Service) OnArrival(ctx context.Context, snap order.Snapshot) error {
 	}
 	s.devEvent(devlog.Info, devlog.KindOrder, "Order %s arrived (%s)", devlog.Short(id.String()), snap.Fulfillment.Type)
 
-	autoAccept, err := s.settings.GetAutoAccept(ctx)
-	if err != nil {
-		s.logger.Warn().Ctx(ctx).Err(err).Msg("Failed to read auto-accept setting, defaulting to manual")
-		autoAccept = false
+	// §2.10aa: every order from main is placed like a called-in order (no
+	// accept step, no ring; the auto-accept setting no longer matters). The
+	// print runs on the accept worker (hardening F-7) so the SSE reader takes
+	// the next frame at once.
+	if wait {
+		s.announceStored(ctx, id, snap)
+		return nil
 	}
-	span.SetAttributes(attribute.Bool("order.auto_accept", autoAccept))
-
-	if autoAccept {
-		// A future order isn't cooked now: it is scheduled with the default
-		// time for its type as the lead, and auto-accepted when it rings
-		// again at ring_at (RaiseDue) — that accept prints.
-		if cur, gerr := s.repo.GetByID(ctx, id); gerr == nil && cur.Status.Future && cur.Status.State == order.StateArrived {
-			lead := s.FutureLead(ctx, *cur)
-			span.SetAttributes(attribute.Bool("order.future", true))
-			_, err := s.Schedule(ctx, id.String(), lead)
-			if err == nil {
-				s.logger.Info().Ctx(ctx).Str("order_id", id.String()).Int("lead_minutes", lead).Msg("Auto-accept ON — future order scheduled")
-				return nil
-			}
-			s.logger.Error().Ctx(ctx).Err(err).Str("order_id", id.String()).Msg("Auto-schedule failed — order rings")
-			span.RecordError(err)
-		} else {
-			s.logger.Info().Ctx(ctx).Str("order_id", id.String()).Msg("Auto-accept ON — accepting immediately")
-			if _, err := s.AutoAccept(ctx, id); err != nil {
-				s.logger.Error().Ctx(ctx).Err(err).Str("order_id", id.String()).Msg("Auto-accept failed — order remains arrived")
-				span.RecordError(err)
-				// Fall through to broadcast so mobile sees the pending order.
-			} else {
-				return nil
-			}
-		}
+	if !s.queueAutoAccept(ctx, id, snap) {
+		s.placeOrSchedule(ctx, id, snap)
 	}
+	return nil
+}
 
-	// Announce the stored row (batch, arrival time) — or, if auto-accept
-	// raced with a manual accept, whatever state it's in now.
+// announceStored tells the tablets about a stored order: arrived (it rings),
+// or, if auto-accept raced with a manual accept, whatever state it's in now.
+func (s *Service) announceStored(ctx context.Context, id uuid.UUID, snap order.Snapshot) {
 	so, err := s.repo.GetByID(ctx, id)
 	if err != nil {
 		so = &order.StoredOrder{Order: snap, Status: order.Status{State: order.StateArrived}}
@@ -206,7 +220,6 @@ func (s *Service) OnArrival(ctx context.Context, snap order.Snapshot) error {
 	} else {
 		s.publishUpdated(*so)
 	}
-	return nil
 }
 
 // Accept transitions an order from arrived to accepted and prints it: claim
@@ -297,7 +310,7 @@ func (s *Service) accept(ctx context.Context, id uuid.UUID, prepMinutes *int, au
 	}
 	// The tickets printed: the accept must reach main even if the tablet's
 	// request was cancelled meanwhile.
-	if err := s.repo.RecordAccepted(context.WithoutCancel(ctx), *so, out.InsertExpected); err != nil {
+	if err := s.repo.RecordAccepted(context.WithoutCancel(ctx), *so); err != nil {
 		s.logger.Error().Ctx(ctx).Err(err).Str("order_id", id.String()).Msg("Failed to record accepted floor event (main won't see it)")
 	}
 	s.floorChanged()
@@ -335,10 +348,7 @@ func (s *Service) recordAcceptTime(ctx context.Context, so order.StoredOrder) {
 	if from.IsZero() || at.Before(from) {
 		return
 	}
-	src := "online"
-	if so.IsPOS() {
-		src = "pos"
-	}
+	src := so.SourceLabel() // online | web | pos
 	s.meters.FloorAcceptSeconds.Record(ctx, at.Sub(from).Seconds(), metric.WithAttributes(attribute.String("source", src)))
 }
 
@@ -358,10 +368,7 @@ func (s *Service) recordPrintTime(ctx context.Context, so order.StoredOrder, sta
 	case len(out.Failed) > 0:
 		result = "partial"
 	}
-	src := "online"
-	if so.IsPOS() {
-		src = "pos"
-	}
+	src := so.SourceLabel() // online | web | pos
 	s.meters.OrdersPrintSeconds.Record(ctx, time.Since(start).Seconds(), metric.WithAttributes(
 		attribute.String("result", result), attribute.String("source", src)))
 }
@@ -387,7 +394,7 @@ func (s *Service) RecoverInterruptedAccepts(ctx context.Context) int {
 			continue
 		}
 		n++
-		s.logger.Warn().Ctx(ctx).Str("order_id", raw).Msg("Accept was interrupted (agent stopped mid-print) — order rings again")
+		s.logger.Warn().Ctx(ctx).Str("order_id", raw).Msg("Accept was interrupted (agent stopped mid-print) — it is placed again")
 	}
 	return n
 }
@@ -406,7 +413,20 @@ func printable(so order.StoredOrder) order.Snapshot {
 	if n := so.Number(); n != nil {
 		snap.KitchenNumber = n
 	}
+	snap.MakeAt = makeAt(so)
+	if so.Status.State == order.StateCancelled {
+		snap.Voided = voidedLabel(snap)
+	}
 	return snap
+}
+
+// voidedLabel is a cancelled order's receipt banner: VOID for a terminal's
+// own order, CANCELLED for the rest.
+func voidedLabel(snap order.Snapshot) string {
+	if snap.Source == order.SourceCounter {
+		return "VOID"
+	}
+	return "CANCELLED"
 }
 
 func deref(p *int64) int64 {
@@ -430,6 +450,9 @@ func (s *Service) PrintSnapshot(ctx context.Context, snap order.Snapshot) error 
 		trace.WithAttributes(attribute.String("order.id", snap.ID)),
 	)
 	defer span.End()
+	if strings.EqualFold(snap.Status, "cancelled") || strings.EqualFold(snap.Status, "rejected") { // main's word
+		snap.Voided = voidedLabel(snap)
+	}
 	out, err := s.print(ctx, snap, printer.ModeReceipt)
 	s.alertPrintIssues(ctx, order.StoredOrder{Order: snap}, out, false)
 	if err != nil {
@@ -478,13 +501,13 @@ func (s *Service) resendExisting(ctx context.Context, so *order.StoredOrder) err
 		_, err := s.Reprint(ctx, uuid.MustParse(so.Order.ID))
 		return err
 	}
-	autoAccept, err := s.settings.GetAutoAccept(ctx)
-	if err == nil && autoAccept {
-		_, err := s.AutoAccept(ctx, uuid.MustParse(so.Order.ID))
-		return err
+	if s.waitsArrived(ctx) {
+		s.broadcastArrived(ctx, *so)
+		return nil
 	}
-	s.broadcastArrived(ctx, *so)
-	return nil
+	// §2.10aa: a waiting order is placed (never rung again).
+	_, err := s.Place(ctx, uuid.MustParse(so.Order.ID))
+	return err
 }
 
 // Reprint prints the order's customer receipt again (receipt only, normal
@@ -626,8 +649,22 @@ func (s *Service) storeArrived(ctx context.Context, snap order.Snapshot) (bool, 
 	if s.onStored != nil {
 		s.onStored(snap.ID)
 	}
+	if inserted && s.onCustomerOrder != nil && snap.Customer.Phone != "" {
+		s.onCustomerOrder(ctx, snap.Customer.Phone, snap.PlacedAt)
+	}
 	return inserted, nil
 }
+
+// OnCustomerOrder registers the hook told about a new order's customer
+// phone (the store's customers on the Pi note their last order).
+func (s *Service) OnCustomerOrder(fn func(ctx context.Context, phone string, at time.Time)) {
+	s.onCustomerOrder = fn
+}
+
+// SetArrivalStamp registers the hook that stamps an order from main before
+// it is stored (cmd/main.go: the counter menu's show_on_driver_ticket
+// flags, terminal.Store.StampDriverTicket).
+func (s *Service) SetArrivalStamp(fn func(*order.Snapshot)) { s.stamp.Store(&fn) }
 
 // OnStored registers the hook run after an order is safely stored (new or
 // already held) — cmd/main.go wires the acker.
@@ -673,13 +710,11 @@ func (s *Service) alertPrintIssues(ctx context.Context, so order.StoredOrder, ou
 	if s.notifier == nil {
 		return
 	}
-	who := snap.Customer.DisplayName
-	if who == "" {
-		who = "(no name)"
-	}
-	msg := fmt.Sprintf("Order %s: %s", who, strings.Join(parts, "; "))
+	// The order's number only, never the customer (hardening L-4).
+	msg := fmt.Sprintf("Print trouble on %s: %s", what, strings.Join(parts, "; "))
 	// In the background: the accept response mustn't wait on Pushover.
 	go func(ctx context.Context) {
+		defer safego.Recover("order.print_alert")
 		if err := s.notifier.SendFloor(ctx, msg, "siren"); err != nil {
 			s.logger.Warn().Ctx(ctx).Err(err).Msg("Pushover print-issue alert failed (non-fatal)")
 		}

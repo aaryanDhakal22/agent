@@ -17,6 +17,7 @@ from datetime import datetime, timezone
 import pytest
 import requests
 
+from gatemark import intentional_sleep
 from conftest import ADMIN_V1, STORE_V1, FakePrinter, wait_until
 
 @pytest.fixture
@@ -62,8 +63,8 @@ def _snap(store, items: list[dict]) -> dict:
         "customer": {"display_name": "Pytest Kitchen"},
         "fulfillment": {"type": "pickup"},
         "money": {"subtotal_cents": 1500, "total_cents": 1500, "currency": "USD"},
-        # Paid by card: a pickup with cash to collect prints only the receipt
-        # (see test_pickup_cash_prints_only_the_receipt).
+        # Paid by card (a cash pickup follows its own switch: see
+        # test_pickup_cash_follows_its_switch).
         "payments": [{"method": "card", "amount_cents": 1500}],
         "items": items,
     }
@@ -92,16 +93,19 @@ def test_station_tickets_and_receipt(kitchen, fakes) -> None:
         _wait_jobs(f, 1)
 
     pizza, wings, front = fakes["Pizza"].text(), fakes["Wings"].text(), fakes["Front"].text()
-    # Pizza station: the kitchen number + customer, its own item in full (big,
-    # with size), the unmatched item flagged, the rest of the order listed small
-    # after the rule.
-    assert "#1100\n" in pizza and "KITCHEN, PYTEST" in pizza, pizza
-    assert "1 Pepperoni Pizza\n  (Large)" in pizza, pizza
-    assert "1 Mystery Dish" in pizza and "UNMATCHED" in pizza
-    assert "\x1b!\x00\x1bE\x01ITEMS TO OTHER PRINTERS" in pizza and "\n1 Hot Wings\n" in pizza
+    # Pizza station (the 2026-11-11 kitchen ticket): the type + print time under
+    # the rail, the kitchen number + customer, its own item in full (big, with
+    # size), the unmatched item flagged, the rest of the order under "Also on
+    # this order:".
+    assert pizza.startswith("\x1b@\x1ba\x01\x1bE\x01\x1d!\x11PICKUP\n") and "Printed " in pizza, pizza
+    assert "\x1d!31100\n" in pizza and "KITCHEN, PYTEST" in pizza, pizza
+    assert "1  PEPPERONI PIZZA\n   (LARGE)" in pizza, pizza
+    assert "1  MYSTERY DISH" in pizza and "UNMATCHED" in pizza
+    assert "Also on this order:\n" in pizza and "\n   1 Hot Wings\n" in pizza
+    assert "\x1dB\x01" not in pizza, "no reverse print on an order ticket"
     assert "$" not in pizza, "station tickets carry no prices"
     # Wings station mirrors it.
-    assert "1 Hot Wings" in wings and "\n1 Pepperoni Pizza (Large)\n" in wings
+    assert "1  HOT WINGS" in wings and "\n   1 Pepperoni Pizza (Large)\n" in wings
     # Front = the full customer receipt only (v1 layout: size on the price
     # line, the item name under it).
     assert len(fakes["Front"].jobs) == 1 and "Total:" in front and "1   Large" in front and "    Pepperoni Pizza\n" in front
@@ -121,28 +125,41 @@ def test_items_on_the_receipt_printer_print_only_on_the_receipt(kitchen, fakes) 
     assert r.status_code == 200, r.text + a.log_tail()
     _wait_jobs(fakes["Pizza"], 1)
     _wait_jobs(fakes["Front"], 1)
-    time.sleep(1.5)  # nothing else may follow
+    intentional_sleep(1.5, "absence: nothing else may print")
     assert len(fakes["Front"].jobs) == 1, "Front must print only the receipt"
     assert "Total:" in fakes["Front"].text() and "Can Soda" in fakes["Front"].text()
     pizza = fakes["Pizza"].text()
     # 2.4.0: a receipt-only item isn't listed for the cooks.
-    assert "1 Pepperoni Pizza" in pizza and "Can Soda" not in pizza, pizza
+    assert "1  PEPPERONI PIZZA" in pizza and "Can Soda" not in pizza, pizza
     assert len(fakes["Wings"].jobs) == 0
 
 
-def test_pickup_cash_prints_only_the_receipt(kitchen, fakes) -> None:
-    """A pickup paid in cash is typed into the store's old POS (which prints the
-    kitchen tickets), so the Pi prints only the customer receipt."""
+def test_pickup_cash_follows_its_switch(kitchen, fakes) -> None:
+    """H3: a pickup paid in cash prints its station tickets like any order
+    (nobody keys it into an old POS any more); with the store's
+    online_cash_pickup switch off the Pi prints only the customer receipt."""
     a, ids = kitchen["agent"], kitchen["ids"]
-    snap = _snap(kitchen["main_store"], [
-        _item("Pepperoni Pizza", ids["Pizza"]),
-        _item("Hot Wings", ids["Wings"]),
-    ])
-    snap.pop("payments")  # no payments = the whole total is cash
-    r = _accept(a, snap)
+
+    def cash_pickup() -> dict:
+        snap = _snap(kitchen["main_store"], [
+            _item("Pepperoni Pizza", ids["Pizza"]),
+            _item("Hot Wings", ids["Wings"]),
+        ])
+        snap.pop("payments")  # no payments = the whole total is cash
+        return snap
+
+    r = _accept(a, cash_pickup())
+    assert r.status_code == 200, r.text + a.log_tail()
+    _wait_jobs(fakes["Pizza"], 1)
+    _wait_jobs(fakes["Wings"], 1)
+    _wait_jobs(fakes["Front"], 1)
+    _reset(fakes)
+
+    assert a.http.put(f"{a.base}/api/settings/tickets", json={"online_cash_pickup": False}, timeout=5).status_code == 200
+    r = _accept(a, cash_pickup())
     assert r.status_code == 200, r.text + a.log_tail()
     _wait_jobs(fakes["Front"], 1)
-    time.sleep(1.5)  # nothing else may follow
+    intentional_sleep(1.5, "absence: nothing else may print")
     assert len(fakes["Front"].jobs) == 1 and "Total:" in fakes["Front"].text()
     assert len(fakes["Pizza"].jobs) == 0 and len(fakes["Wings"].jobs) == 0, "no kitchen tickets for pickup cash"
 
@@ -155,7 +172,7 @@ def test_station_down_reroutes_to_receipt_printer(kitchen, fakes) -> None:
     assert r.status_code == 200, r.text + a.log_tail()
     _wait_jobs(fakes["Front"], 2)
     front = fakes["Front"].text()
-    assert "REROUTED from WINGS" in front and "1 Hot Wings" in front, front
+    assert "REROUTED FROM WINGS" in front and "1  HOT WINGS" in front, front
     assert "Total:" in front, "the receipt still prints on Front"
     assert fakes["Wings"].jobs == []
 
@@ -178,7 +195,7 @@ def test_legacy_order_prints_one_full_receipt(kitchen, fakes) -> None:
     r = _accept(a, _snap(kitchen["main_store"], [item]))
     assert r.status_code == 200, r.text
     _wait_jobs(fakes["Front"], 1)
-    time.sleep(0.5)
+    intentional_sleep(0.5, "absence: nothing else may print")
     assert fakes["Pizza"].jobs == [] and fakes["Wings"].jobs == []
     assert "Old Style Pizza" in fakes["Front"].text()
 
@@ -195,13 +212,13 @@ def test_reprint_prints_only_the_receipt(kitchen, fakes) -> None:
     assert _accept(a, snap).status_code == 200
     for f in fakes.values():
         _wait_jobs(f, 1)
-    time.sleep(0.5)
+    intentional_sleep(0.5, "every job lands before the next check")
     _reset(fakes)
 
     r = a.http.post(f"{a.base}/api/orders/{snap['id']}/reprint", timeout=30)
     assert r.status_code == 200 and r.json()["order"]["id"] == snap["id"], r.text
     _wait_jobs(fakes["Front"], 1)
-    time.sleep(1.5)  # nothing else may follow
+    intentional_sleep(1.5, "absence: nothing else may print")
     assert len(fakes["Front"].jobs) == 1 and "Total:" in fakes["Front"].text()
     assert fakes["Pizza"].jobs == [] and fakes["Wings"].jobs == [], "reprint must not print kitchen tickets"
 
@@ -210,7 +227,7 @@ def test_reprint_prints_only_the_receipt(kitchen, fakes) -> None:
     r = a.http.post(f"{a.base}/api/print", json=snap, timeout=30)
     assert r.status_code == 200, r.text
     _wait_jobs(fakes["Front"], 1)
-    time.sleep(1.5)
+    intentional_sleep(1.5, "absence: nothing else may print")
     assert len(fakes["Front"].jobs) == 1 and "Total:" in fakes["Front"].text()
     assert fakes["Pizza"].jobs == [] and fakes["Wings"].jobs == []
 
@@ -221,7 +238,7 @@ def test_resend_to_kitchen_prints_only_the_stations(kitchen, fakes) -> None:
     assert _accept(a, snap).status_code == 200
     for f in fakes.values():
         _wait_jobs(f, 1)
-    time.sleep(0.5)
+    intentional_sleep(0.5, "every job lands before the next check")
     _reset(fakes)
 
     r = a.http.post(f"{a.base}/api/orders/{snap['id']}/kitchen", timeout=30)
@@ -231,8 +248,8 @@ def test_resend_to_kitchen_prints_only_the_stations(kitchen, fakes) -> None:
     assert sorted(body["printed"]) == ["Pizza", "Wings"] and body["failed"] == [] and body["rerouted"] == [], body
     _wait_jobs(fakes["Pizza"], 1)
     _wait_jobs(fakes["Wings"], 1)
-    time.sleep(1.5)
-    assert "1 Pepperoni Pizza" in fakes["Pizza"].text() and "1 Hot Wings" in fakes["Wings"].text()
+    intentional_sleep(1.5, "the rest of the tickets print")
+    assert "1  PEPPERONI PIZZA" in fakes["Pizza"].text() and "1  HOT WINGS" in fakes["Wings"].text()
     assert fakes["Front"].jobs == [], "a kitchen resend prints no receipt"
     got = a.http.get(f"{a.base}/api/orders/{snap['id']}", timeout=5).json()
     assert got["status"]["state"] == "accepted", got
@@ -244,18 +261,20 @@ def test_resend_to_kitchen_prints_only_the_stations(kitchen, fakes) -> None:
     assert r.status_code == 200, r.text
     assert r.json()["rerouted"] == [{"station": "Wings", "printed_on": "Front"}], r.text
     _wait_jobs(fakes["Front"], 1)
-    assert "REROUTED from WINGS" in fakes["Front"].text() and "Total:" not in fakes["Front"].text()
+    assert "REROUTED FROM WINGS" in fakes["Front"].text() and "Total:" not in fakes["Front"].text()
 
 
 def test_resend_to_kitchen_of_pickup_cash_prints_the_stations(kitchen, fakes) -> None:
-    """Accept of a pickup paid in cash prints only the receipt; a deliberate
-    resend to the kitchen prints the station tickets anyway."""
+    """Accept of a pickup paid in cash with its switch off prints only the
+    receipt; a deliberate resend to the kitchen prints the station tickets
+    anyway."""
     a, ids = kitchen["agent"], kitchen["ids"]
+    assert a.http.put(f"{a.base}/api/settings/tickets", json={"online_cash_pickup": False}, timeout=5).status_code == 200
     snap = _snap(kitchen["main_store"], [_item("Pepperoni Pizza", ids["Pizza"]), _item("Hot Wings", ids["Wings"])])
     snap.pop("payments")
     assert _accept(a, snap).status_code == 200
     _wait_jobs(fakes["Front"], 1)
-    time.sleep(1.5)
+    intentional_sleep(1.5, "absence: nothing else may print")
     assert fakes["Pizza"].jobs == [] and fakes["Wings"].jobs == []
     _reset(fakes)
 
@@ -263,7 +282,7 @@ def test_resend_to_kitchen_of_pickup_cash_prints_the_stations(kitchen, fakes) ->
     assert r.status_code == 200 and sorted(r.json()["printed"]) == ["Pizza", "Wings"], r.text
     _wait_jobs(fakes["Pizza"], 1)
     _wait_jobs(fakes["Wings"], 1)
-    time.sleep(1.5)
+    intentional_sleep(1.5, "absence: nothing else may print")
     assert fakes["Front"].jobs == []
 
 
@@ -290,11 +309,11 @@ def test_resend_to_kitchen_refusals(kitchen, fakes) -> None:
     accepted = _snap(kitchen["main_store"], [_item("Pepperoni Pizza", ids["Pizza"])])
     assert _accept(a, accepted).status_code == 200
     _wait_jobs(fakes["Pizza"], 1)
-    time.sleep(0.5)
+    intentional_sleep(0.5, "every job lands before the next check")
     before = {n: len(f.jobs) for n, f in fakes.items()}
     for f in fakes.values():
         f.stop()
     r = a.http.post(f"{a.base}/api/orders/{accepted['id']}/kitchen", timeout=60)
     assert r.status_code == 502 and r.json()["code"] == "print_failed", r.text
-    time.sleep(0.5)
+    intentional_sleep(0.5, "absence: nothing new prints")
     assert {n: len(f.jobs) for n, f in fakes.items()} == before, "nothing new printed"

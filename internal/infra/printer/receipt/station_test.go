@@ -54,48 +54,45 @@ func TestBuildStation_Golden(t *testing.T) {
 func TestBuildStation_Content(t *testing.T) {
 	got := BuildStation(stationFixture())
 	for _, want := range []string{
-		" REROUTED from OVEN ", cmdQuadSz + "#1104\n", "ANA\n",
-		"2 Pepperoni Pizza\n", "  (Large)\n", "  - Extra cheese\n", "  - Note: well done",
-		"1 Mystery", " ** UNMATCHED ** ",
-		cmdNormalSz + cmdBoldOn + "ITEMS TO OTHER PRINTERS", "1 Fries",
+		"DELIVERY\n", cmdHugeSz + "1104\n", "ANA\n",
+		// Printed on a stand-in: the reroute bands, English then Spanish, reverse + double size (2026-11-12).
+		cmdInvertOn + pad("REROUTED FROM OVEN", defaultLayout.big()) + cmdInvertOff,
+		cmdInvertOn + pad("REDIRIGIDO DE OVEN", defaultLayout.big()) + cmdInvertOff,
+		"2  PEPPERONI PIZZA\n   (LARGE)\n", "   - Extra cheese\n", "   - well done\n",
+		"1  MYSTERY\n", "** UNMATCHED **",
+		"Also on this order:\n   1 Fries\n",
+		"NOTE: Ring the bell twice\n", // the order's note, under the header (the owner, 2026-11-12)
 	} {
 		if !bytes.Contains(got, []byte(want)) {
 			t.Errorf("station ticket missing %q", want)
 		}
 	}
-	// The kitchen ticket is just the number, the name and the food; the
-	// order's notes are on the customer receipt only.
-	for _, gone := range []string{"Order #4417", "Delivery", " PIZZA ", "Ring the bell", "Order notes"} {
+	// The kitchen ticket is the type, the number, the name, the order's note
+	// and the food. No reverse print but the two reroute bands, no prices.
+	if n := bytes.Count(got, []byte(cmdInvertOn)); n != 2 {
+		t.Errorf("reverse print %d times, want 2 (the reroute bands)", n)
+	}
+	ps, pt := stationFixture()
+	pt.ReroutedFrom = ""
+	if plain := BuildStation(ps, pt); bytes.Contains(plain, []byte(cmdInvertOn)) || bytes.Contains(plain, []byte("REROUTED")) {
+		t.Errorf("a ticket on its own printer has no reroute band")
+	}
+	for _, gone := range []string{"Order #4417", "Order notes", "$", "#1104"} {
 		if bytes.Contains(got, []byte(gone)) {
 			t.Errorf("station ticket should not carry %q", gone)
 		}
-	}
-	// Free modifiers carry no price.
-	if bytes.Contains(got, []byte("$")) {
-		t.Errorf("station ticket printed a price for a free modifier")
 	}
 	if n := bytes.Count(got, []byte("UNMATCHED")); n != 1 {
 		t.Errorf("UNMATCHED appears %d times, want 1", n)
 	}
 }
 
-func TestBuildStation_PaidModifierShowsPrice(t *testing.T) {
+func TestBuildStation_NoPrices(t *testing.T) {
 	snap, tk := stationFixture()
-	tk.Mine[0].Children = []order.LineItem{{Name: "Extra cheese", Quantity: 1, UnitPrice: 200}, {Name: "Well done", Quantity: 1}}
+	tk.Mine[0].Children = []order.LineItem{{Name: "Extra cheese", Quantity: 1, UnitPrice: 200}, {Name: "Ranch", Quantity: 2}}
 	got := string(BuildStation(snap, tk))
-	if !strings.Contains(got, "  - Extra cheese") || !strings.Contains(got, "$2.00") {
-		t.Fatalf("a paid modifier shows its price: %q", got)
-	}
-	if strings.Contains(got, "$0.00") {
-		t.Fatal("a free modifier shows no price")
-	}
-}
-
-func TestBuildStation_NoOtherItems(t *testing.T) {
-	snap, tk := stationFixture()
-	tk.Others = nil
-	if bytes.Contains(BuildStation(snap, tk), []byte("ITEMS TO OTHER PRINTERS")) {
-		t.Fatal("no heading when every item is on this ticket")
+	if !strings.Contains(got, "   - Extra cheese\n") || !strings.Contains(got, "   - (x2) Ranch\n") || strings.Contains(got, "$") {
+		t.Fatalf("modifiers without prices: %q", got)
 	}
 }
 
@@ -163,7 +160,7 @@ func TestTicketsUseTheLocationTimezone(t *testing.T) {
 	}
 	promised := time.Date(2026, 10, 15, 23, 30, 0, 0, time.UTC)
 	snap.Fulfillment.PromisedAt = &promised
-	if st := Build(snap, sc, tk, order.DefaultReceiptPrefs()); !bytes.Contains(st, []byte("FUTURE Oct 15  7:30 PM")) {
+	if st := Build(snap, sc, tk, order.DefaultReceiptPrefs()); !bytes.Contains(st, []byte("READY 7:30")) || !bytes.Contains(st, []byte("Printed 1:31 PM")) {
 		t.Errorf("a scheduled order's kitchen ticket says when it's for, in New York time: %q", st)
 	}
 	sc.Location.Timezone = "Not/AZone"
@@ -235,13 +232,13 @@ func TestDisplaySize(t *testing.T) {
 
 func TestBuildStation_HidesServingSize(t *testing.T) {
 	snap := order.Snapshot{ID: "o1", Items: []order.LineItem{
-		{Name: "Turkey Club Sandwich", Size: "Serving", Quantity: 1, Routing: order.RoutingMatched, PrinterID: "p1"},
+		{Name: "Turkey Club", Size: "Serving", Quantity: 1, Routing: order.RoutingMatched, PrinterID: "p1"},
 		{Name: "Wings", Size: "Serving (6 Piece)", Quantity: 1, Routing: order.RoutingMatched, PrinterID: "p2"},
 	}}
 	out := string(BuildStation(snap, printer.Ticket{
 		Kind: printer.TicketStation, TargetID: "p1", Station: "Kitchen", Mine: snap.Items[:1], Others: snap.Items[1:],
 	}))
-	if !strings.Contains(out, "1 Turkey Club Sandwich\n") || strings.Contains(out, "Serving") {
+	if !strings.Contains(out, "1  TURKEY CLUB\n") || strings.Contains(strings.ToLower(out), "serving") {
 		t.Errorf("single-size item should print without a size:\n%q", out)
 	}
 	if !strings.Contains(out, "1 Wings (6 Piece)") {
@@ -279,19 +276,97 @@ func TestBuildWith_PaymentWording(t *testing.T) {
 	}
 }
 
-// TestBuildStation_Void (00019): a void ticket has the VOID banner and every
-// line says VOID; nothing else on it.
+// TestBuildStation_Void (00019): a void ticket is a change ticket with only
+// REMOVE / QUITAR: every line "(VOID)" and struck through; nothing else.
 func TestBuildStation_Void(t *testing.T) {
 	snap, tk := stationFixture()
 	tk.Void, tk.Others, tk.ReroutedFrom = true, nil, ""
 	tk.Mine = tk.Mine[:1]
 	out := string(BuildStation(snap, tk))
-	for _, want := range []string{" VOID - REMOVED ", "VOID 2 Pepperoni Pizza"} {
+	for _, want := range []string{"REMOVE / QUITAR", "(VOID) " + strikeImage("2  PEPPERONI PIZZA (LARGE)") + "\n",
+		"          " + strikeImage("- Extra cheese") + "\n"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("void ticket lacks %q:\n%q", want, out)
 		}
 	}
-	if strings.Contains(out, "ITEMS TO OTHER PRINTERS") {
-		t.Fatal("void ticket lists other items")
+	if strings.Contains(out, "Also on this order") || strings.Contains(out, "ADD / AGREGAR") {
+		t.Fatal("void ticket lists other items or adds")
+	}
+}
+
+// TestBuildStation_VoidGolden pins the VOID slip a cancelled website order
+// prints on its stations (2.5.0 CANCEL ORDER) byte for byte.
+func TestBuildStation_VoidGolden(t *testing.T) {
+	snap, tk := stationFixture()
+	tk.Void, tk.Others, tk.ReroutedFrom = true, nil, ""
+	golden(t, "testdata/station_void.golden", BuildStation(snap, tk))
+}
+
+// TestBuildStation_AddOn (terminal §2.10d, an older plan's ADD-ON ticket):
+// the added lines under ADD / AGREGAR, nothing else.
+func TestBuildStation_AddOn(t *testing.T) {
+	snap, tk := stationFixture()
+	tk.AddOn, tk.Others, tk.ReroutedFrom = true, nil, ""
+	tk.Mine = tk.Mine[:1]
+	out := string(BuildStation(snap, tk))
+	if !strings.Contains(out, "ADD / AGREGAR") || !strings.Contains(out, "2  PEPPERONI PIZZA\n") {
+		t.Fatalf("add-on ticket:\n%q", out)
+	}
+	if strings.Contains(out, "Also on this order") || strings.Contains(out, "VOID") {
+		t.Fatal("add-on ticket lists other items or says VOID")
+	}
+}
+
+// The reroute banner (the owner, 2026-11-12): English then Spanish, ALL
+// CAPS, each line a reverse double-size band like ADD / AGREGAR; a long
+// printer name wraps into more bands, never past the band of the printer it
+// printed on (its double-width line: 24 / 21 / 16), a space either side of
+// the text.
+func TestRerouteBands(t *testing.T) {
+	if got := RerouteLines("pizza", 0); strings.Join(got, "|") != "REROUTED FROM PIZZA|REDIRIGIDO DE PIZZA" {
+		t.Fatalf("lines = %q", got)
+	}
+	for _, c := range []struct {
+		cols int
+		want string
+	}{
+		{Cols80, "REROUTED FROM ONLINE|RECEIPT PRINTER|REDIRIGIDO DE ONLINE|RECEIPT PRINTER"},
+		{Cols72, "REROUTED FROM|ONLINE RECEIPT|PRINTER|REDIRIGIDO DE|ONLINE RECEIPT|PRINTER"},
+		{Cols58, "REROUTED FROM|ONLINE RECEIPT|PRINTER|REDIRIGIDO DE|ONLINE RECEIPT|PRINTER"},
+	} {
+		long := RerouteLines("Online receipt printer", c.cols)
+		if strings.Join(long, "|") != c.want {
+			t.Fatalf("%d: long = %q", c.cols, long)
+		}
+		text := layoutFor(c.cols).big() - 2
+		for _, l := range long {
+			if len([]rune(l)) > text {
+				t.Fatalf("%d: band text %q wider than %d", c.cols, l, text)
+			}
+		}
+	}
+	var buf bytes.Buffer
+	writeRerouted(func(s string) { buf.WriteString(s) }, func() { buf.WriteString(cmdFeed) }, "Wings", layoutFor(Cols72))
+	want := cmdCenter + cmdBoldOn + cmdDoubleSz + cmdInvertOn + " REROUTED FROM WINGS " + cmdInvertOff + cmdSizeReset + cmdBaseSz + cmdBoldOff + "\n" +
+		cmdCenter + cmdBoldOn + cmdDoubleSz + cmdInvertOn + " REDIRIGIDO DE WINGS " + cmdInvertOff + cmdSizeReset + cmdBaseSz + cmdBoldOff + "\n" +
+		cmdLeft + "\n"
+	if buf.String() != want {
+		t.Fatalf("bytes\n got %q\nwant %q", buf.String(), want)
+	}
+	// Every slip that can print on a stand-in carries the bands.
+	snap, tk := stationFixture()
+	tk.Kind = printer.TicketReceipt
+	for name, b := range map[string][]byte{
+		"receipt":    Build(snap, storeconfig.StoreContext{}, tk, order.DefaultReceiptPrefs()),
+		"station":    BuildStation(stationFixture()),
+		"unassigned": BuildUnassignedReport(order.UnassignedReport{}, storeconfig.StoreContext{}, "", printer.Paper{ReroutedFrom: "Oven"}, time.Now()),
+		"unsettled":  BuildUnsettledList(order.UnsettledList{}, storeconfig.StoreContext{}, "", printer.Paper{ReroutedFrom: "Oven"}, time.Now()),
+		"driver":     BuildDriverReport(order.DriverReport{}, storeconfig.StoreContext{}, "", printer.Paper{ReroutedFrom: "Oven"}, time.Now()),
+	} {
+		for _, l := range []string{"REROUTED FROM OVEN", "REDIRIGIDO DE OVEN"} {
+			if !bytes.Contains(b, []byte(cmdInvertOn+pad(l, defaultLayout.big())+cmdInvertOff)) {
+				t.Errorf("%s: no %q band", name, l)
+			}
+		}
 	}
 }

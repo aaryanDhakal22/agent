@@ -53,7 +53,7 @@ func (f *fakeRepo) ClaimAccept(_ context.Context, id uuid.UUID, _ int, _ bool) (
 	cp := *so
 	return &cp, nil
 }
-func (f *fakeRepo) RecordAccepted(context.Context, order.StoredOrder, bool) error { return nil }
+func (f *fakeRepo) RecordAccepted(context.Context, order.StoredOrder) error { return nil }
 func (f *fakeRepo) FloorSettings(context.Context) (order.FloorSettings, error) {
 	return order.FloorSettings{KitchenNext: 1100, LastPrepMinutes: 20}, nil
 }
@@ -84,6 +84,7 @@ func newTestService(t *testing.T, autoAccept bool) (*Service, *fakeRepo, *int, c
 	broker := ssebroker.New()
 	events, _ := broker.Subscribe()
 	svc := NewService(repo, fakeSettings{autoAccept: autoAccept}, print, nil, broker, zerolog.Nop(), meters)
+	svc.legacyArrival = true // the kept accept path (§2.10aa: real arrivals are placed)
 	return svc, repo, &prints, events
 }
 

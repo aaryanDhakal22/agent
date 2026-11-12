@@ -17,7 +17,6 @@ import (
 )
 
 const (
-	lineWidth    = 41 // 80mm thermal at base 2x font width
 	marginSpaces = 0
 
 	cmdInit      = "\x1b\x40"
@@ -39,18 +38,25 @@ const (
 
 // Build renders one planned ticket with the store's receipt settings: a
 // kitchen station ticket (BuildStation) or the customer receipt (repeated for
-// prefs.Copies, each copy cut), with a "REROUTED from X" banner when it
-// printed on a fallback printer. order.DefaultReceiptPrefs() prints exactly
+// prefs.Copies, each copy cut), with the reroute bands (writeRerouted) when
+// it printed on a stand-in printer. order.DefaultReceiptPrefs() prints exactly
 // what the agent printed before the settings existed.
+//
+// Every ticket is laid out for t.Cols, the width of the printer it prints on
+// (width.go).
 func Build(snap order.Snapshot, sc storeconfig.StoreContext, t printer.Ticket, prefs order.ReceiptPrefs) []byte {
+	snap, sc, t, prefs = scrubSnapshot(snap), scrubStore(sc), scrubTicket(t), scrubPrefs(prefs) // scrub.go
+	if t.Kind == printer.TicketDeliveryCopies {
+		return BuildDeliveryCopies(snap, sc, prefs, printer.Paper{Cols: t.Cols, ReroutedFrom: t.ReroutedFrom})
+	}
 	snap = localize(snap, sc)
 	prefs = prefs.Normalize()
 	if t.Kind == printer.TicketStation {
 		return buildStation(snap, t, prefs)
 	}
-	out := buildFull(snap, sc, t.ReroutedFrom, prefs)
+	out := buildFull(snap, sc, t.ReroutedFrom, prefs, layoutFor(t.Cols))
 	if t.Future { // a future order's receipt printed early (2.4.0)
-		out = futureReceiptTop(out)
+		out = futureReceiptTop(out, layoutFor(t.Cols))
 	}
 	if prefs.Copies > 1 {
 		return bytes.Repeat(out, prefs.Copies)
@@ -67,7 +73,8 @@ func Build(snap order.Snapshot, sc storeconfig.StoreContext, t printer.Ticket, p
 //
 // Default receipt settings; Build takes the store's.
 func BuildWith(snap order.Snapshot, sc storeconfig.StoreContext) []byte {
-	return buildFull(localize(snap, sc), sc, "", order.DefaultReceiptPrefs())
+	snap, sc = scrubSnapshot(snap), scrubStore(sc)
+	return buildFull(localize(snap, sc), sc, "", order.DefaultReceiptPrefs(), defaultLayout)
 }
 
 // localize puts the order's times in the location's timezone so tickets show
@@ -86,13 +93,13 @@ func localize(snap order.Snapshot, sc storeconfig.StoreContext) order.Snapshot {
 	return snap
 }
 
-func buildFull(snap order.Snapshot, sc storeconfig.StoreContext, reroutedFrom string, prefs order.ReceiptPrefs) []byte {
+func buildFull(snap order.Snapshot, sc storeconfig.StoreContext, reroutedFrom string, prefs order.ReceiptPrefs, l layout) []byte {
 	var buf bytes.Buffer
 	w := func(s string) {
 		if len(s) > 0 && (s[0] == '\x1b' || s[0] == '\x1d' || s[0] == '\x0a') {
-			buf.WriteString(s)
+			buf.WriteString(toPC437(s))
 		} else {
-			buf.WriteString(margin(s))
+			buf.WriteString(toPC437(margin(s)))
 		}
 	}
 	nl := func() { buf.WriteString(cmdFeed) }
@@ -100,29 +107,26 @@ func buildFull(snap order.Snapshot, sc storeconfig.StoreContext, reroutedFrom st
 	w(cmdInit)
 	w(cmdBaseSz)
 	if reroutedFrom != "" {
-		writeRerouted(w, nl, reroutedFrom)
+		writeRerouted(w, nl, reroutedFrom, l)
 	}
 
 	// --- Header (2.4.0, owner): the store's name + address, then the
 	// order number, then the order type (same sizes as before) ------------
 	w(cmdCenter)
 	if prefs.ShowStoreAddress {
-		if sc.Location.Name != "" {
-			w(sc.Location.Name)
-			nl()
-		}
-		if sc.Location.AddressLine1 != "" {
-			w(sc.Location.AddressLine1)
-			nl()
-		}
-		if sc.Location.AddressLine2 != "" {
-			w(sc.Location.AddressLine2)
-			nl()
+		for _, t := range []string{sc.Location.Name, sc.Location.AddressLine1, sc.Location.AddressLine2} {
+			if t == "" {
+				continue
+			}
+			for _, line := range wrapped(t, l.cols, "") {
+				w(line)
+				nl()
+			}
 		}
 	}
 	w(cmdBoldOn)
 	w(cmdQuadSz)
-	writeOrderNumbers(w, nl, snap)
+	writeOrderNumbers(w, nl, snap, l)
 	if t := orderTypeLine(snap); t != "" {
 		w(cmdDoubleSz)
 		w(t)
@@ -130,6 +134,9 @@ func buildFull(snap order.Snapshot, sc storeconfig.StoreContext, reroutedFrom st
 	}
 	w(cmdBoldOff)
 	w(cmdBaseSz)
+	if snap.Voided != "" {
+		writeVoided(w, nl, snap.Voided, l)
+	}
 
 	// --- Promised-for-later flag ---------------------------------------
 	if snap.Fulfillment.PromisedAt != nil && !snap.Fulfillment.PromisedAt.IsZero() {
@@ -137,12 +144,12 @@ func buildFull(snap order.Snapshot, sc storeconfig.StoreContext, reroutedFrom st
 		w(cmdDoubleSz)
 		w(cmdCenter)
 		w(cmdBoldOn)
-		w("        FUTURE      ")
+		w(futureBand(l))
 		w(cmdInvertOff)
 		nl()
 		nl()
 		w(cmdBaseSz)
-		w(" " + snap.Fulfillment.PromisedAt.Format("Jan 2, 2006 ----------  3:04 PM") + " ")
+		w(dateLine(*snap.Fulfillment.PromisedAt, l.cols-2, true))
 		w(cmdBoldOff)
 		nl()
 	}
@@ -154,7 +161,12 @@ func buildFull(snap order.Snapshot, sc storeconfig.StoreContext, reroutedFrom st
 		w(cmdBoldOn)
 		w(cmdDoubleSz)
 		w(cmdCenter)
-		w(" " + lastFirst(name) + " ")
+		for i, line := range padBand(lastFirst(name), l.big()) {
+			if i > 0 {
+				nl()
+			}
+			w(line)
+		}
 		w(cmdBaseSz)
 		w(cmdBoldOff)
 		nl()
@@ -163,59 +175,78 @@ func buildFull(snap order.Snapshot, sc storeconfig.StoreContext, reroutedFrom st
 		nl()
 		w(cmdBoldOn)
 		w(cmdDoubleSz)
-		w("Phone: " + formatPhone(phone))
+		w(wrapJoin("Phone: "+formatPhone(phone), l.big(), ""))
 		w(cmdBoldOff)
 		w(cmdBaseSz)
 		nl()
 	}
 
 	// --- Placed at -----------------------------------------------------
-	w(separator())
+	w(l.rule("-"))
 	nl()
 	w(cmdBoldOn)
-	w(snap.PlacedAt.Format("Jan 2, 2006 ----------  3:04 PM"))
+	w(dateLine(snap.PlacedAt, l.cols, false))
 	w(cmdBoldOff)
 	nl()
+	// Who took it (a call-center order, contract §2.10ab): "Call center - Name".
+	if by := strings.TrimSpace(snap.TakenBy); by != "" {
+		for _, line := range wrapped(by, l.cols, "") {
+			w(line)
+			nl()
+		}
+	}
 
 	// --- Delivery address ----------------------------------------------
 	if addr := snap.Fulfillment.Address; addr != nil && strings.ToLower(snap.Fulfillment.Type) == "delivery" {
-		w(separator())
+		w(l.rule("-"))
 		nl()
 		w(cmdLeft)
 		w(cmdDoubleSz)
 		w(cmdBoldOn)
-		w("St: " + addr.Line1)
+		for i, line := range wrapped("St: "+addr.Line1, l.big(), "    ") {
+			if i > 0 {
+				nl()
+			}
+			w(line)
+		}
 		w(cmdBoldOff)
 		w(cmdBaseSz)
 		nl()
-		w("Apt: " + addr.Line2)
-		nl()
-		w("City: " + addr.City)
-		nl()
-		w("Zip: " + addr.PostalCode)
-		nl()
+		for _, t := range []string{"Apt: " + addr.Line2, "City: " + addr.City, "Zip: " + addr.PostalCode} {
+			for _, line := range wrapped(t, l.cols, "      ") {
+				w(line)
+				nl()
+			}
+		}
 		nl()
 	}
 
 	// --- Notes ---------------------------------------------------------
 	if strings.TrimSpace(snap.Notes) != "" {
 		w(cmdCenter)
-		w(separator())
+		w(l.rule("-"))
 		nl()
-		w("Notes: " + snap.Notes)
-		nl()
+		for _, line := range wrapped("Notes: "+snap.Notes, l.cols, "") {
+			w(line)
+			nl()
+		}
 	}
 
 	// --- Payment -------------------------------------------------------
-	w(separator())
+	w(l.rule("-"))
 	w(cmdCenter)
 	nl()
 	w(cmdBoldOn)
 	w(cmdDoubleSz)
 	cashDue := snap.CashDue()
+	if snap.Voided != "" {
+		cashDue = 0 // nothing to collect on a voided / cancelled order
+	}
 	switch {
+	case snap.Voided != "":
+		w(wrapJoin(snap.Voided+" - NOT CHARGED", l.big(), ""))
 	case cashDue > 0:
-		w("CASH - " + dollars(cashDue))
+		w(wrapJoin("CASH - "+dollars(cashDue), l.big(), ""))
 	case !hasCardPayment(snap.Payments):
 		// Paid another way (a third party, an invoice): nothing to collect.
 		w("PAID")
@@ -240,16 +271,40 @@ func buildFull(snap order.Snapshot, sc storeconfig.StoreContext, reroutedFrom st
 	nl()
 
 	// --- Items ---------------------------------------------------------
-	w(separator())
+	w(l.rule("-"))
 	nl()
 	w(cmdBoldOn)
-	w(columnHeader())
+	w(l.columnHeader())
 	w(cmdBoldOff)
 	nl()
 
 	sp := prefs.Spacing
+	// A voided / cancelled order's lines print struck through (strike.go),
+	// always in the expanded format; strike_images off: each item under a
+	// reversed VOID tag.
+	struck := snap.Voided != "" && prefs.StrikeImages
+	if snap.Voided != "" {
+		prefs.Format = order.FormatExpanded
+	}
+	line := func(s string) { // a struck line is a picture of its own: end() adds no line feed after it
+		if struck {
+			buf.WriteString(strikeRaster(margin(s), true))
+			return
+		}
+		w(s)
+	}
+	end := func() {
+		if !struck {
+			nl()
+		}
+	}
+	delivery := isDelivery(snap)
+	if delivery { // the driver's copy: $0 choices main keeps off it
+		snap.Items = driverItems(snap.Items)
+	}
+	snap.Items = couponOrder(snap.Items)
 	if prefs.Format == order.FormatCondensed {
-		writeCondensedItems(w, nl, snap.Items, sp)
+		writeCondensedItems(w, nl, snap.Items, sp, delivery, l)
 	}
 	for i, item := range snap.Items {
 		if prefs.Format == order.FormatCondensed {
@@ -258,25 +313,43 @@ func buildFull(snap order.Snapshot, sc storeconfig.StoreContext, reroutedFrom st
 		if i > 0 {
 			w(feedDots(sp.ItemItem)) // between items, with or without modifiers
 		}
-		w(separator())
+		w(l.rule("-"))
 		nl()
+		if couponStarts(snap.Items, i) {
+			writeCouponHeader(w, nl, item.Coupon, l)
+		}
 		itemSum := int64(item.Quantity) * item.UnitPrice
 		size := strings.TrimSpace(item.Size)
-		w(cmdBoldOn)
-		if size != "" {
-			w(itemLine(item.Quantity, size, item.UnitPrice))
-		} else {
-			w(itemLine(item.Quantity, item.Name, item.UnitPrice))
-		}
-		w(cmdBoldOff)
-		nl()
-		if size != "" {
-			w(cmdLeft)
-			w("    " + item.Name)
+		if snap.Voided != "" && !struck {
+			w(cmdInvertOn + " " + snap.Voided + " " + cmdInvertOff)
 			nl()
 		}
+		w(cmdBoldOn)
+		head := item.Name
+		if size != "" {
+			head = size
+		}
+		for k, s := range l.receiptItemLines(item.Quantity, head, item.UnitPrice) {
+			if k > 0 {
+				w(cmdBoldOn)
+			}
+			line(s)
+			w(cmdBoldOff)
+			end()
+		}
+		if size != "" {
+			w(cmdLeft)
+			for _, s := range wrapped("    "+item.Name, l.cols, "    ") {
+				line(s)
+				end()
+			}
+		}
 
-		for j, mod := range item.Children {
+		mods := item.Children
+		if item.HasHalves() { // compact: whole, then "1st: …", then "2nd: …"
+			mods = receiptHalfMods(item)
+		}
+		for j, mod := range mods {
 			if j == 0 {
 				w(feedDots(sp.ItemMod))
 			} else {
@@ -291,22 +364,26 @@ func buildFull(snap order.Snapshot, sc storeconfig.StoreContext, reroutedFrom st
 			if side {
 				w(cmdBoldOn)
 			}
-			w(modifierLine(label, mod.UnitPrice))
+			for _, s := range l.receiptModLines(label, mod.UnitPrice) {
+				line(s)
+				end()
+			}
 			if side {
 				w(cmdBoldOff)
 			}
-			nl()
 			itemSum += mod.UnitPrice * int64(max(mod.Quantity, 1))
 		}
 		if strings.TrimSpace(item.Notes) != "" {
-			w("    Note: " + item.Notes)
-			nl()
+			for _, s := range wrapped("    Note: "+item.Notes, l.cols, "          ") {
+				line(s)
+				end()
+			}
 		}
-		w(rightAlign("Sum: "+dollars(itemSum), lineWidth))
+		w(rightAlign("Sum: "+dollars(itemSum), l.cols))
 		nl()
 	}
 
-	w(separator())
+	w(l.rule("-"))
 	nl()
 
 	// --- Fees ----------------------------------------------------------
@@ -318,19 +395,21 @@ func buildFull(snap order.Snapshot, sc storeconfig.StoreContext, reroutedFrom st
 		if strings.ToLower(snap.Fulfillment.Type) != "delivery" && strings.EqualFold(fee.Type, "delivery") {
 			continue
 		}
-		w(rightPair(label+":", dollars(fee.Amount)))
-		nl()
+		for _, s := range l.pairLines(label+":", dollars(fee.Amount)) {
+			w(s)
+			nl()
+		}
 	}
 
 	// --- Totals --------------------------------------------------------
-	w(rightPair("Subtotal:", dollars(snap.Money.Subtotal)))
+	w(l.rightPair("Subtotal:", dollars(snap.Money.Subtotal)))
 	nl()
 	if snap.Money.Tax > 0 {
-		w(rightPair("Tax:", dollars(snap.Money.Tax)))
+		w(l.rightPair("Tax:", dollars(snap.Money.Tax)))
 		nl()
 	}
 	if snap.Money.Tip > 0 {
-		w(rightPair("Tips :", dollars(snap.Money.Tip)))
+		w(l.rightPair("Tips :", dollars(snap.Money.Tip)))
 		nl()
 	}
 	for _, d := range snap.Money.Discounts {
@@ -338,22 +417,24 @@ func buildFull(snap order.Snapshot, sc storeconfig.StoreContext, reroutedFrom st
 		if label == "" {
 			label = d.Type
 		}
-		w(rightPair(label+":", "-"+dollars(d.Amount)))
-		nl()
+		for _, s := range l.pairLines(label+":", "-"+dollars(d.Amount)) {
+			w(s)
+			nl()
+		}
 	}
-	w(rightPair("Total:", dollars(snap.Money.Total)))
+	w(l.rightPair("Total:", dollars(snap.Money.Total)))
 
 	nl()
-	w(separator())
+	w(l.rule("-"))
 	nl()
 	w(cmdBoldOn)
 	w(cmdDoubleSz)
 	w(cmdCenter)
 	nl()
 	if cashDue > 0 {
-		w("Collect Cash: " + dollars(cashDue))
+		w(wrapJoin("Collect Cash: "+dollars(cashDue), l.big(), ""))
 	} else {
-		w("Order Total:" + dollars(snap.Money.Total))
+		w(wrapJoin("Order Total:"+dollars(snap.Money.Total), l.big(), ""))
 	}
 	w(cmdBoldOff)
 	w(cmdBaseSz)
@@ -367,10 +448,11 @@ func buildFull(snap order.Snapshot, sc storeconfig.StoreContext, reroutedFrom st
 		w(cmdBoldOn)
 		w(textSize(prefs.FooterSize))
 		w(cmdCenter)
-		w(footer)
+		w(wrapJoin(footer, l.sizeCols(prefs.FooterSize), ""))
 		w(cmdBoldOff)
 		w(cmdBaseSz)
 	}
+	buf.WriteString(poweredByFooter(l))
 	if prefs.ExtraPaper {
 		// v1's ending: cut, feed well past it, cut again.
 		w(cmdCut)
@@ -388,210 +470,33 @@ func buildFull(snap order.Snapshot, sc storeconfig.StoreContext, reroutedFrom st
 	return buf.Bytes()
 }
 
-// BuildStation renders a kitchen station ticket:
-//
-//	#1123                      (biggest)
-//	GONZALEZ, MARIA
-//	-----------------------------------------
-//	2 Pepperoni Pizza (Large)       (big, bold)
-//	  - Extra cheese             $2.00
-//	  - Note: well done
-//	-----------------------------------------
-//	ITEMS TO OTHER PRINTERS
-//	2 Buffalo Wings (10 pc)         (one size smaller)
-//
-// A REROUTED banner tops a ticket printed on a fallback printer, a scheduled
-// order says when it's for, items main couldn't route here are flagged
-// ** UNMATCHED **, and a food note sits under its item (the order's notes are
-// on the customer receipt only). Modifiers show a price only when they aren't
-// free. Default receipt settings; Build takes the store's (item and number
-// sizes).
-func BuildStation(snap order.Snapshot, t printer.Ticket) []byte {
-	return buildStation(snap, t, order.DefaultReceiptPrefs())
-}
-
-func buildStation(snap order.Snapshot, t printer.Ticket, prefs order.ReceiptPrefs) []byte {
-	var buf bytes.Buffer
-	w := func(s string) { buf.WriteString(s) }
-	nl := func() { buf.WriteString(cmdFeed) }
-
-	w(cmdInit)
-	w(cmdBaseSz)
-	if t.ReroutedFrom != "" {
-		writeRerouted(w, nl, t.ReroutedFrom)
-	}
-	if t.Void {
-		writeVoid(w, nl)
-	}
-	if t.Future { // 2.4.0: printed early for a future order
-		writeDoNotMake(w, nl)
-		writeFutureWhen(w, nl, snap)
-	}
-
-	// --- Order type, ticket number, customer (2.4.0: the type on top) -------
-	w(cmdCenter)
-	w(cmdBoldOn)
-	if t := orderTypeLine(snap); t != "" {
-		w(cmdDoubleSz)
-		w(t)
-		nl()
-	}
-	w(textSize(prefs.KitchenNumberSize))
-	writeOrderNumbers(w, nl, snap)
-	if name := strings.TrimSpace(snap.Customer.DisplayName); name != "" {
-		w(cmdDoubleSz)
-		w(lastFirst(name))
-		nl()
-	}
-	w(cmdBaseSz)
-	if snap.Fulfillment.PromisedAt != nil && !snap.Fulfillment.PromisedAt.IsZero() && !t.Future {
-		w(cmdInvertOn)
-		w(" FUTURE " + snap.Fulfillment.PromisedAt.Format("Jan 2  3:04 PM") + " ")
-		w(cmdInvertOff)
-		nl()
-	}
-	w(cmdBoldOff)
-	w(cmdLeft)
-	w(strings.Repeat("-", stationWidth))
+// writeVoided is a voided / cancelled order's banner under its number:
+// "VOID" (or "CANCELLED") reversed and double size, then a line saying
+// nothing on it is charged.
+func writeVoided(w func(string), nl func(), label string, l layout) {
 	nl()
-
-	// --- This station's items ----------------------------------------------
-	sp := prefs.Spacing
-	for i, it := range t.Mine {
-		if i > 0 {
-			w(feedDots(sp.ItemItem)) // between items, with or without modifiers
-		}
-		w(cmdBoldOn)
-		w(textSize(prefs.KitchenItemSize))
-		label := fmt.Sprintf("%d %s", it.Quantity, itemName(it))
-		if t.Void {
-			label = "VOID " + label
-		}
-		for _, line := range wordWrap(label, itemWidth(prefs.KitchenItemSize), "  ") {
-			w(line)
-			nl()
-		}
-		w(cmdBaseSz)
-		w(cmdBoldOff)
-		if it.Routing != order.RoutingMatched || it.PrinterID != t.TargetID {
-			w(cmdInvertOn)
-			w(" ** UNMATCHED ** ")
-			w(cmdInvertOff)
-			nl()
-		}
-		for j, mod := range it.Children {
-			if j == 0 {
-				w(feedDots(sp.ItemMod))
-			} else {
-				w(feedDots(sp.ModMod))
-			}
-			label := mod.Name
-			if mod.Quantity > 1 {
-				label = fmt.Sprintf("(x%d) %s", mod.Quantity, label)
-			}
-			w(stationModifierLine(label, mod.UnitPrice))
-			nl()
-		}
-		if note := strings.TrimSpace(it.Notes); note != "" {
-			w(cmdBoldOn)
-			for _, line := range wordWrap("  - Note: "+note, stationWidth, "          ") {
-				w(line)
-				nl()
-			}
-			w(cmdBoldOff)
-		}
-	}
-	w(strings.Repeat("-", stationWidth))
-	nl()
-
-	// --- The rest of the order, one size smaller ---------------------------------
-	if len(t.Others) > 0 {
-		w(cmdNormalSz)
-		w(cmdBoldOn)
-		w("ITEMS TO OTHER PRINTERS")
-		w(cmdBoldOff)
-		nl()
-		for _, it := range t.Others {
-			for _, line := range wordWrap(fmt.Sprintf("%d %s", it.Quantity, itemName(it)), stationWidth, "  ") {
-				w(line)
-				nl()
-			}
-		}
-		w(cmdBaseSz)
-	}
-	if t.Future {
-		w(cmdCenter)
-		writeDoNotMake(w, nl)
-		w(cmdLeft)
-	}
-
-	for i := 0; i < 4; i++ {
-		nl()
-	}
-	w(cmdCut)
-	return buf.Bytes()
-}
-
-// writeDoNotMake prints the inverted "--- DO NOT MAKE ---" bar a future
-// order's early kitchen ticket has on top and at the bottom (2.4.0).
-func writeDoNotMake(w func(string), nl func()) {
 	w(cmdCenter)
 	w(cmdBoldOn)
 	w(cmdDoubleSz)
-	w(cmdInvertOn)
-	w(" --- DO NOT MAKE --- ")
-	w(cmdInvertOff)
+	w(cmdInvertOn + "  " + label + "  " + cmdInvertOff)
 	w(cmdBaseSz)
 	w(cmdBoldOff)
 	nl()
-}
-
-// writeFutureWhen prints when a future order is due under the DO NOT MAKE
-// bar: "PICKUP AT 7:30 PM" / "DELIVERY AT 7:30 PM", and the day under it
-// when it isn't the day it was placed.
-func writeFutureWhen(w func(string), nl func(), snap order.Snapshot) {
-	p := snap.Fulfillment.PromisedAt
-	if p == nil || p.IsZero() {
-		return
-	}
-	kind := "PICKUP"
-	if strings.EqualFold(strings.TrimSpace(snap.Fulfillment.Type), "delivery") {
-		kind = "DELIVERY"
-	}
-	w(cmdCenter)
-	w(cmdBoldOn)
-	w(cmdDoubleSz)
-	w(kind + " AT " + p.Format("3:04 PM"))
-	nl()
-	if pl := snap.PlacedAt; !pl.IsZero() && (pl.YearDay() != p.YearDay() || pl.Year() != p.Year()) {
-		w(strings.ToUpper(p.Format("Mon Jan 2")))
-		nl()
-	}
-	w(cmdBaseSz)
-	w(cmdBoldOff)
+	w(wrapJoin("Nothing on this order is charged", l.cols, ""))
 	nl()
 }
 
 // futureReceiptTop puts an inverted FUTURE bar at the very top of a
 // customer receipt printed early for a future order (2.4.0), right after
 // the printer reset that starts it.
-func futureReceiptTop(out []byte) []byte {
-	bar := cmdCenter + cmdBoldOn + cmdDoubleSz + cmdInvertOn + "   FUTURE   " + cmdInvertOff + cmdBaseSz + cmdBoldOff + cmdFeed + cmdFeed
+func futureReceiptTop(out []byte, l layout) []byte {
+	bar := cmdCenter + cmdBoldOn + cmdDoubleSz + cmdInvertOn + pad("FUTURE", min(12, l.big())) + cmdInvertOff + cmdBaseSz + cmdBoldOff + cmdFeed + cmdFeed
 	head := cmdInit + cmdBaseSz
 	if !bytes.HasPrefix(out, []byte(head)) {
 		return append([]byte(bar), out...)
 	}
 	return append(append([]byte(head), bar...), out[len(head):]...)
 }
-
-// The kitchen ticket uses the full 80 mm line: 48 characters in the base font,
-// 24 at double size, 16 at quad. (The customer receipt keeps v1's 41-column
-// layout.)
-const (
-	stationWidth = 48
-	bigLineWidth = 24
-	xlLineWidth  = 16
-)
 
 // textSize maps a receipt-settings size onto its ESC/POS size command:
 // normal = the base font (double height), large = double, xlarge = quad,
@@ -610,16 +515,7 @@ func textSize(size string) string {
 }
 
 // itemWidth is how many characters of a kitchen item fit on a line at size.
-func itemWidth(size string) int {
-	switch size {
-	case order.SizeNormal:
-		return stationWidth
-	case order.SizeXLarge:
-		return xlLineWidth
-	default:
-		return bigLineWidth
-	}
-}
+func (l layout) itemWidth(size string) int { return l.sizeCols(size) }
 
 // wordWrap breaks text into lines of at most width characters at spaces (a
 // word longer than a line is split), continuation lines starting with indent —
@@ -668,56 +564,60 @@ func wordWrap(text string, width int, indent string) []string {
 	return lines
 }
 
-// stationModifierLine is "  - Extra cheese" with the price right-aligned when
-// the modifier isn't free.
-func stationModifierLine(name string, priceCents int64) string {
-	label := "  - " + name
-	if priceCents == 0 {
-		return label
-	}
-	return leftRight(truncRunes(label, stationWidth-9), dollars(priceCents), stationWidth)
-}
-
 // writeOrderNumbers prints the big header number: "#<kitchen number>" (it took
 // the place of the vendor's order number on the v1 receipt — staff call orders
 // by it, and the tablet shows the same number); "#<vendor order id>" only for
 // an order that has none yet. Expects quad size on entry and leaves it on.
-func writeOrderNumbers(w func(string), nl func(), snap order.Snapshot) {
+func writeOrderNumbers(w func(string), nl func(), snap order.Snapshot, l layout) {
 	if snap.KitchenNumber == nil {
-		w("#" + snap.SourceEventID)
+		w(wrapJoin("#"+snap.SourceEventID, l.xl(), ""))
 	} else {
 		w(fmt.Sprintf("#%d", *snap.KitchenNumber))
 	}
 	nl()
 }
 
-// writeRerouted prints the inverted "REROUTED from X" banner that tops a
-// ticket printed on a fallback printer.
-func writeRerouted(w func(string), nl func(), from string) {
-	w(cmdCenter)
-	w(cmdBoldOn)
-	w(cmdDoubleSz)
-	w(cmdInvertOn)
-	w(" REROUTED from " + strings.ToUpper(from) + " ")
-	w(cmdInvertOff)
-	w(cmdBaseSz)
-	w(cmdBoldOff)
-	nl()
-	nl()
+// The reroute bands are as wide as the printer the ticket landed on prints a
+// double-size line (24 / 21 / 16 characters: layout.big), so a band never
+// wraps on it; the text wraps two characters narrower so the black band
+// always has a space either side of it.
+
+// RerouteLines is the reroute banner's text for a printer of cols columns,
+// one band per line: the English line, then its Spanish counterpart (the
+// owner, 2026-11-12: like ADD / AGREGAR and REMOVE / QUITAR), each wrapped
+// to the band: "REROUTED FROM PIZZA", "REDIRIGIDO DE PIZZA".
+func RerouteLines(from string, cols int) []string {
+	text := layoutFor(cols).big() - 2
+	name := strings.ToUpper(strings.Join(strings.Fields(cleanName(from)), " "))
+	var out []string
+	for _, l := range wordWrap("REROUTED FROM "+name, text, "") {
+		out = append(out, printable(l))
+	}
+	for _, l := range wordWrap("REDIRIGIDO DE "+name, text, "") {
+		out = append(out, printable(l))
+	}
+	return out
 }
 
-// writeVoid prints the inverted "VOID" banner that tops a void ticket (lines
-// voided at the POS terminal, 00019).
-func writeVoid(w func(string), nl func()) {
-	w(cmdCenter)
-	w(cmdBoldOn)
-	w(cmdDoubleSz)
-	w(cmdInvertOn)
-	w(" VOID - REMOVED ")
-	w(cmdInvertOff)
-	w(cmdBaseSz)
-	w(cmdBoldOff)
-	nl()
+// writeRerouted prints the reroute banner on any ticket or slip that printed
+// on a stand-in printer (spec §4.42): each RerouteLines line as a band like
+// the change ticket's ADD / REMOVE ones — centred, bold, double size,
+// reverse (white on black), padded to the band width — then a blank line.
+// It leaves the text left-aligned at the base size, bold off.
+func writeRerouted(w func(string), nl func(), from string, lay layout) {
+	for _, l := range RerouteLines(from, lay.cols) {
+		w(cmdCenter)
+		w(cmdBoldOn)
+		w(cmdDoubleSz)
+		w(cmdInvertOn)
+		w(pad(l, lay.big()))
+		w(cmdInvertOff)
+		w(cmdSizeReset)
+		w(cmdBaseSz)
+		w(cmdBoldOff)
+		nl()
+	}
+	w(cmdLeft)
 	nl()
 }
 
@@ -776,8 +676,6 @@ func firstCardPayment(payments []order.PaymentSummary) order.PaymentSummary {
 	return order.PaymentSummary{}
 }
 
-func separator() string { return strings.Repeat("-", lineWidth) }
-
 // feedDots is ESC J n — feed n dots of paper (the line before it has already
 // ended, so it only adds space); "" for 0, so the default spacing prints the
 // same bytes as before the setting.
@@ -800,6 +698,27 @@ func leftRight(left, right string, width int) string {
 	return left + strings.Repeat(" ", space) + right
 }
 
+// leftRightLines is leftRight when both fit on the line, else the left on
+// its own line(s) and the right under it, right-aligned (a narrow printer).
+func leftRightLines(left, right string, width int) []string {
+	if utf8.RuneCountInString(left)+1+utf8.RuneCountInString(right) <= width {
+		return []string{leftRight(left, right, width)}
+	}
+	return append(wrapped(left, width, "  "), rightAlign(right, width))
+}
+
+// bigName is a name printed large (a driver's, a printer's): triple size
+// when every word fits the printer's triple-size line, else double (a word
+// never splits); the size command and its line width.
+func bigName(text string, l layout) (string, int) {
+	for _, word := range strings.Fields(text) {
+		if utf8.RuneCountInString(word) > l.xl() {
+			return cmdDoubleSz, l.big()
+		}
+	}
+	return cmdQuadSz, l.xl()
+}
+
 func rightAlign(s string, width int) string {
 	if len(s) >= width {
 		return s
@@ -807,25 +726,26 @@ func rightAlign(s string, width int) string {
 	return strings.Repeat(" ", width-len(s)) + s
 }
 
-func rightPair(label, value string) string {
-	return leftRight(strings.Repeat(" ", 19)+label, value, lineWidth)
+// rightPair is a totals row: the label right-aligned so the amount ends the line.
+func (l layout) rightPair(label, value string) string {
+	return leftRight(strings.Repeat(" ", l.pairIndent())+label, value, l.cols)
 }
 
-func columnHeader() string {
-	return fmt.Sprintf("%-3s %-29s %7s", "Qty", "Item", "Price")
+func (l layout) columnHeader() string {
+	return fmt.Sprintf("%-3s %-*s %7s", "Qty", l.nameW(), "Item", "Price")
 }
 
-func itemLine(qty int, name string, unitCents int64) string {
-	return fmt.Sprintf("%-3d %-29s %7s", qty, truncRunes(name, 29), dollars(unitCents))
+func (l layout) itemLine(qty int, name string, unitCents int64) string {
+	return fmt.Sprintf("%-3d %-*s %7s", qty, l.nameW(), truncRunes(name, l.nameW()), dollars(unitCents))
 }
 
 // modifierLine is a modifier under its item; free modifiers carry no price.
-func modifierLine(name string, priceCents int64) string {
+func (l layout) modifierLine(name string, priceCents int64) string {
 	indent := "     "
 	if priceCents == 0 {
-		return indent + truncRunes(name, 36)
+		return indent + truncRunes(name, l.freeModW())
 	}
-	return fmt.Sprintf("%s%-28s %7s", indent, truncRunes(name, 28), dollars(priceCents))
+	return fmt.Sprintf("%s%-*s %7s", indent, l.modW(), truncRunes(name, l.modW()), dollars(priceCents))
 }
 
 // lastFirst turns "Maria Gonzalez" into "GONZALEZ, MARIA" (the v1 receipt's
@@ -853,34 +773,59 @@ func truncRunes(s string, n int) string {
 // lines add up to the subtotal), then only its first modifier (vendors and
 // the POS list the main choice first - the soda flavour, the pizza's
 // topping) without a price, then its note.
-func writeCondensedItems(w func(string), nl func(), items []order.LineItem, sp order.LineSpacing) {
+//
+// On a delivery (driver) the hidden children are already gone
+// (driverItems), so the first modifier is the first one the driver may see,
+// and every child stamped show_on_driver_ticket follows it: the driver must
+// see the drinks.
+func writeCondensedItems(w func(string), nl func(), items []order.LineItem, sp order.LineSpacing, driver bool, lay layout) {
 	for i, item := range items {
 		if i > 0 {
 			w(feedDots(sp.ItemItem))
+		}
+		if couponStarts(items, i) {
+			writeCouponHeader(w, nl, item.Coupon, lay)
 		}
 		sum := int64(item.Quantity) * item.UnitPrice
 		for _, mod := range item.Children {
 			sum += mod.UnitPrice * int64(max(mod.Quantity, 1))
 		}
 		name := strings.TrimSpace(strings.TrimSpace(item.Size) + " " + strings.TrimSpace(item.Name))
-		w(cmdBoldOn)
-		w(itemLine(item.Quantity, name, sum))
-		w(cmdBoldOff)
-		nl()
-		if len(item.Children) > 0 {
-			w(feedDots(sp.ItemMod))
-			mod := item.Children[0]
-			label := mod.Name
-			if mod.Quantity > 1 {
-				label = fmt.Sprintf("(x%d) %s", mod.Quantity, label)
-			}
-			w(cmdLeft)
-			w("    - " + truncRunes(label, lineWidth-6))
+		for _, l := range lay.receiptItemLines(item.Quantity, name, sum) {
+			w(cmdBoldOn)
+			w(l)
+			w(cmdBoldOff)
 			nl()
 		}
+		if item.HasHalves() { // half and half: the kitchen summary instead
+			w(feedDots(sp.ItemMod))
+			w(cmdLeft)
+			for _, line := range wordWrap("    - "+glue(halfText(item)), lay.cols, "      ") {
+				w(printable(line))
+				nl()
+			}
+		} else if len(item.Children) > 0 {
+			w(feedDots(sp.ItemMod))
+			for k, mod := range item.Children {
+				if k > 0 && !(driver && mod.ShownOnDriverTicket()) {
+					continue
+				}
+				label := mod.Name
+				if mod.Quantity > 1 {
+					label = fmt.Sprintf("(x%d) %s", mod.Quantity, label)
+				}
+				w(cmdLeft)
+				for _, l := range wrapped("    - "+label, lay.cols, "      ") {
+					w(l)
+					nl()
+				}
+			}
+		}
 		if strings.TrimSpace(item.Notes) != "" {
-			w("    Note: " + item.Notes)
-			nl()
+			for _, l := range wrapped("    Note: "+item.Notes, lay.cols, "          ") {
+				w(l)
+				nl()
+			}
 		}
 	}
 }
@@ -895,7 +840,7 @@ func orderTypeLine(snap order.Snapshot) string {
 	case "pickup":
 		return "PICKUP"
 	case "dine_in":
-		if snap.Source == order.SourcePOS {
+		if snap.Source == order.SourceCounter {
 			return "COUNTER"
 		}
 		return "DINE IN"
@@ -915,4 +860,88 @@ func formatPhone(p string) string {
 		return fmt.Sprintf("%s-%s-%s", digits[:3], digits[3:6], digits[6:])
 	}
 	return p
+}
+
+// isDelivery: the receipt is the delivery ticket (the driver's copy).
+func isDelivery(snap order.Snapshot) bool {
+	return strings.EqualFold(strings.TrimSpace(snap.Fulfillment.Type), "delivery")
+}
+
+// driverItems are a delivery's lines without the modifier children the
+// driver doesn't need: a $0 choice stamped show_on_driver_ticket false
+// (order.LineItem.HiddenOnDriverTicket). Unstamped children (vendor and
+// older orders) stay, so those print exactly as before. A copy.
+func driverItems(items []order.LineItem) []order.LineItem {
+	out := make([]order.LineItem, len(items))
+	for i, it := range items {
+		hidden := false
+		for _, c := range it.Children {
+			hidden = hidden || c.HiddenOnDriverTicket()
+		}
+		if hidden {
+			kids := make([]order.LineItem, 0, len(it.Children))
+			for _, c := range it.Children {
+				if !c.HiddenOnDriverTicket() {
+					kids = append(kids, c)
+				}
+			}
+			it.Children = kids
+		}
+		out[i] = it
+	}
+	return out
+}
+
+// Coupons (the owner, 2026-11-12): a coupon re-prices its lines (never a
+// discount line); the receipt prints the coupon's name over its lines, which
+// sit together.
+
+// couponOrder moves each coupon's lines up next to its first one (the rest
+// keep their order).
+func couponOrder(items []order.LineItem) []order.LineItem {
+	has := false
+	for _, it := range items {
+		has = has || it.Coupon != ""
+	}
+	if !has {
+		return items
+	}
+	out := make([]order.LineItem, 0, len(items))
+	done := map[int]bool{}
+	for i, it := range items {
+		if it.Coupon == "" {
+			out = append(out, it)
+			continue
+		}
+		if done[i] {
+			continue
+		}
+		for j := i; j < len(items); j++ {
+			if !done[j] && items[j].Coupon != "" && items[j].CouponNo == it.CouponNo && items[j].Coupon == it.Coupon {
+				out = append(out, items[j])
+				done[j] = true
+			}
+		}
+	}
+	return out
+}
+
+// couponStarts: line i is the first of its coupon's lines.
+func couponStarts(items []order.LineItem, i int) bool {
+	it := items[i]
+	if it.Coupon == "" {
+		return false
+	}
+	return i == 0 || items[i-1].Coupon != it.Coupon || items[i-1].CouponNo != it.CouponNo
+}
+
+// writeCouponHeader is the band over a coupon's lines: "** 8" Sub Combo **".
+func writeCouponHeader(w func(string), nl func(), name string, lay layout) {
+	w(cmdBoldOn)
+	w(cmdLeft)
+	for _, l := range wrapped("** "+strings.TrimSpace(name)+" **", lay.cols, "   ") {
+		w(printable(l))
+		nl()
+	}
+	w(cmdBoldOff)
 }

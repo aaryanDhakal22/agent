@@ -68,8 +68,8 @@ func reportFor(t *testing.T, svc *Service, driverID string) *order.DriverReport 
 func TestNotDeliveredRetryReleaseAndDeliverLater(t *testing.T) {
 	ctx := context.Background()
 	svc, repo, events := newPoolService(t)
-	ann, _ := svc.CreateDriver(ctx, "Ann", "")
-	bob, _ := svc.CreateDriver(ctx, "Bob", "")
+	ann, _ := svc.CreateDriver(ctx, "Ann")
+	bob, _ := svc.CreateDriver(ctx, "Bob")
 	svc.ClockIn(ctx, ann.ID)
 	svc.ClockIn(ctx, bob.ID)
 	a := readyDelivery(t, svc, 5*time.Minute)
@@ -103,14 +103,6 @@ func TestNotDeliveredRetryReleaseAndDeliverLater(t *testing.T) {
 	if len(nds) != 1 || nds[0].OrderID != a || nds[0].Action != "retry" || nds[0].Status != order.StateReady ||
 		nds[0].DriverID != ann.ID || nds[0].DriverName != "Ann" || nds[0].AgentStatus == nil || !nds[0].AgentStatus.CameBack {
 		t.Fatalf("floor events: %+v", nds)
-	}
-	feed := feedOf(t, svc)
-	last := feed[len(feed)-1]
-	var fd order.OrderNotDeliveredData
-	_ = json.Unmarshal(last.Data, &fd)
-	if last.Type != order.FeedOrderNotDelivered || fd.OrderID != a || fd.ExtRef != nil || fd.Action != "retry" ||
-		fd.DriverID != ann.ID || fd.DriverPosNumber != nil {
-		t.Fatalf("feed: %s %s", last.Type, last.Data)
 	}
 
 	// Again on the same order: it is no longer out.
@@ -193,7 +185,7 @@ func TestNotDeliveredRetryReleaseAndDeliverLater(t *testing.T) {
 func TestNotDeliveredCancelAfterReturnAndLastStop(t *testing.T) {
 	ctx := context.Background()
 	svc, repo, _ := newPoolService(t)
-	ann, _ := svc.CreateDriver(ctx, "Ann", "")
+	ann, _ := svc.CreateDriver(ctx, "Ann")
 	svc.ClockIn(ctx, ann.ID)
 	a := readyDelivery(t, svc, 5*time.Minute)
 	if _, err := svc.AssignDriver(ctx, ann.ID, []string{a}); err != nil {
@@ -286,7 +278,7 @@ func TestNotDeliveredRefusals(t *testing.T) {
 		t.Fatalf("pickup: %v", err)
 	}
 	// A delivery of a closed batch is history.
-	ann, _ := svc.CreateDriver(ctx, "Ann", "")
+	ann, _ := svc.CreateDriver(ctx, "Ann")
 	svc.ClockIn(ctx, ann.ID)
 	svc.AssignDriver(ctx, ann.ID, []string{a})
 	svc.DriverReturned(ctx, ann.ID)
@@ -295,72 +287,5 @@ func TestNotDeliveredRefusals(t *testing.T) {
 	}
 	if _, err := svc.NotDelivered(ctx, a, order.NotDeliveredCancel); !errors.Is(err, order.ErrNotOutOrDelivered) {
 		t.Fatalf("closed batch: %v", err)
-	}
-}
-
-// A POS delivery: the hub hears order.not_delivered with the check and the
-// driver number; nothing reaches main; the POS still showing that driver is
-// not mirrored back, a later assignment at the terminal is.
-func TestNotDeliveredPOS(t *testing.T) {
-	ctx := context.Background()
-	svc, repo, _, _, _ := newIntegService(t)
-	ann, _ := svc.CreateDriver(ctx, "Ann", "12")
-	svc.ClockIn(ctx, ann.ID)
-	e := extOrder("delivery", "a")
-	num := "12"
-	e.DriverPosNumber = &num
-	res := mustUpsert(t, svc, "100", e)
-	if so := storedOf(t, svc, res.OrderID); so.Status.State != order.StateOnDelivery {
-		t.Fatalf("mirror: %+v", so.Status)
-	}
-	floorBefore, _ := repo.ListUnsyncedEvents(ctx, 1000)
-
-	so, err := svc.NotDelivered(ctx, res.OrderID, order.NotDeliveredRetry)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !so.Status.CameBack || so.Status.State != order.StateReady {
-		t.Fatalf("POS retry: %+v", so.Status)
-	}
-	if got := driverStatus(t, svc, ann.ID); got != order.DriverAvailable {
-		t.Fatalf("Ann = %s", got)
-	}
-	feed := feedOf(t, svc)
-	last := feed[len(feed)-1]
-	var fd order.OrderNotDeliveredData
-	_ = json.Unmarshal(last.Data, &fd)
-	if last.Type != order.FeedOrderNotDelivered || fd.ExtRef == nil || *fd.ExtRef != "100" || fd.Source != order.SourcePOS ||
-		fd.DriverPosNumber == nil || *fd.DriverPosNumber != "12" || fd.Action != "retry" || fd.DriverName != "Ann" {
-		t.Fatalf("feed: %s", last.Data)
-	}
-	floorAfter, _ := repo.ListUnsyncedEvents(ctx, 1000)
-	for _, ev := range floorAfter[len(floorBefore):] {
-		if ev.Type == order.FloorEventNotDelivered || ev.OrderID == res.OrderID {
-			t.Fatalf("a POS order reached main: %s %s", ev.Type, ev.Payload)
-		}
-	}
-
-	// The POS still shows #12 (another change on the check): not sent again.
-	e.Hash = "a2"
-	mustUpsert(t, svc, "100", e)
-	if so := storedOf(t, svc, res.OrderID); so.Status.State != order.StateReady || !so.Status.CameBack {
-		t.Fatalf("stale #12 mirrored: %+v", so.Status)
-	}
-	// The hub cleared it; then the cashier assigns #12 again: mirrored.
-	e.Hash, e.DriverPosNumber = "a3", nil
-	mustUpsert(t, svc, "100", e)
-	e.Hash, e.DriverPosNumber = "a4", &num
-	mustUpsert(t, svc, "100", e)
-	if so := storedOf(t, svc, res.OrderID); so.Status.State != order.StateOnDelivery || so.Status.CameBack || so.Status.DriverID != ann.ID {
-		t.Fatalf("re-assigned at the terminal: %+v", so.Status)
-	}
-
-	// Cancel this time; a different number set at the POS before the clear
-	// would mirror, but a cancelled order is finished.
-	if _, err := svc.NotDelivered(ctx, res.OrderID, order.NotDeliveredCancel); err != nil {
-		t.Fatal(err)
-	}
-	if so := storedOf(t, svc, res.OrderID); so.Status.State != order.StateCancelled {
-		t.Fatalf("POS cancel: %+v", so.Status)
 	}
 }

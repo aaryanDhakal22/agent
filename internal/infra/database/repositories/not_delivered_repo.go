@@ -15,51 +15,15 @@ import (
 
 // Not delivered (2.2.1): a delivery that came back with its driver. Same
 // floor rule as every transition: one transaction that changes the order,
-// the driver and writes main's floor event + the hub's feed event.
+// the driver and writes main's floor event.
 
-// recordNotDelivered appends the order.not_delivered floor event (never for
-// a local-only POS order).
+// recordNotDelivered appends the order.not_delivered floor event.
 func recordNotDelivered(ctx context.Context, q *models.Queries, so order.StoredOrder, action, driverID, driverName string, auto bool, at time.Time) error {
-	if so.Status.LocalOnly {
-		return nil
-	}
 	st := so.Status
 	ev := order.NotDeliveredEvent{EventID: uuid.NewString(), Type: order.FloorEventNotDelivered, OrderID: so.Order.ID,
 		Action: action, Status: so.Status.State, DriverID: driverID, DriverName: driverName, Auto: auto,
 		At: at.UTC().Truncate(time.Millisecond), BatchID: so.Status.BatchID, AgentStatus: &st}
 	return insertEvent(ctx, q, ev.EventID, so.Order.ID, ev.Type, at, ev)
-}
-
-// markCameBackPOS: for a POS check leaving its driver, forget the driver
-// number the POS showed, so a later assignment at the terminal mirrors again —
-// except the very number it came back from while the POS still shows it (the
-// hub clears it from the order.not_delivered feed event; see
-// order.CameBackMark). Returns that number (nil when none). Not a POS check:
-// nothing, nil.
-func markCameBackPOS(ctx context.Context, q *models.Queries, so order.StoredOrder, driverPos string) (*string, error) {
-	var posNum *string
-	if driverPos != "" {
-		posNum = &driverPos
-	}
-	if !so.IsPOS() {
-		return posNum, nil
-	}
-	row, err := q.GetOrderByID(ctx, so.Order.ID)
-	if err != nil {
-		return nil, err
-	}
-	if posNum == nil && row.ExtDriverPos != "" && row.ExtDriverPos[:1] != order.CameBackMark {
-		v := row.ExtDriverPos // the driver has no number now: the one the POS showed
-		posNum = &v
-	}
-	mark := ""
-	if posNum != nil {
-		mark = order.CameBackMark + *posNum
-	}
-	if err := q.SetExtDriverPos(ctx, models.SetExtDriverPosParams{ExtDriverPos: mark, PosDriverNote: "", ID: so.Order.ID}); err != nil {
-		return nil, err
-	}
-	return posNum, nil
 }
 
 // NotDelivered — see order.FloorRepository.
@@ -114,46 +78,16 @@ func (r *OrderRepository) NotDelivered(ctx context.Context, id, action string) (
 				return err
 			}
 		}
-		if hasDriver && st == order.StateOnDelivery && drv.Active && drv.Status == order.DriverOut {
-			left, err := q.CountOnDeliveryByDriver(ctx, sql.NullString{String: drv.ID, Valid: true})
-			if err != nil {
+		if hasDriver && st == order.StateOnDelivery {
+			if returnedDriver, err = returnIfRunDone(ctx, q, drv, now); err != nil {
 				return err
 			}
-			if left == 0 {
-				pos, err := q.NextDriverPosition(ctx)
-				if err != nil {
-					return err
-				}
-				if err := q.SetDriverReturned(ctx, models.SetDriverReturnedParams{LastReturnedAt: nullTS(now), Position: pos, ID: drv.ID}); err != nil {
-					return err
-				}
-				if err := clockOutIfResetPassed(ctx, q, drv.ID, now); err != nil {
-					return err
-				}
-				if err := recordRoster(ctx, q, now); err != nil {
-					return err
-				}
-				returnedDriver = true
-			}
-		}
-
-		driverPos := ""
-		if hasDriver {
-			driverPos = drv.PosNumber
-		}
-		posNum, err := markCameBackPOS(ctx, q, so, driverPos)
-		if err != nil {
-			return err
 		}
 
 		if fresh, err = loadOrder(ctx, q, id); err != nil {
 			return err
 		}
-		if err := recordNotDelivered(ctx, q, fresh, action, fromID, fromName, false, now); err != nil {
-			return err
-		}
-		return insertFeed(ctx, q, order.FeedOrderNotDelivered, now, order.OrderNotDeliveredData{
-			FeedOrderRef: order.RefOf(fresh), Action: action, DriverID: fromID, DriverName: fromName, DriverPosNumber: posNum})
+		return recordNotDelivered(ctx, q, fresh, action, fromID, fromName, false, now)
 	})
 	if err != nil {
 		return nil, false, err

@@ -15,6 +15,59 @@ type Batch struct {
 	OpenedAt   time.Time  `json:"opened_at"`
 	ClosedAt   *time.Time `json:"closed_at,omitempty"`
 	OrderCount int64      `json:"order_count"`
+	// ClearedDrafts: the terminals' shared drafts Close batch deleted (their
+	// removal is announced; never on the wire).
+	ClearedDrafts []string `json:"-"`
+	// ClosedDrawers: the terminal drawer sessions Close batch closed (not
+	// counted, flagged; contract 2.10k). ZPending: a Z report was queued for
+	// this batch (built right after, contract 2.10l).
+	ClosedDrawers []string `json:"-"`
+	ZPending      bool     `json:"-"`
+	// Unsettled: the Unsettled Check List at the close (contract 2.10s §4;
+	// nil when not a close).
+	Unsettled *UnsettledList `json:"-"`
+}
+
+// Close kinds (the Z report's close_kind): Close batch by hand, or the Pi's
+// auto-close.
+const (
+	CloseManual = "manual"
+	CloseAuto   = "auto"
+)
+
+type closeKindKey struct{}
+
+// WithCloseKind tells CloseBatch how it was started (the Z report).
+func WithCloseKind(ctx context.Context, kind string) context.Context {
+	return context.WithValue(ctx, closeKindKey{}, kind)
+}
+
+// CloseKindOf is the close kind on ctx (CloseManual when none).
+func CloseKindOf(ctx context.Context) string {
+	if k, ok := ctx.Value(closeKindKey{}).(string); ok && k != "" {
+		return k
+	}
+	return CloseManual
+}
+
+type closeTriggerKey struct{}
+
+// WithCloseTrigger tells CloseBatch who started it (the batch.closes metric:
+// terminal | tablet | web | auto).
+func WithCloseTrigger(ctx context.Context, trigger string) context.Context {
+	return context.WithValue(ctx, closeTriggerKey{}, trigger)
+}
+
+// CloseTriggerOf is the trigger on ctx ("auto" for an auto-close kind, else
+// "tablet" when none).
+func CloseTriggerOf(ctx context.Context) string {
+	if t, ok := ctx.Value(closeTriggerKey{}).(string); ok && t != "" {
+		return t
+	}
+	if CloseKindOf(ctx) == CloseAuto {
+		return "auto"
+	}
+	return "tablet"
 }
 
 // Driver statuses: off = clocked out (not in the queue), available = clocked
@@ -36,9 +89,6 @@ type Driver struct {
 	Deliveries     int64      `json:"deliveries"`
 	// ClockedInAt is the start of the driver's open shift (nil when off).
 	ClockedInAt *time.Time `json:"clocked_in_at,omitempty"`
-	// PosNumber is the driver's login number on the store's POS (2.1.0) —
-	// how the hub matches drivers, never by name.
-	PosNumber string `json:"pos_number,omitempty"`
 	// PushoverDevice (2.3.7) is the driver's phone in Pushover: Send Out
 	// pushes them the route ("" = none).
 	PushoverDevice string `json:"pushover_device,omitempty"`
@@ -66,7 +116,28 @@ const (
 	FloorEventDriverShift   = "driver.shift"
 	// FloorEventNotDelivered (2.2.1): a delivery came back with its driver.
 	FloorEventNotDelivered = "order.not_delivered"
+	// FloorEventOrderTip (2.5.0): ADD TIP on a card channel order - the
+	// whole tip added after the order (absolute, so a replay is harmless).
+	FloorEventOrderTip = "order.tip"
+	// FloorEventBatchClosed (2.5.0): Close batch - main charges every card
+	// hold left in the batch.
+	FloorEventBatchClosed = "batch.closed"
 )
+
+// Cancel reasons (2.5.0 CANCEL ORDER on a channel order; order.status
+// cancelled carries one so main applies it after accept too).
+const (
+	CancelCustomerAsked  = "customer_asked"
+	CancelCouldntDeliver = "couldnt_deliver"
+	CancelOther          = "other"
+	MaxCancelNoteRunes   = 140
+	MaxAddedTipCents     = 50000
+)
+
+// ValidCancelReason reports whether r is one of the cancel reasons.
+func ValidCancelReason(r string) bool {
+	return r == CancelCustomerAsked || r == CancelCouldntDeliver || r == CancelOther
+}
 
 // FloorEvent is one change to sync to main. Payload is the complete JSON sent
 // (it carries its own event_id + type + at, so main can dedupe on event_id).
@@ -77,6 +148,10 @@ type FloorEvent struct {
 	Payload  json.RawMessage `json:"payload"`
 	At       time.Time       `json:"at"`
 	Attempts int64           `json:"attempts"`
+	// Subject (contract 2.4e): what the event is about ("" = nothing held).
+	Subject string `json:"subject,omitempty"`
+	// Refusals: how often main refused it (a kept event).
+	Refusals int64 `json:"refusals,omitempty"`
 }
 
 // OrderStatusEvent is the payload of an order.status floor event.
@@ -90,7 +165,10 @@ type OrderStatusEvent struct {
 	EstimatedReadyAt *time.Time `json:"estimated_ready_at,omitempty"`
 	DriverName       string     `json:"driver_name,omitempty"`
 	Auto             bool       `json:"auto,omitempty"` // set by Close batch's auto-finish / auto-cancel
-	At               time.Time  `json:"at"`
+	// Reason (2.5.0): a cancel by hand (CANCEL ORDER) - main applies it in
+	// any state before completed and releases the card hold.
+	Reason string    `json:"reason,omitempty"`
+	At     time.Time `json:"at"`
 	// The agent's whole status + batch, stored by main so a replacement Pi
 	// (swapped SD card) can restore the open batch exactly.
 	BatchID     int64   `json:"batch_id,omitempty"`
@@ -114,6 +192,25 @@ type NotDeliveredEvent struct {
 	BatchID    int64     `json:"batch_id,omitempty"`
 	// The agent's whole status, as on order.status (a replacement Pi's restore).
 	AgentStatus *Status `json:"agent_status,omitempty"`
+}
+
+// OrderTipEvent is the payload of an order.tip floor event (2.5.0): the
+// whole tip added after the order, in cents (absolute).
+type OrderTipEvent struct {
+	EventID  string    `json:"event_id"`
+	Type     string    `json:"type"` // order.tip
+	OrderID  string    `json:"order_id"`
+	TipCents int64     `json:"tip_cents"`
+	At       time.Time `json:"at"`
+}
+
+// BatchClosedEvent is the payload of a batch.closed floor event (2.5.0),
+// written by Close batch after the batch's own order events.
+type BatchClosedEvent struct {
+	EventID string    `json:"event_id"`
+	Type    string    `json:"type"` // batch.closed
+	BatchID int64     `json:"batch_id"`
+	At      time.Time `json:"at"`
 }
 
 // DriversRosterEvent is the payload of a drivers.roster floor event (the whole
@@ -169,8 +266,6 @@ var (
 	// ErrDriverNotOut: recall needs a driver out on a run (2.4.1).
 	ErrDriverNotOut = fmt.Errorf("driver is not out on a run")
 	ErrNoOrders     = fmt.Errorf("no orders given")
-	// ErrPosNumberTaken: another active driver has that POS number.
-	ErrPosNumberTaken = fmt.Errorf("another driver has that driver number")
 )
 
 // FloorSettings are the floor counters shown to staff.
@@ -217,19 +312,20 @@ type DriverReport struct {
 	// OwedRoundedCents is OwedCents rounded to whole dollars (RoundOwed) —
 	// what the slip prints.
 	OwedRoundedCents int64 `json:"owed_rounded_cents"`
-	// 2.3.0: the driver's Driver # (also on a POS driver Quibase doesn't
-	// know: DriverID ""), whether the report was checked against the POS
-	// ledger (nil = the store has no POS hub) and notes for the slip.
-	DriverPosNumber string     `json:"driver_pos_number,omitempty"`
-	POS             *ReportPOS `json:"pos,omitempty"`
-	Notes           []string   `json:"notes,omitempty"`
+	// PendingTipCents (2.5.0): the card channel tips in TipCents main hasn't
+	// charged yet (the driver hasn't clocked out, the batch isn't closed) -
+	// ADD TIP can still change them.
+	PendingTipCents int64 `json:"pending_tip_cents"`
+	// DriverShareCents: his share of the delivery fees on his orders (main's
+	// split of the store's delivery fee: store share + driver share). Shown
+	// on the report; OwedCents doesn't count it (the store pays it out).
+	DriverShareCents int64 `json:"driver_share_cents"`
 }
 
 // DriverReportLine is one delivery on a driver report.
 type DriverReportLine struct {
 	OrderID       string     `json:"order_id"`
 	KitchenNumber *int64     `json:"kitchen_number,omitempty"`
-	DisplayNumber *int64     `json:"display_number,omitempty"` // a POS order's check number
 	Source        string     `json:"source,omitempty"`
 	Customer      string     `json:"customer"` // "Erik D."
 	Address       string     `json:"address"`
@@ -238,13 +334,8 @@ type DriverReportLine struct {
 	CashCents     int64      `json:"cash_cents"` // collected in cash less its tip (0 for card)
 	TotalCents    int64      `json:"total_cents"`
 	DeliveredAt   *time.Time `json:"delivered_at,omitempty"`
-	// 2.3.0: the POS check (POS orders), when it went out, how it matched
-	// the POS ledger (MatchBoth / MatchPOSOnly / MatchQuibaseOnly; "" =
-	// online, or not checked) and a short note for the slip.
-	ExtRef string     `json:"ext_ref,omitempty"`
-	OutAt  *time.Time `json:"out_at,omitempty"`
-	Match  string     `json:"match,omitempty"`
-	Note   string     `json:"note,omitempty"`
+	// OutAt (2.3.0): when it went out.
+	OutAt *time.Time `json:"out_at,omitempty"`
 	// What the slip prints (no customer name on it): Street = house number
 	// + street only (no apt, city, notes); OrderTipCents = the tip on the
 	// order, cash or card; SlipTotalCents = card: the total + the tip, cash:
@@ -252,6 +343,14 @@ type DriverReportLine struct {
 	Street         string `json:"street"`
 	OrderTipCents  int64  `json:"order_tip_cents"`
 	SlipTotalCents int64  `json:"slip_total_cents"`
+	// 2.5.0, a card channel order: AddedTipCents = the tip added on the
+	// tablet after the order (included in TipCents / OrderTipCents);
+	// TipPending = main hasn't charged the card yet (not tip_locked).
+	AddedTipCents int64 `json:"added_tip_cents,omitempty"`
+	TipPending    bool  `json:"tip_pending,omitempty"`
+	// DriverShareCents: the driver's share of the order's delivery fee (0 =
+	// none, or no split known: a vendor order).
+	DriverShareCents int64 `json:"driver_share_cents,omitempty"`
 }
 
 // setSlipMoney fills the slip's Tip / Total from the order's total without
@@ -285,21 +384,20 @@ func StreetOnly(line1 string) string {
 }
 
 // NewDriverReportLine builds a report line from a delivered order. Card-paid
-// (online: no cash due; POS: paid with no cash due) → the tip counts, no
-// cash. Cash → cash due less the tip (online: CashDue - tip, floored at 0;
-// POS: the hub's cash_due_cents, already net of a cash tip) and no tip.
+// (no cash due) → the tip counts, no cash. Cash → cash due less the tip
+// (CashDue - tip, floored at 0) and no tip.
 func NewDriverReportLine(so StoredOrder) DriverReportLine {
 	snap := so.Order
 	l := DriverReportLine{
 		OrderID:       snap.ID,
 		KitchenNumber: so.Status.KitchenNumber,
-		DisplayNumber: so.Status.DisplayNumber,
 		Source:        snap.Source,
 		Customer:      ShortCustomerName(snap.Customer.DisplayName),
 		TotalCents:    snap.Money.Total,
 		DeliveredAt:   so.Status.DeliveredAt,
-		ExtRef:        so.Status.ExtRef,
 		OutAt:         so.Status.OutAt,
+		// The driver's share of the delivery fee.
+		DriverShareCents: snap.Money.DeliveryDriverCents(),
 	}
 	if a := snap.Fulfillment.Address; a != nil {
 		l.Street = StreetOnly(a.Line1)
@@ -308,27 +406,52 @@ func NewDriverReportLine(so StoredOrder) DriverReportLine {
 			l.Address += ", " + l2
 		}
 	}
-	if so.IsPOS() { // the POS's total has no tip in it
-		l.Cash, l.CashCents, l.TipCents = posMoney(so.Status.Paid, so.Status.CashDueCents, so.Status.TipCents)
-		l.setSlipMoney(snap.Money.Total, so.Status.TipCents)
+	if snap.Source == SourceCounter {
+		// A terminal's delivery (the owner, 2026-11-12): the tips taken with
+		// its payments at the counter are the driver's (the store owes them
+		// to him); a comp lists at $0; split card + cash at the door: he
+		// collects (and owes) only the cash part still due.
+		var comp int64
+		for _, p := range snap.Payments {
+			if p.Method == "other" {
+				comp += p.AmountCents
+			}
+		}
+		base := max(snap.Money.Total-comp, 0)
+		l.TotalCents = base
+		l.TipCents = max(so.Status.TipCents, 0)
+		if due := snap.CashDue(); due > 0 {
+			l.Cash, l.CashCents = true, due
+		}
+		l.setSlipMoney(base, l.TipCents)
 		return l
 	}
 	if due := snap.CashDue(); due > 0 {
 		l.Cash, l.CashCents = true, max(due-snap.Money.Tip, 0)
-	} else {
-		l.TipCents = snap.Money.Tip
+		l.setSlipMoney(snap.Money.Total-snap.Money.Tip, snap.Money.Tip) // an online total includes the tip
+		return l
 	}
-	l.setSlipMoney(snap.Money.Total-snap.Money.Tip, snap.Money.Tip) // an online total includes the tip
+	tip := snap.Money.Tip
+	if so.IsChannel() { // 2.5.0: the checkout tip + the tip added on the tablet
+		tip += so.Status.AddedTipCents
+		l.AddedTipCents, l.TipPending = so.Status.AddedTipCents, !so.Status.TipLocked
+	}
+	l.TipCents = tip
+	l.setSlipMoney(snap.Money.Total-snap.Money.Tip, tip)
 	return l
 }
 
 // Finish fills the report's totals with the store's tip tax.
 func (r *DriverReport) Finish(tipTaxBps int64) {
 	r.Deliveries = len(r.Lines)
-	r.CashCents, r.TipCents = 0, 0
+	r.CashCents, r.TipCents, r.PendingTipCents, r.DriverShareCents = 0, 0, 0, 0
 	for _, l := range r.Lines {
+		r.DriverShareCents += l.DriverShareCents
 		r.CashCents += l.CashCents
 		r.TipCents += l.TipCents
+		if l.TipPending {
+			r.PendingTipCents += l.TipCents
+		}
 	}
 	r.TipTaxBps = tipTaxBps
 	r.TipAfterTaxCents = (r.TipCents*(10000-tipTaxBps) + 5000) / 10000
@@ -374,6 +497,10 @@ type FloorRepository interface {
 	// UndoReady puts an order marked ready at or after since back to
 	// cooking (2.3.8); ErrInvalidState when it isn't (any more).
 	UndoReady(ctx context.Context, id string, since time.Time) (*StoredOrder, error)
+	// SetReadyAt moves an accepted / ready order's ready time (a terminal's
+	// time change, contract 2.10v) with an order.status event; prev = the
+	// time before. ErrInvalidState in any other state.
+	SetReadyAt(ctx context.Context, id string, at, now time.Time) (so *StoredOrder, prev *time.Time, err error)
 	AssignDriver(ctx context.Context, driverID string, orderIDs []string) ([]StoredOrder, error)
 	DriverReturned(ctx context.Context, driverID string) ([]StoredOrder, error)
 	// CloseBatch closes the open batch and opens the next. Without force it
@@ -388,11 +515,9 @@ type FloorRepository interface {
 	FloorSettings(ctx context.Context) (FloorSettings, error)
 
 	ListDrivers(ctx context.Context) ([]Driver, error)
-	// CreateDriver adds a driver (posNumber "" = none; ErrPosNumberTaken).
-	CreateDriver(ctx context.Context, name, posNumber string) (*Driver, error)
+	// CreateDriver adds a driver.
+	CreateDriver(ctx context.Context, name string) (*Driver, error)
 	RenameDriver(ctx context.Context, id, name string) error
-	// SetDriverPosNumber sets ("" clears) a driver's POS number.
-	SetDriverPosNumber(ctx context.Context, id, posNumber string) error
 	// SetDriverPushoverDevice sets ("" clears) a driver's Pushover device.
 	SetDriverPushoverDevice(ctx context.Context, id, device string) error
 	// RemoveDriver also returns the orders its pool held (back to unassigned).
@@ -402,7 +527,8 @@ type FloorRepository interface {
 	// ClockOut takes an available driver out of the queue and closes it
 	// (ErrInvalidState while the driver is out on a run).
 	ClockIn(ctx context.Context, id string) (*Driver, error)
-	// ClockOut also returns the orders its pool held (back to unassigned).
+	// ClockOut also returns the orders its pool held (back to unassigned)
+	// and those whose tip locked with the shift (2.5.0).
 	ClockOut(ctx context.Context, id string) (*Driver, []StoredOrder, error)
 	// AutoClockOut is the daily reset: clocks out every available driver
 	// (drivers out on a run are clocked out when they return) and records the
@@ -444,6 +570,18 @@ type FloorRepository interface {
 	// ReleaseCameBack ends a came-back hold (ErrNotCameBack when not held).
 	ReleaseCameBack(ctx context.Context, id string) (*StoredOrder, error)
 
+	// 2.5.0 website / channel orders. SetAddedTip saves ADD TIP (the whole
+	// tip added after the order, absolute) and writes order.tip - a card
+	// channel order of the open batch, not cancelled (ErrNotTippable), not
+	// charged yet (ErrTipLocked); an unchanged tip writes nothing.
+	// CancelChannelOrder is CANCEL ORDER: a channel order before delivered
+	// (arrived|scheduled|accepted|ready|on_delivery, not mid-accept) is
+	// cancelled with the reason, off any pool or run (the last stop of a run
+	// brings the driver back: returnedDriver), order.status cancelled +
+	// reason; prev is the order before. ErrNotCancellable otherwise.
+	SetAddedTip(ctx context.Context, id string, cents int64) (*StoredOrder, error)
+	CancelChannelOrder(ctx context.Context, id, reason string) (so *StoredOrder, prev StoredOrder, returnedDriver bool, err error)
+
 	// 2.4.0 Unassigned. MarkDeliveredNoDriver delivers an open delivery of
 	// the open batch (cooking or ready, out of its pool) with no driver
 	// (ErrInvalidState otherwise). Undeliver puts an Unassigned delivery
@@ -461,7 +599,7 @@ type FloorRepository interface {
 	// RecordAccepted writes the order.status=accepted floor event (after the
 	// tickets printed — a reverted claim never reaches main) and, for an
 	// online order, the hub's order.accepted with insertExpected.
-	RecordAccepted(ctx context.Context, so StoredOrder, insertExpected bool) error
+	RecordAccepted(ctx context.Context, so StoredOrder) error
 	// ListInterruptedAccepts: orders claimed for accept whose accept was never
 	// recorded (the agent stopped mid-accept).
 	ListInterruptedAccepts(ctx context.Context) ([]string, error)

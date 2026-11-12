@@ -21,7 +21,7 @@ const maxReceiptPrefsBody = 8 << 10
 // SetReceiptSample wires PRINT SAMPLE: build renders the sample customer
 // receipt + kitchen ticket with the given settings (receipt.BuildSample with
 // the live store context).
-func (s *Server) SetReceiptSample(build func(prefs order.ReceiptPrefs, kind string) []byte) {
+func (s *Server) SetReceiptSample(build func(prefs order.ReceiptPrefs, kind string, cols int) []byte) {
 	s.receiptSample = build
 }
 
@@ -69,6 +69,10 @@ func (s *Server) handleSetReceiptPrefs(w http.ResponseWriter, r *http.Request) {
 	if json.Unmarshal(raw, &keys) == nil {
 		if _, ok := keys["format"]; !ok {
 			p.Format = s.service.ReceiptPrefs(r.Context()).Format
+		}
+		// A tablet that doesn't know strike_images yet keeps the store's.
+		if _, ok := keys["strike_images"]; !ok {
+			p.StrikeImages = s.service.ReceiptPrefs(r.Context()).StrikeImages
 		}
 	}
 	saved, err := s.service.SetReceiptPrefs(r.Context(), p)
@@ -125,8 +129,10 @@ func (s *Server) handlePrinterSample(w http.ResponseWriter, r *http.Request) {
 		s.writeJSON(w, http.StatusBadRequest, errCodeMap("kind must be future_kitchen or future_receipt", "bad_request"))
 		return
 	}
-	sample := s.receiptSample(s.service.PrintPrefs(), req.Kind)
-	results := s.diag.Dispatcher.PrintTest(r.Context(), id, func(printerApp.RosterEntry) []byte { return sample })
+	prefs := s.service.PrintPrefs()
+	results := s.diag.Dispatcher.PrintTest(r.Context(), id, func(e printerApp.RosterEntry) []byte {
+		return s.receiptSample(prefs, req.Kind, e.Cols) // laid out for that printer's width
+	})
 	if results == nil {
 		results = []printerApp.TestResult{}
 	}

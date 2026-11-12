@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -26,7 +27,10 @@ type Config struct {
 	HTTPPort      string
 	// HTTPAltPort (HTTP_ALT_PORT, optional) is a second port serving the same
 	// API + web UI — 80 on a Pi, so the address needs no ":8080". Empty = off.
-	HTTPAltPort        string
+	HTTPAltPort string
+	// PprofAddr (PPROF_ADDR, optional, hardening R-1): net/http/pprof on its
+	// own loopback listener, e.g. 127.0.0.1:6061; empty = off.
+	PprofAddr          string
 	LogLevel           string // trace|debug|info|warn|error — default "info"
 	LogOutput          string // console|json|file — default "console"
 	PrinterDetectDelay time.Duration
@@ -59,6 +63,15 @@ type Config struct {
 	// check reads; default https://utility.quiccpos.com.
 	UtilityURL string
 
+	// DevTimers (AGENT_DEV_TIMERS, e.g. "backup=15s,retention=30s"; the soak
+	// test, HARDENING-PLAN §7): how often a time-based job *checks* whether
+	// it is due — never when it is due (that still reads the real clock and
+	// the stored last run). Honoured only with APP_ENV=dev; anywhere else the
+	// value is refused (DevTimersRefused, logged at start) and the built-in
+	// intervals stay. Keys: backup (default 10m), retention (default 1h).
+	DevTimers        map[string]time.Duration
+	DevTimersRefused string
+
 	// OpenTelemetry
 	OTELEndpoint    string // e.g. "home-server.lan:4317"; empty → noop providers
 	OTELServiceName string // default "quicc-agent"
@@ -70,6 +83,7 @@ func Load() (*Config, error) {
 		MainServerURL:        os.Getenv("MAIN_SERVER_URL"),
 		HTTPPort:             getEnvDefault("HTTP_PORT", "8080"),
 		HTTPAltPort:          getEnvDefault("HTTP_ALT_PORT", ""),
+		PprofAddr:            os.Getenv("PPROF_ADDR"),
 		PrinterDetectDelay:   getPrinterDetectDelay(),
 		PushoverAppToken:     os.Getenv("PUSHOVER_APP_TOKEN"),
 		PushoverUserKey:      os.Getenv("PUSHOVER_USER_KEY"),
@@ -91,6 +105,7 @@ func Load() (*Config, error) {
 	}
 
 	cfg.UpdateDir = getEnvDefault("AGENT_UPDATE_DIR", filepath.Dir(cfg.AgentDBPath))
+	cfg.DevTimers, cfg.DevTimersRefused = parseDevTimers(cfg.AppEnv, os.Getenv("AGENT_DEV_TIMERS"))
 
 	if cfg.MainServerURL == "" {
 		return nil, fmt.Errorf("MAIN_SERVER_URL is required")
@@ -152,4 +167,34 @@ func getPrinterDetectDelay() time.Duration {
 		return d
 	}
 	return 25 * time.Second
+}
+
+// devTimerKeys are the jobs AGENT_DEV_TIMERS may speed up.
+var devTimerKeys = map[string]bool{"backup": true, "retention": true}
+
+// parseDevTimers reads AGENT_DEV_TIMERS ("job=duration,…"). Only APP_ENV=dev
+// takes it: anywhere else (staging, prod, a Pi) it is refused with the reason,
+// so a stray value can never change how often a real store backs up. An
+// unknown job, a bad duration or one under a second is refused too.
+func parseDevTimers(appEnv, raw string) (map[string]time.Duration, string) {
+	if raw == "" {
+		return nil, ""
+	}
+	if appEnv != "dev" {
+		return nil, fmt.Sprintf("AGENT_DEV_TIMERS ignored: APP_ENV=%s (dev only)", appEnv)
+	}
+	out := map[string]time.Duration{}
+	for _, part := range strings.Split(raw, ",") {
+		k, v, ok := strings.Cut(strings.TrimSpace(part), "=")
+		d, err := time.ParseDuration(strings.TrimSpace(v))
+		k = strings.TrimSpace(k)
+		switch {
+		case !ok || !devTimerKeys[k]:
+			return nil, fmt.Sprintf("AGENT_DEV_TIMERS ignored: unknown job %q (backup, retention)", k)
+		case err != nil || d < time.Second:
+			return nil, fmt.Sprintf("AGENT_DEV_TIMERS ignored: %s=%q is not a duration of 1s or more", k, v)
+		}
+		out[k] = d
+	}
+	return out, ""
 }

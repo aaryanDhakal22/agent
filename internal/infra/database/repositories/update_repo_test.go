@@ -45,8 +45,8 @@ func TestCountOpenFloor(t *testing.T) {
 		m := map[string]int64{}
 		for _, c := range rows {
 			src := "online"
-			if c.POS {
-				src = "pos"
+			if c.Channel {
+				src = "web"
 			}
 			m[string(c.State)+"/"+src] += c.N
 		}
@@ -65,9 +65,8 @@ func TestCountOpenFloor(t *testing.T) {
 	if _, err := r.Schedule(ctx, future.Order.ID, 20, time.Now().Add(2*time.Hour)); err != nil {
 		t.Fatal(err)
 	}
-	upsertPOS(t, r, "1", posOrder("delivery", "a"))
 	m := counts()
-	want := map[string]int64{"arrived/online": 1, "accepted/online": 1, "ready/online": 1, "scheduled/online": 1, "accepted/pos": 1}
+	want := map[string]int64{"arrived/web": 1, "accepted/web": 1, "ready/web": 1, "scheduled/web": 1} // source "test": a channel
 	if len(m) != len(want) {
 		t.Fatalf("got %v, want %v", m, want)
 	}
@@ -80,7 +79,7 @@ func TestCountOpenFloor(t *testing.T) {
 	if _, _, err := r.CloseBatch(ctx, true); err != nil {
 		t.Fatal(err)
 	}
-	if m := counts(); len(m) != 1 || m["scheduled/online"] != 1 {
+	if m := counts(); len(m) != 1 || m["scheduled/web"] != 1 {
 		t.Fatalf("after close: %v", m)
 	}
 }

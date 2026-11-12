@@ -29,10 +29,8 @@ func TestIntegrationKeyGuarding(t *testing.T) {
 	for _, rt := range []struct{ method, path string }{
 		{"GET", "/api/integration/config"},
 		{"PUT", "/api/integration/status"},
-		{"PUT", "/api/integration/orders/1234"},
-		{"POST", "/api/integration/orders/1234/void"},
-		{"PATCH", "/api/integration/online-orders/0198b4a6-0000-7000-8000-000000000000"},
 		{"GET", "/api/integration/events"},
+		{"PUT", "/api/integration/callout-audio/x"},
 	} {
 		if rec := call(h, rt.method, rt.path, tablet, "{}"); rec.Code != http.StatusForbidden || code(rec) != "integration_required" {
 			t.Errorf("tablet %s %s = %d %s, want 403 integration_required", rt.method, rt.path, rec.Code, rec.Body)
@@ -51,13 +49,31 @@ func TestIntegrationKeyGuarding(t *testing.T) {
 	} else {
 		var cfg map[string]any
 		_ = json.Unmarshal(rec.Body.Bytes(), &cfg)
-		for _, k := range []string{"location", "features", "tickets", "times", "drivers", "printers", "agent_version"} {
+		for _, k := range []string{"location", "callout", "agent_version"} {
 			if _, ok := cfg[k]; !ok {
 				t.Errorf("config lacks %q: %s", k, rec.Body)
 			}
 		}
+		// H3: the SoftTouch-era keys are gone.
+		for _, k := range []string{"features", "tickets", "times", "drivers", "printers"} {
+			if _, ok := cfg[k]; ok {
+				t.Errorf("config still has %q: %s", k, rec.Body)
+			}
+		}
 	}
-	if rec := call(h, "PUT", "/api/integration/status", hub, `{"ok":true,"insert_mode":"shadow","problems":[]}`); rec.Code != http.StatusNoContent {
+	// The SoftTouch routes are gone (405: only the GET of the path is left, or nothing).
+	for _, rt := range []struct{ method, path string }{
+		{"PUT", "/api/integration/orders/1234"},
+		{"POST", "/api/integration/orders/1234/void"},
+		{"PATCH", "/api/integration/online-orders/0198b4a6-0000-7000-8000-000000000000"},
+		{"PUT", "/api/integration/driver-ledger"},
+		{"POST", "/api/orders/0198b4a6-0000-7000-8000-000000000000/change/ack"},
+	} {
+		if rec := call(h, rt.method, rt.path, hub, "{}"); rec.Code != http.StatusNotFound && rec.Code != http.StatusMethodNotAllowed {
+			t.Errorf("hub %s %s = %d %s, want gone", rt.method, rt.path, rec.Code, rec.Body)
+		}
+	}
+	if rec := call(h, "PUT", "/api/integration/status", hub, `{"ok":true,"insert_mode":"off","problems":[]}`); rec.Code != http.StatusNoContent {
 		t.Fatalf("hub status = %d %s", rec.Code, rec.Body)
 	}
 	if rec := call(h, "GET", "/api/integration/events?after=0", hub, ""); rec.Code != http.StatusOK {
@@ -74,7 +90,7 @@ func TestIntegrationKeyGuarding(t *testing.T) {
 		{"GET", "/api/orders", ""},
 		{"GET", "/api/diag", ""},
 		{"POST", "/api/drivers", `{"name":"X"}`},
-		{"PUT", "/api/settings/features", `{"pos_pull":false}`},
+		{"PUT", "/api/settings/features", `{"paid_wave":false}`},
 		{"POST", "/api/pairing/code", ""},
 		{"POST", "/api/batch/close", `{}`},
 	} {
@@ -119,18 +135,18 @@ func TestPairKind(t *testing.T) {
 func TestSettingsRoutes(t *testing.T) {
 	_, h, tablet := diagServer(t)
 	rec := call(h, "GET", "/api/settings/features", tablet, "")
-	if rec.Code != 200 || rec.Body.String() != `{"pos_pull":true,"order_insert":false,"driver_writeback":true,"address_heal":true,"future_orders":true,"paid_wave":true}`+"\n" {
+	if rec.Code != 200 || rec.Body.String() != `{"future_orders":true,"paid_wave":true}`+"\n" {
 		t.Fatalf("features = %d %s", rec.Code, rec.Body)
 	}
-	rec = call(h, "PUT", "/api/settings/features", tablet, `{"order_insert":true}`)
-	if rec.Code != 200 || rec.Body.String() != `{"pos_pull":true,"order_insert":true,"driver_writeback":true,"address_heal":true,"future_orders":true,"paid_wave":true}`+"\n" {
+	rec = call(h, "PUT", "/api/settings/features", tablet, `{"paid_wave":false}`)
+	if rec.Code != 200 || rec.Body.String() != `{"future_orders":true,"paid_wave":false}`+"\n" {
 		t.Fatalf("partial PUT = %d %s", rec.Code, rec.Body)
 	}
-	if rec = call(h, "PUT", "/api/settings/features", tablet, `{"order_insert":"yes"}`); rec.Code != 400 {
+	if rec = call(h, "PUT", "/api/settings/features", tablet, `{"paid_wave":"yes"}`); rec.Code != 400 {
 		t.Fatalf("bad type = %d", rec.Code)
 	}
 	if rec = call(h, "GET", "/api/settings/tickets", tablet, ""); rec.Code != 200 ||
-		rec.Body.String() != `{"pos_delivery":false,"pos_takeout":false,"pos_counter":false,"online_cash_pickup":true,"online_cash_delivery":true,"online_card":true,"future_kitchen":false,"future_receipt":false}`+"\n" {
+		rec.Body.String() != `{"online_cash_pickup":true,"online_cash_delivery":true,"online_card":true,"future_kitchen":false,"future_receipt":false}`+"\n" {
 		t.Fatalf("tickets = %d %s", rec.Code, rec.Body)
 	}
 	if rec = call(h, "PUT", "/api/settings/times", tablet, `{"default_pickup_minutes":0}`); rec.Code != 400 {
@@ -154,7 +170,7 @@ func TestSettingsRoutes(t *testing.T) {
 		} `json:"integration"`
 	}
 	rec = call(h, "GET", "/api/floor", tablet, "")
-	if err := json.Unmarshal(rec.Body.Bytes(), &floor); err != nil || !floor.Settings.Features["order_insert"] ||
+	if err := json.Unmarshal(rec.Body.Bytes(), &floor); err != nil || floor.Settings.Features["paid_wave"] ||
 		floor.Settings.Times["default_delivery_minutes"] != 40 || floor.Integration.Connected || floor.Integration.InsertMode != "off" {
 		t.Fatalf("floor = %s", rec.Body)
 	}

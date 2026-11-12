@@ -105,7 +105,7 @@ def test_dashboard_revoke_auto_wipes_agent(blank_agent, main_store) -> None:
     r = main_store.admin.post(f"{ADMIN_V1}/devices/{dev['device_id']}/revoke", timeout=5)
     assert r.status_code == 204, r.text
 
-    wait_until(lambda: a.state() == "unconfigured", timeout=45, interval=1,
+    wait_until(lambda: a.state() == "unconfigured", timeout=180, interval=1,  # F-4: confirmed a minute apart
                what=f"agent auto-wipe after revoke\n--- agent log ---\n{a.log_tail()}")
     s = a.session()
     assert s["sse_state"] == "unconfigured"

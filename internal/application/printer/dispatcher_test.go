@@ -3,6 +3,7 @@ package printer
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -215,7 +216,7 @@ func TestKnownDownFallbacksAreTriedLast(t *testing.T) {
 
 func TestPrintDocument_ReceiptPrinterThenFailover(t *testing.T) {
 	d, fk := newTestDispatcher(t)
-	build := func(from string) []byte { return []byte("report:" + from) }
+	build := func(on printer.Paper) []byte { return []byte("report:" + on.ReroutedFrom) }
 	res, err := d.PrintDocument(context.Background(), "driver-report", build)
 	if err != nil || res.PrintedOn != "Front" || res.ReroutedFrom != "" {
 		t.Fatalf("res=%+v err=%v", res, err)
@@ -268,54 +269,55 @@ func TestExecuteMode_ReceiptAndKitchen(t *testing.T) {
 	}
 }
 
-// insert_expected: true only when this accept printed the kitchen tickets of
-// an online cash pickup under the insert_live rule, decided from the same
-// rules snapshot the plan used.
-func TestExecute_InsertExpected(t *testing.T) {
-	d, fk := newTestDispatcher(t)
-	cash := routedSnap()
-	cash.Fulfillment.Type = "pickup"
-	cash.Money.Total = 2000 // no payments: all cash
-	card := cash
-	card.Payments = []order.PaymentSummary{{Method: "card", AmountCents: 2000}}
-	delivery := cash
-	delivery.Fulfillment.Type = "delivery"
-	pos := cash
-	pos.Source = order.SourcePOS
-	live := Rules{Tickets: order.DefaultTicketToggles(), InsertLive: true}
-	off := Rules{Tickets: order.DefaultTicketToggles()}
-	switchOff := live
-	switchOff.Tickets.OnlineCashPickup = false
-	posOn := live
-	posOn.Tickets.PosTakeout = true
-	for _, tc := range []struct {
-		name  string
-		snap  order.Snapshot
-		rules Rules
-		mode  printer.Mode
-		want  bool
-	}{
-		{"cash pickup, insert live", cash, live, printer.ModeAccept, true},
-		{"cash pickup, not live (receipt only)", cash, off, printer.ModeAccept, false},
-		{"cash pickup, switch off", cash, switchOff, printer.ModeAccept, false},
-		{"cash pickup, kitchen resend", cash, live, printer.ModeKitchen, false},
-		{"card pickup", card, live, printer.ModeAccept, false},
-		{"cash delivery", delivery, live, printer.ModeAccept, false},
-		{"POS pickup", pos, posOn, printer.ModeAccept, false},
-	} {
-		rules := tc.rules
-		d.SetRules(func() Rules { return rules })
-		out, err := d.ExecuteMode(context.Background(), tc.snap, tc.mode)
-		if err != nil || out.InsertExpected != tc.want {
-			t.Fatalf("%s: insert_expected = %v (err %v), want %v", tc.name, out.InsertExpected, err, tc.want)
-		}
+// Every ticket and slip is laid out for the printer it prints on (contract
+// §2.3c "Paper width"): a Pizza ticket (80 mm station) rerouted to the
+// 42-column Online printer is built for 42, a driver report on its stand-in
+// for the stand-in's width.
+func TestTicketsLaidOutForThePrinterTheyPrintOn(t *testing.T) {
+	meters, err := observability.NewMeters()
+	if err != nil {
+		t.Fatal(err)
 	}
-	// Nothing printed anywhere: no insert either.
-	for _, f := range fk {
-		f.setDown(true)
+	fakes := map[string]*fakePrinter{}
+	factory := func(name, _ string) printer.Printer {
+		f := &fakePrinter{name: name}
+		fakes[name] = f
+		return f
 	}
-	d.SetRules(func() Rules { return live })
-	if out, err := d.Execute(context.Background(), cash); err == nil || out.InsertExpected {
-		t.Fatalf("all down: insert_expected = %v (err %v)", out.InsertExpected, err)
+	build := func(_ order.Snapshot, tk printer.Ticket) []byte {
+		return []byte(fmt.Sprintf("%s:%s:cols=%d:from=%s", tk.Kind, tk.Station, tk.Cols, tk.ReroutedFrom))
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	d := NewDispatcher(ctx, factory, NewRegistry(), nil, time.Hour, build, zerolog.Nop(), meters)
+	d.Apply(ctx, []storeconfig.PrinterContext{
+		{ID: "p-online", Name: "Online", IP: "x", IsReceipt: true, PrintColumns: 42},
+		{ID: "p-pizza", Name: "Pizza", IP: "x"}, // no print_columns (an older main) = 48
+		{ID: "p-wings", Name: "Wings", IP: "x", PrintColumns: 48},
+	})
+	if _, err := d.Execute(ctx, routedSnap()); err != nil {
+		t.Fatal(err)
+	}
+	if got := jobs(fakes["Pizza"]); got != "station:Pizza:cols=0:from=" {
+		t.Fatalf("pizza on its own printer: %q", got)
+	}
+	fakes["Pizza"].setDown(true)
+	if _, err := d.Execute(ctx, routedSnap()); err != nil {
+		t.Fatal(err)
+	}
+	if got := jobs(fakes["Online"]); !strings.Contains(got, "station:Pizza:cols=42:from=Pizza") {
+		t.Fatalf("pizza rerouted to Online not laid out for 42: %q", got)
+	}
+	var papers []printer.Paper
+	doc := func(on printer.Paper) []byte { papers = append(papers, on); return []byte("doc") }
+	if _, err := d.PrintDocument(ctx, "driver-report", doc); err != nil {
+		t.Fatal(err)
+	}
+	fakes["Online"].setDown(true)
+	if _, err := d.PrintDocument(ctx, "driver-report", doc); err != nil {
+		t.Fatal(err)
+	}
+	if len(papers) < 2 || papers[0] != (printer.Paper{Cols: 42}) || papers[len(papers)-1].ReroutedFrom != "Online" || papers[len(papers)-1].Cols == 42 {
+		t.Fatalf("papers %+v", papers)
 	}
 }

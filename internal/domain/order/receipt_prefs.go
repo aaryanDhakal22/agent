@@ -64,6 +64,10 @@ type ReceiptPrefs struct {
 	// Format (2.4.0): the customer receipt's item list - expanded |
 	// condensed (reprints too; kitchen tickets never change).
 	Format string `json:"format"`
+	// StrikeImages (kitchen change tickets): a removed line prints "(VOID)"
+	// and the item struck through as a small picture; off = "(VOID)" in
+	// reverse and the item as text, for a printer that can't print pictures.
+	StrikeImages bool `json:"strike_images"`
 }
 
 // LineSpacing is ReceiptPrefs.Spacing, in printer dots (0..MaxSpacingDots).
@@ -88,6 +92,7 @@ func DefaultReceiptPrefs() ReceiptPrefs {
 		ExtraPaper:        true,
 		DriverReportSize:  SizeNormal,
 		Format:            FormatExpanded,
+		StrikeImages:      true,
 	}
 }
 

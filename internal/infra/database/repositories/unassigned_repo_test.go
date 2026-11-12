@@ -2,7 +2,6 @@ package repositories
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"reflect"
 	"testing"
@@ -157,50 +156,9 @@ func TestReassignDeliveries(t *testing.T) {
 	if _, _, err := r.ReassignDeliveries(ctx, ids(ds[0]), ann.ID, counter); !errors.Is(err, order.ErrDriverNotAvailable) {
 		t.Fatalf("to clocked out: %v", err)
 	}
-	// ... unless the POS says so (the record follows the POS).
-	if moved, _, err := r.ReassignDeliveries(ctx, ids(ds[0]), ann.ID, order.MarkedBy{Kind: order.ByPOS, Name: "POS"}); err != nil || len(moved) != 1 {
-		t.Fatalf("POS to clocked out: %+v %v", moved, err)
-	}
 	// A cooking order isn't delivered or out.
 	cook := accept(t, r, arrive(t, r, "delivery"))
 	if _, _, err := r.ReassignDeliveries(ctx, ids(cook), bob.ID, counter); !errors.Is(err, order.ErrNotOutOrDelivered) {
 		t.Fatalf("cooking: %v", err)
-	}
-}
-
-// A POS delivery's move goes to the hub (order.driver_changed with from /
-// to); one the POS itself moved doesn't.
-func TestReassignPOSFeed(t *testing.T) {
-	ctx := context.Background()
-	r := newFloorRepo(t)
-	ann, _ := r.CreateDriver(ctx, "Ann", "11")
-	bob, _ := r.CreateDriver(ctx, "Bob", "12")
-	clockIn(t, r, ann.ID, bob.ID)
-	so := upsertPOS(t, r, "921", kitchenCheck("delivery", "h1", pizza)).Order
-	if _, err := r.MarkDeliveredNoDriver(ctx, so.Order.ID, counter); err != nil {
-		t.Fatal(err)
-	}
-	if _, _, err := r.ReassignDeliveries(ctx, ids(so), ann.ID, counter); err != nil {
-		t.Fatal(err)
-	}
-	if _, _, err := r.ReassignDeliveries(ctx, ids(so), bob.ID, order.MarkedBy{Kind: order.ByPOS, Name: "POS"}); err != nil {
-		t.Fatal(err)
-	}
-	evs, _, err := r.ListFeed(ctx, 0, 1000)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var got []order.OrderDriverChangedData
-	for _, e := range evs {
-		if e.Type == order.FeedOrderDriverChanged {
-			var d order.OrderDriverChangedData
-			if err := json.Unmarshal(e.Data, &d); err != nil {
-				t.Fatal(err)
-			}
-			got = append(got, d)
-		}
-	}
-	if len(got) != 1 || got[0].From != nil || got[0].To == nil || *got[0].To.PosNumber != "11" || got[0].ExtRef == nil || *got[0].ExtRef != "921" {
-		t.Fatalf("feed = %+v", got)
 	}
 }

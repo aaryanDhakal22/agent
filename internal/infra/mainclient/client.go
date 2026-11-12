@@ -8,6 +8,7 @@ package mainclient
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -31,7 +32,9 @@ type Client struct {
 	// heartbeat, history, store-config, RPC replies) resets it to the setup
 	// screen, not just an SSE reconnect. Receives the key that was rejected so
 	// the handler can ignore a stale 401 for a since-rotated token.
-	onUnauthorized func(key string)
+	// The hook gets the 401 body's code (contract 2.10s §2: only
+	// device_revoked, confirmed by whoami, ever wipes - revoke.Guard).
+	onUnauthorized func(key, code string)
 }
 
 func New(baseURL string) *Client {
@@ -46,7 +49,29 @@ func New(baseURL string) *Client {
 
 // SetOnUnauthorized registers the 401 hook (see the field doc). Set once at wiring
 // time, after the SSE controller exists.
-func (c *Client) SetOnUnauthorized(f func(key string)) { c.onUnauthorized = f }
+func (c *Client) SetOnUnauthorized(f func(key, code string)) { c.onUnauthorized = f }
+
+// WhoAmI asks main about the store key (GET /store/v1/agent/whoami,
+// contract 2.10s §2): the status and the error body's code. It never fires
+// the 401 hook (the hook's own check).
+func (c *Client) WhoAmI(ctx context.Context, key string) (int, string, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/store/v1/agent/whoami", nil)
+	if err != nil {
+		return 0, "", err
+	}
+	req.Header.Set(storeAPIKeyHeader, key)
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return 0, "", err
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
+	var b struct {
+		Code string `json:"code"`
+	}
+	_ = json.Unmarshal(body, &b)
+	return resp.StatusCode, b.Code, nil
+}
 
 // downloadTimeout bounds a large download (a tablet-app APK over the
 // restaurant's internet).
@@ -137,13 +162,16 @@ func (c *Client) doWithType(hc *http.Client, ctx context.Context, method, key, p
 	}
 	defer resp.Body.Close()
 
-	// A 401 from any device-keyed request means the key is revoked/unknown — fire
-	// the hook (async, non-blocking) so the agent resets to the setup screen.
-	if resp.StatusCode == http.StatusUnauthorized && c.onUnauthorized != nil && key != "" {
-		go c.onUnauthorized(key)
-	}
-
 	respBody, err := io.ReadAll(resp.Body)
+	// A 401 to a device-keyed request goes to the hook (async) with main's
+	// code; the revoke guard decides (contract 2.10s §2).
+	if resp.StatusCode == http.StatusUnauthorized && c.onUnauthorized != nil && key != "" {
+		var b struct {
+			Code string `json:"code"`
+		}
+		_ = json.Unmarshal(respBody, &b)
+		go c.onUnauthorized(key, b.Code)
+	}
 	if err != nil {
 		return resp.StatusCode, nil, fmt.Errorf("read response: %w", err)
 	}

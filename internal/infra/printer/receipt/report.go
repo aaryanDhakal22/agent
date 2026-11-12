@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"quiccpos/agent/internal/domain/order"
+	"quiccpos/agent/internal/domain/printer"
 	"quiccpos/agent/internal/domain/storeconfig"
 )
 
@@ -14,36 +15,35 @@ import (
 // size (size = the receipt settings' driver_report_size: small | normal |
 // large; nothing larger, so a long slip stays short): the header, the CASH
 // orders first (each with its amount, then a subtotal), the CARD orders below
-// (each with its tip, then the tips), the POS notes, the totals, and what is
+// (each with its tip, then the tips; a website card tip not charged yet is
+// marked pending, 2.5.0), the POS notes, the totals, and what is
 // owed — to the store, or (negative) by the store — rounded to whole dollars
 // with the exact amount under it. The report must already be Finish()ed.
-// printedAt is shown in the footer.
-func BuildDriverReport(rep order.DriverReport, sc storeconfig.StoreContext, size, reroutedFrom string, printedAt time.Time) []byte {
+// printedAt is shown in the footer. It is laid out for on.Cols, the printer
+// it prints on (width.go), with the reroute bands on a stand-in.
+func BuildDriverReport(rep order.DriverReport, sc storeconfig.StoreContext, size string, on printer.Paper, printedAt time.Time) []byte {
+	rep, sc, on = scrubDriverReport(rep), scrubStore(sc), scrubPaper(on)
+	lay := layoutFor(on.Cols)
+	lineWidth := lay.cols
 	loc := time.Local
 	if tz, err := time.LoadLocation(sc.Location.Timezone); sc.Location.Timezone != "" && err == nil {
 		loc = tz
 	}
 	var buf bytes.Buffer
-	w := func(s string) { buf.WriteString(s) }
+	w := func(s string) { buf.WriteString(toPC437(s)) }
 	nl := func() { buf.WriteString(cmdFeed) }
 	bold := func(s string) { w(cmdBoldOn); w(s); w(cmdBoldOff); nl() }
 	// Headers, groups and totals print large (the base size of the other
-	// slips, 41 characters — the store's 72 mm-wide Online printer wraps a
-	// 48-character line); only the delivery lines use the report's text size.
-	itemWidth := driverReportWidth(size)
+	// slips, the printer's line); only the delivery lines use the report's
+	// text size.
+	itemWidth := lay.driverReportWidth(size)
 	separator := func() string { return strings.Repeat("-", lineWidth) }
 	itemSize := driverReportSize(size)
 
 	w(cmdInit)
 	w(cmdBaseSz)
-	if reroutedFrom != "" {
-		w(cmdCenter)
-		w(cmdBoldOn)
-		w(cmdInvertOn)
-		w(" REROUTED from " + strings.ToUpper(reroutedFrom) + " ")
-		w(cmdInvertOff)
-		w(cmdBoldOff)
-		nl()
+	if on.ReroutedFrom != "" {
+		writeRerouted(w, nl, on.ReroutedFrom, lay)
 	}
 
 	// --- Header -----------------------------------------------------------
@@ -52,13 +52,14 @@ func BuildDriverReport(rep order.DriverReport, sc storeconfig.StoreContext, size
 	w(cmdDoubleSz)
 	w("DRIVER REPORT")
 	nl()
-	w(cmdQuadSz)
-	w(truncRunes(strings.ToUpper(rep.DriverName), 12))
+	nameSz, nameW := bigName(strings.ToUpper(rep.DriverName), lay)
+	w(nameSz)
+	w(wrapJoin(strings.ToUpper(rep.DriverName), nameW, ""))
 	nl()
 	w(cmdBaseSz)
 	w(cmdBoldOff)
 	if sc.Location.Name != "" {
-		w(truncRunes(sc.Location.Name, lineWidth))
+		w(wrapJoin(sc.Location.Name, lineWidth, ""))
 		nl()
 	}
 	w(fmt.Sprintf("Batch #%d", rep.BatchID))
@@ -72,11 +73,15 @@ func BuildDriverReport(rep order.DriverReport, sc storeconfig.StoreContext, size
 	// --- Deliveries: cash first, then card --------------------------------
 	var cash, card []order.DriverReportLine
 	var cashSum, tipSum int64
+	pending := 0 // 2.5.0: card website tips main hasn't charged yet
 	for _, l := range rep.Lines {
 		if l.Cash {
 			cash, cashSum = append(cash, l), cashSum+l.CashCents
 		} else {
 			card, tipSum = append(card, l), tipSum+l.TipCents
+			if l.TipPending {
+				pending++
+			}
 		}
 	}
 	if len(rep.Lines) == 0 {
@@ -87,20 +92,20 @@ func BuildDriverReport(rep order.DriverReport, sc storeconfig.StoreContext, size
 	}
 	// Each delivery, no customer name: "<ticket #> <street>", then the tip
 	// at the far left and the total at the far right (card: total + tip;
-	// cash: the total), then a POS note if any.
+	// cash: the total).
 	line := func(l order.DriverReportLine) {
 		num := "----"
 		if l.KitchenNumber != nil {
 			num = fmt.Sprintf("%d", *l.KitchenNumber)
-		} else if l.DisplayNumber != nil {
-			num = fmt.Sprintf("%d", *l.DisplayNumber) // a POS check
 		}
 		w(itemSize)
-		bold(truncRunes(strings.TrimSpace(num+" "+l.Street), itemWidth))
-		w(leftRight("Tip: "+dollars(l.OrderTipCents), "Total: "+dollars(l.SlipTotalCents), itemWidth))
-		nl()
-		if l.Note != "" { // how it matched the POS
-			w("  * " + truncRunes(l.Note, itemWidth-4))
+		bold(wrapJoin(strings.TrimSpace(num+" "+l.Street), itemWidth, strings.Repeat(" ", len(num)+1)))
+		tip := "Tip: " + dollars(l.OrderTipCents)
+		if l.TipPending { // a website card tip ADD TIP can still change
+			tip += " (pending)"
+		}
+		for _, s := range leftRightLines(tip, "Total: "+dollars(l.SlipTotalCents), itemWidth) {
+			w(s)
 			nl()
 		}
 		w(cmdBaseSz)
@@ -122,20 +127,13 @@ func BuildDriverReport(rep order.DriverReport, sc storeconfig.StoreContext, size
 		for _, l := range card {
 			line(l)
 		}
-		w(leftRight("Card tips", dollars(tipSum), lineWidth))
-		nl()
-	}
-	if len(rep.Notes) > 0 {
-		w(separator())
-		nl()
-	}
-	for _, n := range rep.Notes {
-		for _, l := range wordWrap("* "+n, lineWidth, "  ") {
-			w(l)
-			nl()
+		tips := "Card tips"
+		if pending > 0 {
+			tips += fmt.Sprintf(" (%d pending)", pending)
 		}
+		w(leftRight(tips, dollars(tipSum), lineWidth))
+		nl()
 	}
-
 	// --- Totals -----------------------------------------------------------
 	w(separator())
 	nl()
@@ -147,6 +145,10 @@ func BuildDriverReport(rep order.DriverReport, sc storeconfig.StoreContext, size
 	nl()
 	w(fmt.Sprintf("  (%s - %s)", dollars(rep.TipCents), percent(rep.TipTaxBps)))
 	nl()
+	if rep.DriverShareCents > 0 { // his share of the delivery fees (not in the owed total)
+		w(leftRight("Delivery fee share", dollars(rep.DriverShareCents), lineWidth))
+		nl()
+	}
 	w(strings.Repeat("=", lineWidth))
 	nl()
 
@@ -157,10 +159,10 @@ func BuildDriverReport(rep order.DriverReport, sc storeconfig.StoreContext, size
 	w(cmdCenter)
 	w(cmdBoldOn)
 	w(cmdDoubleSz)
-	w(label)
+	w(wrapJoin(label, lay.big(), ""))
 	nl()
 	w(cmdQuadSz)
-	w(dollars(amount))
+	w(wrapJoin(dollars(amount), lay.xl(), ""))
 	nl()
 	w(cmdBaseSz)
 	w(cmdBoldOff)
@@ -169,22 +171,6 @@ func BuildDriverReport(rep order.DriverReport, sc storeconfig.StoreContext, size
 		nl()
 	}
 	nl()
-	if p := rep.POS; p != nil { // was it checked against the POS?
-		if p.Checked {
-			pos := "POS checked"
-			if p.AsOf != nil {
-				pos += " " + p.AsOf.In(loc).Format("3:04 PM")
-			}
-			w(pos)
-			nl()
-		} else {
-			bold("POS NOT CHECKED")
-			if p.Note != "" {
-				w(truncRunes(p.Note, lineWidth))
-				nl()
-			}
-		}
-	}
 	w("Printed " + printedAt.In(loc).Format("Jan 2 3:04 PM"))
 	nl()
 
@@ -193,14 +179,14 @@ func BuildDriverReport(rep order.DriverReport, sc storeconfig.StoreContext, size
 	return buf.Bytes()
 }
 
-// driverReportWidth is the delivery lines' width at the slip's size, sized
-// for the store's 72 mm printer (font A 41 characters like the receipt,
-// also at double height; font B 54) — 48 / 64 wrapped there.
-func driverReportWidth(size string) int {
+// driverReportWidth is the delivery lines' width at the slip's size on the
+// printer: font A (also at double height) = its line, font B (small) 64 /
+// 56 / 42.
+func (l layout) driverReportWidth(size string) int {
 	if size == order.SizeSmall {
-		return 54 // font B on the store's 72 mm printer
+		return l.fontB()
 	}
-	return lineWidth
+	return l.cols
 }
 
 // driverReportSize is the slip's one text size: small = font B, normal =

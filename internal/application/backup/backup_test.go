@@ -2,6 +2,7 @@ package backup
 
 import (
 	"context"
+	"database/sql"
 	"os"
 	"path/filepath"
 	"strings"
@@ -95,59 +96,38 @@ func TestNowUploadsASQLiteFile(t *testing.T) {
 	}
 }
 
-// POS orders' customers never leave the Pi: the uploaded copy has no name,
-// phone or address for a local-only order (online orders are untouched).
-func TestNowScrubsPOSCustomers(t *testing.T) {
+// F-7: no backup while orders are in play, nor around the auto-close minute.
+func TestHeldWhenBusyOrAtAutoClose(t *testing.T) {
+	ny, _ := time.LoadLocation("America/New_York")
+	busy := true
+	s := New(nil, "", nil, &memSettings{}, nil, func() *time.Location { return ny }, zerolog.Nop())
+	s.SetQuiet(func(context.Context) bool { return !busy })
+	s.SetAvoid(func() (int, int, bool) { return 4, 0, true })
 	ctx := context.Background()
-	path := filepath.Join(t.TempDir(), "agent.db")
-	if err := migrate.Run(ctx, path); err != nil {
-		t.Fatal(err)
+	at := func(h, m int) time.Time { return time.Date(2026, 10, 17, h, m, 0, 0, ny) }
+	if s.due(ctx, at(19, 0)) {
+		t.Fatal("never backed up, but orders are in play: must wait")
 	}
-	db, err := database.Open(ctx, path)
-	if err != nil {
-		t.Fatal(err)
+	busy = false
+	if !s.due(ctx, at(19, 0)) {
+		t.Fatal("quiet → due")
 	}
-	defer db.Close()
-	for _, q := range []string{
-		`INSERT INTO orders (id, tenant_id, location_id, source, source_event_id, snapshot, state, batch_id, local_only)
-		 VALUES ('pos-1', 't', 'l', 'pos', 'softtouch:1', '{"id":"pos-1","customer":{"display_name":"Pat Secret","phone":"4105550199"},"fulfillment":{"type":"delivery","address":{"line1":"77 Hidden Ln"}},"money":{"total_cents":1430}}', 'accepted', 1, true)`,
-		`INSERT INTO orders (id, tenant_id, location_id, source, source_event_id, snapshot, state, batch_id)
-		 VALUES ('web-1', 't', 'l', 'online', '1', '{"id":"web-1","customer":{"display_name":"Erik Davis"},"fulfillment":{"type":"delivery","address":{"line1":"12 Main St"}}}', 'accepted', 1)`,
-		`INSERT INTO order_geo (order_id, state, lat, lng, updated_at) VALUES ('pos-1', 'located', 39.4, -76.6, 'x')`,
-	} {
-		if _, err := db.ExecContext(ctx, q); err != nil {
-			t.Fatal(err)
+	for _, m := range []int{0, 10} {
+		if s.due(ctx, at(4, m)) {
+			t.Fatalf("04:%02d is the auto-close's window", m)
 		}
 	}
-	var got []byte
-	s := New(db, path, func(_ context.Context, _ string, body []byte, _ string) (int, []byte, error) {
-		got = body
-		return 201, nil, nil
-	}, &memSettings{}, nil, nil, zerolog.Nop())
-	s.TempDir = t.TempDir()
-	if _, err := s.Now(ctx); err != nil {
-		t.Fatal(err)
+	if s.due(ctx, at(3, 56)) {
+		t.Fatal("03:56 is inside the 5 minutes before the auto-close")
 	}
-	for _, secret := range []string{"Pat Secret", "4105550199", "77 Hidden Ln"} {
-		if strings.Contains(string(got), secret) {
-			t.Fatalf("backup still holds %q", secret)
-		}
-	}
-	if !strings.Contains(string(got), "Erik Davis") || !strings.Contains(string(got), "1430") {
-		t.Fatal("scrub touched more than the POS customer")
-	}
-	// The live database keeps it (wiped at Close batch, not by the backup).
-	var snap string
-	_ = db.QueryRowContext(ctx, `SELECT snapshot FROM orders WHERE id = 'pos-1'`).Scan(&snap)
-	if !strings.Contains(snap, "Pat Secret") {
-		t.Fatal("the live order was scrubbed")
+	if !s.due(ctx, at(4, 16)) {
+		t.Fatal("04:16 → due")
 	}
 }
 
-// The hub feed and the AUTO plans hold POS customer data too: the copy has
-// no POS address.confirmed event, no POS customer in an event payload and no
-// plan (online orders' events stay).
-func TestNowScrubsPOSFeedAndPlans(t *testing.T) {
+// F-7: the copy runs on its own read-only connection, so a write on the
+// agent's one connection isn't held up while a big file is copied.
+func TestBackupDoesNotBlockWrites(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "agent.db")
 	if err := migrate.Run(ctx, path); err != nil {
@@ -158,65 +138,39 @@ func TestNowScrubsPOSFeedAndPlans(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer db.Close()
-	for _, q := range []string{
-		`INSERT INTO orders (id, tenant_id, location_id, source, source_event_id, snapshot, state, batch_id, local_only)
-		 VALUES ('pos-1', 't', 'l', 'pos', 'softtouch:1', '{"id":"pos-1"}', 'accepted', 1, true)`,
-		`INSERT INTO integration_events (type, payload, created_at) VALUES ('address.confirmed',
-		 '{"order_id":"pos-1","ext_ref":"1","how":"candidate","address":{"line1":"88 Secret Rd","city":"Towson"},"lat":39.4111111,"lng":-76.6111111}', 'x')`,
-		`INSERT INTO integration_events (type, payload, created_at) VALUES ('address.confirmed',
-		 '{"order_id":"pos-1","ext_ref":null,"how":"pin","address":null,"lat":39.4222222,"lng":-76.6222222}', 'x')`,
-		`INSERT INTO integration_events (type, payload, created_at) VALUES ('address.confirmed',
-		 '{"order_id":"web-1","ext_ref":null,"how":"pin","address":null,"lat":39.4333333,"lng":-76.6333333}', 'x')`,
-		`INSERT INTO integration_events (type, payload, created_at) VALUES ('order.accepted',
-		 '{"order":{"order":{"id":"pos-2","source":"pos","customer":{"display_name":"Pat Secret","phone":"4105550199"},"fulfillment":{"type":"delivery","address":{"line1":"77 Hidden Ln"}}},"status":{"state":"accepted","ext_source":"softtouch","local_only":true},"geo":{"state":"located","lat":39.4444444}}}', 'x')`,
-		`INSERT INTO integration_events (type, payload, created_at) VALUES ('order.accepted',
-		 '{"order":{"order":{"id":"web-2","source":"online","customer":{"display_name":"Erik Davis"}},"status":{"state":"accepted"}}}', 'x')`,
-		`INSERT INTO auto_plans (id, created_at, plan_json) VALUES ('plan-1', 'x', '{"runs":[{"stops":[{"order_id":"pos-1","lat":39.4555555,"lng":-76.6555555,"address":"99 Plan St"}]}]}')`,
-	} {
-		if _, err := db.ExecContext(ctx, q); err != nil {
+	if _, err := db.ExecContext(ctx, `CREATE TABLE pad(b BLOB)`); err != nil {
+		t.Fatal(err)
+	}
+	blob := make([]byte, 1<<20)
+	for i := 0; i < 24; i++ {
+		if _, err := db.ExecContext(ctx, `INSERT INTO pad(b) VALUES (?)`, blob); err != nil {
 			t.Fatal(err)
 		}
 	}
-	var got []byte
-	s := New(db, path, func(_ context.Context, _ string, body []byte, _ string) (int, []byte, error) {
-		got = body
-		return 201, nil, nil
-	}, &memSettings{}, nil, nil, zerolog.Nop())
+	usedRO := false
+	s := New(db, path, func(context.Context, string, []byte, string) (int, []byte, error) { return 201, nil, nil },
+		&memSettings{}, nil, nil, zerolog.Nop())
 	s.TempDir = t.TempDir()
-	if _, err := s.Now(ctx); err != nil {
-		t.Fatal(err)
-	}
-	for _, secret := range []string{"88 Secret Rd", "39.4111111", "39.4222222", "Pat Secret", "4105550199", "77 Hidden Ln",
-		"39.4444444", "39.4555555", "99 Plan St"} {
-		if strings.Contains(string(got), secret) {
-			t.Fatalf("backup still holds %q", secret)
+	s.OpenRO = func(p string) (*sql.DB, error) { usedRO = true; return openReadOnly(p) }
+	defer s.Close()
+	done := make(chan error, 1)
+	go func() { _, err := s.Now(ctx); done <- err }()
+	var worst time.Duration
+	for i := 0; i < 20; i++ {
+		start := time.Now()
+		if _, err := db.ExecContext(ctx, `UPDATE settings SET id = id WHERE id = 1`); err != nil {
+			t.Fatal(err)
 		}
+		worst = max(worst, time.Since(start))
+		time.Sleep(5 * time.Millisecond)
 	}
-	for _, kept := range []string{"39.4333333", "Erik Davis"} {
-		if !strings.Contains(string(got), kept) {
-			t.Fatalf("scrub removed online data %q", kept)
-		}
-	}
-	// The copy is still a readable database with the online events in it.
-	copyPath := filepath.Join(t.TempDir(), "copy.db")
-	if err := os.WriteFile(copyPath, got, 0o600); err != nil {
+	if err := <-done; err != nil {
 		t.Fatal(err)
 	}
-	cp, err := database.Open(ctx, copyPath)
-	if err != nil {
-		t.Fatal(err)
+	if !usedRO {
+		t.Fatal("the backup didn't use its own read-only connection")
 	}
-	defer cp.Close()
-	var events, plans int
-	_ = cp.QueryRowContext(ctx, `SELECT COUNT(*) FROM integration_events`).Scan(&events)
-	_ = cp.QueryRowContext(ctx, `SELECT COUNT(*) FROM auto_plans`).Scan(&plans)
-	if events != 3 || plans != 0 {
-		t.Fatalf("copy has %d events, %d plans; want 3, 0", events, plans)
-	}
-	// The live database keeps everything.
-	var live int
-	_ = db.QueryRowContext(ctx, `SELECT COUNT(*) FROM integration_events`).Scan(&live)
-	if live != 5 {
-		t.Fatalf("live feed touched: %d events", live)
+	if limit := 200 * time.Millisecond; worst > limit && os.Getenv("GATE_PARALLEL") == "" {
+		t.Fatalf("a write waited %v during the backup", worst)
 	}
 }

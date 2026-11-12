@@ -40,59 +40,11 @@ type Repository interface {
 	FloorRepository
 	PoolRepository
 	IntegrationRepository
+	DriverViewRepository
 }
 
-// ExternalMeta is what the service adds to a POS upsert: the id for a new
-// order (UUIDv7, made on the Pi), the store it belongs to, its prep time
-// (the store default for its type) and the clock.
-type ExternalMeta struct {
-	OrderID     string
-	TenantID    string
-	LocationID  string
-	PrepMinutes int64
-	Now         time.Time
-	// UpdateOnly (2.3.6, PUT ?if_exists=1): a check the Pi doesn't hold is
-	// not created — the upsert answers ErrNotFound (the hub's final PUT for
-	// a check the Pi already dropped must never bring it back).
-	UpdateOnly bool
-}
-
-// ExternalResult is a POS upsert's outcome. AddressChanged: an open check is
-// a delivery now with a new address (or newly a delivery) — main must locate
-// it; DeliveryEnded: an open check stopped being a delivery — main must
-// forget its point. PrevDriverPos is the driver number the POS had set
-// before (to see a change).
-type ExternalResult struct {
-	Order          StoredOrder
-	Created        bool
-	Changed        bool
-	AddressChanged bool
-	DeliveryEnded  bool
-	PrevDriverPos  string
-	// 00019: Shown = a hidden check now qualifies for Kitchen (published as
-	// a new order, with the chime); Change = a terminal change to a check
-	// already on the tablet (rings until OK; nil = none or quiet);
-	// Reopened = a ready order went back to cooking (left its pool);
-	// Finished = the POS closed it and it is done with; VoidPrint = the
-	// kitchen lines removed (for a void ticket where the POS switch prints).
-	Shown     bool
-	Change    *PosChange
-	Reopened  bool
-	Finished  bool
-	VoidPrint []LineItem
-}
-
-// OnlinePatch is PATCH /api/integration/online-orders/{id}. SetFlag with a
-// nil Flag clears it.
-type OnlinePatch struct {
-	Paid           *bool
-	PosCheckNumber *int64
-	SetFlag        bool
-	Flag           *Flag
-}
-
-// IntegrationRepository persists the 2.1.0 store-hub surface: settings, POS
-// orders, the hub feed and future orders. Every change the hub must see
+// IntegrationRepository persists the store-hub surface (the callout box):
+// settings, the hub feed and future orders. Every change the hub must see
 // writes its feed event in the same transaction.
 type IntegrationRepository interface {
 	IntegrationSettings(ctx context.Context) (IntegrationSettings, error)
@@ -101,24 +53,7 @@ type IntegrationRepository interface {
 	IntegrationStatus(ctx context.Context) (IntegrationStatus, error)
 	SetIntegrationStatus(ctx context.Context, st IntegrationStatus) error
 
-	// UpsertExternal inserts a new POS check (accepted, no kitchen number,
-	// local only) or updates a changed one (same hash = no-op; a finished
-	// order only takes the money and paid).
-	UpsertExternal(ctx context.Context, extRef string, in ExternalOrder, meta ExternalMeta) (ExternalResult, error)
-	SetExtDriver(ctx context.Context, id, posNumber, note string) (*StoredOrder, error)
-	// VoidExternal cancels a POS order (pool cleared, order.cancelled on the
-	// feed); changed=false when it was already cancelled or delivered.
-	VoidExternal(ctx context.Context, source, extRef string) (so *StoredOrder, changed bool, err error)
-	PatchOnline(ctx context.Context, id string, p OnlinePatch) (*StoredOrder, error)
-	DriverByPosNumber(ctx context.Context, pos string) (*Driver, error)
-	// MirrorSendOut sends one delivery out alone with an available driver
-	// (marked ready first if cooking; run.sent on the feed); the driver's
-	// other pooled orders go back to unassigned.
-	MirrorSendOut(ctx context.Context, driverID, orderID string) (sent, readied, unpooled []StoredOrder, err error)
-	// MirrorJoinRun puts a delivery on the run of a driver already out.
-	MirrorJoinRun(ctx context.Context, driverID, orderID string) (so *StoredOrder, readied []StoredOrder, err error)
-	// AppendFeed writes a feed event that goes with no other change (2.3.0:
-	// driver_ledger.requested).
+	// AppendFeed writes a feed event that goes with no other change.
 	AppendFeed(ctx context.Context, typ string, at time.Time, data any) error
 	// ListFeed returns up to limit feed events after seq, and the newest seq.
 	ListFeed(ctx context.Context, after int64, limit int) ([]FeedEvent, int64, error)
@@ -142,11 +77,7 @@ type IntegrationRepository interface {
 	// not mid-accept) with its cancelled floor event (ErrInvalidState).
 	CancelWaiting(ctx context.Context, id string) (*StoredOrder, error)
 
-	// 00019. AckPosChange marks an order's terminal change OK'd (acked_at;
-	// it stops ringing, the ticket keeps CHANGED). changeID "" = whatever is
-	// pending; acked=false when nothing is pending or a newer one came in.
-	AckPosChange(ctx context.Context, id, changeID string) (so *StoredOrder, acked bool, err error)
-	// FinishDueOnlinePickups finishes online pickups / dine-in ready since
+	// 00019. FinishDueOnlinePickups finishes online pickups / dine-in ready since
 	// before cutoff (finished_by auto) and returns them.
 	FinishDueOnlinePickups(ctx context.Context, cutoff, now time.Time) ([]StoredOrder, error)
 	// InsertCalloutTest writes the feed's callout.test.
@@ -216,4 +147,28 @@ type LinkInfo struct {
 	Secrets         Secrets
 	ManagerUsername string
 	DeviceID        string
+}
+
+// DriverViewRepository is the terminal's driver view (contract/agent.md
+// §2.10b) and the batch auto-close (§2.10c).
+type DriverViewRepository interface {
+	// DeliverOne is a driver's "close" on one of his out orders: delivered
+	// (order.status to main); returned = it was his last stop and he is back
+	// in the queue. ErrDriverNotFound; ErrInvalidState when it isn't one of
+	// his out orders.
+	DeliverOne(ctx context.Context, driverID, orderID string) (so *StoredOrder, returned bool, err error)
+	// ClaimDelivered is a driver claiming deliveries nobody took (the
+	// Dispatch section): each must be ClaimableLate(rule) in the open batch
+	// (one already his and delivered is left as it is), else *ErrTaken with
+	// the ones that failed, all or nothing; an unknown id is ErrNotFound. Each
+	// becomes his and delivered (delivered now when it wasn't), order.status
+	// to main; he does not go out. claimed = the orders that changed.
+	ClaimDelivered(ctx context.Context, driverID string, ids []string, rule ClaimRule, by MarkedBy) (claimed []StoredOrder, err error)
+	// AutoCloseLast / SetAutoCloseLast: the last auto-close slot handled
+	// (zero = none yet).
+	AutoCloseLast(ctx context.Context) (time.Time, error)
+	SetAutoCloseLast(ctx context.Context, slot time.Time) error
+	// CountOpenBatchOrders: the open batch's orders (total) and the ones
+	// still on the floor (active).
+	CountOpenBatchOrders(ctx context.Context) (total, active int64, err error)
 }

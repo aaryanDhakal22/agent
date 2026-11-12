@@ -38,10 +38,10 @@ type Meters struct {
 	DriverRouteSent  metric.Int64Counter
 	FloorSyncBacklog metric.Int64Gauge
 	// FloorAcceptSeconds: arrival (or a future order's re-ring) → accept,
-	// by source=online|pos.
+	// by source=online|web|counter.
 	FloorAcceptSeconds metric.Float64Histogram
 	// OrdersPrintSeconds: an accept's print job, start → every ticket
-	// written or given up (result=ok|partial|failed, source=online|pos).
+	// written or given up (result=ok|partial|failed, source=online|web|counter).
 	OrdersPrintSeconds metric.Float64Histogram
 
 	// Pi updates: one per finished update / rollback run
@@ -53,6 +53,21 @@ type Meters struct {
 	RPCRepliesSent      metric.Int64Counter
 	RPCReportsSent      metric.Int64Counter
 	RPCHandleMs         metric.Float64Histogram
+
+	// Hardening A2 (2026-11-12).
+	// SSEIdleTimeouts: SSE streams to main given up after 45 s of silence
+	// (main's keepalive is every 15 s) — F-5.
+	SSEIdleTimeouts metric.Int64Counter
+	// ClockSkew: main's clock (the SSE 200's Date header) minus the Pi's,
+	// seconds; positive = the Pi is behind — F-13.
+	ClockSkew metric.Float64Gauge
+	// TicketsRerouted: a ticket printed on another printer because its own
+	// failed (source=counter|online|web, kind=station|receipt|change|void) —
+	// CM-7.
+	TicketsRerouted metric.Int64Counter
+	// DBErrors: SQLite answered read-only / disk full / I/O error
+	// (kind=readonly|full|ioerr) — F-15.
+	DBErrors metric.Int64Counter
 }
 
 func NewMeters() (Meters, error) {
@@ -162,7 +177,7 @@ func NewMeters() (Meters, error) {
 	if ms.FloorAcceptSeconds, err = m.Float64Histogram(
 		"floor.accept.seconds",
 		metric.WithUnit("s"),
-		metric.WithDescription("Time from an order's arrival (a future order: its re-ring) to its accept (source=online|pos)"),
+		metric.WithDescription("Time from an order's arrival (a future order: its re-ring) to its accept (source=online|web|counter)"),
 		metric.WithExplicitBucketBoundaries(5, 15, 30, 60, 90, 120, 180, 300, 600, 900, 1800),
 	); err != nil {
 		return Meters{}, fmt.Errorf("floor.accept.seconds: %w", err)
@@ -172,7 +187,7 @@ func NewMeters() (Meters, error) {
 	if ms.OrdersPrintSeconds, err = m.Float64Histogram(
 		"orders.print.seconds",
 		metric.WithUnit("s"),
-		metric.WithDescription("An accept's print job: start to every ticket written or given up (result=ok|partial|failed, source=online|pos)"),
+		metric.WithDescription("An accept's print job: start to every ticket written or given up (result=ok|partial|failed, source=online|web|counter)"),
 		metric.WithExplicitBucketBoundaries(0.05, 0.1, 0.25, 0.5, 1, 2, 3, 5, 10, 15, 20, 30),
 	); err != nil {
 		return Meters{}, fmt.Errorf("orders.print.seconds: %w", err)
@@ -224,11 +239,42 @@ func NewMeters() (Meters, error) {
 		return Meters{}, fmt.Errorf("rpc.handle.duration: %w", err)
 	}
 
+	if ms.SSEIdleTimeouts, err = m.Int64Counter(
+		"sse.idle_timeouts",
+		metric.WithDescription("SSE streams to main dropped after 45 s without a byte (keepalives are every 15 s)"),
+	); err != nil {
+		return Meters{}, fmt.Errorf("sse.idle_timeouts: %w", err)
+	}
+
+	// Unit "s" + a name ending in "seconds": Prometheus keeps the name.
+	if ms.ClockSkew, err = m.Float64Gauge(
+		"agent.clock.skew.seconds",
+		metric.WithUnit("s"),
+		metric.WithDescription("main's clock (Date header of the SSE 200) minus the Pi's, in seconds; positive = the Pi is behind"),
+	); err != nil {
+		return Meters{}, fmt.Errorf("agent.clock.skew.seconds: %w", err)
+	}
+
+	if ms.TicketsRerouted, err = m.Int64Counter(
+		"orders.tickets.rerouted",
+		metric.WithDescription("Tickets printed on another printer because their own failed (source=counter|online|web, kind=station|receipt|change|void)"),
+	); err != nil {
+		return Meters{}, fmt.Errorf("orders.tickets.rerouted: %w", err)
+	}
+
+	if ms.DBErrors, err = m.Int64Counter(
+		"agent.db.errors",
+		metric.WithDescription("SQLite errors that mean the SD card is in trouble (kind=readonly|full|ioerr)"),
+	); err != nil {
+		return Meters{}, fmt.Errorf("agent.db.errors: %w", err)
+	}
+
 	return ms, nil
 }
 
 // FloorCount is one floor.orders.open series: State is new|cooking|ready|
-// out|scheduled, Source online|pos.
+// out|scheduled, Source online|web|counter (web = every channel order but the
+// terminals' counter orders, CM-12).
 type FloorCount struct {
 	State  string
 	Source string
@@ -239,7 +285,7 @@ type FloorCount struct {
 // combination is reported (0 when empty) so dashboards never see "no data".
 var (
 	FloorStates  = []string{"new", "cooking", "ready", "out", "scheduled"}
-	FloorSources = []string{"online", "pos"}
+	FloorSources = []string{"online", "web", "counter"}
 )
 
 // HubLink is the store hub's last report as the gauges see it.
@@ -258,6 +304,9 @@ type Live struct {
 	// TabletVersions: tablets on the /api/events stream now, by the Quibase
 	// version they reported ("unknown" = none) — floor.tablets.version.
 	TabletVersions func() map[string]int
+	// TerminalsConnected (CM-2): every paired terminal by name, 1 while it
+	// has an /api/events stream, else 0 — terminal.connected{device}.
+	TerminalsConnected func(ctx context.Context) map[string]int
 	// Hub: ok=false when no store hub has ever reported (both hub gauges
 	// are then absent).
 	Hub func() (HubLink, bool)
@@ -285,7 +334,7 @@ func RegisterLive(src Live) (metric.Registration, error) {
 	m := otel.Meter(MeterName)
 
 	floorOpen, err := m.Int64ObservableGauge("floor.orders.open",
-		metric.WithDescription("Open-batch orders in play by state (new|cooking|ready|out|scheduled) and source (online|pos)"))
+		metric.WithDescription("Open-batch orders in play by state (new|cooking|ready|out|scheduled) and source (online|web|counter)"))
 	if err != nil {
 		return nil, fmt.Errorf("floor.orders.open: %w", err)
 	}
@@ -340,6 +389,11 @@ func RegisterLive(src Live) (metric.Registration, error) {
 	if err != nil {
 		return nil, fmt.Errorf("agent.update.last_success: %w", err)
 	}
+	terminals, err := m.Int64ObservableGauge("terminal.connected",
+		metric.WithDescription("A paired POS terminal (attribute device = its name) has the Pi's event stream open: 1=connected, 0=not"))
+	if err != nil {
+		return nil, fmt.Errorf("terminal.connected: %w", err)
+	}
 	infoAttrs := metric.WithAttributes(attribute.String("version", src.Version))
 
 	return m.RegisterCallback(func(ctx context.Context, o metric.Observer) error {
@@ -372,6 +426,11 @@ func RegisterLive(src Live) (metric.Registration, error) {
 				o.ObserveInt64(tabletVersions, int64(n), metric.WithAttributes(attribute.String("app_version", v)))
 			}
 		}
+		if src.TerminalsConnected != nil {
+			for name, up := range src.TerminalsConnected(ctx) {
+				o.ObserveInt64(terminals, int64(up), metric.WithAttributes(attribute.String("device", name)))
+			}
+		}
 		if src.Hub != nil {
 			if h, ok := src.Hub(); ok {
 				up := int64(0)
@@ -399,5 +458,5 @@ func RegisterLive(src Live) (metric.Registration, error) {
 			}
 		}
 		return nil
-	}, floorOpen, tablets, tabletVersions, hubUp, hubAge, info, sseUp, uptime, hostUptime, lastUpdate)
+	}, floorOpen, tablets, tabletVersions, hubUp, hubAge, info, sseUp, uptime, hostUptime, lastUpdate, terminals)
 }

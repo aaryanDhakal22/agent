@@ -13,7 +13,7 @@ import (
 func TestBuildTestSlip_Golden(t *testing.T) {
 	sc := storeconfig.StoreContext{Location: storeconfig.LocationContext{Name: "Lombardi's Pizza", Timezone: "America/New_York"}}
 	at := time.Date(2026, 10, 20, 19, 4, 0, 0, time.UTC)
-	got := BuildTestSlip("Pizza", sc, "Counter tablet", at)
+	got := BuildTestSlip("Pizza", sc, "Counter tablet", at, 0)
 	path := "testdata/test_slip.golden"
 	if *update {
 		if err := os.WriteFile(path, got, 0o644); err != nil {
@@ -38,7 +38,7 @@ func TestBuildTestSlip_Golden(t *testing.T) {
 
 func TestBuildTestSlip_ASCIIOnly(t *testing.T) {
 	sc := storeconfig.StoreContext{Tenant: storeconfig.TenantContext{Name: "Café Ünï"}}
-	got := BuildTestSlip("Küche", sc, "Tablet ☕", time.Now())
+	got := BuildTestSlip("Küche", sc, "Tablet ☕", time.Now(), 0)
 	for i, c := range got {
 		if c > 0x7F {
 			t.Fatalf("non-ASCII byte 0x%X at %d in %q", c, i, got)

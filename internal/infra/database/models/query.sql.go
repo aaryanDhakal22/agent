@@ -34,22 +34,26 @@ func (q *Queries) CancelCameBack(ctx context.Context, arg CancelCameBackParams) 
 	return result.RowsAffected()
 }
 
-const cancelExternalOrder = `-- name: CancelExternalOrder :execrows
+const cancelChannelOrder = `-- name: CancelChannelOrder :execrows
 UPDATE orders
-SET state = 'cancelled', cancelled_at = ?, pool_driver_id = NULL, pooled_at = NULL, pool_seq = NULL,
-    pool_plan_id = NULL, accept_pending = 0, came_back = false
-WHERE id = ? AND state NOT IN ('cancelled', 'delivered')
+SET state = 'cancelled', cancelled_at = ?1, cancel_reason = ?2,
+    ring_at = NULL, came_back = false,
+    driver_id = NULL, driver_name = '', out_at = NULL, delivered_at = NULL, run_seq = NULL,
+    pool_driver_id = NULL, pooled_at = NULL, pool_seq = NULL, pool_plan_id = NULL
+WHERE id = ?3 AND accept_pending = 0
+  AND state IN ('arrived', 'scheduled', 'accepted', 'ready', 'on_delivery')
 `
 
-type CancelExternalOrderParams struct {
+type CancelChannelOrderParams struct {
 	CancelledAt sql.NullString `json:"cancelled_at"`
+	Reason      string         `json:"reason"`
 	ID          string         `json:"id"`
 }
 
-// A void at the POS (or Close batch): cancelled, out of any pool. A delivered
-// order stays delivered (its driver collected it).
-func (q *Queries) CancelExternalOrder(ctx context.Context, arg CancelExternalOrderParams) (int64, error) {
-	result, err := q.db.ExecContext(ctx, cancelExternalOrder, arg.CancelledAt, arg.ID)
+// 2.5.0 CANCEL ORDER on a channel (website) order not delivered yet: off any
+// pool or run (no driver, so it counts on no driver report).
+func (q *Queries) CancelChannelOrder(ctx context.Context, arg CancelChannelOrderParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, cancelChannelOrder, arg.CancelledAt, arg.Reason, arg.ID)
 	if err != nil {
 		return 0, err
 	}
@@ -166,6 +170,34 @@ func (q *Queries) ClearProvisioning(ctx context.Context) error {
 	return err
 }
 
+const clearTerminalDrafts = `-- name: ClearTerminalDrafts :many
+DELETE FROM terminal_drafts RETURNING id
+`
+
+// Close batch: every shared draft goes (their ids are announced).
+func (q *Queries) ClearTerminalDrafts(ctx context.Context) ([]string, error) {
+	rows, err := q.db.QueryContext(ctx, clearTerminalDrafts)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const clockOutDriver = `-- name: ClockOutDriver :execrows
 UPDATE drivers SET status = 'off' WHERE id = ? AND status = 'available'
 `
@@ -190,6 +222,41 @@ type CloseBatchParams struct {
 func (q *Queries) CloseBatch(ctx context.Context, arg CloseBatchParams) error {
 	_, err := q.db.ExecContext(ctx, closeBatch, arg.ClosedAt, arg.ID)
 	return err
+}
+
+const closeDrawerSession = `-- name: CloseDrawerSession :execrows
+UPDATE drawer_sessions SET closed_at = ?1, closed_by = ?2, close_reason = ?3,
+       counted_cents = ?4, denominations = ?5, expected_cents = ?6,
+       flagged = ?7
+WHERE id = ?8 AND closed_at IS NULL
+`
+
+type CloseDrawerSessionParams struct {
+	ClosedAt      sql.NullString `json:"closed_at"`
+	ClosedBy      string         `json:"closed_by"`
+	CloseReason   string         `json:"close_reason"`
+	CountedCents  sql.NullInt64  `json:"counted_cents"`
+	Denominations string         `json:"denominations"`
+	ExpectedCents sql.NullInt64  `json:"expected_cents"`
+	Flagged       bool           `json:"flagged"`
+	ID            string         `json:"id"`
+}
+
+func (q *Queries) CloseDrawerSession(ctx context.Context, arg CloseDrawerSessionParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, closeDrawerSession,
+		arg.ClosedAt,
+		arg.ClosedBy,
+		arg.CloseReason,
+		arg.CountedCents,
+		arg.Denominations,
+		arg.ExpectedCents,
+		arg.Flagged,
+		arg.ID,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
 
 const closeShift = `-- name: CloseShift :exec
@@ -243,6 +310,17 @@ func (q *Queries) CountAllOrders(ctx context.Context) (int64, error) {
 	return count, err
 }
 
+const countCustomers = `-- name: CountCustomers :one
+SELECT count(*) FROM customers
+`
+
+func (q *Queries) CountCustomers(ctx context.Context) (int64, error) {
+	row := q.db.QueryRowContext(ctx, countCustomers)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const countDeliveriesInBatch = `-- name: CountDeliveriesInBatch :many
 SELECT driver_id, count(*) AS deliveries FROM orders
 WHERE batch_id = ? AND driver_id IS NOT NULL
@@ -275,6 +353,43 @@ func (q *Queries) CountDeliveriesInBatch(ctx context.Context, batchID int64) ([]
 		return nil, err
 	}
 	return items, nil
+}
+
+const countHeldFloorEvents = `-- name: CountHeldFloorEvents :one
+SELECT count(*) FROM floor_events f
+WHERE f.synced_at IS NULL AND f.parked_at IS NULL AND f.subject <> ''
+  AND EXISTS (SELECT 1 FROM floor_events p
+              WHERE p.subject = f.subject AND p.parked_at IS NOT NULL AND p.synced_at IS NULL AND p.rowid < f.rowid)
+`
+
+// CountHeldFloorEvents: unsynced events waiting behind a parked one about
+// the same subject.
+func (q *Queries) CountHeldFloorEvents(ctx context.Context) (int64, error) {
+	row := q.db.QueryRowContext(ctx, countHeldFloorEvents)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
+const countNoSales = `-- name: CountNoSales :one
+SELECT count(*) FROM journal
+WHERE action = 'no_sale' AND device_id = ?1 AND at >= ?2
+  AND (?3 = '' OR at <= ?3)
+`
+
+type CountNoSalesParams struct {
+	DeviceID string      `json:"device_id"`
+	FromAt   string      `json:"from_at"`
+	ToAt     interface{} `json:"to_at"`
+}
+
+// CountNoSales: a terminal's no_sale journal rows in a time window
+// (closed_at ” = still open).
+func (q *Queries) CountNoSales(ctx context.Context, arg CountNoSalesParams) (int64, error) {
+	row := q.db.QueryRowContext(ctx, countNoSales, arg.DeviceID, arg.FromAt, arg.ToAt)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
 }
 
 const countOnDeliveryByDriver = `-- name: CountOnDeliveryByDriver :one
@@ -311,23 +426,21 @@ func (q *Queries) CountOpenBatchOrders(ctx context.Context) (CountOpenBatchOrder
 
 const countOpenFloorOrders = `-- name: CountOpenFloorOrders :many
 SELECT state,
-       CAST(ext_source <> '' AS INTEGER) AS pos,
+       CAST(source NOT IN ('online', 'pos', '') AS INTEGER) AS channel,
        CAST(count(*) AS INTEGER) AS n
 FROM orders
 WHERE batch_id = (SELECT id FROM batches WHERE closed_at IS NULL ORDER BY id DESC LIMIT 1)
   AND state IN ('arrived', 'scheduled', 'accepted', 'ready', 'on_delivery')
-  AND board_hidden = 0
-GROUP BY state, pos
+GROUP BY state, channel
 `
 
 type CountOpenFloorOrdersRow struct {
-	State string `json:"state"`
-	Pos   int64  `json:"pos"`
-	N     int64  `json:"n"`
+	State   string `json:"state"`
+	Channel int64  `json:"channel"`
+	N       int64  `json:"n"`
 }
 
-// Metrics: floor.orders.open (open batch, by state and online/POS; POS
-// counter checks with no kitchen item are left out, as on Kitchen).
+// Metrics: floor.orders.open (open batch, by state and online / channel).
 func (q *Queries) CountOpenFloorOrders(ctx context.Context) ([]CountOpenFloorOrdersRow, error) {
 	rows, err := q.db.QueryContext(ctx, countOpenFloorOrders)
 	if err != nil {
@@ -337,7 +450,7 @@ func (q *Queries) CountOpenFloorOrders(ctx context.Context) ([]CountOpenFloorOrd
 	var items []CountOpenFloorOrdersRow
 	for rows.Next() {
 		var i CountOpenFloorOrdersRow
-		if err := rows.Scan(&i.State, &i.Pos, &i.N); err != nil {
+		if err := rows.Scan(&i.State, &i.Channel, &i.N); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
@@ -351,8 +464,30 @@ func (q *Queries) CountOpenFloorOrders(ctx context.Context) ([]CountOpenFloorOrd
 	return items, nil
 }
 
+const countParkedFloorEvents = `-- name: CountParkedFloorEvents :one
+SELECT count(*) FROM floor_events WHERE parked_at IS NOT NULL AND synced_at IS NULL
+`
+
+func (q *Queries) CountParkedFloorEvents(ctx context.Context) (int64, error) {
+	row := q.db.QueryRowContext(ctx, countParkedFloorEvents)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
+const countTerminalDrafts = `-- name: CountTerminalDrafts :one
+SELECT CAST(count(*) AS INTEGER) FROM terminal_drafts WHERE location_id = ?
+`
+
+func (q *Queries) CountTerminalDrafts(ctx context.Context, locationID string) (int64, error) {
+	row := q.db.QueryRowContext(ctx, countTerminalDrafts, locationID)
+	var column_1 int64
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
 const countUnsyncedFloorEvents = `-- name: CountUnsyncedFloorEvents :one
-SELECT count(*) FROM floor_events WHERE synced_at IS NULL
+SELECT count(*) FROM floor_events WHERE synced_at IS NULL AND parked_at IS NULL
 `
 
 func (q *Queries) CountUnsyncedFloorEvents(ctx context.Context) (int64, error) {
@@ -363,14 +498,13 @@ func (q *Queries) CountUnsyncedFloorEvents(ctx context.Context) (int64, error) {
 }
 
 const createDriver = `-- name: CreateDriver :exec
-INSERT INTO drivers (id, name, position, pos_number, pushover_device) VALUES (?, ?, ?, ?, ?)
+INSERT INTO drivers (id, name, position, pushover_device) VALUES (?, ?, ?, ?)
 `
 
 type CreateDriverParams struct {
 	ID             string `json:"id"`
 	Name           string `json:"name"`
 	Position       int64  `json:"position"`
-	PosNumber      string `json:"pos_number"`
 	PushoverDevice string `json:"pushover_device"`
 }
 
@@ -379,7 +513,6 @@ func (q *Queries) CreateDriver(ctx context.Context, arg CreateDriverParams) erro
 		arg.ID,
 		arg.Name,
 		arg.Position,
-		arg.PosNumber,
 		arg.PushoverDevice,
 	)
 	return err
@@ -431,6 +564,42 @@ func (q *Queries) DeleteAllBatches(ctx context.Context) error {
 	return err
 }
 
+const deleteAllCustomerAddresses = `-- name: DeleteAllCustomerAddresses :exec
+DELETE FROM customer_addresses
+`
+
+func (q *Queries) DeleteAllCustomerAddresses(ctx context.Context) error {
+	_, err := q.db.ExecContext(ctx, deleteAllCustomerAddresses)
+	return err
+}
+
+const deleteAllCustomers = `-- name: DeleteAllCustomers :exec
+DELETE FROM customers
+`
+
+func (q *Queries) DeleteAllCustomers(ctx context.Context) error {
+	_, err := q.db.ExecContext(ctx, deleteAllCustomers)
+	return err
+}
+
+const deleteCustomer = `-- name: DeleteCustomer :exec
+DELETE FROM customers WHERE id = ?
+`
+
+func (q *Queries) DeleteCustomer(ctx context.Context, id string) error {
+	_, err := q.db.ExecContext(ctx, deleteCustomer, id)
+	return err
+}
+
+const deleteCustomerAddresses = `-- name: DeleteCustomerAddresses :exec
+DELETE FROM customer_addresses WHERE customer_id = ?
+`
+
+func (q *Queries) DeleteCustomerAddresses(ctx context.Context, customerID string) error {
+	_, err := q.db.ExecContext(ctx, deleteCustomerAddresses, customerID)
+	return err
+}
+
 const deleteOldAutoPlans = `-- name: DeleteOldAutoPlans :exec
 DELETE FROM auto_plans WHERE created_at < ?
 `
@@ -445,6 +614,13 @@ DELETE FROM batches
 WHERE closed_at IS NOT NULL
   AND id NOT IN (
       SELECT id FROM batches WHERE closed_at IS NOT NULL ORDER BY id DESC LIMIT ?
+  )
+  AND id NOT IN (
+      -- F-10: held while an event about them hasn't reached main, or a carried check is open.
+      SELECT o2.batch_id FROM orders o2 JOIN floor_events f ON f.subject = o2.id WHERE f.synced_at IS NULL
+      UNION SELECT o3.batch_id FROM orders o3 WHERE o3.carried
+      UNION SELECT d.batch_id FROM drawer_sessions d JOIN floor_events f2 ON f2.subject = 'drawer:' || d.id WHERE f2.synced_at IS NULL
+      UNION SELECT z.batch_id FROM z_reports z JOIN floor_events f3 ON f3.subject = 'z:' || z.batch_id WHERE f3.synced_at IS NULL
   )
 `
 
@@ -489,6 +665,13 @@ WHERE batch_id NOT IN (SELECT id FROM batches WHERE closed_at IS NULL)
   AND batch_id NOT IN (
       SELECT id FROM batches WHERE closed_at IS NOT NULL ORDER BY id DESC LIMIT ?
   )
+  AND batch_id NOT IN (
+      -- F-10: held while an event about them hasn't reached main, or a carried check is open.
+      SELECT o2.batch_id FROM orders o2 JOIN floor_events f ON f.subject = o2.id WHERE f.synced_at IS NULL
+      UNION SELECT o3.batch_id FROM orders o3 WHERE o3.carried
+      UNION SELECT d.batch_id FROM drawer_sessions d JOIN floor_events f2 ON f2.subject = 'drawer:' || d.id WHERE f2.synced_at IS NULL
+      UNION SELECT z.batch_id FROM z_reports z JOIN floor_events f3 ON f3.subject = 'z:' || z.batch_id WHERE f3.synced_at IS NULL
+  )
 `
 
 // Batch retention: keep the open batch plus the newest N closed batches.
@@ -500,12 +683,60 @@ func (q *Queries) DeleteOrdersOutsideKeptBatches(ctx context.Context, limit int6
 	return result.RowsAffected()
 }
 
+const deleteOrphanCustomerAddresses = `-- name: DeleteOrphanCustomerAddresses :exec
+DELETE FROM customer_addresses WHERE customer_id NOT IN (SELECT id FROM customers)
+`
+
+func (q *Queries) DeleteOrphanCustomerAddresses(ctx context.Context) error {
+	_, err := q.db.ExecContext(ctx, deleteOrphanCustomerAddresses)
+	return err
+}
+
+const deleteOrphanDeadLetters = `-- name: DeleteOrphanDeadLetters :exec
+DELETE FROM floor_dead_letters WHERE event_id NOT IN (SELECT id FROM floor_events)
+`
+
+func (q *Queries) DeleteOrphanDeadLetters(ctx context.Context) error {
+	_, err := q.db.ExecContext(ctx, deleteOrphanDeadLetters)
+	return err
+}
+
+const deleteOrphanDrawerMovements = `-- name: DeleteOrphanDrawerMovements :exec
+DELETE FROM drawer_movements WHERE drawer_id IN (SELECT id FROM drawer_sessions WHERE batch_id NOT IN (SELECT id FROM batches))
+`
+
+// Retention of stage 2 rows: drawers and Z reports of trimmed batches, dead
+// letters whose event is gone.
+func (q *Queries) DeleteOrphanDrawerMovements(ctx context.Context) error {
+	_, err := q.db.ExecContext(ctx, deleteOrphanDrawerMovements)
+	return err
+}
+
+const deleteOrphanDrawerSessions = `-- name: DeleteOrphanDrawerSessions :exec
+DELETE FROM drawer_sessions WHERE batch_id NOT IN (SELECT id FROM batches)
+`
+
+func (q *Queries) DeleteOrphanDrawerSessions(ctx context.Context) error {
+	_, err := q.db.ExecContext(ctx, deleteOrphanDrawerSessions)
+	return err
+}
+
 const deleteOrphanOrderGeo = `-- name: DeleteOrphanOrderGeo :exec
 DELETE FROM order_geo WHERE order_id NOT IN (SELECT id FROM orders)
 `
 
 func (q *Queries) DeleteOrphanOrderGeo(ctx context.Context) error {
 	_, err := q.db.ExecContext(ctx, deleteOrphanOrderGeo)
+	return err
+}
+
+const deleteOrphanOrderPayments = `-- name: DeleteOrphanOrderPayments :exec
+DELETE FROM order_payments WHERE order_id NOT IN (SELECT id FROM orders)
+`
+
+// Retention: the payments of trimmed counter orders.
+func (q *Queries) DeleteOrphanOrderPayments(ctx context.Context) error {
+	_, err := q.db.ExecContext(ctx, deleteOrphanOrderPayments)
 	return err
 }
 
@@ -519,24 +750,144 @@ func (q *Queries) DeleteOrphanOrderTimes(ctx context.Context) error {
 	return err
 }
 
-const finishHiddenClosed = `-- name: FinishHiddenClosed :execrows
-UPDATE orders SET state = 'ready', ready_at = ?1, finished_at = ?1, finished_by = 'pos'
-WHERE id = ?2 AND state = 'accepted' AND board_hidden
+const deleteOrphanZReports = `-- name: DeleteOrphanZReports :exec
+DELETE FROM z_reports WHERE status = 'done' AND batch_id NOT IN (SELECT id FROM batches)
 `
 
-type FinishHiddenClosedParams struct {
-	At sql.NullString `json:"at"`
-	ID string         `json:"id"`
+func (q *Queries) DeleteOrphanZReports(ctx context.Context) error {
+	_, err := q.db.ExecContext(ctx, deleteOrphanZReports)
+	return err
 }
 
-// A POS check that was never on Kitchen (board hidden) closed at the POS:
-// ready and finished at once (no feed event: nothing is called out).
-func (q *Queries) FinishHiddenClosed(ctx context.Context, arg FinishHiddenClosedParams) (int64, error) {
-	result, err := q.db.ExecContext(ctx, finishHiddenClosed, arg.At, arg.ID)
+const deleteSyncedCustomers = `-- name: DeleteSyncedCustomers :exec
+DELETE FROM customers WHERE local_at = ''
+`
+
+// A feed reset: drop main's copy, keep what a terminal changed (on its way to main).
+func (q *Queries) DeleteSyncedCustomers(ctx context.Context) error {
+	_, err := q.db.ExecContext(ctx, deleteSyncedCustomers)
+	return err
+}
+
+const deleteTerminalDraft = `-- name: DeleteTerminalDraft :execrows
+DELETE FROM terminal_drafts WHERE id = ?
+`
+
+func (q *Queries) DeleteTerminalDraft(ctx context.Context, id string) (int64, error) {
+	result, err := q.db.ExecContext(ctx, deleteTerminalDraft, id)
 	if err != nil {
 		return 0, err
 	}
 	return result.RowsAffected()
+}
+
+const deleteTerminalDriverLinkOfDriver = `-- name: DeleteTerminalDriverLinkOfDriver :exec
+DELETE FROM terminal_driver_links WHERE driver_id = ?1 AND staff_id <> ?2
+`
+
+type DeleteTerminalDriverLinkOfDriverParams struct {
+	DriverID string `json:"driver_id"`
+	StaffID  string `json:"staff_id"`
+}
+
+// A driver is linked to one staff member at a time.
+func (q *Queries) DeleteTerminalDriverLinkOfDriver(ctx context.Context, arg DeleteTerminalDriverLinkOfDriverParams) error {
+	_, err := q.db.ExecContext(ctx, deleteTerminalDriverLinkOfDriver, arg.DriverID, arg.StaffID)
+	return err
+}
+
+const findCustomersByPhonePrefix = `-- name: FindCustomersByPhonePrefix :many
+SELECT id, phone, phone_rev, first_name, last_name, name, notes, source, updated_at, local_at, last_order_at FROM customers WHERE phone >= ?1 AND phone < ?2
+ORDER BY last_order_at DESC, updated_at DESC, id LIMIT ?3
+`
+
+type FindCustomersByPhonePrefixParams struct {
+	Lo      string `json:"lo"`
+	Hi      string `json:"hi"`
+	MaxRows int64  `json:"max_rows"`
+}
+
+// phone in [lo, hi): the typed digits as a prefix (index idx_customers_phone).
+func (q *Queries) FindCustomersByPhonePrefix(ctx context.Context, arg FindCustomersByPhonePrefixParams) ([]Customer, error) {
+	rows, err := q.db.QueryContext(ctx, findCustomersByPhonePrefix, arg.Lo, arg.Hi, arg.MaxRows)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Customer
+	for rows.Next() {
+		var i Customer
+		if err := rows.Scan(
+			&i.ID,
+			&i.Phone,
+			&i.PhoneRev,
+			&i.FirstName,
+			&i.LastName,
+			&i.Name,
+			&i.Notes,
+			&i.Source,
+			&i.UpdatedAt,
+			&i.LocalAt,
+			&i.LastOrderAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const findCustomersByPhoneSuffix = `-- name: FindCustomersByPhoneSuffix :many
+SELECT id, phone, phone_rev, first_name, last_name, name, notes, source, updated_at, local_at, last_order_at FROM customers WHERE phone_rev >= ?1 AND phone_rev < ?2
+ORDER BY last_order_at DESC, updated_at DESC, id LIMIT ?3
+`
+
+type FindCustomersByPhoneSuffixParams struct {
+	Lo      string `json:"lo"`
+	Hi      string `json:"hi"`
+	MaxRows int64  `json:"max_rows"`
+}
+
+// phone_rev in [lo, hi): the typed digits as the number's end ("the last 4").
+func (q *Queries) FindCustomersByPhoneSuffix(ctx context.Context, arg FindCustomersByPhoneSuffixParams) ([]Customer, error) {
+	rows, err := q.db.QueryContext(ctx, findCustomersByPhoneSuffix, arg.Lo, arg.Hi, arg.MaxRows)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Customer
+	for rows.Next() {
+		var i Customer
+		if err := rows.Scan(
+			&i.ID,
+			&i.Phone,
+			&i.PhoneRev,
+			&i.FirstName,
+			&i.LastName,
+			&i.Name,
+			&i.Notes,
+			&i.Source,
+			&i.UpdatedAt,
+			&i.LocalAt,
+			&i.LastOrderAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const finishOrder = `-- name: FinishOrder :exec
@@ -578,25 +929,15 @@ func (q *Queries) FrontDriverPosition(ctx context.Context) (int64, error) {
 	return front_position, err
 }
 
-const getActiveDriverByPosNumber = `-- name: GetActiveDriverByPosNumber :one
-SELECT id, name, active, position, status, last_returned_at, created_at, pos_number, pushover_device FROM drivers WHERE pos_number = ? AND pos_number <> '' AND active
+const getAdminPair = `-- name: GetAdminPair :one
+SELECT admin_pair FROM settings WHERE id = 1
 `
 
-func (q *Queries) GetActiveDriverByPosNumber(ctx context.Context, posNumber string) (Driver, error) {
-	row := q.db.QueryRowContext(ctx, getActiveDriverByPosNumber, posNumber)
-	var i Driver
-	err := row.Scan(
-		&i.ID,
-		&i.Name,
-		&i.Active,
-		&i.Position,
-		&i.Status,
-		&i.LastReturnedAt,
-		&i.CreatedAt,
-		&i.PosNumber,
-		&i.PushoverDevice,
-	)
-	return i, err
+func (q *Queries) GetAdminPair(ctx context.Context) (string, error) {
+	row := q.db.QueryRowContext(ctx, getAdminPair)
+	var admin_pair string
+	err := row.Scan(&admin_pair)
+	return admin_pair, err
 }
 
 const getAppRelease = `-- name: GetAppRelease :one
@@ -621,6 +962,17 @@ func (q *Queries) GetAutoAccept(ctx context.Context) (bool, error) {
 	var auto_accept bool
 	err := row.Scan(&auto_accept)
 	return auto_accept, err
+}
+
+const getAutoCloseLast = `-- name: GetAutoCloseLast :one
+SELECT auto_close_last FROM settings WHERE id = 1
+`
+
+func (q *Queries) GetAutoCloseLast(ctx context.Context) (string, error) {
+	row := q.db.QueryRowContext(ctx, getAutoCloseLast)
+	var auto_close_last string
+	err := row.Scan(&auto_close_last)
+	return auto_close_last, err
 }
 
 const getAutoPlan = `-- name: GetAutoPlan :one
@@ -661,6 +1013,82 @@ func (q *Queries) GetBatch(ctx context.Context, id int64) (Batch, error) {
 	return i, err
 }
 
+const getCounterNext = `-- name: GetCounterNext :one
+SELECT counter_next FROM settings WHERE id = 1
+`
+
+func (q *Queries) GetCounterNext(ctx context.Context) (int64, error) {
+	row := q.db.QueryRowContext(ctx, getCounterNext)
+	var counter_next int64
+	err := row.Scan(&counter_next)
+	return counter_next, err
+}
+
+const getCustomer = `-- name: GetCustomer :one
+SELECT id, phone, phone_rev, first_name, last_name, name, notes, source, updated_at, local_at, last_order_at FROM customers WHERE id = ?
+`
+
+func (q *Queries) GetCustomer(ctx context.Context, id string) (Customer, error) {
+	row := q.db.QueryRowContext(ctx, getCustomer, id)
+	var i Customer
+	err := row.Scan(
+		&i.ID,
+		&i.Phone,
+		&i.PhoneRev,
+		&i.FirstName,
+		&i.LastName,
+		&i.Name,
+		&i.Notes,
+		&i.Source,
+		&i.UpdatedAt,
+		&i.LocalAt,
+		&i.LastOrderAt,
+	)
+	return i, err
+}
+
+const getCustomerByPhone = `-- name: GetCustomerByPhone :one
+SELECT id, phone, phone_rev, first_name, last_name, name, notes, source, updated_at, local_at, last_order_at FROM customers WHERE phone = ?
+`
+
+func (q *Queries) GetCustomerByPhone(ctx context.Context, phone string) (Customer, error) {
+	row := q.db.QueryRowContext(ctx, getCustomerByPhone, phone)
+	var i Customer
+	err := row.Scan(
+		&i.ID,
+		&i.Phone,
+		&i.PhoneRev,
+		&i.FirstName,
+		&i.LastName,
+		&i.Name,
+		&i.Notes,
+		&i.Source,
+		&i.UpdatedAt,
+		&i.LocalAt,
+		&i.LastOrderAt,
+	)
+	return i, err
+}
+
+const getCustomerSync = `-- name: GetCustomerSync :one
+
+SELECT location_id, cursor, synced_at FROM customer_sync WHERE id = 1
+`
+
+type GetCustomerSyncRow struct {
+	LocationID string `json:"location_id"`
+	Cursor     string `json:"cursor"`
+	SyncedAt   string `json:"synced_at"`
+}
+
+// 00028_customers: the store's customers (main's feed + the terminals).
+func (q *Queries) GetCustomerSync(ctx context.Context) (GetCustomerSyncRow, error) {
+	row := q.db.QueryRowContext(ctx, getCustomerSync)
+	var i GetCustomerSyncRow
+	err := row.Scan(&i.LocationID, &i.Cursor, &i.SyncedAt)
+	return i, err
+}
+
 const getDeliveryPrefs = `-- name: GetDeliveryPrefs :one
 
 SELECT soon_ready_minutes, delivery_target_minutes, nearby_rule, nearby_detour_minutes, nearby_distance_mi, auto_assign
@@ -691,8 +1119,74 @@ func (q *Queries) GetDeliveryPrefs(ctx context.Context) (GetDeliveryPrefsRow, er
 	return i, err
 }
 
+const getDeviceSetups = `-- name: GetDeviceSetups :one
+SELECT device_setups FROM settings WHERE id = 1
+`
+
+func (q *Queries) GetDeviceSetups(ctx context.Context) (string, error) {
+	row := q.db.QueryRowContext(ctx, getDeviceSetups)
+	var device_setups string
+	err := row.Scan(&device_setups)
+	return device_setups, err
+}
+
+const getDrawerMovementByKey = `-- name: GetDrawerMovementByKey :one
+SELECT id, drawer_id, kind, amount_cents, reason, staff_id, approved_by, client_key, at FROM drawer_movements WHERE drawer_id = ? AND client_key = ? AND client_key <> ''
+`
+
+type GetDrawerMovementByKeyParams struct {
+	DrawerID  string `json:"drawer_id"`
+	ClientKey string `json:"client_key"`
+}
+
+func (q *Queries) GetDrawerMovementByKey(ctx context.Context, arg GetDrawerMovementByKeyParams) (DrawerMovement, error) {
+	row := q.db.QueryRowContext(ctx, getDrawerMovementByKey, arg.DrawerID, arg.ClientKey)
+	var i DrawerMovement
+	err := row.Scan(
+		&i.ID,
+		&i.DrawerID,
+		&i.Kind,
+		&i.AmountCents,
+		&i.Reason,
+		&i.StaffID,
+		&i.ApprovedBy,
+		&i.ClientKey,
+		&i.At,
+	)
+	return i, err
+}
+
+const getDrawerSession = `-- name: GetDrawerSession :one
+SELECT id, device_id, device_name, staff_id, staff_name, batch_id, opened_at, start_cents, handover_from, closed_at, closed_by, close_reason, counted_cents, denominations, expected_cents, flagged, auto FROM drawer_sessions WHERE id = ?
+`
+
+func (q *Queries) GetDrawerSession(ctx context.Context, id string) (DrawerSession, error) {
+	row := q.db.QueryRowContext(ctx, getDrawerSession, id)
+	var i DrawerSession
+	err := row.Scan(
+		&i.ID,
+		&i.DeviceID,
+		&i.DeviceName,
+		&i.StaffID,
+		&i.StaffName,
+		&i.BatchID,
+		&i.OpenedAt,
+		&i.StartCents,
+		&i.HandoverFrom,
+		&i.ClosedAt,
+		&i.ClosedBy,
+		&i.CloseReason,
+		&i.CountedCents,
+		&i.Denominations,
+		&i.ExpectedCents,
+		&i.Flagged,
+		&i.Auto,
+	)
+	return i, err
+}
+
 const getDriver = `-- name: GetDriver :one
-SELECT id, name, active, position, status, last_returned_at, created_at, pos_number, pushover_device FROM drivers WHERE id = ?
+SELECT id, name, active, position, status, last_returned_at, created_at, pushover_device FROM drivers WHERE id = ?
 `
 
 func (q *Queries) GetDriver(ctx context.Context, id string) (Driver, error) {
@@ -706,7 +1200,6 @@ func (q *Queries) GetDriver(ctx context.Context, id string) (Driver, error) {
 		&i.Status,
 		&i.LastReturnedAt,
 		&i.CreatedAt,
-		&i.PosNumber,
 		&i.PushoverDevice,
 	)
 	return i, err
@@ -800,6 +1293,35 @@ func (q *Queries) GetIntegrationStatus(ctx context.Context) (string, error) {
 	var integration_status string
 	err := row.Scan(&integration_status)
 	return integration_status, err
+}
+
+const getJournalByClientKey = `-- name: GetJournalByClientKey :one
+SELECT id, at, staff_id, device_id, "action", order_id, detail FROM journal
+WHERE device_id = ?1 AND action = ?2
+  AND json_extract(detail, '$.client_key') = ?3
+LIMIT 1
+`
+
+type GetJournalByClientKeyParams struct {
+	DeviceID  string `json:"device_id"`
+	Action    string `json:"action"`
+	ClientKey string `json:"client_key"`
+}
+
+// A terminal's journal row its offline replay sent before (00034).
+func (q *Queries) GetJournalByClientKey(ctx context.Context, arg GetJournalByClientKeyParams) (Journal, error) {
+	row := q.db.QueryRowContext(ctx, getJournalByClientKey, arg.DeviceID, arg.Action, arg.ClientKey)
+	var i Journal
+	err := row.Scan(
+		&i.ID,
+		&i.At,
+		&i.StaffID,
+		&i.DeviceID,
+		&i.Action,
+		&i.OrderID,
+		&i.Detail,
+	)
+	return i, err
 }
 
 const getLastBackup = `-- name: GetLastBackup :one
@@ -906,6 +1428,64 @@ func (q *Queries) GetOpenBatch(ctx context.Context) (Batch, error) {
 	return i, err
 }
 
+const getOpenDrawerByDevice = `-- name: GetOpenDrawerByDevice :one
+SELECT id, device_id, device_name, staff_id, staff_name, batch_id, opened_at, start_cents, handover_from, closed_at, closed_by, close_reason, counted_cents, denominations, expected_cents, flagged, auto FROM drawer_sessions WHERE device_id = ? AND closed_at IS NULL
+`
+
+func (q *Queries) GetOpenDrawerByDevice(ctx context.Context, deviceID string) (DrawerSession, error) {
+	row := q.db.QueryRowContext(ctx, getOpenDrawerByDevice, deviceID)
+	var i DrawerSession
+	err := row.Scan(
+		&i.ID,
+		&i.DeviceID,
+		&i.DeviceName,
+		&i.StaffID,
+		&i.StaffName,
+		&i.BatchID,
+		&i.OpenedAt,
+		&i.StartCents,
+		&i.HandoverFrom,
+		&i.ClosedAt,
+		&i.ClosedBy,
+		&i.CloseReason,
+		&i.CountedCents,
+		&i.Denominations,
+		&i.ExpectedCents,
+		&i.Flagged,
+		&i.Auto,
+	)
+	return i, err
+}
+
+const getOpenDrawerByStaff = `-- name: GetOpenDrawerByStaff :one
+SELECT id, device_id, device_name, staff_id, staff_name, batch_id, opened_at, start_cents, handover_from, closed_at, closed_by, close_reason, counted_cents, denominations, expected_cents, flagged, auto FROM drawer_sessions WHERE staff_id = ? AND closed_at IS NULL
+`
+
+func (q *Queries) GetOpenDrawerByStaff(ctx context.Context, staffID string) (DrawerSession, error) {
+	row := q.db.QueryRowContext(ctx, getOpenDrawerByStaff, staffID)
+	var i DrawerSession
+	err := row.Scan(
+		&i.ID,
+		&i.DeviceID,
+		&i.DeviceName,
+		&i.StaffID,
+		&i.StaffName,
+		&i.BatchID,
+		&i.OpenedAt,
+		&i.StartCents,
+		&i.HandoverFrom,
+		&i.ClosedAt,
+		&i.ClosedBy,
+		&i.CloseReason,
+		&i.CountedCents,
+		&i.Denominations,
+		&i.ExpectedCents,
+		&i.Flagged,
+		&i.Auto,
+	)
+	return i, err
+}
+
 const getOpenShift = `-- name: GetOpenShift :one
 SELECT id, driver_id, driver_name, batch_id, clock_in, clock_out, auto_out FROM driver_shifts WHERE driver_id = ? AND clock_out IS NULL ORDER BY clock_in DESC LIMIT 1
 `
@@ -925,19 +1505,12 @@ func (q *Queries) GetOpenShift(ctx context.Context, driverID string) (DriverShif
 	return i, err
 }
 
-const getOrderByExtRef = `-- name: GetOrderByExtRef :one
-SELECT id, tenant_id, location_id, source, source_event_id, snapshot, state, arrival_date, printed_date, batch_id, kitchen_number, prep_minutes, estimated_ready_at, accepted_at, ready_at, out_at, delivered_at, driver_id, driver_name, last_alert_at, cancelled_at, accept_pending, pool_driver_id, pooled_at, pool_seq, pool_plan_id, ext_source, ext_ref, ext_hash, ext_driver_pos, display_number, paid, cash_due_cents, tip_cents, board_hidden, sent_at, local_only, flag, pos_check_number, pos_driver_note, scheduled_lead_minutes, ring_at, rerung, auto_accepted, came_back, not_delivered_action, not_delivered_at, not_delivered_driver_id, run_seq, finished_at, finished_by, pos_closed, pos_change, marked_delivered, paid_at, early_kitchen, early_receipt, due_override, made_now FROM orders WHERE ext_source = ? AND ext_ref = ? AND ext_ref <> ''
-ORDER BY arrival_date DESC LIMIT 1
+const getOrderByClientKey = `-- name: GetOrderByClientKey :one
+SELECT id, tenant_id, location_id, source, source_event_id, snapshot, state, arrival_date, printed_date, batch_id, kitchen_number, prep_minutes, estimated_ready_at, accepted_at, ready_at, out_at, delivered_at, driver_id, driver_name, last_alert_at, cancelled_at, accept_pending, pool_driver_id, pooled_at, pool_seq, pool_plan_id, paid, cash_due_cents, tip_cents, sent_at, scheduled_lead_minutes, ring_at, rerung, auto_accepted, came_back, not_delivered_action, not_delivered_at, not_delivered_driver_id, run_seq, finished_at, finished_by, marked_delivered, paid_at, early_kitchen, early_receipt, due_override, made_now, added_tip_cents, tip_locked, cancel_reason, client_key, door_tip_cents, request_hash, carried, kitchen_pending FROM orders WHERE client_key = ? AND client_key <> ''
 `
 
-type GetOrderByExtRefParams struct {
-	ExtSource string `json:"ext_source"`
-	ExtRef    string `json:"ext_ref"`
-}
-
-// The newest order for a POS check (a check number is never reused by the POS).
-func (q *Queries) GetOrderByExtRef(ctx context.Context, arg GetOrderByExtRefParams) (Order, error) {
-	row := q.db.QueryRowContext(ctx, getOrderByExtRef, arg.ExtSource, arg.ExtRef)
+func (q *Queries) GetOrderByClientKey(ctx context.Context, clientKey string) (Order, error) {
+	row := q.db.QueryRowContext(ctx, getOrderByClientKey, clientKey)
 	var i Order
 	err := row.Scan(
 		&i.ID,
@@ -966,20 +1539,10 @@ func (q *Queries) GetOrderByExtRef(ctx context.Context, arg GetOrderByExtRefPara
 		&i.PooledAt,
 		&i.PoolSeq,
 		&i.PoolPlanID,
-		&i.ExtSource,
-		&i.ExtRef,
-		&i.ExtHash,
-		&i.ExtDriverPos,
-		&i.DisplayNumber,
 		&i.Paid,
 		&i.CashDueCents,
 		&i.TipCents,
-		&i.BoardHidden,
 		&i.SentAt,
-		&i.LocalOnly,
-		&i.Flag,
-		&i.PosCheckNumber,
-		&i.PosDriverNote,
 		&i.ScheduledLeadMinutes,
 		&i.RingAt,
 		&i.Rerung,
@@ -991,20 +1554,26 @@ func (q *Queries) GetOrderByExtRef(ctx context.Context, arg GetOrderByExtRefPara
 		&i.RunSeq,
 		&i.FinishedAt,
 		&i.FinishedBy,
-		&i.PosClosed,
-		&i.PosChange,
 		&i.MarkedDelivered,
 		&i.PaidAt,
 		&i.EarlyKitchen,
 		&i.EarlyReceipt,
 		&i.DueOverride,
 		&i.MadeNow,
+		&i.AddedTipCents,
+		&i.TipLocked,
+		&i.CancelReason,
+		&i.ClientKey,
+		&i.DoorTipCents,
+		&i.RequestHash,
+		&i.Carried,
+		&i.KitchenPending,
 	)
 	return i, err
 }
 
 const getOrderByID = `-- name: GetOrderByID :one
-SELECT id, tenant_id, location_id, source, source_event_id, snapshot, state, arrival_date, printed_date, batch_id, kitchen_number, prep_minutes, estimated_ready_at, accepted_at, ready_at, out_at, delivered_at, driver_id, driver_name, last_alert_at, cancelled_at, accept_pending, pool_driver_id, pooled_at, pool_seq, pool_plan_id, ext_source, ext_ref, ext_hash, ext_driver_pos, display_number, paid, cash_due_cents, tip_cents, board_hidden, sent_at, local_only, flag, pos_check_number, pos_driver_note, scheduled_lead_minutes, ring_at, rerung, auto_accepted, came_back, not_delivered_action, not_delivered_at, not_delivered_driver_id, run_seq, finished_at, finished_by, pos_closed, pos_change, marked_delivered, paid_at, early_kitchen, early_receipt, due_override, made_now FROM orders WHERE id = ?
+SELECT id, tenant_id, location_id, source, source_event_id, snapshot, state, arrival_date, printed_date, batch_id, kitchen_number, prep_minutes, estimated_ready_at, accepted_at, ready_at, out_at, delivered_at, driver_id, driver_name, last_alert_at, cancelled_at, accept_pending, pool_driver_id, pooled_at, pool_seq, pool_plan_id, paid, cash_due_cents, tip_cents, sent_at, scheduled_lead_minutes, ring_at, rerung, auto_accepted, came_back, not_delivered_action, not_delivered_at, not_delivered_driver_id, run_seq, finished_at, finished_by, marked_delivered, paid_at, early_kitchen, early_receipt, due_override, made_now, added_tip_cents, tip_locked, cancel_reason, client_key, door_tip_cents, request_hash, carried, kitchen_pending FROM orders WHERE id = ?
 `
 
 func (q *Queries) GetOrderByID(ctx context.Context, id string) (Order, error) {
@@ -1037,20 +1606,10 @@ func (q *Queries) GetOrderByID(ctx context.Context, id string) (Order, error) {
 		&i.PooledAt,
 		&i.PoolSeq,
 		&i.PoolPlanID,
-		&i.ExtSource,
-		&i.ExtRef,
-		&i.ExtHash,
-		&i.ExtDriverPos,
-		&i.DisplayNumber,
 		&i.Paid,
 		&i.CashDueCents,
 		&i.TipCents,
-		&i.BoardHidden,
 		&i.SentAt,
-		&i.LocalOnly,
-		&i.Flag,
-		&i.PosCheckNumber,
-		&i.PosDriverNote,
 		&i.ScheduledLeadMinutes,
 		&i.RingAt,
 		&i.Rerung,
@@ -1062,14 +1621,20 @@ func (q *Queries) GetOrderByID(ctx context.Context, id string) (Order, error) {
 		&i.RunSeq,
 		&i.FinishedAt,
 		&i.FinishedBy,
-		&i.PosClosed,
-		&i.PosChange,
 		&i.MarkedDelivered,
 		&i.PaidAt,
 		&i.EarlyKitchen,
 		&i.EarlyReceipt,
 		&i.DueOverride,
 		&i.MadeNow,
+		&i.AddedTipCents,
+		&i.TipLocked,
+		&i.CancelReason,
+		&i.ClientKey,
+		&i.DoorTipCents,
+		&i.RequestHash,
+		&i.Carried,
+		&i.KitchenPending,
 	)
 	return i, err
 }
@@ -1102,6 +1667,44 @@ func (q *Queries) GetOrderGeo(ctx context.Context, orderID string) (OrderGeo, er
 	return i, err
 }
 
+const getOrderPaymentByKey = `-- name: GetOrderPaymentByKey :one
+SELECT id, order_id, client_key, at, tender, amount_cents, tip_cents, tendered_cents, change_cents, refund, reason, ref, last4, staff_id, device_id, approved_by, drawer_id, brand, refund_kind, request_hash, batch_id FROM order_payments WHERE order_id = ? AND client_key = ? AND client_key <> ''
+`
+
+type GetOrderPaymentByKeyParams struct {
+	OrderID   string `json:"order_id"`
+	ClientKey string `json:"client_key"`
+}
+
+func (q *Queries) GetOrderPaymentByKey(ctx context.Context, arg GetOrderPaymentByKeyParams) (OrderPayment, error) {
+	row := q.db.QueryRowContext(ctx, getOrderPaymentByKey, arg.OrderID, arg.ClientKey)
+	var i OrderPayment
+	err := row.Scan(
+		&i.ID,
+		&i.OrderID,
+		&i.ClientKey,
+		&i.At,
+		&i.Tender,
+		&i.AmountCents,
+		&i.TipCents,
+		&i.TenderedCents,
+		&i.ChangeCents,
+		&i.Refund,
+		&i.Reason,
+		&i.Ref,
+		&i.Last4,
+		&i.StaffID,
+		&i.DeviceID,
+		&i.ApprovedBy,
+		&i.DrawerID,
+		&i.Brand,
+		&i.RefundKind,
+		&i.RequestHash,
+		&i.BatchID,
+	)
+	return i, err
+}
+
 const getPairedDeviceByHash = `-- name: GetPairedDeviceByHash :one
 SELECT id, name, key_hash, key_prefix, created_at, last_seen_at, revoked_at, kind, app_version, app_version_seen_at FROM paired_devices WHERE key_hash = ? AND revoked_at IS NULL
 `
@@ -1122,6 +1725,39 @@ func (q *Queries) GetPairedDeviceByHash(ctx context.Context, keyHash string) (Pa
 		&i.AppVersionSeenAt,
 	)
 	return i, err
+}
+
+const getPairedDeviceName = `-- name: GetPairedDeviceName :one
+SELECT name FROM paired_devices WHERE id = ?
+`
+
+func (q *Queries) GetPairedDeviceName(ctx context.Context, id string) (string, error) {
+	row := q.db.QueryRowContext(ctx, getPairedDeviceName, id)
+	var name string
+	err := row.Scan(&name)
+	return name, err
+}
+
+const getPinThrottle = `-- name: GetPinThrottle :one
+SELECT pin_throttle FROM settings WHERE id = 1
+`
+
+func (q *Queries) GetPinThrottle(ctx context.Context) (string, error) {
+	row := q.db.QueryRowContext(ctx, getPinThrottle)
+	var pin_throttle string
+	err := row.Scan(&pin_throttle)
+	return pin_throttle, err
+}
+
+const getPrintRouting = `-- name: GetPrintRouting :one
+SELECT print_routing FROM settings WHERE id = 1
+`
+
+func (q *Queries) GetPrintRouting(ctx context.Context) (string, error) {
+	row := q.db.QueryRowContext(ctx, getPrintRouting)
+	var print_routing string
+	err := row.Scan(&print_routing)
+	return print_routing, err
 }
 
 const getReceiptPrefs = `-- name: GetReceiptPrefs :one
@@ -1175,6 +1811,95 @@ func (q *Queries) GetStoreConfig(ctx context.Context) (GetStoreConfigRow, error)
 	return i, err
 }
 
+const getSyncParkSettings = `-- name: GetSyncParkSettings :one
+SELECT sync_park_refusals, sync_park_hours, sync_park_alerted_at FROM settings WHERE id = 1
+`
+
+type GetSyncParkSettingsRow struct {
+	SyncParkRefusals  int64  `json:"sync_park_refusals"`
+	SyncParkHours     int64  `json:"sync_park_hours"`
+	SyncParkAlertedAt string `json:"sync_park_alerted_at"`
+}
+
+func (q *Queries) GetSyncParkSettings(ctx context.Context) (GetSyncParkSettingsRow, error) {
+	row := q.db.QueryRowContext(ctx, getSyncParkSettings)
+	var i GetSyncParkSettingsRow
+	err := row.Scan(&i.SyncParkRefusals, &i.SyncParkHours, &i.SyncParkAlertedAt)
+	return i, err
+}
+
+const getTerminalAppRelease = `-- name: GetTerminalAppRelease :one
+SELECT terminal_app_release FROM settings WHERE id = 1
+`
+
+func (q *Queries) GetTerminalAppRelease(ctx context.Context) (string, error) {
+	row := q.db.QueryRowContext(ctx, getTerminalAppRelease)
+	var terminal_app_release string
+	err := row.Scan(&terminal_app_release)
+	return terminal_app_release, err
+}
+
+const getTerminalDraft = `-- name: GetTerminalDraft :one
+
+SELECT id, location_id, type, name, held, holder_device_id, holder_device_name, holder_staff_id, holder_staff_name, staff_id, staff_name, order_id, draft, created_at, updated_at FROM terminal_drafts WHERE id = ?
+`
+
+// The terminals' shared drafts (00027, contract 2.10i) -------------------------
+func (q *Queries) GetTerminalDraft(ctx context.Context, id string) (TerminalDraft, error) {
+	row := q.db.QueryRowContext(ctx, getTerminalDraft, id)
+	var i TerminalDraft
+	err := row.Scan(
+		&i.ID,
+		&i.LocationID,
+		&i.Type,
+		&i.Name,
+		&i.Held,
+		&i.HolderDeviceID,
+		&i.HolderDeviceName,
+		&i.HolderStaffID,
+		&i.HolderStaffName,
+		&i.StaffID,
+		&i.StaffName,
+		&i.OrderID,
+		&i.Draft,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const getTerminalDriverLink = `-- name: GetTerminalDriverLink :one
+
+SELECT driver_id FROM terminal_driver_links WHERE staff_id = ?
+`
+
+// Terminal driver view + batch auto-close (00026_terminal_driver) ----------------
+func (q *Queries) GetTerminalDriverLink(ctx context.Context, staffID string) (string, error) {
+	row := q.db.QueryRowContext(ctx, getTerminalDriverLink, staffID)
+	var driver_id string
+	err := row.Scan(&driver_id)
+	return driver_id, err
+}
+
+const getTerminalSnapshot = `-- name: GetTerminalSnapshot :one
+
+SELECT kind, version, etag, body, fetched_at FROM terminal_snapshots WHERE kind = ?
+`
+
+// ===== 00025 terminal (stage 0d): the Pi serves the store's POS terminals =====
+func (q *Queries) GetTerminalSnapshot(ctx context.Context, kind string) (TerminalSnapshot, error) {
+	row := q.db.QueryRowContext(ctx, getTerminalSnapshot, kind)
+	var i TerminalSnapshot
+	err := row.Scan(
+		&i.Kind,
+		&i.Version,
+		&i.Etag,
+		&i.Body,
+		&i.FetchedAt,
+	)
+	return i, err
+}
+
 const getUIPassword = `-- name: GetUIPassword :one
 SELECT ui_password_hash, ui_password_hint FROM settings WHERE id = 1
 `
@@ -1218,6 +1943,27 @@ func (q *Queries) GetUpdateState(ctx context.Context) (GetUpdateStateRow, error)
 	return i, err
 }
 
+const getZReport = `-- name: GetZReport :one
+SELECT batch_id, id, status, close_kind, forced, report, created_at, built_at, flagged FROM z_reports WHERE batch_id = ?
+`
+
+func (q *Queries) GetZReport(ctx context.Context, batchID int64) (ZReport, error) {
+	row := q.db.QueryRowContext(ctx, getZReport, batchID)
+	var i ZReport
+	err := row.Scan(
+		&i.BatchID,
+		&i.ID,
+		&i.Status,
+		&i.CloseKind,
+		&i.Forced,
+		&i.Report,
+		&i.CreatedAt,
+		&i.BuiltAt,
+		&i.Flagged,
+	)
+	return i, err
+}
+
 const insertAutoPlan = `-- name: InsertAutoPlan :exec
 
 INSERT INTO auto_plans (id, created_at, plan_json) VALUES (?, ?, ?)
@@ -1249,22 +1995,19 @@ func (q *Queries) InsertBatchWithID(ctx context.Context, arg InsertBatchWithIDPa
 	return err
 }
 
-const insertExternalOrder = `-- name: InsertExternalOrder :exec
-
+const insertCounterOrder = `-- name: InsertCounterOrder :exec
 INSERT INTO orders (id, tenant_id, location_id, source, source_event_id, snapshot, state, arrival_date,
-                    batch_id, prep_minutes, estimated_ready_at, accepted_at,
-                    ext_source, ext_ref, ext_hash, ext_driver_pos, display_number, paid, cash_due_cents,
-                    tip_cents, board_hidden, sent_at, local_only, paid_at)
+                    batch_id, kitchen_number, prep_minutes, estimated_ready_at, accepted_at,
+                    paid, cash_due_cents, tip_cents, sent_at, paid_at, client_key, request_hash, kitchen_pending)
 VALUES (?1, ?2, ?3, ?4, ?5,
         ?6, 'accepted', ?7,
         (SELECT id FROM batches WHERE closed_at IS NULL ORDER BY id DESC LIMIT 1),
-        ?8, ?9, ?10,
-        ?11, ?12, ?13, '', ?14,
-        ?15, ?16, ?17, ?18,
-        ?19, true, ?20)
+        ?8, ?9, ?10, ?11,
+        ?12, ?13, ?14, ?15, ?16,
+        ?17, ?18, ?19)
 `
 
-type InsertExternalOrderParams struct {
+type InsertCounterOrderParams struct {
 	ID               string         `json:"id"`
 	TenantID         string         `json:"tenant_id"`
 	LocationID       string         `json:"location_id"`
@@ -1272,25 +2015,24 @@ type InsertExternalOrderParams struct {
 	SourceEventID    string         `json:"source_event_id"`
 	Snapshot         string         `json:"snapshot"`
 	ArrivalDate      string         `json:"arrival_date"`
+	KitchenNumber    sql.NullInt64  `json:"kitchen_number"`
 	PrepMinutes      sql.NullInt64  `json:"prep_minutes"`
 	EstimatedReadyAt sql.NullString `json:"estimated_ready_at"`
 	AcceptedAt       sql.NullString `json:"accepted_at"`
-	ExtSource        string         `json:"ext_source"`
-	ExtRef           string         `json:"ext_ref"`
-	ExtHash          string         `json:"ext_hash"`
-	DisplayNumber    sql.NullInt64  `json:"display_number"`
 	Paid             bool           `json:"paid"`
 	CashDueCents     sql.NullInt64  `json:"cash_due_cents"`
 	TipCents         sql.NullInt64  `json:"tip_cents"`
-	BoardHidden      bool           `json:"board_hidden"`
 	SentAt           sql.NullString `json:"sent_at"`
 	PaidAt           sql.NullString `json:"paid_at"`
+	ClientKey        string         `json:"client_key"`
+	RequestHash      string         `json:"request_hash"`
+	KitchenPending   bool           `json:"kitchen_pending"`
 }
 
-// POS orders from the store hub (2.1.0) ------------------------------------------
-// A POS check the hub pulled: stored accepted (no kitchen number), local only.
-func (q *Queries) InsertExternalOrder(ctx context.Context, arg InsertExternalOrderParams) error {
-	_, err := q.db.ExecContext(ctx, insertExternalOrder,
+// A counter order from a terminal: stored accepted at once (no ring) with its
+// counter number, in the open batch.
+func (q *Queries) InsertCounterOrder(ctx context.Context, arg InsertCounterOrderParams) error {
+	_, err := q.db.ExecContext(ctx, insertCounterOrder,
 		arg.ID,
 		arg.TenantID,
 		arg.LocationID,
@@ -1298,26 +2040,169 @@ func (q *Queries) InsertExternalOrder(ctx context.Context, arg InsertExternalOrd
 		arg.SourceEventID,
 		arg.Snapshot,
 		arg.ArrivalDate,
+		arg.KitchenNumber,
 		arg.PrepMinutes,
 		arg.EstimatedReadyAt,
 		arg.AcceptedAt,
-		arg.ExtSource,
-		arg.ExtRef,
-		arg.ExtHash,
-		arg.DisplayNumber,
 		arg.Paid,
 		arg.CashDueCents,
 		arg.TipCents,
-		arg.BoardHidden,
 		arg.SentAt,
 		arg.PaidAt,
+		arg.ClientKey,
+		arg.RequestHash,
+		arg.KitchenPending,
+	)
+	return err
+}
+
+const insertCustomerAddress = `-- name: InsertCustomerAddress :exec
+INSERT INTO customer_addresses (id, customer_id, position, label, line1, line2, city, state, zip, notes, is_default, created_at, lat, lng)
+VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7,
+        ?8, ?9, ?10, ?11, ?12, ?13, ?14)
+`
+
+type InsertCustomerAddressParams struct {
+	ID         string          `json:"id"`
+	CustomerID string          `json:"customer_id"`
+	Position   int64           `json:"position"`
+	Label      string          `json:"label"`
+	Line1      string          `json:"line1"`
+	Line2      string          `json:"line2"`
+	City       string          `json:"city"`
+	State      string          `json:"state"`
+	Zip        string          `json:"zip"`
+	Notes      string          `json:"notes"`
+	IsDefault  bool            `json:"is_default"`
+	CreatedAt  string          `json:"created_at"`
+	Lat        sql.NullFloat64 `json:"lat"`
+	Lng        sql.NullFloat64 `json:"lng"`
+}
+
+func (q *Queries) InsertCustomerAddress(ctx context.Context, arg InsertCustomerAddressParams) error {
+	_, err := q.db.ExecContext(ctx, insertCustomerAddress,
+		arg.ID,
+		arg.CustomerID,
+		arg.Position,
+		arg.Label,
+		arg.Line1,
+		arg.Line2,
+		arg.City,
+		arg.State,
+		arg.Zip,
+		arg.Notes,
+		arg.IsDefault,
+		arg.CreatedAt,
+		arg.Lat,
+		arg.Lng,
+	)
+	return err
+}
+
+const insertDeadLetter = `-- name: InsertDeadLetter :exec
+INSERT INTO floor_dead_letters (event_id, subject, type, result, refusals, first_refused_at, parked_at, last_error)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT (event_id) DO UPDATE SET result = excluded.result, refusals = excluded.refusals,
+  first_refused_at = excluded.first_refused_at, parked_at = excluded.parked_at, last_error = excluded.last_error,
+  retried_at = NULL, retried_by = ''
+`
+
+type InsertDeadLetterParams struct {
+	EventID        string `json:"event_id"`
+	Subject        string `json:"subject"`
+	Type           string `json:"type"`
+	Result         string `json:"result"`
+	Refusals       int64  `json:"refusals"`
+	FirstRefusedAt string `json:"first_refused_at"`
+	ParkedAt       string `json:"parked_at"`
+	LastError      string `json:"last_error"`
+}
+
+func (q *Queries) InsertDeadLetter(ctx context.Context, arg InsertDeadLetterParams) error {
+	_, err := q.db.ExecContext(ctx, insertDeadLetter,
+		arg.EventID,
+		arg.Subject,
+		arg.Type,
+		arg.Result,
+		arg.Refusals,
+		arg.FirstRefusedAt,
+		arg.ParkedAt,
+		arg.LastError,
+	)
+	return err
+}
+
+const insertDrawerMovement = `-- name: InsertDrawerMovement :exec
+INSERT INTO drawer_movements (id, drawer_id, kind, amount_cents, reason, staff_id, approved_by, client_key, at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+`
+
+type InsertDrawerMovementParams struct {
+	ID          string `json:"id"`
+	DrawerID    string `json:"drawer_id"`
+	Kind        string `json:"kind"`
+	AmountCents int64  `json:"amount_cents"`
+	Reason      string `json:"reason"`
+	StaffID     string `json:"staff_id"`
+	ApprovedBy  string `json:"approved_by"`
+	ClientKey   string `json:"client_key"`
+	At          string `json:"at"`
+}
+
+func (q *Queries) InsertDrawerMovement(ctx context.Context, arg InsertDrawerMovementParams) error {
+	_, err := q.db.ExecContext(ctx, insertDrawerMovement,
+		arg.ID,
+		arg.DrawerID,
+		arg.Kind,
+		arg.AmountCents,
+		arg.Reason,
+		arg.StaffID,
+		arg.ApprovedBy,
+		arg.ClientKey,
+		arg.At,
+	)
+	return err
+}
+
+const insertDrawerSession = `-- name: InsertDrawerSession :exec
+
+INSERT INTO drawer_sessions (id, device_id, device_name, staff_id, staff_name, batch_id, opened_at, start_cents, handover_from, auto)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+`
+
+type InsertDrawerSessionParams struct {
+	ID           string `json:"id"`
+	DeviceID     string `json:"device_id"`
+	DeviceName   string `json:"device_name"`
+	StaffID      string `json:"staff_id"`
+	StaffName    string `json:"staff_name"`
+	BatchID      int64  `json:"batch_id"`
+	OpenedAt     string `json:"opened_at"`
+	StartCents   int64  `json:"start_cents"`
+	HandoverFrom string `json:"handover_from"`
+	Auto         bool   `json:"auto"`
+}
+
+// Cash drawers (00029_drawers_z) ---------------------------------------------
+func (q *Queries) InsertDrawerSession(ctx context.Context, arg InsertDrawerSessionParams) error {
+	_, err := q.db.ExecContext(ctx, insertDrawerSession,
+		arg.ID,
+		arg.DeviceID,
+		arg.DeviceName,
+		arg.StaffID,
+		arg.StaffName,
+		arg.BatchID,
+		arg.OpenedAt,
+		arg.StartCents,
+		arg.HandoverFrom,
+		arg.Auto,
 	)
 	return err
 }
 
 const insertFloorEvent = `-- name: InsertFloorEvent :exec
 
-INSERT INTO floor_events (id, order_id, type, payload, at) VALUES (?, ?, ?, ?, ?)
+INSERT INTO floor_events (id, order_id, type, payload, at, subject) VALUES (?, ?, ?, ?, ?, ?)
 `
 
 type InsertFloorEventParams struct {
@@ -1326,6 +2211,7 @@ type InsertFloorEventParams struct {
 	Type    string         `json:"type"`
 	Payload string         `json:"payload"`
 	At      string         `json:"at"`
+	Subject string         `json:"subject"`
 }
 
 // Floor events (sync outbox to main) -------------------------------------------
@@ -1336,6 +2222,7 @@ func (q *Queries) InsertFloorEvent(ctx context.Context, arg InsertFloorEventPara
 		arg.Type,
 		arg.Payload,
 		arg.At,
+		arg.Subject,
 	)
 	return err
 }
@@ -1354,6 +2241,120 @@ type InsertIntegrationEventParams struct {
 // Integration feed (2.1.0) -----------------------------------------------------
 func (q *Queries) InsertIntegrationEvent(ctx context.Context, arg InsertIntegrationEventParams) error {
 	_, err := q.db.ExecContext(ctx, insertIntegrationEvent, arg.Type, arg.Payload, arg.CreatedAt)
+	return err
+}
+
+const insertJournal = `-- name: InsertJournal :exec
+INSERT INTO journal (id, at, staff_id, device_id, action, order_id, detail)
+VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+`
+
+type InsertJournalParams struct {
+	ID       string `json:"id"`
+	At       string `json:"at"`
+	StaffID  string `json:"staff_id"`
+	DeviceID string `json:"device_id"`
+	Action   string `json:"action"`
+	OrderID  string `json:"order_id"`
+	Detail   string `json:"detail"`
+}
+
+func (q *Queries) InsertJournal(ctx context.Context, arg InsertJournalParams) error {
+	_, err := q.db.ExecContext(ctx, insertJournal,
+		arg.ID,
+		arg.At,
+		arg.StaffID,
+		arg.DeviceID,
+		arg.Action,
+		arg.OrderID,
+		arg.Detail,
+	)
+	return err
+}
+
+const insertOrderPayment = `-- name: InsertOrderPayment :exec
+INSERT INTO order_payments (id, order_id, client_key, at, tender, amount_cents, tip_cents, tendered_cents,
+                            change_cents, refund, reason, ref, last4, staff_id, device_id, approved_by, drawer_id, brand,
+                            refund_kind, request_hash, batch_id)
+VALUES (?1, ?2, ?3, ?4, ?5, ?6,
+        ?7, ?8, ?9, ?10, ?11,
+        ?12, ?13, ?14, ?15, ?16, ?17,
+        ?18, ?19, ?20,
+        (SELECT id FROM batches WHERE closed_at IS NULL ORDER BY id DESC LIMIT 1))
+`
+
+type InsertOrderPaymentParams struct {
+	ID            string `json:"id"`
+	OrderID       string `json:"order_id"`
+	ClientKey     string `json:"client_key"`
+	At            string `json:"at"`
+	Tender        string `json:"tender"`
+	AmountCents   int64  `json:"amount_cents"`
+	TipCents      int64  `json:"tip_cents"`
+	TenderedCents int64  `json:"tendered_cents"`
+	ChangeCents   int64  `json:"change_cents"`
+	Refund        bool   `json:"refund"`
+	Reason        string `json:"reason"`
+	Ref           string `json:"ref"`
+	Last4         string `json:"last4"`
+	StaffID       string `json:"staff_id"`
+	DeviceID      string `json:"device_id"`
+	ApprovedBy    string `json:"approved_by"`
+	DrawerID      string `json:"drawer_id"`
+	Brand         string `json:"brand"`
+	RefundKind    string `json:"refund_kind"`
+	RequestHash   string `json:"request_hash"`
+}
+
+func (q *Queries) InsertOrderPayment(ctx context.Context, arg InsertOrderPaymentParams) error {
+	_, err := q.db.ExecContext(ctx, insertOrderPayment,
+		arg.ID,
+		arg.OrderID,
+		arg.ClientKey,
+		arg.At,
+		arg.Tender,
+		arg.AmountCents,
+		arg.TipCents,
+		arg.TenderedCents,
+		arg.ChangeCents,
+		arg.Refund,
+		arg.Reason,
+		arg.Ref,
+		arg.Last4,
+		arg.StaffID,
+		arg.DeviceID,
+		arg.ApprovedBy,
+		arg.DrawerID,
+		arg.Brand,
+		arg.RefundKind,
+		arg.RequestHash,
+	)
+	return err
+}
+
+const insertPendingZReport = `-- name: InsertPendingZReport :exec
+
+INSERT INTO z_reports (batch_id, id, status, close_kind, forced, created_at) VALUES (?, ?, 'pending', ?, ?, ?)
+ON CONFLICT (batch_id) DO NOTHING
+`
+
+type InsertPendingZReportParams struct {
+	BatchID   int64  `json:"batch_id"`
+	ID        string `json:"id"`
+	CloseKind string `json:"close_kind"`
+	Forced    bool   `json:"forced"`
+	CreatedAt string `json:"created_at"`
+}
+
+// Z reports -------------------------------------------------------------------
+func (q *Queries) InsertPendingZReport(ctx context.Context, arg InsertPendingZReportParams) error {
+	_, err := q.db.ExecContext(ctx, insertPendingZReport,
+		arg.BatchID,
+		arg.ID,
+		arg.CloseKind,
+		arg.Forced,
+		arg.CreatedAt,
+	)
 	return err
 }
 
@@ -1385,7 +2386,7 @@ func (q *Queries) InsertSettingsChange(ctx context.Context, arg InsertSettingsCh
 
 const listActiveDrivers = `-- name: ListActiveDrivers :many
 
-SELECT id, name, active, position, status, last_returned_at, created_at, pos_number, pushover_device FROM drivers WHERE active ORDER BY position ASC, created_at ASC
+SELECT id, name, active, position, status, last_returned_at, created_at, pushover_device FROM drivers WHERE active ORDER BY position ASC, created_at ASC
 `
 
 // Drivers -------------------------------------------------------------------
@@ -1406,7 +2407,6 @@ func (q *Queries) ListActiveDrivers(ctx context.Context) ([]Driver, error) {
 			&i.Status,
 			&i.LastReturnedAt,
 			&i.CreatedAt,
-			&i.PosNumber,
 			&i.PushoverDevice,
 		); err != nil {
 			return nil, err
@@ -1422,8 +2422,91 @@ func (q *Queries) ListActiveDrivers(ctx context.Context) ([]Driver, error) {
 	return items, nil
 }
 
+const listAllBatchOrders = `-- name: ListAllBatchOrders :many
+SELECT id, tenant_id, location_id, source, source_event_id, snapshot, state, arrival_date, printed_date, batch_id, kitchen_number, prep_minutes, estimated_ready_at, accepted_at, ready_at, out_at, delivered_at, driver_id, driver_name, last_alert_at, cancelled_at, accept_pending, pool_driver_id, pooled_at, pool_seq, pool_plan_id, paid, cash_due_cents, tip_cents, sent_at, scheduled_lead_minutes, ring_at, rerung, auto_accepted, came_back, not_delivered_action, not_delivered_at, not_delivered_driver_id, run_seq, finished_at, finished_by, marked_delivered, paid_at, early_kitchen, early_receipt, due_override, made_now, added_tip_cents, tip_locked, cancel_reason, client_key, door_tip_cents, request_hash, carried, kitchen_pending FROM orders WHERE batch_id = ? ORDER BY arrival_date, rowid
+`
+
+func (q *Queries) ListAllBatchOrders(ctx context.Context, batchID int64) ([]Order, error) {
+	rows, err := q.db.QueryContext(ctx, listAllBatchOrders, batchID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Order
+	for rows.Next() {
+		var i Order
+		if err := rows.Scan(
+			&i.ID,
+			&i.TenantID,
+			&i.LocationID,
+			&i.Source,
+			&i.SourceEventID,
+			&i.Snapshot,
+			&i.State,
+			&i.ArrivalDate,
+			&i.PrintedDate,
+			&i.BatchID,
+			&i.KitchenNumber,
+			&i.PrepMinutes,
+			&i.EstimatedReadyAt,
+			&i.AcceptedAt,
+			&i.ReadyAt,
+			&i.OutAt,
+			&i.DeliveredAt,
+			&i.DriverID,
+			&i.DriverName,
+			&i.LastAlertAt,
+			&i.CancelledAt,
+			&i.AcceptPending,
+			&i.PoolDriverID,
+			&i.PooledAt,
+			&i.PoolSeq,
+			&i.PoolPlanID,
+			&i.Paid,
+			&i.CashDueCents,
+			&i.TipCents,
+			&i.SentAt,
+			&i.ScheduledLeadMinutes,
+			&i.RingAt,
+			&i.Rerung,
+			&i.AutoAccepted,
+			&i.CameBack,
+			&i.NotDeliveredAction,
+			&i.NotDeliveredAt,
+			&i.NotDeliveredDriverID,
+			&i.RunSeq,
+			&i.FinishedAt,
+			&i.FinishedBy,
+			&i.MarkedDelivered,
+			&i.PaidAt,
+			&i.EarlyKitchen,
+			&i.EarlyReceipt,
+			&i.DueOverride,
+			&i.MadeNow,
+			&i.AddedTipCents,
+			&i.TipLocked,
+			&i.CancelReason,
+			&i.ClientKey,
+			&i.DoorTipCents,
+			&i.RequestHash,
+			&i.Carried,
+			&i.KitchenPending,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listArrivedOrders = `-- name: ListArrivedOrders :many
-SELECT id, tenant_id, location_id, source, source_event_id, snapshot, state, arrival_date, printed_date, batch_id, kitchen_number, prep_minutes, estimated_ready_at, accepted_at, ready_at, out_at, delivered_at, driver_id, driver_name, last_alert_at, cancelled_at, accept_pending, pool_driver_id, pooled_at, pool_seq, pool_plan_id, ext_source, ext_ref, ext_hash, ext_driver_pos, display_number, paid, cash_due_cents, tip_cents, board_hidden, sent_at, local_only, flag, pos_check_number, pos_driver_note, scheduled_lead_minutes, ring_at, rerung, auto_accepted, came_back, not_delivered_action, not_delivered_at, not_delivered_driver_id, run_seq, finished_at, finished_by, pos_closed, pos_change, marked_delivered, paid_at, early_kitchen, early_receipt, due_override, made_now FROM orders
+SELECT id, tenant_id, location_id, source, source_event_id, snapshot, state, arrival_date, printed_date, batch_id, kitchen_number, prep_minutes, estimated_ready_at, accepted_at, ready_at, out_at, delivered_at, driver_id, driver_name, last_alert_at, cancelled_at, accept_pending, pool_driver_id, pooled_at, pool_seq, pool_plan_id, paid, cash_due_cents, tip_cents, sent_at, scheduled_lead_minutes, ring_at, rerung, auto_accepted, came_back, not_delivered_action, not_delivered_at, not_delivered_driver_id, run_seq, finished_at, finished_by, marked_delivered, paid_at, early_kitchen, early_receipt, due_override, made_now, added_tip_cents, tip_locked, cancel_reason, client_key, door_tip_cents, request_hash, carried, kitchen_pending FROM orders
 WHERE state = 'arrived'
 ORDER BY arrival_date ASC
 `
@@ -1464,20 +2547,10 @@ func (q *Queries) ListArrivedOrders(ctx context.Context) ([]Order, error) {
 			&i.PooledAt,
 			&i.PoolSeq,
 			&i.PoolPlanID,
-			&i.ExtSource,
-			&i.ExtRef,
-			&i.ExtHash,
-			&i.ExtDriverPos,
-			&i.DisplayNumber,
 			&i.Paid,
 			&i.CashDueCents,
 			&i.TipCents,
-			&i.BoardHidden,
 			&i.SentAt,
-			&i.LocalOnly,
-			&i.Flag,
-			&i.PosCheckNumber,
-			&i.PosDriverNote,
 			&i.ScheduledLeadMinutes,
 			&i.RingAt,
 			&i.Rerung,
@@ -1489,14 +2562,20 @@ func (q *Queries) ListArrivedOrders(ctx context.Context) ([]Order, error) {
 			&i.RunSeq,
 			&i.FinishedAt,
 			&i.FinishedBy,
-			&i.PosClosed,
-			&i.PosChange,
 			&i.MarkedDelivered,
 			&i.PaidAt,
 			&i.EarlyKitchen,
 			&i.EarlyReceipt,
 			&i.DueOverride,
 			&i.MadeNow,
+			&i.AddedTipCents,
+			&i.TipLocked,
+			&i.CancelReason,
+			&i.ClientKey,
+			&i.DoorTipCents,
+			&i.RequestHash,
+			&i.Carried,
+			&i.KitchenPending,
 		); err != nil {
 			return nil, err
 		}
@@ -1512,7 +2591,7 @@ func (q *Queries) ListArrivedOrders(ctx context.Context) ([]Order, error) {
 }
 
 const listAvailableDrivers = `-- name: ListAvailableDrivers :many
-SELECT id, name, active, position, status, last_returned_at, created_at, pos_number, pushover_device FROM drivers WHERE active AND status = 'available'
+SELECT id, name, active, position, status, last_returned_at, created_at, pushover_device FROM drivers WHERE active AND status = 'available'
 `
 
 func (q *Queries) ListAvailableDrivers(ctx context.Context) ([]Driver, error) {
@@ -1532,7 +2611,6 @@ func (q *Queries) ListAvailableDrivers(ctx context.Context) ([]Driver, error) {
 			&i.Status,
 			&i.LastReturnedAt,
 			&i.CreatedAt,
-			&i.PosNumber,
 			&i.PushoverDevice,
 		); err != nil {
 			return nil, err
@@ -1549,7 +2627,7 @@ func (q *Queries) ListAvailableDrivers(ctx context.Context) ([]Driver, error) {
 }
 
 const listBatchDeliveries = `-- name: ListBatchDeliveries :many
-SELECT id, tenant_id, location_id, source, source_event_id, snapshot, state, arrival_date, printed_date, batch_id, kitchen_number, prep_minutes, estimated_ready_at, accepted_at, ready_at, out_at, delivered_at, driver_id, driver_name, last_alert_at, cancelled_at, accept_pending, pool_driver_id, pooled_at, pool_seq, pool_plan_id, ext_source, ext_ref, ext_hash, ext_driver_pos, display_number, paid, cash_due_cents, tip_cents, board_hidden, sent_at, local_only, flag, pos_check_number, pos_driver_note, scheduled_lead_minutes, ring_at, rerung, auto_accepted, came_back, not_delivered_action, not_delivered_at, not_delivered_driver_id, run_seq, finished_at, finished_by, pos_closed, pos_change, marked_delivered, paid_at, early_kitchen, early_receipt, due_override, made_now FROM orders
+SELECT id, tenant_id, location_id, source, source_event_id, snapshot, state, arrival_date, printed_date, batch_id, kitchen_number, prep_minutes, estimated_ready_at, accepted_at, ready_at, out_at, delivered_at, driver_id, driver_name, last_alert_at, cancelled_at, accept_pending, pool_driver_id, pooled_at, pool_seq, pool_plan_id, paid, cash_due_cents, tip_cents, sent_at, scheduled_lead_minutes, ring_at, rerung, auto_accepted, came_back, not_delivered_action, not_delivered_at, not_delivered_driver_id, run_seq, finished_at, finished_by, marked_delivered, paid_at, early_kitchen, early_receipt, due_override, made_now, added_tip_cents, tip_locked, cancel_reason, client_key, door_tip_cents, request_hash, carried, kitchen_pending FROM orders
 WHERE batch_id = ? AND state = 'delivered' AND driver_id IS NOT NULL
 ORDER BY delivered_at ASC, kitchen_number ASC
 `
@@ -1591,20 +2669,10 @@ func (q *Queries) ListBatchDeliveries(ctx context.Context, batchID int64) ([]Ord
 			&i.PooledAt,
 			&i.PoolSeq,
 			&i.PoolPlanID,
-			&i.ExtSource,
-			&i.ExtRef,
-			&i.ExtHash,
-			&i.ExtDriverPos,
-			&i.DisplayNumber,
 			&i.Paid,
 			&i.CashDueCents,
 			&i.TipCents,
-			&i.BoardHidden,
 			&i.SentAt,
-			&i.LocalOnly,
-			&i.Flag,
-			&i.PosCheckNumber,
-			&i.PosDriverNote,
 			&i.ScheduledLeadMinutes,
 			&i.RingAt,
 			&i.Rerung,
@@ -1616,14 +2684,20 @@ func (q *Queries) ListBatchDeliveries(ctx context.Context, batchID int64) ([]Ord
 			&i.RunSeq,
 			&i.FinishedAt,
 			&i.FinishedBy,
-			&i.PosClosed,
-			&i.PosChange,
 			&i.MarkedDelivered,
 			&i.PaidAt,
 			&i.EarlyKitchen,
 			&i.EarlyReceipt,
 			&i.DueOverride,
 			&i.MadeNow,
+			&i.AddedTipCents,
+			&i.TipLocked,
+			&i.CancelReason,
+			&i.ClientKey,
+			&i.DoorTipCents,
+			&i.RequestHash,
+			&i.Carried,
+			&i.KitchenPending,
 		); err != nil {
 			return nil, err
 		}
@@ -1639,7 +2713,7 @@ func (q *Queries) ListBatchDeliveries(ctx context.Context, batchID int64) ([]Ord
 }
 
 const listBatchLeftovers = `-- name: ListBatchLeftovers :many
-SELECT id, tenant_id, location_id, source, source_event_id, snapshot, state, arrival_date, printed_date, batch_id, kitchen_number, prep_minutes, estimated_ready_at, accepted_at, ready_at, out_at, delivered_at, driver_id, driver_name, last_alert_at, cancelled_at, accept_pending, pool_driver_id, pooled_at, pool_seq, pool_plan_id, ext_source, ext_ref, ext_hash, ext_driver_pos, display_number, paid, cash_due_cents, tip_cents, board_hidden, sent_at, local_only, flag, pos_check_number, pos_driver_note, scheduled_lead_minutes, ring_at, rerung, auto_accepted, came_back, not_delivered_action, not_delivered_at, not_delivered_driver_id, run_seq, finished_at, finished_by, pos_closed, pos_change, marked_delivered, paid_at, early_kitchen, early_receipt, due_override, made_now FROM orders
+SELECT id, tenant_id, location_id, source, source_event_id, snapshot, state, arrival_date, printed_date, batch_id, kitchen_number, prep_minutes, estimated_ready_at, accepted_at, ready_at, out_at, delivered_at, driver_id, driver_name, last_alert_at, cancelled_at, accept_pending, pool_driver_id, pooled_at, pool_seq, pool_plan_id, paid, cash_due_cents, tip_cents, sent_at, scheduled_lead_minutes, ring_at, rerung, auto_accepted, came_back, not_delivered_action, not_delivered_at, not_delivered_driver_id, run_seq, finished_at, finished_by, marked_delivered, paid_at, early_kitchen, early_receipt, due_override, made_now, added_tip_cents, tip_locked, cancel_reason, client_key, door_tip_cents, request_hash, carried, kitchen_pending FROM orders
 WHERE batch_id = ?
   AND state <> 'scheduled'
   AND NOT (state IN ('delivered', 'cancelled')
@@ -1687,20 +2761,10 @@ func (q *Queries) ListBatchLeftovers(ctx context.Context, batchID int64) ([]Orde
 			&i.PooledAt,
 			&i.PoolSeq,
 			&i.PoolPlanID,
-			&i.ExtSource,
-			&i.ExtRef,
-			&i.ExtHash,
-			&i.ExtDriverPos,
-			&i.DisplayNumber,
 			&i.Paid,
 			&i.CashDueCents,
 			&i.TipCents,
-			&i.BoardHidden,
 			&i.SentAt,
-			&i.LocalOnly,
-			&i.Flag,
-			&i.PosCheckNumber,
-			&i.PosDriverNote,
 			&i.ScheduledLeadMinutes,
 			&i.RingAt,
 			&i.Rerung,
@@ -1712,14 +2776,71 @@ func (q *Queries) ListBatchLeftovers(ctx context.Context, batchID int64) ([]Orde
 			&i.RunSeq,
 			&i.FinishedAt,
 			&i.FinishedBy,
-			&i.PosClosed,
-			&i.PosChange,
 			&i.MarkedDelivered,
 			&i.PaidAt,
 			&i.EarlyKitchen,
 			&i.EarlyReceipt,
 			&i.DueOverride,
 			&i.MadeNow,
+			&i.AddedTipCents,
+			&i.TipLocked,
+			&i.CancelReason,
+			&i.ClientKey,
+			&i.DoorTipCents,
+			&i.RequestHash,
+			&i.Carried,
+			&i.KitchenPending,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listBatchPayments = `-- name: ListBatchPayments :many
+SELECT p.id, p.order_id, p.client_key, p.at, p.tender, p.amount_cents, p.tip_cents, p.tendered_cents, p.change_cents, p.refund, p.reason, p.ref, p.last4, p.staff_id, p.device_id, p.approved_by, p.drawer_id, p.brand, p.refund_kind, p.request_hash, p.batch_id FROM order_payments p WHERE p.batch_id = ? ORDER BY p.at, p.rowid
+`
+
+// The payments taken in a batch (00033: a carried order's later payment
+// counts on the batch it was taken in; an older row has its order's batch).
+func (q *Queries) ListBatchPayments(ctx context.Context, batchID sql.NullInt64) ([]OrderPayment, error) {
+	rows, err := q.db.QueryContext(ctx, listBatchPayments, batchID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []OrderPayment
+	for rows.Next() {
+		var i OrderPayment
+		if err := rows.Scan(
+			&i.ID,
+			&i.OrderID,
+			&i.ClientKey,
+			&i.At,
+			&i.Tender,
+			&i.AmountCents,
+			&i.TipCents,
+			&i.TenderedCents,
+			&i.ChangeCents,
+			&i.Refund,
+			&i.Reason,
+			&i.Ref,
+			&i.Last4,
+			&i.StaffID,
+			&i.DeviceID,
+			&i.ApprovedBy,
+			&i.DrawerID,
+			&i.Brand,
+			&i.RefundKind,
+			&i.RequestHash,
+			&i.BatchID,
 		); err != nil {
 			return nil, err
 		}
@@ -1735,7 +2856,7 @@ func (q *Queries) ListBatchLeftovers(ctx context.Context, batchID int64) ([]Orde
 }
 
 const listBatchUnassigned = `-- name: ListBatchUnassigned :many
-SELECT id, tenant_id, location_id, source, source_event_id, snapshot, state, arrival_date, printed_date, batch_id, kitchen_number, prep_minutes, estimated_ready_at, accepted_at, ready_at, out_at, delivered_at, driver_id, driver_name, last_alert_at, cancelled_at, accept_pending, pool_driver_id, pooled_at, pool_seq, pool_plan_id, ext_source, ext_ref, ext_hash, ext_driver_pos, display_number, paid, cash_due_cents, tip_cents, board_hidden, sent_at, local_only, flag, pos_check_number, pos_driver_note, scheduled_lead_minutes, ring_at, rerung, auto_accepted, came_back, not_delivered_action, not_delivered_at, not_delivered_driver_id, run_seq, finished_at, finished_by, pos_closed, pos_change, marked_delivered, paid_at, early_kitchen, early_receipt, due_override, made_now FROM orders
+SELECT id, tenant_id, location_id, source, source_event_id, snapshot, state, arrival_date, printed_date, batch_id, kitchen_number, prep_minutes, estimated_ready_at, accepted_at, ready_at, out_at, delivered_at, driver_id, driver_name, last_alert_at, cancelled_at, accept_pending, pool_driver_id, pooled_at, pool_seq, pool_plan_id, paid, cash_due_cents, tip_cents, sent_at, scheduled_lead_minutes, ring_at, rerung, auto_accepted, came_back, not_delivered_action, not_delivered_at, not_delivered_driver_id, run_seq, finished_at, finished_by, marked_delivered, paid_at, early_kitchen, early_receipt, due_override, made_now, added_tip_cents, tip_locked, cancel_reason, client_key, door_tip_cents, request_hash, carried, kitchen_pending FROM orders
 WHERE batch_id = ? AND state = 'delivered' AND driver_id IS NULL AND marked_delivered <> ''
 ORDER BY delivered_at ASC
 `
@@ -1777,20 +2898,10 @@ func (q *Queries) ListBatchUnassigned(ctx context.Context, batchID int64) ([]Ord
 			&i.PooledAt,
 			&i.PoolSeq,
 			&i.PoolPlanID,
-			&i.ExtSource,
-			&i.ExtRef,
-			&i.ExtHash,
-			&i.ExtDriverPos,
-			&i.DisplayNumber,
 			&i.Paid,
 			&i.CashDueCents,
 			&i.TipCents,
-			&i.BoardHidden,
 			&i.SentAt,
-			&i.LocalOnly,
-			&i.Flag,
-			&i.PosCheckNumber,
-			&i.PosDriverNote,
 			&i.ScheduledLeadMinutes,
 			&i.RingAt,
 			&i.Rerung,
@@ -1802,14 +2913,20 @@ func (q *Queries) ListBatchUnassigned(ctx context.Context, batchID int64) ([]Ord
 			&i.RunSeq,
 			&i.FinishedAt,
 			&i.FinishedBy,
-			&i.PosClosed,
-			&i.PosChange,
 			&i.MarkedDelivered,
 			&i.PaidAt,
 			&i.EarlyKitchen,
 			&i.EarlyReceipt,
 			&i.DueOverride,
 			&i.MadeNow,
+			&i.AddedTipCents,
+			&i.TipLocked,
+			&i.CancelReason,
+			&i.ClientKey,
+			&i.DoorTipCents,
+			&i.RequestHash,
+			&i.Carried,
+			&i.KitchenPending,
 		); err != nil {
 			return nil, err
 		}
@@ -1867,9 +2984,301 @@ func (q *Queries) ListBatches(ctx context.Context, limit int64) ([]ListBatchesRo
 	return items, nil
 }
 
+const listCarriedOrders = `-- name: ListCarriedOrders :many
+SELECT id, tenant_id, location_id, source, source_event_id, snapshot, state, arrival_date, printed_date, batch_id, kitchen_number, prep_minutes, estimated_ready_at, accepted_at, ready_at, out_at, delivered_at, driver_id, driver_name, last_alert_at, cancelled_at, accept_pending, pool_driver_id, pooled_at, pool_seq, pool_plan_id, paid, cash_due_cents, tip_cents, sent_at, scheduled_lead_minutes, ring_at, rerung, auto_accepted, came_back, not_delivered_action, not_delivered_at, not_delivered_driver_id, run_seq, finished_at, finished_by, marked_delivered, paid_at, early_kitchen, early_receipt, due_override, made_now, added_tip_cents, tip_locked, cancel_reason, client_key, door_tip_cents, request_hash, carried, kitchen_pending FROM orders WHERE carried ORDER BY arrival_date, id
+`
+
+// Unsettled checks carried past their batch's close (M-10), oldest first.
+func (q *Queries) ListCarriedOrders(ctx context.Context) ([]Order, error) {
+	rows, err := q.db.QueryContext(ctx, listCarriedOrders)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Order
+	for rows.Next() {
+		var i Order
+		if err := rows.Scan(
+			&i.ID,
+			&i.TenantID,
+			&i.LocationID,
+			&i.Source,
+			&i.SourceEventID,
+			&i.Snapshot,
+			&i.State,
+			&i.ArrivalDate,
+			&i.PrintedDate,
+			&i.BatchID,
+			&i.KitchenNumber,
+			&i.PrepMinutes,
+			&i.EstimatedReadyAt,
+			&i.AcceptedAt,
+			&i.ReadyAt,
+			&i.OutAt,
+			&i.DeliveredAt,
+			&i.DriverID,
+			&i.DriverName,
+			&i.LastAlertAt,
+			&i.CancelledAt,
+			&i.AcceptPending,
+			&i.PoolDriverID,
+			&i.PooledAt,
+			&i.PoolSeq,
+			&i.PoolPlanID,
+			&i.Paid,
+			&i.CashDueCents,
+			&i.TipCents,
+			&i.SentAt,
+			&i.ScheduledLeadMinutes,
+			&i.RingAt,
+			&i.Rerung,
+			&i.AutoAccepted,
+			&i.CameBack,
+			&i.NotDeliveredAction,
+			&i.NotDeliveredAt,
+			&i.NotDeliveredDriverID,
+			&i.RunSeq,
+			&i.FinishedAt,
+			&i.FinishedBy,
+			&i.MarkedDelivered,
+			&i.PaidAt,
+			&i.EarlyKitchen,
+			&i.EarlyReceipt,
+			&i.DueOverride,
+			&i.MadeNow,
+			&i.AddedTipCents,
+			&i.TipLocked,
+			&i.CancelReason,
+			&i.ClientKey,
+			&i.DoorTipCents,
+			&i.RequestHash,
+			&i.Carried,
+			&i.KitchenPending,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listCounterOrders = `-- name: ListCounterOrders :many
+SELECT id, tenant_id, location_id, source, source_event_id, snapshot, state, arrival_date, printed_date, batch_id, kitchen_number, prep_minutes, estimated_ready_at, accepted_at, ready_at, out_at, delivered_at, driver_id, driver_name, last_alert_at, cancelled_at, accept_pending, pool_driver_id, pooled_at, pool_seq, pool_plan_id, paid, cash_due_cents, tip_cents, sent_at, scheduled_lead_minutes, ring_at, rerung, auto_accepted, came_back, not_delivered_action, not_delivered_at, not_delivered_driver_id, run_seq, finished_at, finished_by, marked_delivered, paid_at, early_kitchen, early_receipt, due_override, made_now, added_tip_cents, tip_locked, cancel_reason, client_key, door_tip_cents, request_hash, carried, kitchen_pending FROM orders WHERE source = 'counter' AND batch_id = ? ORDER BY arrival_date, id
+`
+
+// Counter orders of a batch (the terminals' Pick Up list filters them).
+func (q *Queries) ListCounterOrders(ctx context.Context, batchID int64) ([]Order, error) {
+	rows, err := q.db.QueryContext(ctx, listCounterOrders, batchID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Order
+	for rows.Next() {
+		var i Order
+		if err := rows.Scan(
+			&i.ID,
+			&i.TenantID,
+			&i.LocationID,
+			&i.Source,
+			&i.SourceEventID,
+			&i.Snapshot,
+			&i.State,
+			&i.ArrivalDate,
+			&i.PrintedDate,
+			&i.BatchID,
+			&i.KitchenNumber,
+			&i.PrepMinutes,
+			&i.EstimatedReadyAt,
+			&i.AcceptedAt,
+			&i.ReadyAt,
+			&i.OutAt,
+			&i.DeliveredAt,
+			&i.DriverID,
+			&i.DriverName,
+			&i.LastAlertAt,
+			&i.CancelledAt,
+			&i.AcceptPending,
+			&i.PoolDriverID,
+			&i.PooledAt,
+			&i.PoolSeq,
+			&i.PoolPlanID,
+			&i.Paid,
+			&i.CashDueCents,
+			&i.TipCents,
+			&i.SentAt,
+			&i.ScheduledLeadMinutes,
+			&i.RingAt,
+			&i.Rerung,
+			&i.AutoAccepted,
+			&i.CameBack,
+			&i.NotDeliveredAction,
+			&i.NotDeliveredAt,
+			&i.NotDeliveredDriverID,
+			&i.RunSeq,
+			&i.FinishedAt,
+			&i.FinishedBy,
+			&i.MarkedDelivered,
+			&i.PaidAt,
+			&i.EarlyKitchen,
+			&i.EarlyReceipt,
+			&i.DueOverride,
+			&i.MadeNow,
+			&i.AddedTipCents,
+			&i.TipLocked,
+			&i.CancelReason,
+			&i.ClientKey,
+			&i.DoorTipCents,
+			&i.RequestHash,
+			&i.Carried,
+			&i.KitchenPending,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listCustomerAddresses = `-- name: ListCustomerAddresses :many
+SELECT id, customer_id, position, label, line1, line2, city, state, zip, notes, is_default, created_at, lat, lng FROM customer_addresses WHERE customer_id = ? ORDER BY position, created_at, id
+`
+
+func (q *Queries) ListCustomerAddresses(ctx context.Context, customerID string) ([]CustomerAddress, error) {
+	rows, err := q.db.QueryContext(ctx, listCustomerAddresses, customerID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []CustomerAddress
+	for rows.Next() {
+		var i CustomerAddress
+		if err := rows.Scan(
+			&i.ID,
+			&i.CustomerID,
+			&i.Position,
+			&i.Label,
+			&i.Line1,
+			&i.Line2,
+			&i.City,
+			&i.State,
+			&i.Zip,
+			&i.Notes,
+			&i.IsDefault,
+			&i.CreatedAt,
+			&i.Lat,
+			&i.Lng,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listDrawerMovements = `-- name: ListDrawerMovements :many
+SELECT id, drawer_id, kind, amount_cents, reason, staff_id, approved_by, client_key, at FROM drawer_movements WHERE drawer_id = ? ORDER BY at, rowid
+`
+
+func (q *Queries) ListDrawerMovements(ctx context.Context, drawerID string) ([]DrawerMovement, error) {
+	rows, err := q.db.QueryContext(ctx, listDrawerMovements, drawerID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []DrawerMovement
+	for rows.Next() {
+		var i DrawerMovement
+		if err := rows.Scan(
+			&i.ID,
+			&i.DrawerID,
+			&i.Kind,
+			&i.AmountCents,
+			&i.Reason,
+			&i.StaffID,
+			&i.ApprovedBy,
+			&i.ClientKey,
+			&i.At,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listDrawersByBatch = `-- name: ListDrawersByBatch :many
+SELECT id, device_id, device_name, staff_id, staff_name, batch_id, opened_at, start_cents, handover_from, closed_at, closed_by, close_reason, counted_cents, denominations, expected_cents, flagged, auto FROM drawer_sessions WHERE batch_id = ? ORDER BY opened_at, rowid
+`
+
+func (q *Queries) ListDrawersByBatch(ctx context.Context, batchID int64) ([]DrawerSession, error) {
+	rows, err := q.db.QueryContext(ctx, listDrawersByBatch, batchID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []DrawerSession
+	for rows.Next() {
+		var i DrawerSession
+		if err := rows.Scan(
+			&i.ID,
+			&i.DeviceID,
+			&i.DeviceName,
+			&i.StaffID,
+			&i.StaffName,
+			&i.BatchID,
+			&i.OpenedAt,
+			&i.StartCents,
+			&i.HandoverFrom,
+			&i.ClosedAt,
+			&i.ClosedBy,
+			&i.CloseReason,
+			&i.CountedCents,
+			&i.Denominations,
+			&i.ExpectedCents,
+			&i.Flagged,
+			&i.Auto,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listDueOnlinePickups = `-- name: ListDueOnlinePickups :many
 SELECT id FROM orders
-WHERE state = 'ready' AND finished_at IS NULL AND ext_source = '' AND ready_at IS NOT NULL AND ready_at <= ?1
+WHERE state = 'ready' AND finished_at IS NULL AND ready_at IS NOT NULL AND ready_at <= ?1
   AND COALESCE(json_extract(snapshot, '$.fulfillment.type'), '') <> 'delivery'
 `
 
@@ -1898,7 +3307,7 @@ func (q *Queries) ListDueOnlinePickups(ctx context.Context, cutoff sql.NullStrin
 }
 
 const listDueScheduled = `-- name: ListDueScheduled :many
-SELECT id, tenant_id, location_id, source, source_event_id, snapshot, state, arrival_date, printed_date, batch_id, kitchen_number, prep_minutes, estimated_ready_at, accepted_at, ready_at, out_at, delivered_at, driver_id, driver_name, last_alert_at, cancelled_at, accept_pending, pool_driver_id, pooled_at, pool_seq, pool_plan_id, ext_source, ext_ref, ext_hash, ext_driver_pos, display_number, paid, cash_due_cents, tip_cents, board_hidden, sent_at, local_only, flag, pos_check_number, pos_driver_note, scheduled_lead_minutes, ring_at, rerung, auto_accepted, came_back, not_delivered_action, not_delivered_at, not_delivered_driver_id, run_seq, finished_at, finished_by, pos_closed, pos_change, marked_delivered, paid_at, early_kitchen, early_receipt, due_override, made_now FROM orders WHERE state = 'scheduled' AND ring_at <= ? ORDER BY ring_at ASC
+SELECT id, tenant_id, location_id, source, source_event_id, snapshot, state, arrival_date, printed_date, batch_id, kitchen_number, prep_minutes, estimated_ready_at, accepted_at, ready_at, out_at, delivered_at, driver_id, driver_name, last_alert_at, cancelled_at, accept_pending, pool_driver_id, pooled_at, pool_seq, pool_plan_id, paid, cash_due_cents, tip_cents, sent_at, scheduled_lead_minutes, ring_at, rerung, auto_accepted, came_back, not_delivered_action, not_delivered_at, not_delivered_driver_id, run_seq, finished_at, finished_by, marked_delivered, paid_at, early_kitchen, early_receipt, due_override, made_now, added_tip_cents, tip_locked, cancel_reason, client_key, door_tip_cents, request_hash, carried, kitchen_pending FROM orders WHERE state = 'scheduled' AND ring_at <= ? ORDER BY ring_at ASC
 `
 
 func (q *Queries) ListDueScheduled(ctx context.Context, ringAt sql.NullString) ([]Order, error) {
@@ -1937,20 +3346,10 @@ func (q *Queries) ListDueScheduled(ctx context.Context, ringAt sql.NullString) (
 			&i.PooledAt,
 			&i.PoolSeq,
 			&i.PoolPlanID,
-			&i.ExtSource,
-			&i.ExtRef,
-			&i.ExtHash,
-			&i.ExtDriverPos,
-			&i.DisplayNumber,
 			&i.Paid,
 			&i.CashDueCents,
 			&i.TipCents,
-			&i.BoardHidden,
 			&i.SentAt,
-			&i.LocalOnly,
-			&i.Flag,
-			&i.PosCheckNumber,
-			&i.PosDriverNote,
 			&i.ScheduledLeadMinutes,
 			&i.RingAt,
 			&i.Rerung,
@@ -1962,15 +3361,54 @@ func (q *Queries) ListDueScheduled(ctx context.Context, ringAt sql.NullString) (
 			&i.RunSeq,
 			&i.FinishedAt,
 			&i.FinishedBy,
-			&i.PosClosed,
-			&i.PosChange,
 			&i.MarkedDelivered,
 			&i.PaidAt,
 			&i.EarlyKitchen,
 			&i.EarlyReceipt,
 			&i.DueOverride,
 			&i.MadeNow,
+			&i.AddedTipCents,
+			&i.TipLocked,
+			&i.CancelReason,
+			&i.ClientKey,
+			&i.DoorTipCents,
+			&i.RequestHash,
+			&i.Carried,
+			&i.KitchenPending,
 		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listFlaggedZReports = `-- name: ListFlaggedZReports :many
+SELECT batch_id, id, built_at FROM z_reports WHERE flagged ORDER BY batch_id DESC LIMIT ?
+`
+
+type ListFlaggedZReportsRow struct {
+	BatchID int64          `json:"batch_id"`
+	ID      string         `json:"id"`
+	BuiltAt sql.NullString `json:"built_at"`
+}
+
+func (q *Queries) ListFlaggedZReports(ctx context.Context, limit int64) ([]ListFlaggedZReportsRow, error) {
+	rows, err := q.db.QueryContext(ctx, listFlaggedZReports, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListFlaggedZReportsRow
+	for rows.Next() {
+		var i ListFlaggedZReportsRow
+		if err := rows.Scan(&i.BatchID, &i.ID, &i.BuiltAt); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
@@ -2049,12 +3487,89 @@ func (q *Queries) ListInterruptedAccepts(ctx context.Context) ([]string, error) 
 	return items, nil
 }
 
-const listLocalOnlyByBatch = `-- name: ListLocalOnlyByBatch :many
-SELECT id, tenant_id, location_id, source, source_event_id, snapshot, state, arrival_date, printed_date, batch_id, kitchen_number, prep_minutes, estimated_ready_at, accepted_at, ready_at, out_at, delivered_at, driver_id, driver_name, last_alert_at, cancelled_at, accept_pending, pool_driver_id, pooled_at, pool_seq, pool_plan_id, ext_source, ext_ref, ext_hash, ext_driver_pos, display_number, paid, cash_due_cents, tip_cents, board_hidden, sent_at, local_only, flag, pos_check_number, pos_driver_note, scheduled_lead_minutes, ring_at, rerung, auto_accepted, came_back, not_delivered_action, not_delivered_at, not_delivered_driver_id, run_seq, finished_at, finished_by, pos_closed, pos_change, marked_delivered, paid_at, early_kitchen, early_receipt, due_override, made_now FROM orders WHERE batch_id = ? AND local_only ORDER BY arrival_date ASC
+const listJournal = `-- name: ListJournal :many
+SELECT id, at, staff_id, device_id, "action", order_id, detail FROM journal ORDER BY at DESC, rowid DESC LIMIT ?
 `
 
-func (q *Queries) ListLocalOnlyByBatch(ctx context.Context, batchID int64) ([]Order, error) {
-	rows, err := q.db.QueryContext(ctx, listLocalOnlyByBatch, batchID)
+// Newest first.
+func (q *Queries) ListJournal(ctx context.Context, limit int64) ([]Journal, error) {
+	rows, err := q.db.QueryContext(ctx, listJournal, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Journal
+	for rows.Next() {
+		var i Journal
+		if err := rows.Scan(
+			&i.ID,
+			&i.At,
+			&i.StaffID,
+			&i.DeviceID,
+			&i.Action,
+			&i.OrderID,
+			&i.Detail,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listJournalBetween = `-- name: ListJournalBetween :many
+SELECT id, at, staff_id, device_id, "action", order_id, detail FROM journal WHERE at >= ?1 AND at <= ?2 ORDER BY at, rowid
+`
+
+type ListJournalBetweenParams struct {
+	FromAt string `json:"from_at"`
+	ToAt   string `json:"to_at"`
+}
+
+func (q *Queries) ListJournalBetween(ctx context.Context, arg ListJournalBetweenParams) ([]Journal, error) {
+	rows, err := q.db.QueryContext(ctx, listJournalBetween, arg.FromAt, arg.ToAt)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Journal
+	for rows.Next() {
+		var i Journal
+		if err := rows.Scan(
+			&i.ID,
+			&i.At,
+			&i.StaffID,
+			&i.DeviceID,
+			&i.Action,
+			&i.OrderID,
+			&i.Detail,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listKitchenPending = `-- name: ListKitchenPending :many
+SELECT id, tenant_id, location_id, source, source_event_id, snapshot, state, arrival_date, printed_date, batch_id, kitchen_number, prep_minutes, estimated_ready_at, accepted_at, ready_at, out_at, delivered_at, driver_id, driver_name, last_alert_at, cancelled_at, accept_pending, pool_driver_id, pooled_at, pool_seq, pool_plan_id, paid, cash_due_cents, tip_cents, sent_at, scheduled_lead_minutes, ring_at, rerung, auto_accepted, came_back, not_delivered_action, not_delivered_at, not_delivered_driver_id, run_seq, finished_at, finished_by, marked_delivered, paid_at, early_kitchen, early_receipt, due_override, made_now, added_tip_cents, tip_locked, cancel_reason, client_key, door_tip_cents, request_hash, carried, kitchen_pending FROM orders WHERE kitchen_pending ORDER BY arrival_date, id
+`
+
+// M-11: counter orders whose kitchen tickets never printed (a restart in between).
+func (q *Queries) ListKitchenPending(ctx context.Context) ([]Order, error) {
+	rows, err := q.db.QueryContext(ctx, listKitchenPending)
 	if err != nil {
 		return nil, err
 	}
@@ -2089,20 +3604,10 @@ func (q *Queries) ListLocalOnlyByBatch(ctx context.Context, batchID int64) ([]Or
 			&i.PooledAt,
 			&i.PoolSeq,
 			&i.PoolPlanID,
-			&i.ExtSource,
-			&i.ExtRef,
-			&i.ExtHash,
-			&i.ExtDriverPos,
-			&i.DisplayNumber,
 			&i.Paid,
 			&i.CashDueCents,
 			&i.TipCents,
-			&i.BoardHidden,
 			&i.SentAt,
-			&i.LocalOnly,
-			&i.Flag,
-			&i.PosCheckNumber,
-			&i.PosDriverNote,
 			&i.ScheduledLeadMinutes,
 			&i.RingAt,
 			&i.Rerung,
@@ -2114,14 +3619,20 @@ func (q *Queries) ListLocalOnlyByBatch(ctx context.Context, batchID int64) ([]Or
 			&i.RunSeq,
 			&i.FinishedAt,
 			&i.FinishedBy,
-			&i.PosClosed,
-			&i.PosChange,
 			&i.MarkedDelivered,
 			&i.PaidAt,
 			&i.EarlyKitchen,
 			&i.EarlyReceipt,
 			&i.DueOverride,
 			&i.MadeNow,
+			&i.AddedTipCents,
+			&i.TipLocked,
+			&i.CancelReason,
+			&i.ClientKey,
+			&i.DoorTipCents,
+			&i.RequestHash,
+			&i.Carried,
+			&i.KitchenPending,
 		); err != nil {
 			return nil, err
 		}
@@ -2136,8 +3647,46 @@ func (q *Queries) ListLocalOnlyByBatch(ctx context.Context, batchID int64) ([]Or
 	return items, nil
 }
 
+const listLocatedDeliveries = `-- name: ListLocatedDeliveries :many
+SELECT o.snapshot, g.lat, g.lng FROM orders o JOIN order_geo g ON g.order_id = o.id
+WHERE g.state = 'located' AND g.lat IS NOT NULL AND g.lng IS NOT NULL
+  AND json_extract(o.snapshot, '$.fulfillment.type') = 'delivery'
+ORDER BY o.arrival_date DESC LIMIT 2000
+`
+
+type ListLocatedDeliveriesRow struct {
+	Snapshot string          `json:"snapshot"`
+	Lat      sql.NullFloat64 `json:"lat"`
+	Lng      sql.NullFloat64 `json:"lng"`
+}
+
+// Delivery orders main located (their address + point), for the customers'
+// in / out of area check.
+func (q *Queries) ListLocatedDeliveries(ctx context.Context) ([]ListLocatedDeliveriesRow, error) {
+	rows, err := q.db.QueryContext(ctx, listLocatedDeliveries)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListLocatedDeliveriesRow
+	for rows.Next() {
+		var i ListLocatedDeliveriesRow
+		if err := rows.Scan(&i.Snapshot, &i.Lat, &i.Lng); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listOnDeliveryByDriver = `-- name: ListOnDeliveryByDriver :many
-SELECT id, tenant_id, location_id, source, source_event_id, snapshot, state, arrival_date, printed_date, batch_id, kitchen_number, prep_minutes, estimated_ready_at, accepted_at, ready_at, out_at, delivered_at, driver_id, driver_name, last_alert_at, cancelled_at, accept_pending, pool_driver_id, pooled_at, pool_seq, pool_plan_id, ext_source, ext_ref, ext_hash, ext_driver_pos, display_number, paid, cash_due_cents, tip_cents, board_hidden, sent_at, local_only, flag, pos_check_number, pos_driver_note, scheduled_lead_minutes, ring_at, rerung, auto_accepted, came_back, not_delivered_action, not_delivered_at, not_delivered_driver_id, run_seq, finished_at, finished_by, pos_closed, pos_change, marked_delivered, paid_at, early_kitchen, early_receipt, due_override, made_now FROM orders
+SELECT id, tenant_id, location_id, source, source_event_id, snapshot, state, arrival_date, printed_date, batch_id, kitchen_number, prep_minutes, estimated_ready_at, accepted_at, ready_at, out_at, delivered_at, driver_id, driver_name, last_alert_at, cancelled_at, accept_pending, pool_driver_id, pooled_at, pool_seq, pool_plan_id, paid, cash_due_cents, tip_cents, sent_at, scheduled_lead_minutes, ring_at, rerung, auto_accepted, came_back, not_delivered_action, not_delivered_at, not_delivered_driver_id, run_seq, finished_at, finished_by, marked_delivered, paid_at, early_kitchen, early_receipt, due_override, made_now, added_tip_cents, tip_locked, cancel_reason, client_key, door_tip_cents, request_hash, carried, kitchen_pending FROM orders
 WHERE state = 'on_delivery' AND driver_id = ?
 ORDER BY out_at ASC
 `
@@ -2178,20 +3727,10 @@ func (q *Queries) ListOnDeliveryByDriver(ctx context.Context, driverID sql.NullS
 			&i.PooledAt,
 			&i.PoolSeq,
 			&i.PoolPlanID,
-			&i.ExtSource,
-			&i.ExtRef,
-			&i.ExtHash,
-			&i.ExtDriverPos,
-			&i.DisplayNumber,
 			&i.Paid,
 			&i.CashDueCents,
 			&i.TipCents,
-			&i.BoardHidden,
 			&i.SentAt,
-			&i.LocalOnly,
-			&i.Flag,
-			&i.PosCheckNumber,
-			&i.PosDriverNote,
 			&i.ScheduledLeadMinutes,
 			&i.RingAt,
 			&i.Rerung,
@@ -2203,14 +3742,72 @@ func (q *Queries) ListOnDeliveryByDriver(ctx context.Context, driverID sql.NullS
 			&i.RunSeq,
 			&i.FinishedAt,
 			&i.FinishedBy,
-			&i.PosClosed,
-			&i.PosChange,
 			&i.MarkedDelivered,
 			&i.PaidAt,
 			&i.EarlyKitchen,
 			&i.EarlyReceipt,
 			&i.DueOverride,
 			&i.MadeNow,
+			&i.AddedTipCents,
+			&i.TipLocked,
+			&i.CancelReason,
+			&i.ClientKey,
+			&i.DoorTipCents,
+			&i.RequestHash,
+			&i.Carried,
+			&i.KitchenPending,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listOpenDeadLetters = `-- name: ListOpenDeadLetters :many
+SELECT d.event_id, d.subject, d.type, d.result, d.refusals, d.first_refused_at, d.parked_at, d.last_error, f.at
+FROM floor_dead_letters d JOIN floor_events f ON f.id = d.event_id
+WHERE d.retried_at IS NULL AND f.parked_at IS NOT NULL AND f.synced_at IS NULL
+ORDER BY f.rowid ASC LIMIT ?
+`
+
+type ListOpenDeadLettersRow struct {
+	EventID        string `json:"event_id"`
+	Subject        string `json:"subject"`
+	Type           string `json:"type"`
+	Result         string `json:"result"`
+	Refusals       int64  `json:"refusals"`
+	FirstRefusedAt string `json:"first_refused_at"`
+	ParkedAt       string `json:"parked_at"`
+	LastError      string `json:"last_error"`
+	At             string `json:"at"`
+}
+
+func (q *Queries) ListOpenDeadLetters(ctx context.Context, limit int64) ([]ListOpenDeadLettersRow, error) {
+	rows, err := q.db.QueryContext(ctx, listOpenDeadLetters, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListOpenDeadLettersRow
+	for rows.Next() {
+		var i ListOpenDeadLettersRow
+		if err := rows.Scan(
+			&i.EventID,
+			&i.Subject,
+			&i.Type,
+			&i.Result,
+			&i.Refusals,
+			&i.FirstRefusedAt,
+			&i.ParkedAt,
+			&i.LastError,
+			&i.At,
 		); err != nil {
 			return nil, err
 		}
@@ -2226,7 +3823,7 @@ func (q *Queries) ListOnDeliveryByDriver(ctx context.Context, driverID sql.NullS
 }
 
 const listOpenDeliveries = `-- name: ListOpenDeliveries :many
-SELECT id, tenant_id, location_id, source, source_event_id, snapshot, state, arrival_date, printed_date, batch_id, kitchen_number, prep_minutes, estimated_ready_at, accepted_at, ready_at, out_at, delivered_at, driver_id, driver_name, last_alert_at, cancelled_at, accept_pending, pool_driver_id, pooled_at, pool_seq, pool_plan_id, ext_source, ext_ref, ext_hash, ext_driver_pos, display_number, paid, cash_due_cents, tip_cents, board_hidden, sent_at, local_only, flag, pos_check_number, pos_driver_note, scheduled_lead_minutes, ring_at, rerung, auto_accepted, came_back, not_delivered_action, not_delivered_at, not_delivered_driver_id, run_seq, finished_at, finished_by, pos_closed, pos_change, marked_delivered, paid_at, early_kitchen, early_receipt, due_override, made_now FROM orders
+SELECT id, tenant_id, location_id, source, source_event_id, snapshot, state, arrival_date, printed_date, batch_id, kitchen_number, prep_minutes, estimated_ready_at, accepted_at, ready_at, out_at, delivered_at, driver_id, driver_name, last_alert_at, cancelled_at, accept_pending, pool_driver_id, pooled_at, pool_seq, pool_plan_id, paid, cash_due_cents, tip_cents, sent_at, scheduled_lead_minutes, ring_at, rerung, auto_accepted, came_back, not_delivered_action, not_delivered_at, not_delivered_driver_id, run_seq, finished_at, finished_by, marked_delivered, paid_at, early_kitchen, early_receipt, due_override, made_now, added_tip_cents, tip_locked, cancel_reason, client_key, door_tip_cents, request_hash, carried, kitchen_pending FROM orders
 WHERE batch_id = (SELECT id FROM batches WHERE closed_at IS NULL ORDER BY id DESC LIMIT 1)
   AND state IN ('accepted', 'ready', 'on_delivery')
   AND json_extract(snapshot, '$.fulfillment.type') = 'delivery'
@@ -2270,20 +3867,10 @@ func (q *Queries) ListOpenDeliveries(ctx context.Context) ([]Order, error) {
 			&i.PooledAt,
 			&i.PoolSeq,
 			&i.PoolPlanID,
-			&i.ExtSource,
-			&i.ExtRef,
-			&i.ExtHash,
-			&i.ExtDriverPos,
-			&i.DisplayNumber,
 			&i.Paid,
 			&i.CashDueCents,
 			&i.TipCents,
-			&i.BoardHidden,
 			&i.SentAt,
-			&i.LocalOnly,
-			&i.Flag,
-			&i.PosCheckNumber,
-			&i.PosDriverNote,
 			&i.ScheduledLeadMinutes,
 			&i.RingAt,
 			&i.Rerung,
@@ -2295,14 +3882,65 @@ func (q *Queries) ListOpenDeliveries(ctx context.Context) ([]Order, error) {
 			&i.RunSeq,
 			&i.FinishedAt,
 			&i.FinishedBy,
-			&i.PosClosed,
-			&i.PosChange,
 			&i.MarkedDelivered,
 			&i.PaidAt,
 			&i.EarlyKitchen,
 			&i.EarlyReceipt,
 			&i.DueOverride,
 			&i.MadeNow,
+			&i.AddedTipCents,
+			&i.TipLocked,
+			&i.CancelReason,
+			&i.ClientKey,
+			&i.DoorTipCents,
+			&i.RequestHash,
+			&i.Carried,
+			&i.KitchenPending,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listOpenDrawers = `-- name: ListOpenDrawers :many
+SELECT id, device_id, device_name, staff_id, staff_name, batch_id, opened_at, start_cents, handover_from, closed_at, closed_by, close_reason, counted_cents, denominations, expected_cents, flagged, auto FROM drawer_sessions WHERE closed_at IS NULL ORDER BY opened_at
+`
+
+func (q *Queries) ListOpenDrawers(ctx context.Context) ([]DrawerSession, error) {
+	rows, err := q.db.QueryContext(ctx, listOpenDrawers)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []DrawerSession
+	for rows.Next() {
+		var i DrawerSession
+		if err := rows.Scan(
+			&i.ID,
+			&i.DeviceID,
+			&i.DeviceName,
+			&i.StaffID,
+			&i.StaffName,
+			&i.BatchID,
+			&i.OpenedAt,
+			&i.StartCents,
+			&i.HandoverFrom,
+			&i.ClosedAt,
+			&i.ClosedBy,
+			&i.CloseReason,
+			&i.CountedCents,
+			&i.Denominations,
+			&i.ExpectedCents,
+			&i.Flagged,
+			&i.Auto,
 		); err != nil {
 			return nil, err
 		}
@@ -2406,6 +4044,55 @@ func (q *Queries) ListOrderGeo(ctx context.Context, ids []string) ([]OrderGeo, e
 	return items, nil
 }
 
+const listOrderPayments = `-- name: ListOrderPayments :many
+SELECT id, order_id, client_key, at, tender, amount_cents, tip_cents, tendered_cents, change_cents, refund, reason, ref, last4, staff_id, device_id, approved_by, drawer_id, brand, refund_kind, request_hash, batch_id FROM order_payments WHERE order_id = ? ORDER BY at, rowid
+`
+
+func (q *Queries) ListOrderPayments(ctx context.Context, orderID string) ([]OrderPayment, error) {
+	rows, err := q.db.QueryContext(ctx, listOrderPayments, orderID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []OrderPayment
+	for rows.Next() {
+		var i OrderPayment
+		if err := rows.Scan(
+			&i.ID,
+			&i.OrderID,
+			&i.ClientKey,
+			&i.At,
+			&i.Tender,
+			&i.AmountCents,
+			&i.TipCents,
+			&i.TenderedCents,
+			&i.ChangeCents,
+			&i.Refund,
+			&i.Reason,
+			&i.Ref,
+			&i.Last4,
+			&i.StaffID,
+			&i.DeviceID,
+			&i.ApprovedBy,
+			&i.DrawerID,
+			&i.Brand,
+			&i.RefundKind,
+			&i.RequestHash,
+			&i.BatchID,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listOrderTimes = `-- name: ListOrderTimes :many
 SELECT a, b, seconds FROM order_times
 WHERE a IN (/*SLICE:from_ids*/?) AND b IN (/*SLICE:to_ids*/?)
@@ -2459,7 +4146,7 @@ func (q *Queries) ListOrderTimes(ctx context.Context, arg ListOrderTimesParams) 
 }
 
 const listOrdersByBatch = `-- name: ListOrdersByBatch :many
-SELECT id, tenant_id, location_id, source, source_event_id, snapshot, state, arrival_date, printed_date, batch_id, kitchen_number, prep_minutes, estimated_ready_at, accepted_at, ready_at, out_at, delivered_at, driver_id, driver_name, last_alert_at, cancelled_at, accept_pending, pool_driver_id, pooled_at, pool_seq, pool_plan_id, ext_source, ext_ref, ext_hash, ext_driver_pos, display_number, paid, cash_due_cents, tip_cents, board_hidden, sent_at, local_only, flag, pos_check_number, pos_driver_note, scheduled_lead_minutes, ring_at, rerung, auto_accepted, came_back, not_delivered_action, not_delivered_at, not_delivered_driver_id, run_seq, finished_at, finished_by, pos_closed, pos_change, marked_delivered, paid_at, early_kitchen, early_receipt, due_override, made_now FROM orders
+SELECT id, tenant_id, location_id, source, source_event_id, snapshot, state, arrival_date, printed_date, batch_id, kitchen_number, prep_minutes, estimated_ready_at, accepted_at, ready_at, out_at, delivered_at, driver_id, driver_name, last_alert_at, cancelled_at, accept_pending, pool_driver_id, pooled_at, pool_seq, pool_plan_id, paid, cash_due_cents, tip_cents, sent_at, scheduled_lead_minutes, ring_at, rerung, auto_accepted, came_back, not_delivered_action, not_delivered_at, not_delivered_driver_id, run_seq, finished_at, finished_by, marked_delivered, paid_at, early_kitchen, early_receipt, due_override, made_now, added_tip_cents, tip_locked, cancel_reason, client_key, door_tip_cents, request_hash, carried, kitchen_pending FROM orders
 WHERE batch_id = ?
 ORDER BY arrival_date DESC
 LIMIT ? OFFSET ?
@@ -2507,20 +4194,10 @@ func (q *Queries) ListOrdersByBatch(ctx context.Context, arg ListOrdersByBatchPa
 			&i.PooledAt,
 			&i.PoolSeq,
 			&i.PoolPlanID,
-			&i.ExtSource,
-			&i.ExtRef,
-			&i.ExtHash,
-			&i.ExtDriverPos,
-			&i.DisplayNumber,
 			&i.Paid,
 			&i.CashDueCents,
 			&i.TipCents,
-			&i.BoardHidden,
 			&i.SentAt,
-			&i.LocalOnly,
-			&i.Flag,
-			&i.PosCheckNumber,
-			&i.PosDriverNote,
 			&i.ScheduledLeadMinutes,
 			&i.RingAt,
 			&i.Rerung,
@@ -2532,14 +4209,111 @@ func (q *Queries) ListOrdersByBatch(ctx context.Context, arg ListOrdersByBatchPa
 			&i.RunSeq,
 			&i.FinishedAt,
 			&i.FinishedBy,
-			&i.PosClosed,
-			&i.PosChange,
 			&i.MarkedDelivered,
 			&i.PaidAt,
 			&i.EarlyKitchen,
 			&i.EarlyReceipt,
 			&i.DueOverride,
 			&i.MadeNow,
+			&i.AddedTipCents,
+			&i.TipLocked,
+			&i.CancelReason,
+			&i.ClientKey,
+			&i.DoorTipCents,
+			&i.RequestHash,
+			&i.Carried,
+			&i.KitchenPending,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listOrdersMentioning = `-- name: ListOrdersMentioning :many
+SELECT id, tenant_id, location_id, source, source_event_id, snapshot, state, arrival_date, printed_date, batch_id, kitchen_number, prep_minutes, estimated_ready_at, accepted_at, ready_at, out_at, delivered_at, driver_id, driver_name, last_alert_at, cancelled_at, accept_pending, pool_driver_id, pooled_at, pool_seq, pool_plan_id, paid, cash_due_cents, tip_cents, sent_at, scheduled_lead_minutes, ring_at, rerung, auto_accepted, came_back, not_delivered_action, not_delivered_at, not_delivered_driver_id, run_seq, finished_at, finished_by, marked_delivered, paid_at, early_kitchen, early_receipt, due_override, made_now, added_tip_cents, tip_locked, cancel_reason, client_key, door_tip_cents, request_hash, carried, kitchen_pending FROM orders WHERE instr(snapshot, ?1) > 0
+ORDER BY arrival_date DESC LIMIT ?2
+`
+
+type ListOrdersMentioningParams struct {
+	Text    string `json:"text"`
+	MaxRows int64  `json:"max_rows"`
+}
+
+// Orders whose snapshot holds the text (a phone's last digits, a customer
+// id), newest first; the caller checks each one.
+func (q *Queries) ListOrdersMentioning(ctx context.Context, arg ListOrdersMentioningParams) ([]Order, error) {
+	rows, err := q.db.QueryContext(ctx, listOrdersMentioning, arg.Text, arg.MaxRows)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Order
+	for rows.Next() {
+		var i Order
+		if err := rows.Scan(
+			&i.ID,
+			&i.TenantID,
+			&i.LocationID,
+			&i.Source,
+			&i.SourceEventID,
+			&i.Snapshot,
+			&i.State,
+			&i.ArrivalDate,
+			&i.PrintedDate,
+			&i.BatchID,
+			&i.KitchenNumber,
+			&i.PrepMinutes,
+			&i.EstimatedReadyAt,
+			&i.AcceptedAt,
+			&i.ReadyAt,
+			&i.OutAt,
+			&i.DeliveredAt,
+			&i.DriverID,
+			&i.DriverName,
+			&i.LastAlertAt,
+			&i.CancelledAt,
+			&i.AcceptPending,
+			&i.PoolDriverID,
+			&i.PooledAt,
+			&i.PoolSeq,
+			&i.PoolPlanID,
+			&i.Paid,
+			&i.CashDueCents,
+			&i.TipCents,
+			&i.SentAt,
+			&i.ScheduledLeadMinutes,
+			&i.RingAt,
+			&i.Rerung,
+			&i.AutoAccepted,
+			&i.CameBack,
+			&i.NotDeliveredAction,
+			&i.NotDeliveredAt,
+			&i.NotDeliveredDriverID,
+			&i.RunSeq,
+			&i.FinishedAt,
+			&i.FinishedBy,
+			&i.MarkedDelivered,
+			&i.PaidAt,
+			&i.EarlyKitchen,
+			&i.EarlyReceipt,
+			&i.DueOverride,
+			&i.MadeNow,
+			&i.AddedTipCents,
+			&i.TipLocked,
+			&i.CancelReason,
+			&i.ClientKey,
+			&i.DoorTipCents,
+			&i.RequestHash,
+			&i.Carried,
+			&i.KitchenPending,
 		); err != nil {
 			return nil, err
 		}
@@ -2555,7 +4329,7 @@ func (q *Queries) ListOrdersByBatch(ctx context.Context, arg ListOrdersByBatchPa
 }
 
 const listOrdersPage = `-- name: ListOrdersPage :many
-SELECT id, tenant_id, location_id, source, source_event_id, snapshot, state, arrival_date, printed_date, batch_id, kitchen_number, prep_minutes, estimated_ready_at, accepted_at, ready_at, out_at, delivered_at, driver_id, driver_name, last_alert_at, cancelled_at, accept_pending, pool_driver_id, pooled_at, pool_seq, pool_plan_id, ext_source, ext_ref, ext_hash, ext_driver_pos, display_number, paid, cash_due_cents, tip_cents, board_hidden, sent_at, local_only, flag, pos_check_number, pos_driver_note, scheduled_lead_minutes, ring_at, rerung, auto_accepted, came_back, not_delivered_action, not_delivered_at, not_delivered_driver_id, run_seq, finished_at, finished_by, pos_closed, pos_change, marked_delivered, paid_at, early_kitchen, early_receipt, due_override, made_now FROM orders
+SELECT id, tenant_id, location_id, source, source_event_id, snapshot, state, arrival_date, printed_date, batch_id, kitchen_number, prep_minutes, estimated_ready_at, accepted_at, ready_at, out_at, delivered_at, driver_id, driver_name, last_alert_at, cancelled_at, accept_pending, pool_driver_id, pooled_at, pool_seq, pool_plan_id, paid, cash_due_cents, tip_cents, sent_at, scheduled_lead_minutes, ring_at, rerung, auto_accepted, came_back, not_delivered_action, not_delivered_at, not_delivered_driver_id, run_seq, finished_at, finished_by, marked_delivered, paid_at, early_kitchen, early_receipt, due_override, made_now, added_tip_cents, tip_locked, cancel_reason, client_key, door_tip_cents, request_hash, carried, kitchen_pending FROM orders
 ORDER BY arrival_date DESC
 LIMIT ? OFFSET ?
 `
@@ -2601,20 +4375,10 @@ func (q *Queries) ListOrdersPage(ctx context.Context, arg ListOrdersPageParams) 
 			&i.PooledAt,
 			&i.PoolSeq,
 			&i.PoolPlanID,
-			&i.ExtSource,
-			&i.ExtRef,
-			&i.ExtHash,
-			&i.ExtDriverPos,
-			&i.DisplayNumber,
 			&i.Paid,
 			&i.CashDueCents,
 			&i.TipCents,
-			&i.BoardHidden,
 			&i.SentAt,
-			&i.LocalOnly,
-			&i.Flag,
-			&i.PosCheckNumber,
-			&i.PosDriverNote,
 			&i.ScheduledLeadMinutes,
 			&i.RingAt,
 			&i.Rerung,
@@ -2626,14 +4390,20 @@ func (q *Queries) ListOrdersPage(ctx context.Context, arg ListOrdersPageParams) 
 			&i.RunSeq,
 			&i.FinishedAt,
 			&i.FinishedBy,
-			&i.PosClosed,
-			&i.PosChange,
 			&i.MarkedDelivered,
 			&i.PaidAt,
 			&i.EarlyKitchen,
 			&i.EarlyReceipt,
 			&i.DueOverride,
 			&i.MadeNow,
+			&i.AddedTipCents,
+			&i.TipLocked,
+			&i.CancelReason,
+			&i.ClientKey,
+			&i.DoorTipCents,
+			&i.RequestHash,
+			&i.Carried,
+			&i.KitchenPending,
 		); err != nil {
 			return nil, err
 		}
@@ -2649,7 +4419,7 @@ func (q *Queries) ListOrdersPage(ctx context.Context, arg ListOrdersPageParams) 
 }
 
 const listOverdueArrived = `-- name: ListOverdueArrived :many
-SELECT id, tenant_id, location_id, source, source_event_id, snapshot, state, arrival_date, printed_date, batch_id, kitchen_number, prep_minutes, estimated_ready_at, accepted_at, ready_at, out_at, delivered_at, driver_id, driver_name, last_alert_at, cancelled_at, accept_pending, pool_driver_id, pooled_at, pool_seq, pool_plan_id, ext_source, ext_ref, ext_hash, ext_driver_pos, display_number, paid, cash_due_cents, tip_cents, board_hidden, sent_at, local_only, flag, pos_check_number, pos_driver_note, scheduled_lead_minutes, ring_at, rerung, auto_accepted, came_back, not_delivered_action, not_delivered_at, not_delivered_driver_id, run_seq, finished_at, finished_by, pos_closed, pos_change, marked_delivered, paid_at, early_kitchen, early_receipt, due_override, made_now FROM orders
+SELECT id, tenant_id, location_id, source, source_event_id, snapshot, state, arrival_date, printed_date, batch_id, kitchen_number, prep_minutes, estimated_ready_at, accepted_at, ready_at, out_at, delivered_at, driver_id, driver_name, last_alert_at, cancelled_at, accept_pending, pool_driver_id, pooled_at, pool_seq, pool_plan_id, paid, cash_due_cents, tip_cents, sent_at, scheduled_lead_minutes, ring_at, rerung, auto_accepted, came_back, not_delivered_action, not_delivered_at, not_delivered_driver_id, run_seq, finished_at, finished_by, marked_delivered, paid_at, early_kitchen, early_receipt, due_override, made_now, added_tip_cents, tip_locked, cancel_reason, client_key, door_tip_cents, request_hash, carried, kitchen_pending FROM orders
 WHERE state = 'arrived'
   AND arrival_date <= ?1
   AND (last_alert_at IS NULL OR last_alert_at <= ?1)
@@ -2693,20 +4463,10 @@ func (q *Queries) ListOverdueArrived(ctx context.Context, cutoff string) ([]Orde
 			&i.PooledAt,
 			&i.PoolSeq,
 			&i.PoolPlanID,
-			&i.ExtSource,
-			&i.ExtRef,
-			&i.ExtHash,
-			&i.ExtDriverPos,
-			&i.DisplayNumber,
 			&i.Paid,
 			&i.CashDueCents,
 			&i.TipCents,
-			&i.BoardHidden,
 			&i.SentAt,
-			&i.LocalOnly,
-			&i.Flag,
-			&i.PosCheckNumber,
-			&i.PosDriverNote,
 			&i.ScheduledLeadMinutes,
 			&i.RingAt,
 			&i.Rerung,
@@ -2718,14 +4478,20 @@ func (q *Queries) ListOverdueArrived(ctx context.Context, cutoff string) ([]Orde
 			&i.RunSeq,
 			&i.FinishedAt,
 			&i.FinishedBy,
-			&i.PosClosed,
-			&i.PosChange,
 			&i.MarkedDelivered,
 			&i.PaidAt,
 			&i.EarlyKitchen,
 			&i.EarlyReceipt,
 			&i.DueOverride,
 			&i.MadeNow,
+			&i.AddedTipCents,
+			&i.TipLocked,
+			&i.CancelReason,
+			&i.ClientKey,
+			&i.DoorTipCents,
+			&i.RequestHash,
+			&i.Carried,
+			&i.KitchenPending,
 		); err != nil {
 			return nil, err
 		}
@@ -2778,8 +4544,160 @@ func (q *Queries) ListPairedDevices(ctx context.Context) ([]PairedDevice, error)
 	return items, nil
 }
 
+const listParkedFloorEventIDs = `-- name: ListParkedFloorEventIDs :many
+SELECT id FROM floor_events WHERE parked_at IS NOT NULL AND synced_at IS NULL ORDER BY rowid
+`
+
+func (q *Queries) ListParkedFloorEventIDs(ctx context.Context) ([]string, error) {
+	rows, err := q.db.QueryContext(ctx, listParkedFloorEventIDs)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listPendingZReports = `-- name: ListPendingZReports :many
+SELECT batch_id, id, status, close_kind, forced, report, created_at, built_at, flagged FROM z_reports WHERE status = 'pending' ORDER BY batch_id
+`
+
+func (q *Queries) ListPendingZReports(ctx context.Context) ([]ZReport, error) {
+	rows, err := q.db.QueryContext(ctx, listPendingZReports)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ZReport
+	for rows.Next() {
+		var i ZReport
+		if err := rows.Scan(
+			&i.BatchID,
+			&i.ID,
+			&i.Status,
+			&i.CloseKind,
+			&i.Forced,
+			&i.Report,
+			&i.CreatedAt,
+			&i.BuiltAt,
+			&i.Flagged,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listPickupOrders = `-- name: ListPickupOrders :many
+SELECT id, tenant_id, location_id, source, source_event_id, snapshot, state, arrival_date, printed_date, batch_id, kitchen_number, prep_minutes, estimated_ready_at, accepted_at, ready_at, out_at, delivered_at, driver_id, driver_name, last_alert_at, cancelled_at, accept_pending, pool_driver_id, pooled_at, pool_seq, pool_plan_id, paid, cash_due_cents, tip_cents, sent_at, scheduled_lead_minutes, ring_at, rerung, auto_accepted, came_back, not_delivered_action, not_delivered_at, not_delivered_driver_id, run_seq, finished_at, finished_by, marked_delivered, paid_at, early_kitchen, early_receipt, due_override, made_now, added_tip_cents, tip_locked, cancel_reason, client_key, door_tip_cents, request_hash, carried, kitchen_pending FROM orders
+WHERE batch_id = ?
+  AND COALESCE(json_extract(snapshot, '$.fulfillment.type'), '') <> 'delivery'
+ORDER BY arrival_date, id
+`
+
+// The terminals' Pickup list (contract 2.10i): a batch's pickup / counter orders of
+// every source, oldest first (the service filters states).
+func (q *Queries) ListPickupOrders(ctx context.Context, batchID int64) ([]Order, error) {
+	rows, err := q.db.QueryContext(ctx, listPickupOrders, batchID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Order
+	for rows.Next() {
+		var i Order
+		if err := rows.Scan(
+			&i.ID,
+			&i.TenantID,
+			&i.LocationID,
+			&i.Source,
+			&i.SourceEventID,
+			&i.Snapshot,
+			&i.State,
+			&i.ArrivalDate,
+			&i.PrintedDate,
+			&i.BatchID,
+			&i.KitchenNumber,
+			&i.PrepMinutes,
+			&i.EstimatedReadyAt,
+			&i.AcceptedAt,
+			&i.ReadyAt,
+			&i.OutAt,
+			&i.DeliveredAt,
+			&i.DriverID,
+			&i.DriverName,
+			&i.LastAlertAt,
+			&i.CancelledAt,
+			&i.AcceptPending,
+			&i.PoolDriverID,
+			&i.PooledAt,
+			&i.PoolSeq,
+			&i.PoolPlanID,
+			&i.Paid,
+			&i.CashDueCents,
+			&i.TipCents,
+			&i.SentAt,
+			&i.ScheduledLeadMinutes,
+			&i.RingAt,
+			&i.Rerung,
+			&i.AutoAccepted,
+			&i.CameBack,
+			&i.NotDeliveredAction,
+			&i.NotDeliveredAt,
+			&i.NotDeliveredDriverID,
+			&i.RunSeq,
+			&i.FinishedAt,
+			&i.FinishedBy,
+			&i.MarkedDelivered,
+			&i.PaidAt,
+			&i.EarlyKitchen,
+			&i.EarlyReceipt,
+			&i.DueOverride,
+			&i.MadeNow,
+			&i.AddedTipCents,
+			&i.TipLocked,
+			&i.CancelReason,
+			&i.ClientKey,
+			&i.DoorTipCents,
+			&i.RequestHash,
+			&i.Carried,
+			&i.KitchenPending,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listPoolByDriver = `-- name: ListPoolByDriver :many
-SELECT id, tenant_id, location_id, source, source_event_id, snapshot, state, arrival_date, printed_date, batch_id, kitchen_number, prep_minutes, estimated_ready_at, accepted_at, ready_at, out_at, delivered_at, driver_id, driver_name, last_alert_at, cancelled_at, accept_pending, pool_driver_id, pooled_at, pool_seq, pool_plan_id, ext_source, ext_ref, ext_hash, ext_driver_pos, display_number, paid, cash_due_cents, tip_cents, board_hidden, sent_at, local_only, flag, pos_check_number, pos_driver_note, scheduled_lead_minutes, ring_at, rerung, auto_accepted, came_back, not_delivered_action, not_delivered_at, not_delivered_driver_id, run_seq, finished_at, finished_by, pos_closed, pos_change, marked_delivered, paid_at, early_kitchen, early_receipt, due_override, made_now FROM orders WHERE pool_driver_id = ?
+SELECT id, tenant_id, location_id, source, source_event_id, snapshot, state, arrival_date, printed_date, batch_id, kitchen_number, prep_minutes, estimated_ready_at, accepted_at, ready_at, out_at, delivered_at, driver_id, driver_name, last_alert_at, cancelled_at, accept_pending, pool_driver_id, pooled_at, pool_seq, pool_plan_id, paid, cash_due_cents, tip_cents, sent_at, scheduled_lead_minutes, ring_at, rerung, auto_accepted, came_back, not_delivered_action, not_delivered_at, not_delivered_driver_id, run_seq, finished_at, finished_by, marked_delivered, paid_at, early_kitchen, early_receipt, due_override, made_now, added_tip_cents, tip_locked, cancel_reason, client_key, door_tip_cents, request_hash, carried, kitchen_pending FROM orders WHERE pool_driver_id = ?
 ORDER BY pool_seq IS NULL, pool_seq ASC, pooled_at ASC, arrival_date ASC
 `
 
@@ -2819,20 +4737,10 @@ func (q *Queries) ListPoolByDriver(ctx context.Context, poolDriverID sql.NullStr
 			&i.PooledAt,
 			&i.PoolSeq,
 			&i.PoolPlanID,
-			&i.ExtSource,
-			&i.ExtRef,
-			&i.ExtHash,
-			&i.ExtDriverPos,
-			&i.DisplayNumber,
 			&i.Paid,
 			&i.CashDueCents,
 			&i.TipCents,
-			&i.BoardHidden,
 			&i.SentAt,
-			&i.LocalOnly,
-			&i.Flag,
-			&i.PosCheckNumber,
-			&i.PosDriverNote,
 			&i.ScheduledLeadMinutes,
 			&i.RingAt,
 			&i.Rerung,
@@ -2844,14 +4752,20 @@ func (q *Queries) ListPoolByDriver(ctx context.Context, poolDriverID sql.NullStr
 			&i.RunSeq,
 			&i.FinishedAt,
 			&i.FinishedBy,
-			&i.PosClosed,
-			&i.PosChange,
 			&i.MarkedDelivered,
 			&i.PaidAt,
 			&i.EarlyKitchen,
 			&i.EarlyReceipt,
 			&i.DueOverride,
 			&i.MadeNow,
+			&i.AddedTipCents,
+			&i.TipLocked,
+			&i.CancelReason,
+			&i.ClientKey,
+			&i.DoorTipCents,
+			&i.RequestHash,
+			&i.Carried,
+			&i.KitchenPending,
 		); err != nil {
 			return nil, err
 		}
@@ -3054,10 +4968,93 @@ func (q *Queries) ListShiftsSince(ctx context.Context, clockIn string) ([]Driver
 	return items, nil
 }
 
-const listUnsyncedFloorEvents = `-- name: ListUnsyncedFloorEvents :many
-SELECT id, order_id, type, payload, at, synced_at, attempts, last_error FROM floor_events WHERE synced_at IS NULL ORDER BY rowid ASC LIMIT ?
+const listTerminalDrafts = `-- name: ListTerminalDrafts :many
+SELECT id, location_id, type, name, held, holder_device_id, holder_device_name, holder_staff_id, holder_staff_name, staff_id, staff_name, order_id, draft, created_at, updated_at FROM terminal_drafts WHERE location_id = ? ORDER BY created_at, id
 `
 
+func (q *Queries) ListTerminalDrafts(ctx context.Context, locationID string) ([]TerminalDraft, error) {
+	rows, err := q.db.QueryContext(ctx, listTerminalDrafts, locationID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []TerminalDraft
+	for rows.Next() {
+		var i TerminalDraft
+		if err := rows.Scan(
+			&i.ID,
+			&i.LocationID,
+			&i.Type,
+			&i.Name,
+			&i.Held,
+			&i.HolderDeviceID,
+			&i.HolderDeviceName,
+			&i.HolderStaffID,
+			&i.HolderStaffName,
+			&i.StaffID,
+			&i.StaffName,
+			&i.OrderID,
+			&i.Draft,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listTerminalDriverLinks = `-- name: ListTerminalDriverLinks :many
+SELECT staff_id, driver_id FROM terminal_driver_links ORDER BY staff_id
+`
+
+type ListTerminalDriverLinksRow struct {
+	StaffID  string `json:"staff_id"`
+	DriverID string `json:"driver_id"`
+}
+
+func (q *Queries) ListTerminalDriverLinks(ctx context.Context) ([]ListTerminalDriverLinksRow, error) {
+	rows, err := q.db.QueryContext(ctx, listTerminalDriverLinks)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListTerminalDriverLinksRow
+	for rows.Next() {
+		var i ListTerminalDriverLinksRow
+		if err := rows.Scan(&i.StaffID, &i.DriverID); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listUnsyncedFloorEvents = `-- name: ListUnsyncedFloorEvents :many
+SELECT id, order_id, type, payload, at, synced_at, attempts, last_error, subject, refusals, first_refused_at, parked_at FROM floor_events f
+WHERE f.synced_at IS NULL AND f.parked_at IS NULL
+  AND (f.subject = '' OR NOT EXISTS (
+        SELECT 1 FROM floor_events p
+        WHERE p.subject = f.subject AND p.synced_at IS NULL AND p.rowid < f.rowid
+          AND (p.parked_at IS NOT NULL OR p.refusals > 0)))
+ORDER BY f.rowid ASC LIMIT ?
+`
+
+// ListUnsyncedFloorEvents: oldest first, never a parked event nor one about
+// the same subject queued behind a parked one (they wait for its retry).
 func (q *Queries) ListUnsyncedFloorEvents(ctx context.Context, limit int64) ([]FloorEvent, error) {
 	rows, err := q.db.QueryContext(ctx, listUnsyncedFloorEvents, limit)
 	if err != nil {
@@ -3076,10 +5073,101 @@ func (q *Queries) ListUnsyncedFloorEvents(ctx context.Context, limit int64) ([]F
 			&i.SyncedAt,
 			&i.Attempts,
 			&i.LastError,
+			&i.Subject,
+			&i.Refusals,
+			&i.FirstRefusedAt,
+			&i.ParkedAt,
 		); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listZReports = `-- name: ListZReports :many
+SELECT batch_id, id, status, close_kind, forced, report, created_at, built_at, flagged FROM z_reports ORDER BY batch_id DESC LIMIT ?
+`
+
+func (q *Queries) ListZReports(ctx context.Context, limit int64) ([]ZReport, error) {
+	rows, err := q.db.QueryContext(ctx, listZReports, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ZReport
+	for rows.Next() {
+		var i ZReport
+		if err := rows.Scan(
+			&i.BatchID,
+			&i.ID,
+			&i.Status,
+			&i.CloseKind,
+			&i.Forced,
+			&i.Report,
+			&i.CreatedAt,
+			&i.BuiltAt,
+			&i.Flagged,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const lockBatchTips = `-- name: LockBatchTips :exec
+UPDATE orders SET tip_locked = true WHERE batch_id = ? AND NOT tip_locked
+`
+
+// 2.5.0 Close batch: main charges everything left, every tip is final.
+func (q *Queries) LockBatchTips(ctx context.Context, batchID int64) error {
+	_, err := q.db.ExecContext(ctx, lockBatchTips, batchID)
+	return err
+}
+
+const lockShiftTips = `-- name: LockShiftTips :many
+UPDATE orders SET tip_locked = true
+WHERE driver_id = ?1 AND NOT tip_locked
+  AND state IN ('on_delivery', 'delivered')
+  AND COALESCE(out_at, delivered_at, ?2) >= ?2
+  AND batch_id = ?3
+RETURNING id
+`
+
+type LockShiftTipsParams struct {
+	DriverID sql.NullString `json:"driver_id"`
+	ClockIn  sql.NullString `json:"clock_in"`
+	BatchID  int64          `json:"batch_id"`
+}
+
+// 2.5.0: a driver's shift ended - main charges the card deliveries they took
+// out during it, so their tips can't change any more. Returns the ids locked.
+func (q *Queries) LockShiftTips(ctx context.Context, arg LockShiftTipsParams) ([]string, error) {
+	rows, err := q.db.QueryContext(ctx, lockShiftTips, arg.DriverID, arg.ClockIn, arg.BatchID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
 	}
 	if err := rows.Close(); err != nil {
 		return nil, err
@@ -3101,6 +5189,21 @@ type MarkAlertedParams struct {
 
 func (q *Queries) MarkAlerted(ctx context.Context, arg MarkAlertedParams) error {
 	_, err := q.db.ExecContext(ctx, markAlerted, arg.LastAlertAt, arg.ID)
+	return err
+}
+
+const markDeadLetterRetried = `-- name: MarkDeadLetterRetried :exec
+UPDATE floor_dead_letters SET retried_at = ?, retried_by = ? WHERE event_id = ? AND retried_at IS NULL
+`
+
+type MarkDeadLetterRetriedParams struct {
+	RetriedAt sql.NullString `json:"retried_at"`
+	RetriedBy string         `json:"retried_by"`
+	EventID   string         `json:"event_id"`
+}
+
+func (q *Queries) MarkDeadLetterRetried(ctx context.Context, arg MarkDeadLetterRetriedParams) error {
+	_, err := q.db.ExecContext(ctx, markDeadLetterRetried, arg.RetriedAt, arg.RetriedBy, arg.EventID)
 	return err
 }
 
@@ -3162,6 +5265,38 @@ func (q *Queries) MarkFloorEventFailed(ctx context.Context, arg MarkFloorEventFa
 	return err
 }
 
+const markFloorEventRefused = `-- name: MarkFloorEventRefused :one
+UPDATE floor_events SET refusals = refusals + 1, attempts = attempts + 1, last_error = ?1,
+       first_refused_at = COALESCE(first_refused_at, ?2)
+WHERE id = ?3
+RETURNING refusals, first_refused_at, subject, type
+`
+
+type MarkFloorEventRefusedParams struct {
+	LastError string         `json:"last_error"`
+	At        sql.NullString `json:"at"`
+	ID        string         `json:"id"`
+}
+
+type MarkFloorEventRefusedRow struct {
+	Refusals       int64          `json:"refusals"`
+	FirstRefusedAt sql.NullString `json:"first_refused_at"`
+	Subject        string         `json:"subject"`
+	Type           string         `json:"type"`
+}
+
+func (q *Queries) MarkFloorEventRefused(ctx context.Context, arg MarkFloorEventRefusedParams) (MarkFloorEventRefusedRow, error) {
+	row := q.db.QueryRowContext(ctx, markFloorEventRefused, arg.LastError, arg.At, arg.ID)
+	var i MarkFloorEventRefusedRow
+	err := row.Scan(
+		&i.Refusals,
+		&i.FirstRefusedAt,
+		&i.Subject,
+		&i.Type,
+	)
+	return i, err
+}
+
 const markFloorEventSynced = `-- name: MarkFloorEventSynced :exec
 UPDATE floor_events SET synced_at = ?, last_error = '' WHERE id = ?
 `
@@ -3173,6 +5308,34 @@ type MarkFloorEventSyncedParams struct {
 
 func (q *Queries) MarkFloorEventSynced(ctx context.Context, arg MarkFloorEventSyncedParams) error {
 	_, err := q.db.ExecContext(ctx, markFloorEventSynced, arg.SyncedAt, arg.ID)
+	return err
+}
+
+const markFloorEventsSyncedAt = `-- name: MarkFloorEventsSyncedAt :exec
+
+UPDATE floor_events SET synced_at = ?1, last_error = '' WHERE id IN (/*SLICE:ids*/?)
+`
+
+type MarkFloorEventsSyncedAtParams struct {
+	SyncedAt sql.NullString `json:"synced_at"`
+	Ids      []string       `json:"ids"`
+}
+
+// Hardening round (00033_hardening, contract 2.10s) ------------------------------
+// One flush's events in one statement (S-7: one fsync, not one per event).
+func (q *Queries) MarkFloorEventsSyncedAt(ctx context.Context, arg MarkFloorEventsSyncedAtParams) error {
+	query := markFloorEventsSyncedAt
+	var queryParams []interface{}
+	queryParams = append(queryParams, arg.SyncedAt)
+	if len(arg.Ids) > 0 {
+		for _, v := range arg.Ids {
+			queryParams = append(queryParams, v)
+		}
+		query = strings.Replace(query, "/*SLICE:ids*/?", strings.Repeat(",?", len(arg.Ids))[1:], 1)
+	} else {
+		query = strings.Replace(query, "/*SLICE:ids*/?", "NULL", 1)
+	}
+	_, err := q.db.ExecContext(ctx, query, queryParams...)
 	return err
 }
 
@@ -3343,6 +5506,40 @@ func (q *Queries) NextRunSeq(ctx context.Context, driverID sql.NullString) (int6
 	return column_1, err
 }
 
+const oldestUnsyncedByType = `-- name: OldestUnsyncedByType :many
+SELECT type, CAST(min(at) AS TEXT) AS oldest FROM floor_events
+WHERE synced_at IS NULL AND parked_at IS NULL GROUP BY type
+`
+
+type OldestUnsyncedByTypeRow struct {
+	Type   string `json:"type"`
+	Oldest string `json:"oldest"`
+}
+
+// CM-9: the oldest unsynced, unparked event of each type.
+func (q *Queries) OldestUnsyncedByType(ctx context.Context) ([]OldestUnsyncedByTypeRow, error) {
+	rows, err := q.db.QueryContext(ctx, oldestUnsyncedByType)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []OldestUnsyncedByTypeRow
+	for rows.Next() {
+		var i OldestUnsyncedByTypeRow
+		if err := rows.Scan(&i.Type, &i.Oldest); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const openBatch = `-- name: OpenBatch :one
 INSERT INTO batches (opened_at) VALUES (?) RETURNING id, opened_at, closed_at
 `
@@ -3379,6 +5576,23 @@ func (q *Queries) OpenShift(ctx context.Context, arg OpenShiftParams) error {
 	return err
 }
 
+const parkFloorEvent = `-- name: ParkFloorEvent :execrows
+UPDATE floor_events SET parked_at = ?1 WHERE id = ?2 AND synced_at IS NULL AND parked_at IS NULL
+`
+
+type ParkFloorEventParams struct {
+	ParkedAt sql.NullString `json:"parked_at"`
+	ID       string         `json:"id"`
+}
+
+func (q *Queries) ParkFloorEvent(ctx context.Context, arg ParkFloorEventParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, parkFloorEvent, arg.ParkedAt, arg.ID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const prepareMakeNow = `-- name: PrepareMakeNow :execrows
 UPDATE orders SET made_now = true, state = 'arrived', rerung = false, ring_at = NULL
 WHERE id = ? AND state IN ('arrived', 'scheduled') AND accept_pending = 0
@@ -3395,12 +5609,68 @@ func (q *Queries) PrepareMakeNow(ctx context.Context, id string) (int64, error) 
 	return result.RowsAffected()
 }
 
+const pruneJournal = `-- name: PruneJournal :execrows
+DELETE FROM journal WHERE at < ?
+`
+
+// The Pi keeps the journal 30 days (main keeps it all).
+func (q *Queries) PruneJournal(ctx context.Context, at string) (int64, error) {
+	result, err := q.db.ExecContext(ctx, pruneJournal, at)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const pruneSettingsLog = `-- name: PruneSettingsLog :exec
 DELETE FROM settings_log WHERE at < ?1
 `
 
 func (q *Queries) PruneSettingsLog(ctx context.Context, before string) error {
 	_, err := q.db.ExecContext(ctx, pruneSettingsLog, before)
+	return err
+}
+
+const putCustomerSync = `-- name: PutCustomerSync :exec
+INSERT INTO customer_sync (id, location_id, cursor, synced_at) VALUES (1, ?1, ?2, ?3)
+ON CONFLICT (id) DO UPDATE SET location_id = excluded.location_id, cursor = excluded.cursor, synced_at = excluded.synced_at
+`
+
+type PutCustomerSyncParams struct {
+	LocationID string `json:"location_id"`
+	Cursor     string `json:"cursor"`
+	SyncedAt   string `json:"synced_at"`
+}
+
+func (q *Queries) PutCustomerSync(ctx context.Context, arg PutCustomerSyncParams) error {
+	_, err := q.db.ExecContext(ctx, putCustomerSync, arg.LocationID, arg.Cursor, arg.SyncedAt)
+	return err
+}
+
+const putTerminalSnapshot = `-- name: PutTerminalSnapshot :exec
+INSERT INTO terminal_snapshots (kind, version, etag, body, fetched_at)
+VALUES (?1, ?2, ?3, ?4, ?5)
+ON CONFLICT (kind) DO UPDATE SET version = excluded.version, etag = excluded.etag,
+    body = excluded.body, fetched_at = excluded.fetched_at
+`
+
+type PutTerminalSnapshotParams struct {
+	Kind      string `json:"kind"`
+	Version   int64  `json:"version"`
+	Etag      string `json:"etag"`
+	Body      string `json:"body"`
+	FetchedAt string `json:"fetched_at"`
+}
+
+// The last good counter menu / terminal config main sent (replaced whole).
+func (q *Queries) PutTerminalSnapshot(ctx context.Context, arg PutTerminalSnapshotParams) error {
+	_, err := q.db.ExecContext(ctx, putTerminalSnapshot,
+		arg.Kind,
+		arg.Version,
+		arg.Etag,
+		arg.Body,
+		arg.FetchedAt,
+	)
 	return err
 }
 
@@ -3501,26 +5771,14 @@ func (q *Queries) RenamePairedDevice(ctx context.Context, arg RenamePairedDevice
 	return result.RowsAffected()
 }
 
-const reopenPosOrder = `-- name: ReopenPosOrder :execrows
-UPDATE orders
-SET state = 'accepted', ready_at = NULL, finished_at = NULL, finished_by = '', estimated_ready_at = ?1,
-    pool_driver_id = NULL, pooled_at = NULL, pool_seq = NULL, pool_plan_id = NULL
-WHERE id = ?2 AND state = 'ready' AND NOT came_back
+const resetCounterNumber = `-- name: ResetCounterNumber :exec
+UPDATE settings SET counter_next = 0 WHERE id = 1
 `
 
-type ReopenPosOrderParams struct {
-	EstimatedReadyAt sql.NullString `json:"estimated_ready_at"`
-	ID               string         `json:"id"`
-}
-
-// A ready POS order the terminal added a kitchen item to: back to cooking,
-// out of any pool, not finished.
-func (q *Queries) ReopenPosOrder(ctx context.Context, arg ReopenPosOrderParams) (int64, error) {
-	result, err := q.db.ExecContext(ctx, reopenPosOrder, arg.EstimatedReadyAt, arg.ID)
-	if err != nil {
-		return 0, err
-	}
-	return result.RowsAffected()
+// Close batch: the next counter order starts again at counter_start.
+func (q *Queries) ResetCounterNumber(ctx context.Context) error {
+	_, err := q.db.ExecContext(ctx, resetCounterNumber)
+	return err
 }
 
 const resetDriversAvailable = `-- name: ResetDriversAvailable :exec
@@ -3543,7 +5801,7 @@ func (q *Queries) ResetKitchenNumber(ctx context.Context) error {
 }
 
 const restoreDriver = `-- name: RestoreDriver :exec
-INSERT INTO drivers (id, name, active, position, status, last_returned_at, pos_number) VALUES (?, ?, true, ?, ?, ?, ?)
+INSERT INTO drivers (id, name, active, position, status, last_returned_at) VALUES (?, ?, true, ?, ?, ?)
 `
 
 type RestoreDriverParams struct {
@@ -3552,7 +5810,6 @@ type RestoreDriverParams struct {
 	Position       int64          `json:"position"`
 	Status         string         `json:"status"`
 	LastReturnedAt sql.NullString `json:"last_returned_at"`
-	PosNumber      string         `json:"pos_number"`
 }
 
 func (q *Queries) RestoreDriver(ctx context.Context, arg RestoreDriverParams) error {
@@ -3562,7 +5819,6 @@ func (q *Queries) RestoreDriver(ctx context.Context, arg RestoreDriverParams) er
 		arg.Position,
 		arg.Status,
 		arg.LastReturnedAt,
-		arg.PosNumber,
 	)
 	return err
 }
@@ -3573,8 +5829,11 @@ INSERT INTO orders (id, tenant_id, location_id, source, source_event_id, snapsho
                     ready_at, out_at, delivered_at, driver_id, driver_name, cancelled_at,
                     pool_driver_id, pooled_at, pool_seq, pool_plan_id,
                     scheduled_lead_minutes, ring_at, rerung,
-                    came_back, not_delivered_action, not_delivered_at, not_delivered_driver_id, run_seq)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    came_back, not_delivered_action, not_delivered_at, not_delivered_driver_id, run_seq,
+                    added_tip_cents, tip_locked, cancel_reason,
+                    paid, paid_at, tip_cents, client_key, door_tip_cents)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+        ?, ?, ?, ?, ?)
 `
 
 type RestoreOrderParams struct {
@@ -3610,6 +5869,14 @@ type RestoreOrderParams struct {
 	NotDeliveredAt       sql.NullString `json:"not_delivered_at"`
 	NotDeliveredDriverID string         `json:"not_delivered_driver_id"`
 	RunSeq               sql.NullInt64  `json:"run_seq"`
+	AddedTipCents        int64          `json:"added_tip_cents"`
+	TipLocked            bool           `json:"tip_locked"`
+	CancelReason         string         `json:"cancel_reason"`
+	Paid                 bool           `json:"paid"`
+	PaidAt               sql.NullString `json:"paid_at"`
+	TipCents             sql.NullInt64  `json:"tip_cents"`
+	ClientKey            string         `json:"client_key"`
+	DoorTipCents         int64          `json:"door_tip_cents"`
 }
 
 func (q *Queries) RestoreOrder(ctx context.Context, arg RestoreOrderParams) error {
@@ -3646,6 +5913,14 @@ func (q *Queries) RestoreOrder(ctx context.Context, arg RestoreOrderParams) erro
 		arg.NotDeliveredAt,
 		arg.NotDeliveredDriverID,
 		arg.RunSeq,
+		arg.AddedTipCents,
+		arg.TipLocked,
+		arg.CancelReason,
+		arg.Paid,
+		arg.PaidAt,
+		arg.TipCents,
+		arg.ClientKey,
+		arg.DoorTipCents,
 	)
 	return err
 }
@@ -3716,6 +5991,21 @@ func (q *Queries) RevokePairedDevice(ctx context.Context, arg RevokePairedDevice
 	return result.RowsAffected()
 }
 
+const saveZReport = `-- name: SaveZReport :exec
+UPDATE z_reports SET status = 'done', report = ?, built_at = ? WHERE batch_id = ?
+`
+
+type SaveZReportParams struct {
+	Report  string         `json:"report"`
+	BuiltAt sql.NullString `json:"built_at"`
+	BatchID int64          `json:"batch_id"`
+}
+
+func (q *Queries) SaveZReport(ctx context.Context, arg SaveZReportParams) error {
+	_, err := q.db.ExecContext(ctx, saveZReport, arg.Report, arg.BuiltAt, arg.BatchID)
+	return err
+}
+
 const scheduleOrder = `-- name: ScheduleOrder :execrows
 
 UPDATE orders SET state = 'scheduled', scheduled_lead_minutes = ?, ring_at = ?
@@ -3736,6 +6026,37 @@ func (q *Queries) ScheduleOrder(ctx context.Context, arg ScheduleOrderParams) (i
 		return 0, err
 	}
 	return result.RowsAffected()
+}
+
+const setAddedTip = `-- name: SetAddedTip :execrows
+UPDATE orders SET added_tip_cents = ?1
+WHERE id = ?2 AND NOT tip_locked AND state <> 'cancelled'
+  AND batch_id = ?3
+`
+
+type SetAddedTipParams struct {
+	TipCents int64  `json:"tip_cents"`
+	ID       string `json:"id"`
+	BatchID  int64  `json:"batch_id"`
+}
+
+// 2.5.0 ADD TIP: the whole tip added after the order (absolute). Only an
+// order of the given (open) batch that isn't cancelled, POS or locked (0 rows).
+func (q *Queries) SetAddedTip(ctx context.Context, arg SetAddedTipParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, setAddedTip, arg.TipCents, arg.ID, arg.BatchID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const setAdminPair = `-- name: SetAdminPair :exec
+UPDATE settings SET admin_pair = ? WHERE id = 1
+`
+
+func (q *Queries) SetAdminPair(ctx context.Context, adminPair string) error {
+	_, err := q.db.ExecContext(ctx, setAdminPair, adminPair)
+	return err
 }
 
 const setAppRelease = `-- name: SetAppRelease :exec
@@ -3760,12 +6081,74 @@ func (q *Queries) SetAutoAccept(ctx context.Context, autoAccept bool) error {
 	return err
 }
 
+const setAutoCloseLast = `-- name: SetAutoCloseLast :exec
+UPDATE settings SET auto_close_last = ? WHERE id = 1
+`
+
+func (q *Queries) SetAutoCloseLast(ctx context.Context, autoCloseLast string) error {
+	_, err := q.db.ExecContext(ctx, setAutoCloseLast, autoCloseLast)
+	return err
+}
+
 const setAutoUpdate = `-- name: SetAutoUpdate :exec
 UPDATE settings SET auto_update = ? WHERE id = 1
 `
 
 func (q *Queries) SetAutoUpdate(ctx context.Context, autoUpdate bool) error {
 	_, err := q.db.ExecContext(ctx, setAutoUpdate, autoUpdate)
+	return err
+}
+
+const setCounterMoney = `-- name: SetCounterMoney :exec
+UPDATE orders SET snapshot = ?1, paid = ?2, cash_due_cents = ?3,
+    tip_cents = ?4, paid_at = ?5
+WHERE id = ?6
+`
+
+type SetCounterMoneyParams struct {
+	Snapshot     string         `json:"snapshot"`
+	Paid         bool           `json:"paid"`
+	CashDueCents sql.NullInt64  `json:"cash_due_cents"`
+	TipCents     sql.NullInt64  `json:"tip_cents"`
+	PaidAt       sql.NullString `json:"paid_at"`
+	ID           string         `json:"id"`
+}
+
+// A payment / refund on a counter order: the snapshot (payments, tip, total)
+// and the money columns.
+func (q *Queries) SetCounterMoney(ctx context.Context, arg SetCounterMoneyParams) error {
+	_, err := q.db.ExecContext(ctx, setCounterMoney,
+		arg.Snapshot,
+		arg.Paid,
+		arg.CashDueCents,
+		arg.TipCents,
+		arg.PaidAt,
+		arg.ID,
+	)
+	return err
+}
+
+const setCounterNext = `-- name: SetCounterNext :exec
+UPDATE settings SET counter_next = ? WHERE id = 1
+`
+
+func (q *Queries) SetCounterNext(ctx context.Context, counterNext int64) error {
+	_, err := q.db.ExecContext(ctx, setCounterNext, counterNext)
+	return err
+}
+
+const setCustomerAddressPoint = `-- name: SetCustomerAddressPoint :exec
+UPDATE customer_addresses SET lat = ?1, lng = ?2 WHERE id = ?3
+`
+
+type SetCustomerAddressPointParams struct {
+	Lat sql.NullFloat64 `json:"lat"`
+	Lng sql.NullFloat64 `json:"lng"`
+	ID  string          `json:"id"`
+}
+
+func (q *Queries) SetCustomerAddressPoint(ctx context.Context, arg SetCustomerAddressPointParams) error {
+	_, err := q.db.ExecContext(ctx, setCustomerAddressPoint, arg.Lat, arg.Lng, arg.ID)
 	return err
 }
 
@@ -3796,6 +6179,15 @@ func (q *Queries) SetDeliveryPrefs(ctx context.Context, arg SetDeliveryPrefsPara
 	return err
 }
 
+const setDeviceSetups = `-- name: SetDeviceSetups :exec
+UPDATE settings SET device_setups = ? WHERE id = 1
+`
+
+func (q *Queries) SetDeviceSetups(ctx context.Context, deviceSetups string) error {
+	_, err := q.db.ExecContext(ctx, setDeviceSetups, deviceSetups)
+	return err
+}
+
 const setDriverOut = `-- name: SetDriverOut :exec
 UPDATE drivers SET status = 'out' WHERE id = ?
 `
@@ -3817,23 +6209,6 @@ type SetDriverOutAtParams struct {
 // Undo a mistaken return: back out on the run, at its old queue position.
 func (q *Queries) SetDriverOutAt(ctx context.Context, arg SetDriverOutAtParams) (int64, error) {
 	result, err := q.db.ExecContext(ctx, setDriverOutAt, arg.Position, arg.ID)
-	if err != nil {
-		return 0, err
-	}
-	return result.RowsAffected()
-}
-
-const setDriverPosNumber = `-- name: SetDriverPosNumber :execrows
-UPDATE drivers SET pos_number = ? WHERE id = ? AND active
-`
-
-type SetDriverPosNumberParams struct {
-	PosNumber string `json:"pos_number"`
-	ID        string `json:"id"`
-}
-
-func (q *Queries) SetDriverPosNumber(ctx context.Context, arg SetDriverPosNumberParams) (int64, error) {
-	result, err := q.db.ExecContext(ctx, setDriverPosNumber, arg.PosNumber, arg.ID)
 	if err != nil {
 		return 0, err
 	}
@@ -3962,21 +6337,6 @@ func (q *Queries) SetEarlyPrinted(ctx context.Context, arg SetEarlyPrintedParams
 	return err
 }
 
-const setExtDriverPos = `-- name: SetExtDriverPos :exec
-UPDATE orders SET ext_driver_pos = ?, pos_driver_note = ? WHERE id = ?
-`
-
-type SetExtDriverPosParams struct {
-	ExtDriverPos  string `json:"ext_driver_pos"`
-	PosDriverNote string `json:"pos_driver_note"`
-	ID            string `json:"id"`
-}
-
-func (q *Queries) SetExtDriverPos(ctx context.Context, arg SetExtDriverPosParams) error {
-	_, err := q.db.ExecContext(ctx, setExtDriverPos, arg.ExtDriverPos, arg.PosDriverNote, arg.ID)
-	return err
-}
-
 const setFloorPrefs = `-- name: SetFloorPrefs :exec
 UPDATE settings SET green_till_minutes = ?, tip_tax_bps = ? WHERE id = 1
 `
@@ -4040,6 +6400,20 @@ type SetKitchenCountersParams struct {
 
 func (q *Queries) SetKitchenCounters(ctx context.Context, arg SetKitchenCountersParams) error {
 	_, err := q.db.ExecContext(ctx, setKitchenCounters, arg.KitchenNext, arg.LastPrepMinutes)
+	return err
+}
+
+const setKitchenPending = `-- name: SetKitchenPending :exec
+UPDATE orders SET kitchen_pending = ?1 WHERE id = ?2
+`
+
+type SetKitchenPendingParams struct {
+	Pending bool   `json:"pending"`
+	ID      string `json:"id"`
+}
+
+func (q *Queries) SetKitchenPending(ctx context.Context, arg SetKitchenPendingParams) error {
+	_, err := q.db.ExecContext(ctx, setKitchenPending, arg.Pending, arg.ID)
 	return err
 }
 
@@ -4143,6 +6517,20 @@ func (q *Queries) SetMapFile(ctx context.Context, mapFile string) error {
 	return err
 }
 
+const setOrderCarried = `-- name: SetOrderCarried :exec
+UPDATE orders SET carried = ?1 WHERE id = ?2
+`
+
+type SetOrderCarriedParams struct {
+	Carried bool   `json:"carried"`
+	ID      string `json:"id"`
+}
+
+func (q *Queries) SetOrderCarried(ctx context.Context, arg SetOrderCarriedParams) error {
+	_, err := q.db.ExecContext(ctx, setOrderCarried, arg.Carried, arg.ID)
+	return err
+}
+
 const setOrderDriver = `-- name: SetOrderDriver :execrows
 UPDATE orders
 SET driver_id = ?1, driver_name = ?2, run_seq = ?3,
@@ -4197,39 +6585,6 @@ func (q *Queries) SetOrderFinished(ctx context.Context, arg SetOrderFinishedPara
 		return 0, err
 	}
 	return result.RowsAffected()
-}
-
-const setOrderFlag = `-- name: SetOrderFlag :exec
-UPDATE orders SET flag = ? WHERE id = ?
-`
-
-type SetOrderFlagParams struct {
-	Flag string `json:"flag"`
-	ID   string `json:"id"`
-}
-
-func (q *Queries) SetOrderFlag(ctx context.Context, arg SetOrderFlagParams) error {
-	_, err := q.db.ExecContext(ctx, setOrderFlag, arg.Flag, arg.ID)
-	return err
-}
-
-const setOrderPaid = `-- name: SetOrderPaid :exec
-UPDATE orders
-SET paid = ?1, paid_at = CASE WHEN ?1 AND NOT paid THEN ?2 ELSE paid_at END
-WHERE id = ?3
-`
-
-type SetOrderPaidParams struct {
-	Paid bool           `json:"paid"`
-	Now  sql.NullString `json:"now"`
-	ID   string         `json:"id"`
-}
-
-// An online order the hub inserted into the POS was paid there (paid_at as
-// on a POS check, 2.4.0).
-func (q *Queries) SetOrderPaid(ctx context.Context, arg SetOrderPaidParams) error {
-	_, err := q.db.ExecContext(ctx, setOrderPaid, arg.Paid, arg.Now, arg.ID)
-	return err
 }
 
 const setOrderPool = `-- name: SetOrderPool :execrows
@@ -4293,6 +6648,15 @@ func (q *Queries) SetPairedDeviceAppVersion(ctx context.Context, arg SetPairedDe
 	return err
 }
 
+const setPinThrottle = `-- name: SetPinThrottle :exec
+UPDATE settings SET pin_throttle = ? WHERE id = 1
+`
+
+func (q *Queries) SetPinThrottle(ctx context.Context, pinThrottle string) error {
+	_, err := q.db.ExecContext(ctx, setPinThrottle, pinThrottle)
+	return err
+}
+
 const setPoolSeq = `-- name: SetPoolSeq :execrows
 UPDATE orders SET pool_seq = ?1
 WHERE id = ?2 AND pool_driver_id = ?3
@@ -4314,45 +6678,12 @@ func (q *Queries) SetPoolSeq(ctx context.Context, arg SetPoolSeqParams) (int64, 
 	return result.RowsAffected()
 }
 
-const setPosChange = `-- name: SetPosChange :exec
-UPDATE orders SET pos_change = ? WHERE id = ?
+const setPrintRouting = `-- name: SetPrintRouting :exec
+UPDATE settings SET print_routing = ? WHERE id = 1
 `
 
-type SetPosChangeParams struct {
-	PosChange string `json:"pos_change"`
-	ID        string `json:"id"`
-}
-
-func (q *Queries) SetPosChange(ctx context.Context, arg SetPosChangeParams) error {
-	_, err := q.db.ExecContext(ctx, setPosChange, arg.PosChange, arg.ID)
-	return err
-}
-
-const setPosCheckNumber = `-- name: SetPosCheckNumber :exec
-UPDATE orders SET pos_check_number = ? WHERE id = ?
-`
-
-type SetPosCheckNumberParams struct {
-	PosCheckNumber sql.NullInt64 `json:"pos_check_number"`
-	ID             string        `json:"id"`
-}
-
-func (q *Queries) SetPosCheckNumber(ctx context.Context, arg SetPosCheckNumberParams) error {
-	_, err := q.db.ExecContext(ctx, setPosCheckNumber, arg.PosCheckNumber, arg.ID)
-	return err
-}
-
-const setPosClosed = `-- name: SetPosClosed :exec
-UPDATE orders SET pos_closed = ? WHERE id = ?
-`
-
-type SetPosClosedParams struct {
-	PosClosed bool   `json:"pos_closed"`
-	ID        string `json:"id"`
-}
-
-func (q *Queries) SetPosClosed(ctx context.Context, arg SetPosClosedParams) error {
-	_, err := q.db.ExecContext(ctx, setPosClosed, arg.PosClosed, arg.ID)
+func (q *Queries) SetPrintRouting(ctx context.Context, printRouting string) error {
+	_, err := q.db.ExecContext(ctx, setPrintRouting, printRouting)
 	return err
 }
 
@@ -4379,6 +6710,29 @@ func (q *Queries) SetPushoverSecrets(ctx context.Context, arg SetPushoverSecrets
 		arg.SecretPushoverAdminDevices,
 	)
 	return err
+}
+
+const setReadyAt = `-- name: SetReadyAt :execrows
+UPDATE orders
+SET estimated_ready_at = ?1,
+    prep_minutes       = ?2
+WHERE id = ?3 AND state IN ('accepted', 'ready')
+`
+
+type SetReadyAtParams struct {
+	EstimatedReadyAt sql.NullString `json:"estimated_ready_at"`
+	PrepMinutes      sql.NullInt64  `json:"prep_minutes"`
+	ID               string         `json:"id"`
+}
+
+// A terminal moved an order's ready / delivery time (contract 2.10v): the
+// estimate and the prep minutes it implies, while the order is cooking or ready.
+func (q *Queries) SetReadyAt(ctx context.Context, arg SetReadyAtParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, setReadyAt, arg.EstimatedReadyAt, arg.PrepMinutes, arg.ID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
 
 const setReceiptPrefs = `-- name: SetReceiptPrefs :exec
@@ -4428,6 +6782,65 @@ func (q *Queries) SetStoreAPIKey(ctx context.Context, storeApiKey string) error 
 	return err
 }
 
+const setSyncParkAlertedAt = `-- name: SetSyncParkAlertedAt :exec
+UPDATE settings SET sync_park_alerted_at = ? WHERE id = 1
+`
+
+func (q *Queries) SetSyncParkAlertedAt(ctx context.Context, syncParkAlertedAt string) error {
+	_, err := q.db.ExecContext(ctx, setSyncParkAlertedAt, syncParkAlertedAt)
+	return err
+}
+
+const setSyncParkSettings = `-- name: SetSyncParkSettings :exec
+UPDATE settings SET sync_park_refusals = ?, sync_park_hours = ? WHERE id = 1
+`
+
+type SetSyncParkSettingsParams struct {
+	SyncParkRefusals int64 `json:"sync_park_refusals"`
+	SyncParkHours    int64 `json:"sync_park_hours"`
+}
+
+func (q *Queries) SetSyncParkSettings(ctx context.Context, arg SetSyncParkSettingsParams) error {
+	_, err := q.db.ExecContext(ctx, setSyncParkSettings, arg.SyncParkRefusals, arg.SyncParkHours)
+	return err
+}
+
+const setTerminalAppRelease = `-- name: SetTerminalAppRelease :exec
+UPDATE settings SET terminal_app_release = ? WHERE id = 1
+`
+
+func (q *Queries) SetTerminalAppRelease(ctx context.Context, terminalAppRelease string) error {
+	_, err := q.db.ExecContext(ctx, setTerminalAppRelease, terminalAppRelease)
+	return err
+}
+
+const setTerminalPaidMoney = `-- name: SetTerminalPaidMoney :exec
+UPDATE orders SET paid = ?1, cash_due_cents = ?2, tip_cents = ?3,
+    paid_at = ?4
+WHERE id = ?5
+`
+
+type SetTerminalPaidMoneyParams struct {
+	Paid         bool           `json:"paid"`
+	CashDueCents sql.NullInt64  `json:"cash_due_cents"`
+	TipCents     sql.NullInt64  `json:"tip_cents"`
+	PaidAt       sql.NullString `json:"paid_at"`
+	ID           string         `json:"id"`
+}
+
+// A payment taken at a terminal on an online pickup (contract 2.10i): the
+// money columns only; the snapshot stays main's.
+func (q *Queries) SetTerminalPaidMoney(ctx context.Context, arg SetTerminalPaidMoneyParams) error {
+	_, err := q.db.ExecContext(ctx, setTerminalPaidMoney,
+		arg.Paid,
+		arg.CashDueCents,
+		arg.TipCents,
+		arg.PaidAt,
+		arg.ID,
+	)
+	return err
+}
+
 const setUIPassword = `-- name: SetUIPassword :exec
 UPDATE settings
 SET ui_password_hash = ?, ui_password_hint = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
@@ -4471,20 +6884,89 @@ func (q *Queries) SetUpdateNotified(ctx context.Context, updateNotified string) 
 	return err
 }
 
-const showPosOrder = `-- name: ShowPosOrder :exec
-UPDATE orders SET board_hidden = false, accepted_at = ?1, estimated_ready_at = ?2
-WHERE id = ?3
+const setZReportFlagged = `-- name: SetZReportFlagged :exec
+UPDATE z_reports SET flagged = true WHERE batch_id = ?
 `
 
-type ShowPosOrderParams struct {
-	At               sql.NullString `json:"at"`
-	EstimatedReadyAt sql.NullString `json:"estimated_ready_at"`
-	ID               string         `json:"id"`
+func (q *Queries) SetZReportFlagged(ctx context.Context, batchID int64) error {
+	_, err := q.db.ExecContext(ctx, setZReportFlagged, batchID)
+	return err
 }
 
-// A hidden POS check that now qualifies for Kitchen: shown as if new.
-func (q *Queries) ShowPosOrder(ctx context.Context, arg ShowPosOrderParams) error {
-	_, err := q.db.ExecContext(ctx, showPosOrder, arg.At, arg.EstimatedReadyAt, arg.ID)
+const sumDrawerCash = `-- name: SumDrawerCash :one
+SELECT CAST(COALESCE(SUM(CASE WHEN refund THEN 0 ELSE amount_cents END), 0) AS INTEGER) AS sales_cents,
+       CAST(COALESCE(SUM(CASE WHEN refund THEN 0 ELSE tip_cents END), 0) AS INTEGER) AS tips_cents,
+       CAST(COALESCE(SUM(CASE WHEN refund THEN amount_cents + tip_cents ELSE 0 END), 0) AS INTEGER) AS refunds_cents,
+       count(*) AS payments
+FROM order_payments WHERE drawer_id = ?
+`
+
+type SumDrawerCashRow struct {
+	SalesCents   int64 `json:"sales_cents"`
+	TipsCents    int64 `json:"tips_cents"`
+	RefundsCents int64 `json:"refunds_cents"`
+	Payments     int64 `json:"payments"`
+}
+
+func (q *Queries) SumDrawerCash(ctx context.Context, drawerID string) (SumDrawerCashRow, error) {
+	row := q.db.QueryRowContext(ctx, sumDrawerCash, drawerID)
+	var i SumDrawerCashRow
+	err := row.Scan(
+		&i.SalesCents,
+		&i.TipsCents,
+		&i.RefundsCents,
+		&i.Payments,
+	)
+	return i, err
+}
+
+const sumDrawerMovements = `-- name: SumDrawerMovements :one
+SELECT CAST(COALESCE(SUM(CASE WHEN kind = 'pay_in' THEN amount_cents ELSE 0 END), 0) AS INTEGER) AS pay_ins_cents,
+       CAST(COALESCE(SUM(CASE WHEN kind = 'pay_out' THEN amount_cents ELSE 0 END), 0) AS INTEGER) AS pay_outs_cents
+FROM drawer_movements WHERE drawer_id = ?
+`
+
+type SumDrawerMovementsRow struct {
+	PayInsCents  int64 `json:"pay_ins_cents"`
+	PayOutsCents int64 `json:"pay_outs_cents"`
+}
+
+func (q *Queries) SumDrawerMovements(ctx context.Context, drawerID string) (SumDrawerMovementsRow, error) {
+	row := q.db.QueryRowContext(ctx, sumDrawerMovements, drawerID)
+	var i SumDrawerMovementsRow
+	err := row.Scan(&i.PayInsCents, &i.PayOutsCents)
+	return i, err
+}
+
+const takeCounterNumber = `-- name: TakeCounterNumber :one
+UPDATE settings
+SET counter_next = CASE WHEN counter_next > 0 THEN counter_next + 1 ELSE CAST(?1 AS INTEGER) + 1 END
+WHERE id = 1
+RETURNING counter_next
+`
+
+// The counter sequence: hands out counter_next (or start when it is 0, i.e.
+// after Close batch) and moves it on. Returns the number AFTER the one taken.
+func (q *Queries) TakeCounterNumber(ctx context.Context, start int64) (int64, error) {
+	row := q.db.QueryRowContext(ctx, takeCounterNumber, start)
+	var counter_next int64
+	err := row.Scan(&counter_next)
+	return counter_next, err
+}
+
+const touchCustomerOrder = `-- name: TouchCustomerOrder :exec
+UPDATE customers SET last_order_at = ?1
+WHERE (id = ?2 OR phone = ?3) AND last_order_at < ?1
+`
+
+type TouchCustomerOrderParams struct {
+	At    string `json:"at"`
+	ID    string `json:"id"`
+	Phone string `json:"phone"`
+}
+
+func (q *Queries) TouchCustomerOrder(ctx context.Context, arg TouchCustomerOrderParams) error {
+	_, err := q.db.ExecContext(ctx, touchCustomerOrder, arg.At, arg.ID, arg.Phone)
 	return err
 }
 
@@ -4543,43 +7025,17 @@ func (q *Queries) UndoReady(ctx context.Context, arg UndoReadyParams) (int64, er
 	return result.RowsAffected()
 }
 
-const updateExternalOrder = `-- name: UpdateExternalOrder :exec
-UPDATE orders
-SET snapshot = ?1, ext_hash = ?2, display_number = ?3,
-    paid = ?4, cash_due_cents = ?5, tip_cents = ?6,
-    board_hidden = ?7,
-    paid_at = CASE WHEN ?4 AND NOT paid THEN ?8 ELSE paid_at END
-WHERE id = ?9
+const unparkFloorEvent = `-- name: UnparkFloorEvent :execrows
+UPDATE floor_events SET parked_at = NULL, refusals = 0, first_refused_at = NULL
+WHERE id = ? AND parked_at IS NOT NULL AND synced_at IS NULL
 `
 
-type UpdateExternalOrderParams struct {
-	Snapshot      string         `json:"snapshot"`
-	ExtHash       string         `json:"ext_hash"`
-	DisplayNumber sql.NullInt64  `json:"display_number"`
-	Paid          bool           `json:"paid"`
-	CashDueCents  sql.NullInt64  `json:"cash_due_cents"`
-	TipCents      sql.NullInt64  `json:"tip_cents"`
-	BoardHidden   bool           `json:"board_hidden"`
-	Now           sql.NullString `json:"now"`
-	ID            string         `json:"id"`
-}
-
-// A changed POS check: the new snapshot (items, money, notes, address) and
-// the paid / cash / tip / hidden figures. No state change. paid_at (2.4.0)
-// moves when the check goes from a balance due to paid.
-func (q *Queries) UpdateExternalOrder(ctx context.Context, arg UpdateExternalOrderParams) error {
-	_, err := q.db.ExecContext(ctx, updateExternalOrder,
-		arg.Snapshot,
-		arg.ExtHash,
-		arg.DisplayNumber,
-		arg.Paid,
-		arg.CashDueCents,
-		arg.TipCents,
-		arg.BoardHidden,
-		arg.Now,
-		arg.ID,
-	)
-	return err
+func (q *Queries) UnparkFloorEvent(ctx context.Context, id string) (int64, error) {
+	result, err := q.db.ExecContext(ctx, unparkFloorEvent, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
 
 const upsertArrivedOrder = `-- name: UpsertArrivedOrder :execrows
@@ -4616,6 +7072,45 @@ func (q *Queries) UpsertArrivedOrder(ctx context.Context, arg UpsertArrivedOrder
 		return 0, err
 	}
 	return result.RowsAffected()
+}
+
+const upsertCustomer = `-- name: UpsertCustomer :exec
+INSERT INTO customers (id, phone, phone_rev, first_name, last_name, name, notes, source, updated_at, local_at)
+VALUES (?1, ?2, ?3, ?4, ?5, ?6,
+        ?7, ?8, ?9, ?10)
+ON CONFLICT (id) DO UPDATE SET phone = excluded.phone, phone_rev = excluded.phone_rev, first_name = excluded.first_name,
+    last_name = excluded.last_name, name = excluded.name, notes = excluded.notes, source = excluded.source,
+    updated_at = excluded.updated_at, local_at = excluded.local_at
+`
+
+type UpsertCustomerParams struct {
+	ID        string `json:"id"`
+	Phone     string `json:"phone"`
+	PhoneRev  string `json:"phone_rev"`
+	FirstName string `json:"first_name"`
+	LastName  string `json:"last_name"`
+	Name      string `json:"name"`
+	Notes     string `json:"notes"`
+	Source    string `json:"source"`
+	UpdatedAt string `json:"updated_at"`
+	LocalAt   string `json:"local_at"`
+}
+
+// last_order_at is the Pi's own: never written here.
+func (q *Queries) UpsertCustomer(ctx context.Context, arg UpsertCustomerParams) error {
+	_, err := q.db.ExecContext(ctx, upsertCustomer,
+		arg.ID,
+		arg.Phone,
+		arg.PhoneRev,
+		arg.FirstName,
+		arg.LastName,
+		arg.Name,
+		arg.Notes,
+		arg.Source,
+		arg.UpdatedAt,
+		arg.LocalAt,
+	)
+	return err
 }
 
 const upsertOrderGeo = `-- name: UpsertOrderGeo :exec
@@ -4723,5 +7218,73 @@ ON CONFLICT (id) DO UPDATE SET
 
 func (q *Queries) UpsertStoreConfig(ctx context.Context, argContext string) error {
 	_, err := q.db.ExecContext(ctx, upsertStoreConfig, argContext)
+	return err
+}
+
+const upsertTerminalDraft = `-- name: UpsertTerminalDraft :exec
+INSERT INTO terminal_drafts (id, location_id, type, name, held, holder_device_id, holder_device_name, holder_staff_id,
+                             holder_staff_name, staff_id, staff_name, order_id, draft, created_at, updated_at)
+VALUES (?1, ?2, ?3, ?4, ?5, ?6,
+        ?7, ?8, ?9, ?10,
+        ?11, ?12, ?13, ?14, ?15)
+ON CONFLICT (id) DO UPDATE SET
+    type = excluded.type, name = excluded.name, held = excluded.held, holder_device_id = excluded.holder_device_id,
+    holder_device_name = excluded.holder_device_name, holder_staff_id = excluded.holder_staff_id,
+    holder_staff_name = excluded.holder_staff_name, staff_id = excluded.staff_id, staff_name = excluded.staff_name,
+    order_id = excluded.order_id, draft = excluded.draft, updated_at = excluded.updated_at
+`
+
+type UpsertTerminalDraftParams struct {
+	ID               string `json:"id"`
+	LocationID       string `json:"location_id"`
+	Type             string `json:"type"`
+	Name             string `json:"name"`
+	Held             bool   `json:"held"`
+	HolderDeviceID   string `json:"holder_device_id"`
+	HolderDeviceName string `json:"holder_device_name"`
+	HolderStaffID    string `json:"holder_staff_id"`
+	HolderStaffName  string `json:"holder_staff_name"`
+	StaffID          string `json:"staff_id"`
+	StaffName        string `json:"staff_name"`
+	OrderID          string `json:"order_id"`
+	Draft            string `json:"draft"`
+	CreatedAt        string `json:"created_at"`
+	UpdatedAt        string `json:"updated_at"`
+}
+
+func (q *Queries) UpsertTerminalDraft(ctx context.Context, arg UpsertTerminalDraftParams) error {
+	_, err := q.db.ExecContext(ctx, upsertTerminalDraft,
+		arg.ID,
+		arg.LocationID,
+		arg.Type,
+		arg.Name,
+		arg.Held,
+		arg.HolderDeviceID,
+		arg.HolderDeviceName,
+		arg.HolderStaffID,
+		arg.HolderStaffName,
+		arg.StaffID,
+		arg.StaffName,
+		arg.OrderID,
+		arg.Draft,
+		arg.CreatedAt,
+		arg.UpdatedAt,
+	)
+	return err
+}
+
+const upsertTerminalDriverLink = `-- name: UpsertTerminalDriverLink :exec
+INSERT INTO terminal_driver_links (staff_id, driver_id, linked_at) VALUES (?, ?, ?)
+ON CONFLICT (staff_id) DO UPDATE SET driver_id = excluded.driver_id, linked_at = excluded.linked_at
+`
+
+type UpsertTerminalDriverLinkParams struct {
+	StaffID  string `json:"staff_id"`
+	DriverID string `json:"driver_id"`
+	LinkedAt string `json:"linked_at"`
+}
+
+func (q *Queries) UpsertTerminalDriverLink(ctx context.Context, arg UpsertTerminalDriverLinkParams) error {
+	_, err := q.db.ExecContext(ctx, upsertTerminalDriverLink, arg.StaffID, arg.DriverID, arg.LinkedAt)
 	return err
 }

@@ -37,8 +37,8 @@ func newAutoFloor(t *testing.T) *autoFloor {
 	svc, repo, _ := newPoolService(t)
 	svc.SetGeo(GeoDeps{Floor: func() (*FloorStore, *FloorMap) { return &FloorStore{Lat: 40.0, Lng: -74.0}, nil }})
 	f := &autoFloor{svc: svc, repo: repo}
-	ann, _ := svc.CreateDriver(ctx, "Ann Lee", "")
-	bob, _ := svc.CreateDriver(ctx, "Bob", "")
+	ann, _ := svc.CreateDriver(ctx, "Ann Lee")
+	bob, _ := svc.CreateDriver(ctx, "Bob")
 	f.ann, f.bob = ann.ID, bob.ID
 	svc.ClockIn(ctx, f.ann)
 	svc.ClockIn(ctx, f.bob)
@@ -245,7 +245,7 @@ func TestAutoAssignedEvent(t *testing.T) {
 	svc, repo, events := newPoolService(t)
 	svc.SetGeo(GeoDeps{Floor: func() (*FloorStore, *FloorMap) { return &FloorStore{Lat: 40.0, Lng: -74.0}, nil }})
 	f := &autoFloor{svc: svc, repo: repo}
-	ann, _ := svc.CreateDriver(ctx, "Juma Ali", "")
+	ann, _ := svc.CreateDriver(ctx, "Juma Ali")
 	f.ann = ann.ID
 	svc.ClockIn(ctx, ann.ID)
 	a := f.located(t, 10*time.Minute, 40.01, 150)

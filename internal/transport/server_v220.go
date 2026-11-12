@@ -20,6 +20,9 @@ const (
 	// quibaseVersionHeader is sent by Quibase >= 1.6.0 on every request
 	// (and /api/events): "<name>+<code>".
 	quibaseVersionHeader = "X-Quibase-Version"
+	// terminalVersionHeader is sent by Centurion (the counter terminal,
+	// contract 2.10y): "<name>+<code>".
+	terminalVersionHeader = "X-Terminal-Version"
 	// appVersionEvery: an unchanged version is re-stamped at most this often.
 	appVersionEvery = 10 * time.Minute
 	// maxAppVersion bounds a stored version string.
@@ -115,7 +118,11 @@ func (s *Server) noteAppVersion(d *device.Device, raw string) {
 		return
 	}
 	if changed && prev.version != "" {
-		s.devLog.Add(devlog.Info, devlog.KindSystem, "Tablet "+d.Name+" now runs Quibase "+v+" (was "+prev.version+")")
+		what, app := "Tablet ", "Quibase "
+		if d.Kind == device.KindTerminal {
+			what, app = "Terminal ", "Centurion "
+		}
+		s.devLog.Add(devlog.Info, devlog.KindSystem, what+d.Name+" now runs "+app+v+" (was "+prev.version+")")
 	}
 }
 
@@ -150,11 +157,24 @@ type TabletInfo struct {
 	AppVersion string     `json:"app_version"`
 	LastSeenAt *time.Time `json:"last_seen_at"`
 	Connected  bool       `json:"connected"`
+	// Setup (contract 2.10y): the device's last setup / full-check result
+	// from its report; absent = none kept.
+	Setup *device.SetupResult `json:"setup,omitempty"`
 }
 
 // Tablets lists the paired (not revoked) tablets with their Quibase version
 // and whether they are on /api/events now.
 func (s *Server) Tablets(ctx context.Context) []TabletInfo {
+	return s.devicesOfKind(ctx, device.KindTablet, false)
+}
+
+// Terminals lists the paired POS terminals the same way (their Centurion
+// version from X-Terminal-Version; contract 2.10y).
+func (s *Server) Terminals(ctx context.Context) []TabletInfo {
+	return s.devicesOfKind(ctx, device.KindTerminal, true)
+}
+
+func (s *Server) devicesOfKind(ctx context.Context, kind string, withSetup bool) []TabletInfo {
 	out := []TabletInfo{}
 	if s.devices == nil {
 		return out
@@ -164,17 +184,29 @@ func (s *Server) Tablets(ctx context.Context) []TabletInfo {
 		return out
 	}
 	s.tabletMu.Lock()
-	on := make(map[string]bool, len(s.tabletStreams))
-	for id := range s.tabletStreams {
+	on := make(map[string]bool, len(s.tabletStreams)+len(s.terminalStreams))
+	streams := s.tabletStreams
+	if kind == device.KindTerminal {
+		streams = s.terminalStreams
+	}
+	for id := range streams {
 		on[id] = true
 	}
 	s.tabletMu.Unlock()
+	var setups map[string]device.SetupResult
+	if withSetup {
+		setups = s.deviceSetups(ctx)
+	}
 	for _, d := range ds {
-		if d.RevokedAt != nil || d.Kind != device.KindTablet {
+		if d.RevokedAt != nil || d.Kind != kind {
 			continue
 		}
-		out = append(out, TabletInfo{DeviceID: d.ID, Name: d.Name, AppVersion: s.appVersionOf(d),
-			LastSeenAt: d.LastSeenAt, Connected: on[d.ID]})
+		t := TabletInfo{DeviceID: d.ID, Name: d.Name, AppVersion: s.appVersionOf(d),
+			LastSeenAt: d.LastSeenAt, Connected: on[d.ID]}
+		if res, ok := setups[d.ID]; ok {
+			t.Setup = &res
+		}
+		out = append(out, t)
 	}
 	sort.SliceStable(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out

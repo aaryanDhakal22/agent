@@ -74,14 +74,11 @@ func TestCalloutRoutes(t *testing.T) {
 	if rec := call(h, "POST", "/api/callout/test", tablet, `{"number":0}`); rec.Code != http.StatusBadRequest {
 		t.Fatalf("bad test = %d %s", rec.Code, rec.Body)
 	}
-	if rec := call(h, "POST", "/api/orders/0198b4a6-0000-7000-8000-000000000000/change/ack", tablet, ""); rec.Code != http.StatusNotFound {
-		t.Fatalf("ack unknown = %d %s", rec.Code, rec.Body)
-	}
 	var cfg map[string]any
 	rec = call(h, "GET", "/api/integration/config", hub, "")
 	_ = json.Unmarshal(rec.Body.Bytes(), &cfg)
-	if cfg["callout"] == nil || cfg["finishing"] == nil {
-		t.Fatalf("config lacks callout/finishing: %s", rec.Body)
+	if cfg["callout"] == nil || cfg["finishing"] != nil {
+		t.Fatalf("config = callout, no finishing (H3): %s", rec.Body)
 	}
 	if co, _ := cfg["callout"].(map[string]any); co["repeat"] != 3.0 {
 		t.Fatalf("the hub reads repeat: %s", rec.Body)

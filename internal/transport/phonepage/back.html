@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Quicc Pay</title>
+<style>
+:root{--bg:#f6f5f2;--card:#fff;--ink:#16181c;--dim:#5d636e;--line:#dcdad4;--go:#1f8a4c;--bad:#c0392b;--warn:#b26a00}
+@media (prefers-color-scheme:dark){:root{--bg:#121417;--card:#1c1f24;--ink:#f1f2f4;--dim:#a2a8b3;--line:#2e333b;--go:#2fb36a;--bad:#ff6b5e;--warn:#f0a43a}}
+html,body{margin:0;background:var(--bg);color:var(--ink);font:17px/1.35 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+main{max-width:520px;margin:0 auto;padding:40px 16px;text-align:center}
+.card{background:var(--card);border:1px solid var(--line);border-radius:18px;padding:24px}
+.big{font-size:64px;line-height:1}.ok{color:var(--go)}.bad{color:var(--bad)}.warn{color:var(--warn)}
+.small{color:var(--dim);font-size:15px}
+a.btn{display:block;margin-top:20px;padding:18px;border-radius:16px;border:2px solid var(--line);color:var(--ink);text-decoration:none;font-weight:700;font-size:20px}
+</style>
+</head>
+<body>
+<main><div class="card"><div id="icon" class="big">&#8230;</div><h1 id="title">Saving…</h1><p id="text" class="small"></p><a class="btn" href="/pay">BACK</a></div></main>
+<script>
+"use strict";
+// Square's answer: Android = com.squareup.pos.* query parameters, iOS = ?data=<JSON>.
+const q = new URLSearchParams(location.search);
+const P = "com.squareup.pos.";
+let meta = q.get(P + "REQUEST_METADATA") || "", result;
+if (q.get("data")) {
+  let d = {};
+  try { d = JSON.parse(q.get("data")); } catch (_) {}
+  meta = d.state || meta;
+  result = d.status === "ok" ? {status: "ok", transaction_id: d.transaction_id || "", client_transaction_id: d.client_transaction_id || ""}
+    : {status: "error", error_code: d.error_code || ""};
+} else if (q.get(P + "SERVER_TRANSACTION_ID") || q.get(P + "CLIENT_TRANSACTION_ID")) {
+  result = {status: "ok", transaction_id: q.get(P + "SERVER_TRANSACTION_ID") || "", client_transaction_id: q.get(P + "CLIENT_TRANSACTION_ID") || ""};
+} else {
+  result = {status: "error", error_code: q.get(P + "ERROR_CODE") || ""};
+}
+let id = "";
+try { id = JSON.parse(meta).c || ""; } catch (_) {}
+if (!id) { try { id = JSON.parse(localStorage.getItem("quicc.pay.current")) || ""; } catch (_) {} }
+const $ = (x) => document.getElementById(x);
+const money = (c) => "$" + (c / 100).toFixed(2);
+function say(icon, cls, title, text) { $("icon").innerHTML = icon; $("icon").className = "big " + cls; $("title").textContent = title; $("text").textContent = text || ""; }
+function keep() { // the Pi didn't answer: /pay sends it again (idempotent)
+  try { const box = JSON.parse(localStorage.getItem("quicc.pay.outbox")) || []; box.push({id, result}); localStorage.setItem("quicc.pay.outbox", JSON.stringify(box)); } catch (_) {}
+}
+(async () => {
+  if (!id) return say("!", "bad", "Which charge?", "Square answered but this page doesn't know which charge. Open the pay page and tell the cashier at the terminal (Record it).");
+  let r;
+  try {
+    r = await fetch("/api/phone/charges/" + encodeURIComponent(id) + "/result", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(result)});
+  } catch (_) { keep(); return say("!", "warn", "Saved on this phone", "The Pi didn't answer. It is sent again when the pay page opens."); }
+  let j = {};
+  try { j = await r.json(); } catch (_) {}
+  const c = j.charge || {};
+  if (r.status === 401) return say("!", "bad", "This browser isn't paired", "Open Square's answer in the browser where the pay page is paired. Transaction: " + (result.transaction_id || result.error_code));
+  if (r.status >= 500) { keep(); return say("!", "warn", "Saved on this phone", "The Pi had a problem. It is sent again when the pay page opens."); }
+  if (r.status !== 200) return say("!", "bad", "Not saved", j.error || "Something went wrong.");
+  if (c.status === "paid") say("&#10003;", "ok", "Paid " + money(c.amount_cents + c.tip_cents + (c.extra_tip_cents || 0)), c.number ? "Order #" + c.number : "");
+  else if (c.status === "declined") say("&#10007;", "bad", "Not charged", c.message);
+  else if (c.status === "cancelled") say("&#8211;", "warn", "Cancelled", c.message);
+  else say("!", "bad", "Tell a manager", c.message);
+  if (c.status === "paid" || c.status === "cancelled") setTimeout(() => location.replace("/pay"), 2500);
+})();
+</script>
+</body>
+</html>

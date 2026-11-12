@@ -20,10 +20,10 @@ func startAltListener(ctx context.Context, addr string, handler http.Handler, lo
 		logger.Warn().Err(err).Str("addr", addr).Msg("Second HTTP port not available — serving on the main port only")
 		return false
 	}
-	srv := &http.Server{Handler: handler, ReadHeaderTimeout: 10 * time.Second}
+	srv := &http.Server{Handler: handler, ReadHeaderTimeout: 10 * time.Second, IdleTimeout: idleTimeout}
 	go func() {
 		<-ctx.Done()
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), ShutdownTimeout)
 		defer cancel()
 		_ = srv.Shutdown(shutdownCtx)
 	}()

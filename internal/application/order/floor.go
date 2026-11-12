@@ -10,6 +10,8 @@ import (
 	"unicode/utf8"
 
 	"quiccpos/agent/internal/domain/order"
+	"quiccpos/agent/internal/domain/terminal"
+	"quiccpos/agent/internal/observability"
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
@@ -201,13 +203,26 @@ func (s *Service) CloseBatch(ctx context.Context, force bool) (*order.Batch, []o
 	ctx, span := s.span(ctx, "batch.close", attribute.Bool("force", force))
 	defer span.End()
 	closed, finished, err := s.repo.CloseBatch(ctx, force)
+	cm := observability.Counter()
+	trigger := order.CloseTriggerOf(ctx)
 	if err != nil {
 		var lo *order.LeftoversError
 		if errors.As(err, &lo) {
+			cm.Close(ctx, trigger, "leftovers")
 			return nil, lo.Orders, err // not a failure — needs confirmation
 		}
+		var un *order.UnsettledError
+		if errors.As(err, &un) {
+			// contract 2.10s §4: pay or void the counter checks first.
+			cm.Close(ctx, trigger, "unsettled")
+			s.logger.Info().Ctx(ctx).Int("checks", len(un.Checks)).Str("trigger", trigger).
+				Msg("Batch close refused: unpaid counter checks are open")
+			return nil, nil, err
+		}
+		cm.Close(ctx, trigger, "error")
 		return nil, nil, spanErr(span, err)
 	}
+	cm.Close(ctx, trigger, "ok")
 	s.floorChanged()
 	s.logger.Info().Ctx(ctx).Int64("batch", closed.ID).Int("auto_finished", len(finished)).Msg("Batch closed")
 	for _, so := range finished {
@@ -220,9 +235,17 @@ func (s *Service) CloseBatch(ctx context.Context, force bool) (*order.Batch, []o
 		}
 	}
 	s.publishDrivers(ctx)
+	if s.broker != nil {
+		for _, id := range closed.ClearedDrafts { // the terminals' held / open drafts (contract 2.10i)
+			s.broker.Publish(terminal.EventDraftRemoved, map[string]any{"id": id})
+		}
+	}
+	if fn := s.onClosed.Load(); fn != nil && *fn != nil {
+		b := *closed
+		go (*fn)(context.WithoutCancel(ctx), b)
+	}
 	s.devEvent(devlog.Info, devlog.KindOrder, "Batch %d closed (%d auto-finished)", closed.ID, len(finished))
 	s.printReportsAfterClose(ctx, closed.ID, s.afterClose)
-	s.forgetPOSDeliveries(ctx, closed.ID)
 	return closed, finished, nil
 }
 
@@ -230,30 +253,14 @@ func (s *Service) CloseBatch(ctx context.Context, force bool) (*order.Batch, []o
 // its driver reports printed (or failed): cmd/main.go's Pi auto-update.
 func (s *Service) OnBatchClosed(fn func(ctx context.Context)) { s.onBatchClosed.Store(&fn) }
 
+// OnClosed registers the hook run (in the background) right after a
+// successful Close batch: the terminals' drawers and Z report (contract
+// 2.10k-l).
+func (s *Service) OnClosed(fn func(ctx context.Context, closed order.Batch)) { s.onClosed.Store(&fn) }
+
 func (s *Service) afterClose(ctx context.Context) {
 	if fn := s.onBatchClosed.Load(); fn != nil && *fn != nil {
 		(*fn)(ctx)
-	}
-}
-
-// forgetPOSDeliveries tells main to drop the points of a closed batch's POS
-// deliveries (it would expire them in 24 h anyway).
-func (s *Service) forgetPOSDeliveries(ctx context.Context, batchID int64) {
-	const page = 500
-	for off := 0; ; off += page {
-		list, err := s.repo.ListByBatch(ctx, batchID, off, page)
-		if err != nil {
-			s.logger.Warn().Ctx(ctx).Err(err).Msg("close batch: list POS deliveries failed")
-			return
-		}
-		for _, so := range list {
-			if so.IsPOS() && so.IsDelivery() {
-				s.geoForget(ctx, so.Order.ID)
-			}
-		}
-		if len(list) < page {
-			return
-		}
 	}
 }
 
@@ -288,66 +295,18 @@ func cleanName(name string) (string, error) {
 	return name, nil
 }
 
-// cleanPosNumber checks a driver number ("" = none): 1-12 letters or digits.
-func cleanPosNumber(v string) (string, error) {
-	v = strings.TrimSpace(v)
-	if len(v) > 12 {
-		return "", fmt.Errorf("%w: driver number must be at most 12 characters", ErrBadRequest)
-	}
-	for _, r := range v {
-		if !(r >= '0' && r <= '9' || r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z') {
-			return "", fmt.Errorf("%w: driver number must be letters and digits only", ErrBadRequest)
-		}
-	}
-	return v, nil
-}
-
-// CreateDriver adds a driver (posNumber "" = no POS number).
-func (s *Service) CreateDriver(ctx context.Context, name, posNumber string) (*order.Driver, error) {
+// CreateDriver adds a driver.
+func (s *Service) CreateDriver(ctx context.Context, name string) (*order.Driver, error) {
 	name, err := cleanName(name)
 	if err != nil {
 		return nil, err
 	}
-	if posNumber, err = cleanPosNumber(posNumber); err != nil {
-		return nil, err
-	}
-	d, err := s.repo.CreateDriver(ctx, name, posNumber)
+	d, err := s.repo.CreateDriver(ctx, name)
 	if err != nil {
 		return nil, err
 	}
 	s.driversChanged(ctx)
 	return d, nil
-}
-
-// UpdateDriver renames a driver and/or sets their POS number ("" clears);
-// nil leaves a field as is.
-func (s *Service) UpdateDriver(ctx context.Context, id string, name, posNumber *string) error {
-	if name == nil && posNumber == nil {
-		return fmt.Errorf("%w: give a name or a pos_number", ErrBadRequest)
-	}
-	var clean string
-	var err error
-	if posNumber != nil {
-		if clean, err = cleanPosNumber(*posNumber); err != nil {
-			return err
-		}
-	}
-	if name != nil {
-		n, err := cleanName(*name)
-		if err != nil {
-			return err
-		}
-		if err := s.repo.RenameDriver(ctx, id, n); err != nil {
-			return err
-		}
-	}
-	if posNumber != nil {
-		if err := s.repo.SetDriverPosNumber(ctx, id, clean); err != nil {
-			return err
-		}
-	}
-	s.driversChanged(ctx)
-	return nil
 }
 
 func (s *Service) RenameDriver(ctx context.Context, id, name string) error {

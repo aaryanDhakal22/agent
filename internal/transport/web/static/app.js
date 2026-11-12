@@ -22,10 +22,17 @@ const SETTINGS_TABS = [
   { id: 'orders', label: 'Orders' },
   { id: 'kitchen', label: 'Kitchen tickets' },
   { id: 'receipts', label: 'Receipts' },
+  { id: 'routing', label: 'Routing & reroute' },
   { id: 'clockout', label: 'Daily clock-out' },
   { id: 'tablets', label: 'Tablets' },
   { id: 'store', label: 'Store info' },
   { id: 'account', label: 'Account' },
+];
+// Routing & emergency reroute modes (contract 2.3c): [id, label, help].
+const ROUTE_MODES = [
+  ['none', 'Automatic', 'A ticket whose printer can\'t print goes to the receipt printer, then the other printers in order.'],
+  ['one', 'One emergency printer', 'One printer stands in for any printer that can\'t print.'],
+  ['per_printer', 'Per printer', 'Each printer has its own stand-ins, tried in order.'],
 ];
 const NAV = [
   { id: 'overview', label: 'Overview', icon: 'overview' },
@@ -36,6 +43,11 @@ const NAV = [
   { id: 'settings', label: 'Settings', icon: 'sliders' },
 ];
 // /api/diag problems[] codes → what staff should read.
+// What a parked floor event was (Overview's "Not synced to main" card).
+const PARKED_TYPES = {
+  'order.placed': 'Counter order', 'order.payment': 'Payment', 'customer.upsert': 'Customer', 'z.report': 'Z report',
+  'drawer.opened': 'Drawer opened', 'drawer.movement': 'Drawer pay-in / out', 'drawer.closed': 'Drawer closed',
+};
 const PROBLEM_TEXT = {
   main_down: "Not connected to main — new orders can't arrive.",
   printer_down: 'A printer is down — see Printers.',
@@ -44,6 +56,11 @@ const PROBLEM_TEXT = {
   under_voltage: "The Pi's power supply is too weak (under-voltage).",
   ntp: "The Pi's clock isn't synced.",
   health_stale: "The Pi's health report is out of date.",
+  z_unbalanced: "A Z report doesn't balance — tell the owner (money identity off).",
+  main_auth_failing: "main keeps refusing this Pi's key (not a revoke) — the Pi keeps its link and retries.",
+  pin_lockout: 'Many wrong PINs at a terminal — the PIN pad is paused.',
+  pin_locked: 'Too many wrong PINs today — the terminals\' PIN pads are locked. Unlock them in Settings › Tablets.',
+  db_quick_check: "The Pi's database failed its integrity check at start — restore it after close (RECOVERY.md).",
 };
 const PI_DOWN = "Can't reach the Pi — this screen is out of date.";
 const STILL_WAITING_MS = 2 * 60000; // the full card turns amber ("STILL WAITING")
@@ -60,7 +77,7 @@ const FOOT_SIZES = [['normal', 'Normal'], ['large', 'Large'], ['xlarge', 'X-Larg
 const FOOT_MODES = [['default', 'Store default'], ['custom', 'Custom'], ['none', 'None']];
 const MAX_FOOTER = 32;
 const SIZE_PX = { normal: '12px', large: '16px', xlarge: '22px', huge: '34px' };
-const PREF_KEYS = ['kitchen_item_size', 'kitchen_number_size', 'footer_text', 'footer_size', 'copies', 'show_store_address', 'show_phone', 'extra_paper'];
+const PREF_KEYS = ['kitchen_item_size', 'kitchen_number_size', 'footer_text', 'footer_size', 'copies', 'show_store_address', 'show_phone', 'extra_paper', 'strike_images'];
 
 // --- icons (Lucide, ISC) ---------------------------------------------------
 const ICON_PATHS = {
@@ -197,30 +214,18 @@ function addrLine(snap) {
   const a = (snap.fulfillment || {}).address || {}, j = (xs, sep) => xs.map(x => String(x || '').trim()).filter(Boolean).join(sep);
   return j([j([a.line1, a.line2], ', '), j([j([a.city, a.state], ', '), a.postal_code], ' ')], ', ');
 }
-// The number staff call: a POS order's check number (2.1.0), else the
-// kitchen number, else the vendor's order number.
+// The number staff call: the kitchen number, else the vendor's order number.
 function displayNumber(so) {
-  if (so.status.display_number != null) return '#' + so.status.display_number;
   const k = so.status.kitchen_number != null ? so.status.kitchen_number : so.order.kitchen_order_number;
   return k != null ? '#' + k : '#' + (so.order.source_event_id || String(so.order.id || '').slice(0, 8));
 }
-function isPOS(so) { return !!(so && so.status && so.status.ext_source); }
 // 2.1.0 switches (Settings › Orders / Kitchen tickets), in display order.
 const FEATURES = [
-  ['pos_pull', 'POS orders pull-in', 'Phone and counter orders from the old POS show on the tablet. Off: the store hub stops pulling them.'],
-  ['order_insert', 'Online order insert into the POS', 'The store hub keys accepted online cash pickups into the old POS. Off: staff key them by hand.'],
-  ['driver_writeback', 'Driver write-back', 'Drivers sent out on the tablet are written onto their POS checks.'],
-  ['address_heal', 'Address heal', 'An address staff confirm on the tablet is corrected in the POS customer record.'],
   ['future_orders', 'Future orders', 'Orders for later are confirmed once, wait in a Later strip and ring again when it is time. Off: they ring like any order.'],
   ['paid_wave', 'Paid-not-ready wave', 'Paid pickups that are not ready yet get a slow wave on the tablet’s Kitchen screen.'],
 ];
-const TICKETS_POS = [
-  ['pos_delivery', 'POS deliveries', 'Phone deliveries from the POS. The POS normally prints these itself.'],
-  ['pos_takeout', 'POS takeout', 'Takeout orders from the POS.'],
-  ['pos_counter', 'POS counter', 'Counter / dine-in orders from the POS.'],
-];
 const TICKETS_ONLINE = [
-  ['online_cash_pickup', 'Online cash pickups', 'Only while the store hub keys them into the POS live — otherwise only the receipt prints, and staff key them by hand.'],
+  ['online_cash_pickup', 'Online cash pickups', 'Off: only the customer receipt prints.'],
   ['online_cash_delivery', 'Online cash deliveries', 'Off: only the customer receipt prints.'],
   ['online_card', 'Online card orders', 'Paid online. Off: only the customer receipt prints.'],
 ];
@@ -271,7 +276,7 @@ function agentApp() {
     piReachable: true, soundOff: true, histStatuses: HIST_STATUSES,
     nav: NAV, settingsTabs: SETTINGS_TABS,
     numSizes: NUM_SIZES, itemSizes: ITEM_SIZES, footSizes: FOOT_SIZES, footModes: FOOT_MODES, maxFooter: MAX_FOOTER,
-    featureList: FEATURES, ticketsPOS: TICKETS_POS, ticketsOnline: TICKETS_ONLINE,
+    featureList: FEATURES, ticketsOnline: TICKETS_ONLINE,
 
     // --- provisioning / login ---
     link: { user: '', pass: '', busy: false, err: '' }, showToken: false,
@@ -287,22 +292,28 @@ function agentApp() {
     diag: null, diagErr: false, devices: [], devicesLoaded: false, appLatest: null, batches: [], reportBatch: 'current', reports: [], reportsErr: '',
 
     // --- drivers ---
-    newDriver: '', newDriverNum: '', newDriverDev: '', names: {}, origNames: {}, nums: {}, origNums: {}, devs: {}, origDevs: {}, reset: { time: '', last_run: null, form: '' },
+    newDriver: '', newDriverDev: '', names: {}, origNames: {}, devs: {}, origDevs: {}, reset: { time: '', last_run: null, form: '' },
 
     // --- history ---
     hist: { q: '', status: '', sort: 'desc', from: '', to: '', offset: 0, rows: [], more: false, loading: false, err: '', errRaw: '', loaded: false },
 
     // --- printers ---
     printers: [], printersErr: '', printerResults: {}, printerBusy: '',
+    // The width test (contract §2.3c "Paper width"): the printer whose ruler is out, waiting for its letter.
+    widthFor: '', widthBusy: false,
+    rulerSymbols: 'ABCDEFGHIJKLMNOPQRSTUVWXYZ23456789'.split(''),
     found: null, foundBusy: false,
 
     // --- Pi updates (Settings › Account, Overview Pi card) ---
     upd: null, updErr: '', updBusy: '',
+    // Floor sync dead letters (contract 2.4e): parked events + the thresholds.
+    parked: null, parkBusy: '', parkForm: { refusals: '', hours: '' }, parkFormOpen: false,
 
     // --- settings ---
     autoAccept: false, autoAcceptLoaded: false, autoUpdate: true, autoUpdateLoaded: false, floorForm: { green: '', tiptax: '' }, deliveryForm: { soon: '', target: '' }, timesForm: { pickup: '', delivery: '' },
+    route: null, routeForm: null, routeErr: '', routeBusy: false, routeModes: ROUTE_MODES,
     rcpt: null, rcptForm: null, footMode: 'default', customFooter: '', rcptPreview: 'r', rcptErr: '', rcptBusy: '',
-    pair: null, storeCfg: null, storeCfgErr: '', storeCfgErrRaw: '',
+    pair: null, adminCode: null, pinGuard: null, storeCfg: null, storeCfgErr: '', storeCfgErrRaw: '',
     cp: { current: '', next: '', confirm: '', hint: '', err: '', busy: false },
 
     // ======================================================================
@@ -600,9 +611,10 @@ function agentApp() {
     },
     refreshStatus() {
       if (this.state !== 'ready' || document.hidden) return;
-      if (this.page === 'overview') { this.loadDiag(); this.loadDevices(); }
+      if (this.page === 'overview') { this.loadDiag(); this.loadDevices(); this.loadParked(); }
       if (this.page === 'printers') this.loadPrinters();
       if (this.page === 'settings' && this.settingsTab === 'account') this.loadUpdate();
+      if (this.page === 'settings' && this.settingsTab === 'routing') this.loadRouting(true);
     },
     get pageTitle() { return (NAV.find(n => n.id === this.page) || NAV[0]).label; },
 
@@ -615,11 +627,10 @@ function agentApp() {
       // (Re)connected: reload — events sent while the stream was down are lost.
       es.onopen = reload;
       ['order.arrived', 'order.escalated'].forEach(t => es.addEventListener(t, () => { beep(); reload(); }));
-      // POS orders (order.added) never ring.
-      ['order.updated', 'order.added', 'drivers.updated', 'batch.closed', 'floor.updated', 'settings.updated', 'integration.status'].forEach(t => es.addEventListener(t, reload));
-      es.addEventListener('integration.toast', e => {
-        try { const d = JSON.parse(e.data); this.toast(d.text, d.severity === 'serious'); } catch { /* malformed frame */ }
-      });
+      ['order.updated', 'drivers.updated', 'batch.closed', 'floor.updated', 'settings.updated', 'integration.status'].forEach(t => es.addEventListener(t, reload));
+      es.addEventListener('sync.parked', () => this.loadParked());
+      es.addEventListener('terminal.pins', () => this.loadPinGuard());
+      es.addEventListener('routing.updated', () => { if (this.page === 'settings' && this.settingsTab === 'routing') this.loadRouting(true); });
       es.addEventListener('drivers.dispatched', e => {
         try {
           const d = JSON.parse(e.data);
@@ -676,9 +687,6 @@ function agentApp() {
       for (const d of this.drivers) {
         if (this.names[d.id] === undefined || this.names[d.id] === this.origNames[d.id]) this.names[d.id] = d.name;
         this.origNames[d.id] = d.name;
-        const n = d.pos_number || '';
-        if (this.nums[d.id] === undefined || this.nums[d.id] === this.origNums[d.id]) this.nums[d.id] = n;
-        this.origNums[d.id] = n;
         const dev = d.pushover_device || '';
         if (this.devs[d.id] === undefined || this.devs[d.id] === this.origDevs[d.id]) this.devs[d.id] = dev;
         this.origDevs[d.id] = dev;
@@ -747,7 +755,7 @@ function agentApp() {
     get batchOpenHours() { return this.floor && this.floor.batch ? (this.now - ts(this.floor.batch.opened_at)) / 3600000 : 0; },
 
     // Display helpers used by the markup.
-    money, clock, dateTime, moneyLabel, custName, displayNumber, itemLines, itemCount, mins, dur, addrLine, isPOS,
+    money, clock, dateTime, moneyLabel, custName, displayNumber, itemLines, itemCount, mins, dur, addrLine,
     stateLabel(st) { return { delivered: 'Delivered', cancelled: 'Cancelled', ready: 'Ready for pickup', on_delivery: 'Out', accepted: 'Cooking', arrived: 'Waiting', scheduled: 'Later' }[st] || st; },
     // Future orders confirmed once (they ring again at ring_at), soonest first.
     get laterOrders() { return this.orders.filter(so => so.status.state === 'scheduled').sort(byTime(so => ts(so.status.ring_at))); },
@@ -913,8 +921,38 @@ function agentApp() {
 
     // --- overview -------------------------------------------------------------------
     loadOverview() {
-      this.loadFloor(); this.loadDiag(); this.loadDevices(); this.loadAppLatest(); this.loadBatches(); this.loadReports(); this.loadUpdate();
+      this.loadFloor(); this.loadDiag(); this.loadDevices(); this.loadAppLatest(); this.loadBatches(); this.loadReports(); this.loadUpdate(); this.loadParked();
     },
+    // Parked floor events: main refused them for good, the queue moved on.
+    async loadParked() {
+      try {
+        this.parked = await this.call('/api/sync/parked');
+        if (!this.parkFormOpen) this.parkForm = { refusals: String(this.parked.settings.refusals), hours: String(this.parked.settings.hours) };
+      } catch { /* keep the old view */ }
+    },
+    async retryParked(id) {
+      const key = id || 'all';
+      if (this.parkBusy) return;
+      this.parkBusy = key;
+      try {
+        const res = await this.call(id ? '/api/sync/parked/' + encodeURIComponent(id) + '/retry' : '/api/sync/parked/retry', { method: 'POST' });
+        this.parked = res.view;
+        this.toast(res.retried === 1 ? 'Sent again — it syncs in a moment.' : res.retried + ' events sent again.');
+      } catch (e) { this.toast(e.status === 404 ? 'Already sent — the list will refresh.' : e.message, e.status !== 404); this.loadParked(); }
+      finally { this.parkBusy = ''; }
+    },
+    async saveParkSettings() {
+      const refusals = parseInt(this.parkForm.refusals, 10), hours = parseInt(this.parkForm.hours, 10);
+      if (!(refusals >= 1 && refusals <= 1000 && hours >= 1 && hours <= 168)) { this.toast('Refusals is 1-1000, hours 1-168.', true); return; }
+      this.parkBusy = 'settings';
+      try {
+        await this.call('/api/settings/sync', { method: 'PUT', body: { refusals, hours } });
+        this.parkFormOpen = false;
+        this.toast('Saved');
+        this.loadParked();
+      } catch (e) { this.toast(e.message, true); } finally { this.parkBusy = ''; }
+    },
+    parkedWhat(d) { return (PARKED_TYPES[d.type] || d.type) + (d.subject && d.subject.indexOf(':') < 0 ? ' · order' : ''); },
     async loadDiag() {
       try { this.diag = await this.call('/api/diag'); this.diagErr = false; } catch { this.diagErr = true; /* cards: "Couldn't check" */ }
     },
@@ -966,24 +1004,23 @@ function agentApp() {
         Object.assign({ k: 'Main' }, this.mainCard), Object.assign({ k: 'Printers' }, this.printersCard),
         Object.assign({ k: 'Tablet' }, this.tabletCard), Object.assign({ k: 'Pi' }, this.piCard),
       ];
-      if (this.hasPOS) cards.push(Object.assign({ k: 'POS link' }, this.posCard));
+      if (this.hasHub) cards.push(Object.assign({ k: 'Store hub' }, this.hubCard));
       return cards;
     },
     get integ() { return (this.floor && this.floor.integration) || null; },
     get settingsAll() { return (this.floor && this.floor.settings) || null; },
-    // The store has a POS link: location.config.pos_integration, a paired
-    // integration device, or a hub that ever reported.
-    get hasPOS() {
+    // The store has a hub (the callout box): location.config.pos_integration,
+    // a paired integration device, or a hub that ever reported.
+    get hasHub() {
       const cfg = this.storeCfg && this.storeCfg.location && this.storeCfg.location.config;
       return !!((cfg && cfg.pos_integration) || this.devices.some(d => d.kind === 'integration' && !d.revoked_at) || (this.integ && this.integ.last_seen_at));
     },
-    get posCard() {
+    get hubCard() {
       const v = this.integ;
       if (!v || !v.last_seen_at) return { tone: 'mute', t: 'Not reporting yet', s: 'The store hub has not checked in' };
       const probs = v.problems || [], serious = probs.some(p => p.severity === 'serious');
-      const mode = v.insert_live ? 'online insert LIVE' : 'online insert ' + (v.insert_mode || 'off');
-      if (!v.connected) return { tone: 'bad', t: 'POS link down', s: 'last seen ' + agoText(ts(v.last_seen_at), this.now) };
-      return { tone: serious ? 'bad' : (probs.length || !v.ok) ? 'warn' : 'ok', t: probs.length ? probs[0].text : 'Connected', s: mode + ' · seen ' + agoText(ts(v.last_seen_at), this.now) };
+      if (!v.connected) return { tone: 'bad', t: 'Hub link down', s: 'last seen ' + agoText(ts(v.last_seen_at), this.now) };
+      return { tone: serious ? 'bad' : (probs.length || !v.ok) ? 'warn' : 'ok', t: probs.length ? probs[0].text : 'Connected', s: (v.version ? 'hub ' + v.version + ' · ' : '') + 'seen ' + agoText(ts(v.last_seen_at), this.now) };
     },
     get systemProblems() { return this.attention.filter(a => a.k[0] !== 'w').length; },
     get mainCard() {
@@ -1004,7 +1041,7 @@ function agentApp() {
       return { tone: up === ps.length ? 'ok' : 'bad', t: up + ' / ' + ps.length + ' ready', s: checked ? 'checked ' + agoText(checked, this.now) : 'not checked yet' };
     },
     get tabletCard() {
-      const live = this.devices.filter(d => !d.revoked_at).sort((a, b) => ts(b.last_seen_at) - ts(a.last_seen_at));
+      const live = this.devices.filter(d => !d.revoked_at && d.kind !== 'callcenter').sort((a, b) => ts(b.last_seen_at) - ts(a.last_seen_at));
       const app = this.appLatest ? 'Quibase ' + this.appLatest.version_name + ' cached' : '';
       if (!live.length) return { tone: 'mute', t: this.devicesLoaded ? 'No tablet paired' : '—', s: app || 'Pair one in Settings → Tablets' };
       const seen = ts(live[0].last_seen_at), fresh = seen && this.now - seen < 5 * 60000;
@@ -1034,10 +1071,12 @@ function agentApp() {
       if (this.diagErr) out.push({ k: 'diag', tone: 'warn', text: "Couldn't check the printers and the Pi — retrying.", go: '' });
       for (const p of (this.diag && this.diag.problems) || []) out.push({ k: 'p' + p, tone: p === 'main_down' || p === 'printer_down' || p === 'sd_errors' || p === 'rootfs_ro' ? 'bad' : 'warn', text: PROBLEM_TEXT[p] || p, go: p === 'printer_down' ? 'printers' : '' });
       if (this.integ && this.integ.last_seen_at) {
-        for (const p of this.integ.problems || []) out.push({ k: 'pos' + (p.code || p.text), tone: p.severity === 'serious' ? 'bad' : 'warn', text: 'POS link: ' + p.text, go: '' });
+        for (const p of this.integ.problems || []) out.push({ k: 'pos' + (p.code || p.text), tone: p.severity === 'serious' ? 'bad' : 'warn', text: 'Store hub: ' + p.text, go: '' });
       }
       const backlog = (this.diag && this.diag.floor_backlog) || (this.floor && this.floor.unsynced_events) || 0;
       if (backlog > 0) out.push({ k: 'sync', tone: 'warn', text: backlog + ' floor change' + (backlog === 1 ? '' : 's') + ' waiting to sync to main', go: '' });
+      const parked = (this.parked && this.parked.count) || 0;
+      if (parked > 0) out.push({ k: 'parked', tone: 'bad', text: parked + ' change' + (parked === 1 ? '' : 's') + ' main refused, parked — retry below', go: '' });
       const acks = (this.diag && this.diag.acks_pending) || 0;
       if (acks > 0) out.push({ k: 'acks', tone: 'warn', text: acks + ' order receipt' + (acks === 1 ? '' : 's') + ' waiting to be confirmed to main', go: '' });
       if (this.batchOpenHours > 24) out.push({ k: 'old', tone: 'warn', text: 'This batch has been open over a day — close it?', go: '' });
@@ -1112,12 +1151,12 @@ function agentApp() {
       try { const r = await this.call('/api/settings/driver-reset'); this.reset = { time: r.time, last_run: r.last_run || null, form: r.time }; } catch { /* keep */ }
     },
     async addDriver() {
-      const name = this.newDriver.trim(), num = this.newDriverNum.trim(), dev = this.newDriverDev.trim(); if (!name) return;
+      const name = this.newDriver.trim(), dev = this.newDriverDev.trim(); if (!name) return;
       if (dev && !DEVICE_RE.test(dev)) { this.toast(DEVICE_HELP, true); return; }
       try {
-        await this.call('/api/drivers', { method: 'POST', body: { name, pos_number: num, pushover_device: dev } });
-        this.newDriver = ''; this.newDriverNum = ''; this.newDriverDev = ''; this.toast('Added ' + name);
-      } catch (e) { this.toast(e.code === 'pos_number_taken' ? 'Another driver already has Driver # ' + num + '.' : e.message, true); } finally { this.loadFloor(); }
+        await this.call('/api/drivers', { method: 'POST', body: { name, pushover_device: dev } });
+        this.newDriver = ''; this.newDriverDev = ''; this.toast('Added ' + name);
+      } catch (e) { this.toast(e.message, true); } finally { this.loadFloor(); }
     },
     // Phone = the driver's Pushover device name: Send Out pushes them the route.
     async saveDriverDevice(d) {
@@ -1134,14 +1173,6 @@ function agentApp() {
         await this.call('/api/drivers/' + d.id + '/route/test', { method: 'POST' });
         this.toast('Test route sent to ' + d.name);
       } catch (e) { this.toast(e.message, true); } finally { this.busy['rt' + d.id] = false; }
-    },
-    // Driver # = the driver's login number on the store's POS (the hub matches by it).
-    async saveDriverNum(d) {
-      const num = (this.nums[d.id] || '').trim(); if (num === (d.pos_number || '')) return;
-      try {
-        await this.call('/api/drivers/' + d.id, { method: 'PATCH', body: { pos_number: num } });
-        this.origNums[d.id] = num; this.toast(num ? d.name + ' is Driver # ' + num : 'Driver # cleared');
-      } catch (e) { this.toast(e.code === 'pos_number_taken' ? 'Another driver already has Driver # ' + num + '.' : e.message, true); } finally { this.loadFloor(); }
     },
     async renameDriver(d) {
       const name = (this.names[d.id] || '').trim(); if (!name || name === d.name) return;
@@ -1234,7 +1265,7 @@ function agentApp() {
       const cfg = (sc.status === 'fulfilled' && sc.value && sc.value.printers) || [];
       const byName = new Map();
       const add = (name) => { if (!byName.has(name)) byName.set(name, { name, id: '', ip: '', is_receipt: false, up: null }); return byName.get(name); };
-      for (const p of roster) Object.assign(add(p.name), { id: p.id, ip: p.ip || '', is_receipt: !!p.is_receipt });
+      for (const p of roster) Object.assign(add(p.name), { id: p.id, ip: p.ip || '', is_receipt: !!p.is_receipt, print_columns: p.print_columns || 48 });
       for (const p of cfg) { const e = add(p.name); if (!e.id) e.id = p.id; if (!e.ip) e.ip = p.ip; e.is_receipt = e.is_receipt || !!p.is_receipt; }
       for (const s of status) Object.assign(add(s.name), { ip: s.ip || byName.get(s.name).ip, up: s.up, mac: s.mac || '', last_checked: s.last_checked, last_error: s.last_error, up_since: s.up_since, down_since: s.down_since });
       this.printers = [...byName.values()].sort((a, b) => (b.is_receipt - a.is_receipt) || a.name.localeCompare(b.name));
@@ -1302,6 +1333,35 @@ function agentApp() {
       } finally { this.printerBusy = ''; this.loadPrinters(); }
     },
     resultFor(p) { return this.printerResults[p.id] || this.printerResults[p.name] || null; },
+    widthLabel(cols) { return cols === 42 ? '72 mm print area · 42 characters' : cols === 32 ? '58 mm · 32 characters' : '80 mm · 48 characters'; },
+    // Print the letter ruler on one printer, then ask which letter ended its first line.
+    async widthTest(p) {
+      if (this.printerBusy || !p.id) return;
+      this.printerBusy = 'width' + p.id;
+      try {
+        const out = await this.call('/api/printers/width-test', { method: 'POST', body: { printer_id: p.id } });
+        const r = ((out && out.results) || [])[0];
+        if (r && !r.ok) { this.printerResults[p.id] = { ok: false, text: r.error || r.error_code || 'Not printed' }; this.toast("The width test didn't print on " + p.name + '.', true); return; }
+        this.widthFor = p.id;
+      } catch (e) {
+        this.toast(e.code === 'test_in_progress' ? 'A printer test is already running — wait for it.' : e.message, true);
+      } finally { this.printerBusy = ''; }
+    },
+    // letter = the last one on the ruler's first line ('9' = the line didn't wrap).
+    async saveWidth(p, letter) {
+      if (this.widthBusy) return;
+      this.widthBusy = true;
+      try {
+        const out = await this.call('/api/printers/width', { method: 'POST', body: { printer_id: p.id, letter } });
+        this.widthFor = '';
+        p.print_columns = out.print_columns;
+        this.printerResults[p.id] = { ok: true, text: 'Width saved: ' + this.widthLabel(out.print_columns) };
+        this.toast(p.name + ' fits ' + out.columns_read + ' characters a line: its slips are laid out for ' + out.print_columns + '.');
+        setTimeout(() => this.loadPrinters(), 2500);
+      } catch (e) {
+        this.toast(e.message, true);
+      } finally { this.widthBusy = false; }
+    },
     get receiptPrinter() { return this.printers.find(p => p.is_receipt) || null; },
 
     // --- settings -------------------------------------------------------------------------
@@ -1311,8 +1371,9 @@ function agentApp() {
         case 'orders': this.loadAutoAccept(); this.loadDeliveryPrefs(); this.loadTimes(); break;
         case 'kitchen': this.loadFloorPrefs(); this.loadDevices(); this.loadStoreCfg(); break;
         case 'receipts': this.loadReceipt(); this.loadStoreCfg(); this.loadPrinters(); break;
+        case 'routing': this.loadRouting(); break;
         case 'clockout': this.loadReset(); break;
-        case 'tablets': this.loadDevices(); this.loadAppLatest(); break;
+        case 'tablets': this.loadDevices(); this.loadAppLatest(); this.loadAdminCode(); this.loadPinGuard(); break;
         case 'store': this.loadStoreCfg(); break;
         case 'account': this.cp.err = ''; this.loadUpdate(); break;
       }
@@ -1419,6 +1480,62 @@ function agentApp() {
       return [l.address_line1, l.address_line2].filter(Boolean).join(', ');
     },
 
+    // Routing & emergency reroute (contract 2.3c). statusOnly keeps unsaved edits
+    // (the 5 s status refresh and the routing.updated event while editing).
+    async loadRouting(statusOnly) {
+      try {
+        const r = await this.call('/api/settings/routing');
+        const keep = statusOnly && this.routeForm && this.routeDirty;
+        this.route = r; this.routeErr = '';
+        if (!keep) this.setRouteForm(r.routing);
+      } catch (e) { if (!statusOnly) this.routeErr = e.message; }
+    },
+    setRouteForm(r) {
+      const t = {};
+      Object.entries((r && r.targets) || {}).forEach(([k, v]) => { t[k] = (v || []).slice(); });
+      this.routeForm = { mode: (r && r.mode) || 'none', emergency_printer_id: (r && r.emergency_printer_id) || '', targets: t };
+    },
+    buildRouting() {
+      const f = this.routeForm || { targets: {} };
+      const targets = {};
+      Object.entries(f.targets).forEach(([k, v]) => { const ids = (v || []).filter(Boolean); if (ids.length) targets[k] = ids; });
+      return { mode: f.mode, emergency_printer_id: f.emergency_printer_id || '', targets };
+    },
+    get routeDirty() {
+      if (!this.route || !this.routeForm) return false;
+      const key = r => JSON.stringify([r.mode, r.emergency_printer_id || '', Object.keys(r.targets || {}).sort().map(k => [k, r.targets[k]])]);
+      return key(this.buildRouting()) !== key(this.route.routing);
+    },
+    get routePrinters() { return (this.route && this.route.printers) || []; },
+    routeName(id) { const p = this.routePrinters.find(x => x.id === id); return p ? p.name : '(removed printer)'; },
+    routeTone(st) { return st === 'up' ? 'b-ok' : st === 'down' ? 'b-bad' : 'b-mute'; },
+    routeState(st) { return st === 'up' ? 'Up' : st === 'down' ? 'Down' : 'Not checked yet'; },
+    routeList(pid) { return (this.routeForm && this.routeForm.targets[pid]) || []; },
+    // The printers a stand-in select may offer: never the printer itself or one already in its list.
+    routeChoices(pid, keep) {
+      const used = this.routeList(pid);
+      return this.routePrinters.filter(p => p.id !== pid && (p.id === keep || !used.includes(p.id)));
+    },
+    setRouteTarget(pid, i, id) {
+      const l = this.routeList(pid).slice();
+      if (id) l[i] = id; else l.splice(i, 1);
+      this.routeForm.targets = Object.assign({}, this.routeForm.targets, { [pid]: l });
+    },
+    addRouteTarget(pid, id) {
+      if (!id) return;
+      this.routeForm.targets = Object.assign({}, this.routeForm.targets, { [pid]: this.routeList(pid).concat([id]) });
+    },
+    async saveRouting() {
+      const body = this.buildRouting();
+      if (body.mode === 'one' && !body.emergency_printer_id) { this.toast('Choose the emergency printer.', true); return; }
+      this.routeBusy = true;
+      try {
+        const r = await this.call('/api/settings/routing', { method: 'PUT', body });
+        this.route = r; this.setRouteForm(r.routing);
+        this.toast('Routing saved');
+      } catch (e) { this.toast('Not saved. ' + e.message, true); } finally { this.routeBusy = false; }
+    },
+
     // Receipts
     async loadReceipt() {
       try {
@@ -1439,6 +1556,7 @@ function agentApp() {
         kitchen_item_size: f.kitchen_item_size, kitchen_number_size: f.kitchen_number_size, footer_text: footer,
         footer_size: f.footer_size, copies: Number(f.copies) || 1,
         show_store_address: !!f.show_store_address, show_phone: !!f.show_phone, extra_paper: !!f.extra_paper,
+        strike_images: f.strike_images !== false,
         // Set on the tablet (driver-report size, line spacing): kept as they are.
         driver_report_size: f.driver_report_size, spacing: f.spacing,
       };
@@ -1493,6 +1611,81 @@ function agentApp() {
       catch (e) { this.toast(e.message, true); }
     },
     get pairLeft() { return this.pair ? ts(this.pair.expires_at) - this.now : 0; },
+    // A device's last setup / full check (contract 2.10y): "Set up 3:12 pm · ok".
+    setupLine(st) {
+      const what = st.kind === 'full_check' ? 'Checked' : 'Set up';
+      const out = st.outcome === 'ok' ? 'ok' : (st.failed && st.failed.length ? 'not passed: ' + st.failed.join(', ') : 'not passed');
+      return what + ' ' + dateTime(st.at) + ' · ' + out;
+    },
+    // The admin pairing code for counter terminals (2.10y; never shown here).
+    async loadAdminCode() {
+      try { this.adminCode = await this.call('/api/settings/admin-code'); } catch { /* older agent */ }
+    },
+    async saveAdminCode(body) {
+      try { this.adminCode = await this.call('/api/settings/admin-code', { method: 'PUT', body }); this.toast('Admin pairing code saved'); }
+      catch (e) { this.toast(e.message, true); }
+    },
+    async changeAdminCode() {
+      const code = await this.ask({ title: 'New admin pairing code', body: '4 to 8 digits. Counter terminals use it to pair during their setup.', confirmLabel: 'Save', input: { label: 'Code', maxlength: 8 } });
+      if (code == null) return;
+      const c = String(code).trim();
+      if (!/^[0-9]{4,8}$/.test(c)) { this.toast('The code is 4 to 8 digits', true); return; }
+      this.saveAdminCode({ code: c, enabled: true });
+    },
+    // The pairing window (2.10y): the admin code pairs a terminal only while it is open.
+    get pairWindowLine() {
+      const a = this.adminCode, w = a && a.window;
+      if (!w) return '';
+      if (w.open && w.reason === 'manager' && ts(w.until) > this.now) return 'Pairing is OPEN until ' + clock(w.until) + ', or until one terminal pairs.';
+      if (w.open && w.reason === 'first_setup') {
+        return w.default_code_ok ? 'First setup: pairing is open until the first terminal pairs.'
+          : 'First setup: open pairing below to use the standard code 1024, or set the store\'s own code.';
+      }
+      return 'Pairing is closed. The code works only after Open pairing, for ' + a.window_minutes + ' minutes or one terminal.';
+    },
+    get pairWindowOpen() {
+      const w = this.adminCode && this.adminCode.window;
+      return !!(w && w.open && w.reason === 'manager' && ts(w.until) > this.now);
+    },
+    async openPairing() {
+      try { await this.call('/api/pairing/window', { method: 'POST' }); await this.loadAdminCode(); this.toast('Pairing is open'); }
+      catch (e) { this.toast(e.message, true); }
+    },
+    async closePairing() {
+      try { await this.call('/api/pairing/window', { method: 'DELETE' }); await this.loadAdminCode(); this.toast('Pairing is closed'); }
+      catch (e) { this.toast(e.message, true); }
+    },
+    async changePairMinutes() {
+      const v = await this.ask({ title: 'How long pairing stays open', body: '1 to 120 minutes after Open pairing (it also closes once a terminal has paired).', confirmLabel: 'Save', input: { label: 'Minutes', maxlength: 3 } });
+      if (v == null) return;
+      const m = Number(String(v).trim());
+      if (!Number.isInteger(m) || m < 1 || m > 120) { this.toast('1 to 120 minutes', true); return; }
+      this.saveAdminCode({ window_minutes: m });
+    },
+    // The PIN guard (2.10s): too many wrong PINs in a day lock the terminals' PIN pads until a manager unlocks them.
+    async loadPinGuard() {
+      try { this.pinGuard = await this.call('/api/pin-guard'); } catch { /* older agent / no terminals */ }
+    },
+    get pinGuardLine() {
+      const g = this.pinGuard;
+      if (!g) return '';
+      return (g.locked ? 'LOCKED since ' + dateTime(g.locked_at) + ': nobody can log in on a terminal with a PIN until you unlock. ' : 'OK. ')
+        + g.misses_24h + ' wrong PIN' + (g.misses_24h === 1 ? '' : 's') + ' in the last 24 hours; the PIN pads lock at ' + g.daily_ceiling + '.';
+    },
+    async unlockPins() {
+      const ok = await this.ask({ title: 'Unlock the PIN pads?', body: 'Do this once you know who typed the wrong PINs. The count starts over.', confirmLabel: 'Unlock', focusCancel: true });
+      if (!ok) return;
+      try { this.pinGuard = await this.call('/api/pin-guard/unlock', { method: 'POST' }); this.toast('PIN pads unlocked'); }
+      catch (e) { this.toast(e.message, true); }
+    },
+    async changePinCeiling() {
+      const v = await this.ask({ title: 'Wrong PINs before the PIN pads lock', body: '10 to 1000 wrong PINs in 24 hours, all terminals together.', confirmLabel: 'Save', input: { label: 'Wrong PINs', maxlength: 4 } });
+      if (v == null) return;
+      const n = Number(String(v).trim());
+      if (!Number.isInteger(n) || n < 10 || n > 1000) { this.toast('10 to 1000', true); return; }
+      try { this.pinGuard = await this.call('/api/settings/pin-guard', { method: 'PUT', body: { daily_ceiling: n } }); this.toast('Saved'); }
+      catch (e) { this.toast(e.message, true); }
+    },
     async revokeDevice(d) {
       const ok = await this.ask({ title: 'Revoke ' + d.name + '?', body: 'The tablet is signed out at once and has to be paired again.', confirmLabel: 'Revoke tablet', danger: true });
       if (!ok) return;

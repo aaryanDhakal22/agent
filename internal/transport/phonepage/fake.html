@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Fake Square (test)</title>
+<style>
+:root{--bg:#000;--ink:#fff;--dim:#9aa0a6;--go:#006aff}
+html,body{margin:0;background:var(--bg);color:var(--ink);font:17px/1.35 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+main{max-width:520px;margin:0 auto;padding:30px 16px;text-align:center;display:flex;flex-direction:column;gap:14px}
+.tag{color:#ffb020;font-weight:700;letter-spacing:1px}.amount{font-size:60px;font-weight:800}
+a{display:block;padding:20px;border-radius:14px;text-decoration:none;color:#fff;font-weight:700;font-size:20px;border:2px solid #333}
+a.go{background:var(--go);border-color:var(--go)}.small{color:var(--dim)}
+</style>
+</head>
+<body>
+<main>
+  <div class="tag">FAKE SQUARE · TEST ONLY · NO REAL MONEY</div>
+  <div class="amount" id="amount"></div>
+  <div class="small" id="note"></div>
+  <a id="approve" class="go" href="#">Approve (customer tapped)</a>
+  <a id="decline" href="#">Decline</a>
+  <a id="cancel" href="#">Cancel</a>
+</main>
+<script>
+"use strict";
+const q = new URLSearchParams(location.search);
+const amount = parseInt(q.get("amount") || "0", 10);
+document.getElementById("amount").textContent = "$" + (amount / 100).toFixed(2);
+document.getElementById("note").textContent = q.get("note") || "";
+for (const act of ["approve", "decline", "cancel"]) {
+  const p = new URLSearchParams(q); p.set("do", act);
+  document.getElementById(act).href = "/pay/fake-square?" + p.toString();
+}
+</script>
+</body>
+</html>

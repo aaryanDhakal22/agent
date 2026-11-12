@@ -75,7 +75,7 @@ type recordingRepo struct {
 	recorded       bool
 }
 
-func (r *recordingRepo) RecordAccepted(ctx context.Context, _ order.StoredOrder, _ bool) error {
+func (r *recordingRepo) RecordAccepted(ctx context.Context, _ order.StoredOrder) error {
 	r.recorded, r.recordedCtxErr = true, ctx.Err()
 	return nil
 }
@@ -139,7 +139,6 @@ func TestRecordAcceptTime(t *testing.T) {
 	ring := at(-30 * time.Second)
 	svc.recordAcceptTime(context.Background(), order.StoredOrder{Status: order.Status{ArrivalDate: now.Add(-90 * time.Second), AcceptedAt: at(0)}})
 	svc.recordAcceptTime(context.Background(), order.StoredOrder{Status: order.Status{ArrivalDate: now.Add(-3 * time.Hour), AcceptedAt: at(0), Rerung: true, RingAt: ring}})
-	svc.recordAcceptTime(context.Background(), order.StoredOrder{Status: order.Status{ArrivalDate: now.Add(-10 * time.Second), AcceptedAt: at(0), ExtSource: order.ExtSourceSoftTouch}})
 	svc.recordAcceptTime(context.Background(), order.StoredOrder{}) // no arrival time: skipped
 
 	var rm metricdata.ResourceMetrics
@@ -155,7 +154,7 @@ func TestRecordAcceptTime(t *testing.T) {
 			}
 		}
 	}
-	if got["online"] != [2]float64{2, 120} || got["pos"] != [2]float64{1, 10} {
+	if got["online"] != [2]float64{2, 120} || len(got) != 1 {
 		t.Fatalf("floor.accept.seconds = %v", got)
 	}
 }
@@ -174,12 +173,12 @@ func TestRecordPrintTime(t *testing.T) {
 	ctx := context.Background()
 	start := time.Now().Add(-2 * time.Second)
 	online := order.StoredOrder{}
-	pos := order.StoredOrder{Status: order.Status{ExtSource: order.ExtSourceSoftTouch}}
+	web := order.StoredOrder{Order: order.Snapshot{Source: "web"}}
 	one := []printer.TicketResult{{}}
 	svc.recordPrintTime(ctx, online, start, printer.Outcome{Printed: one}, nil)
 	svc.recordPrintTime(ctx, online, start, printer.Outcome{Printed: one, Failed: one}, nil)
 	svc.recordPrintTime(ctx, online, start, printer.Outcome{Failed: one}, errors.New("all down"))
-	svc.recordPrintTime(ctx, pos, start, printer.Outcome{Printed: one}, nil)
+	svc.recordPrintTime(ctx, web, start, printer.Outcome{Printed: one}, nil)
 	svc.recordPrintTime(ctx, online, start, printer.Outcome{}, printer.ErrNoTickets)
 
 	var rm metricdata.ResourceMetrics
@@ -199,7 +198,7 @@ func TestRecordPrintTime(t *testing.T) {
 			}
 		}
 	}
-	want := map[string]uint64{"ok/online": 1, "partial/online": 1, "failed/online": 1, "ok/pos": 1}
+	want := map[string]uint64{"ok/online": 1, "partial/online": 1, "failed/online": 1, "ok/web": 1}
 	if len(got) != len(want) {
 		t.Fatalf("orders.print.seconds = %v", got)
 	}

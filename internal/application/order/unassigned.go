@@ -69,7 +69,6 @@ func (s *Service) ReassignDeliveries(ctx context.Context, ids []string, driverID
 	if driversChanged {
 		s.publishDrivers(ctx)
 	}
-	s.feedNotify()
 	to := "Unassigned"
 	if driverID != "" {
 		to = moved[0].Status.DriverName

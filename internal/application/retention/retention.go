@@ -32,12 +32,21 @@ const (
 // long-downed agent trims down promptly. `keep` is the number of closed batches
 // to retain.
 func Run(ctx context.Context, repo order.Repository, keep int, logger zerolog.Logger, meters observability.Meters) {
+	RunEvery(ctx, repo, keep, sweepInterval, logger, meters)
+}
+
+// RunEvery is Run with another sweep interval (AGENT_DEV_TIMERS retention=,
+// dev only: the soak test; what a sweep trims is the same).
+func RunEvery(ctx context.Context, repo order.Repository, keep int, every time.Duration, logger zerolog.Logger, meters observability.Meters) {
+	if every <= 0 {
+		every = sweepInterval
+	}
 	log := logger.With().Str("module", "retention").Logger()
-	log.Info().Dur("interval", sweepInterval).Int("keep", keep).Msg("Retention sweeper started")
+	log.Info().Dur("interval", every).Int("keep", keep).Msg("Retention sweeper started")
 
 	sweep(ctx, repo, keep, log, meters)
 
-	ticker := time.NewTicker(sweepInterval)
+	ticker := time.NewTicker(every)
 	defer ticker.Stop()
 
 	for {

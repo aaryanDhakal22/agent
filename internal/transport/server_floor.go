@@ -26,7 +26,11 @@ func (s *Server) floorErr(w http.ResponseWriter, r *http.Request, err error) {
 	var lo *order.LeftoversError
 	var nr *order.ErrNotReady
 	var re *orderApp.RouteError
+	var un *order.UnsettledError
 	switch {
+	case errors.As(err, &un):
+		// contract 2.10s §4: a manual close over an unpaid counter check.
+		s.writeJSON(w, http.StatusConflict, map[string]any{"error": err.Error(), "code": "unsettled_checks", "checks": un.Checks})
 	case errors.As(err, &lo):
 		s.writeJSON(w, http.StatusConflict, map[string]any{"error": err.Error(), "code": "batch_has_leftovers", "leftovers": lo.Orders})
 	case errors.As(err, &re):
@@ -57,14 +61,8 @@ func (s *Server) floorErr(w http.ResponseWriter, r *http.Request, err error) {
 		s.writeJSON(w, http.StatusConflict, errCodeMap("came_back", "came_back"))
 	case errors.Is(err, orderApp.ErrNoDrivers):
 		s.writeJSON(w, http.StatusConflict, errCodeMap(err.Error(), "no_drivers"))
-	case errors.Is(err, orderApp.ErrPosPullOff):
-		s.writeJSON(w, http.StatusConflict, errCodeMap(err.Error(), "pos_pull_off"))
-	case errors.Is(err, orderApp.ErrNoChange):
-		s.writeJSON(w, http.StatusConflict, errCodeMap(err.Error(), "no_change"))
 	case errors.Is(err, orderApp.ErrNotFuture):
 		s.writeJSON(w, http.StatusConflict, errCodeMap(err.Error(), "not_future"))
-	case errors.Is(err, order.ErrPosNumberTaken):
-		s.writeJSON(w, http.StatusConflict, errCodeMap(err.Error(), "pos_number_taken"))
 	case errors.Is(err, orderApp.ErrBadQuery):
 		s.writeJSON(w, http.StatusBadRequest, errCodeMap("bad_query", "bad_query"))
 	case errors.Is(err, orderApp.ErrTooSoon):
@@ -73,6 +71,14 @@ func (s *Server) floorErr(w http.ResponseWriter, r *http.Request, err error) {
 		s.writeJSON(w, http.StatusServiceUnavailable, errCodeMap("Can't reach the server — try again.", "main_offline"))
 	case errors.Is(err, orderApp.ErrMainUnsupported):
 		s.writeJSON(w, http.StatusNotImplemented, errCodeMap("The server doesn't support this yet.", "main_unsupported"))
+	case errors.Is(err, order.ErrNotTippable):
+		s.writeJSON(w, http.StatusConflict, errCodeMap(err.Error(), "not_tippable"))
+	case errors.Is(err, order.ErrTipLocked):
+		s.writeJSON(w, http.StatusConflict, errCodeMap(err.Error(), "tip_locked"))
+	case errors.Is(err, order.ErrNotCancellable):
+		s.writeJSON(w, http.StatusConflict, errCodeMap(err.Error(), "not_cancellable"))
+	case errors.Is(err, orderApp.ErrMainUnreachable):
+		s.writeJSON(w, http.StatusServiceUnavailable, errCodeMap("Can't reach the server — try again.", "main_unreachable"))
 	case errors.Is(err, order.ErrNotFound):
 		s.writeJSON(w, http.StatusNotFound, errCodeMap(err.Error(), "not_found"))
 	case errors.Is(err, order.ErrDriverNotFound):
@@ -337,11 +343,10 @@ func (s *Server) handleListDrivers(w http.ResponseWriter, r *http.Request) {
 	s.writeJSON(w, http.StatusOK, ds)
 }
 
-// POST /api/drivers {name, pos_number?}
+// POST /api/drivers {name, pushover_device?}
 func (s *Server) handleCreateDriver(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Name           string `json:"name"`
-		PosNumber      string `json:"pos_number"`
 		PushoverDevice string `json:"pushover_device"`
 	}
 	if err := decodeBody(r, &req); err != nil {
@@ -352,7 +357,7 @@ func (s *Server) handleCreateDriver(w http.ResponseWriter, r *http.Request) {
 		s.floorErr(w, r, err)
 		return
 	}
-	d, err := s.service.CreateDriver(r.Context(), req.Name, req.PosNumber)
+	d, err := s.service.CreateDriver(r.Context(), req.Name)
 	if err != nil {
 		s.floorErr(w, r, err)
 		return
@@ -367,12 +372,10 @@ func (s *Server) handleCreateDriver(w http.ResponseWriter, r *http.Request) {
 	s.writeJSON(w, http.StatusCreated, d)
 }
 
-// PATCH /api/drivers/{id} {name?, pos_number?, pushover_device?} ("" clears
-// the number / device)
+// PATCH /api/drivers/{id} {name?, pushover_device?} ("" clears the device)
 func (s *Server) handleRenameDriver(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Name           *string `json:"name"`
-		PosNumber      *string `json:"pos_number"`
 		PushoverDevice *string `json:"pushover_device"`
 	}
 	if err := decodeBody(r, &req); err != nil {
@@ -386,8 +389,12 @@ func (s *Server) handleRenameDriver(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if req.Name != nil || req.PosNumber != nil || req.PushoverDevice == nil {
-		if err := s.service.UpdateDriver(r.Context(), id, req.Name, req.PosNumber); err != nil {
+	if req.Name == nil && req.PushoverDevice == nil {
+		s.writeJSON(w, http.StatusBadRequest, errCodeMap("give a name or a pushover_device", "bad_request"))
+		return
+	}
+	if req.Name != nil {
+		if err := s.service.RenameDriver(r.Context(), id, *req.Name); err != nil {
 			s.floorErr(w, r, err)
 			return
 		}
@@ -553,7 +560,11 @@ func (s *Server) handleCloseBatch(w http.ResponseWriter, r *http.Request) {
 		s.floorErr(w, r, err)
 		return
 	}
-	closed, finished, err := s.service.CloseBatch(r.Context(), req.Force)
+	ctx := r.Context()
+	if _, ok := r.Context().Value(deviceCtxKey{}).(*device.Device); !ok {
+		ctx = order.WithCloseTrigger(ctx, "web") // the Pi page (a session)
+	}
+	closed, finished, err := s.service.CloseBatch(ctx, req.Force)
 	if err != nil {
 		s.floorErr(w, r, err)
 		return
@@ -566,7 +577,8 @@ func (s *Server) handleCloseBatch(w http.ResponseWriter, r *http.Request) {
 		s.floorErr(w, r, err)
 		return
 	}
-	s.writeJSON(w, http.StatusOK, map[string]any{"closed": closed, "opened": opened.Batch, "auto_finished": finished})
+	s.writeJSON(w, http.StatusOK, map[string]any{"closed": closed, "opened": opened.Batch, "auto_finished": finished,
+		"unsettled": closed.Unsettled})
 }
 
 // POST /api/drivers/{id}/undo-return — 409 invalid_state when it isn't the

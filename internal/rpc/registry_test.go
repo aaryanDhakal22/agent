@@ -48,3 +48,24 @@ func TestSendReturnsTheReplyPayload(t *testing.T) {
 		t.Fatal("a poster without replies must error")
 	}
 }
+
+// F-1: a panicking handler is recovered; the registry keeps serving.
+func TestHandlerPanicIsRecovered(t *testing.T) {
+	meters, err := observability.NewMeters()
+	if err != nil {
+		t.Fatal(err)
+	}
+	posts := &countingPoster{}
+	r := NewRegistry(posts, zerolog.Nop(), meters)
+	r.Register("boom", func(context.Context, json.RawMessage) (any, error) { panic("poison") })
+	r.Register(MsgPing, func(context.Context, json.RawMessage) (any, error) { return map[string]bool{"pong": true}, nil })
+	r.Handle(context.Background(), []byte(`{"type":"boom","id":"1","payload":{}}`))
+	r.Handle(context.Background(), []byte(`{"type":"ping","id":"2","payload":{}}`))
+	if posts.n != 1 {
+		t.Fatalf("replies posted = %d, want 1 (the ping after the panic)", posts.n)
+	}
+}
+
+type countingPoster struct{ n int }
+
+func (c *countingPoster) PostRPC(context.Context, []byte) error { c.n++; return nil }

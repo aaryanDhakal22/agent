@@ -75,7 +75,8 @@ def test_pairing_and_device_keys(floor) -> None:
     assert requests.get(f"{a.base}/api/devices", headers=tablet, timeout=5).status_code == 401
 
     devs = a.http.get(f"{a.base}/api/devices", timeout=5).json()
-    assert [d["name"] for d in devs] == ["Counter tablet"] and "key" not in devs[0]
+    # (+ the store's call-center device, always last: contract 2.10ab)
+    assert [(d["name"], d["kind"]) for d in devs] == [("Counter tablet", "tablet"), ("Call center", "callcenter")] and "key" not in devs[0]
     assert post(a, f"/api/devices/{devs[0]['id']}/revoke").status_code == 204
     assert requests.get(f"{a.base}/api/floor", headers=tablet, timeout=5).status_code == 401
 

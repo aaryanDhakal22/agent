@@ -1,8 +1,10 @@
-// Package appupdate keeps the newest Quibase (counter tablet app) APK cached
-// on the agent so paired tablets can update over the LAN. The console uploads
-// a release to main; the agent polls main (on every SSE connect + every few
-// minutes), downloads a newer APK, verifies its sha256 and keeps it next to
-// the SQLite file. Tablets then GET /api/app/latest + /api/app/apk.
+// Package appupdate keeps the newest APK of an app cached on the agent so
+// paired devices can update over the LAN: Quibase (the counter tablet; GET
+// /api/app/latest + /api/app/apk) and the counter terminal (GET
+// /api/terminal/app/latest + /api/terminal/app/apk, contract §2.10w). The
+// console uploads a release to main (per app); the agent polls main (on
+// every SSE connect + every few minutes), downloads a newer APK, verifies
+// its sha256 and keeps it next to the SQLite file. One Updater per app.
 package appupdate
 
 import (
@@ -11,6 +13,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -22,8 +25,12 @@ import (
 	"github.com/rs/zerolog"
 )
 
-// App is the only app distributed today.
-const App = "quibase"
+// App is the tablet app (the Updater New builds); AppTerminal the counter
+// terminal's (NewFor).
+const (
+	App         = "quibase"
+	AppTerminal = "terminal"
+)
 
 // Release is a cached app release (main's /store/v1/agent/app/latest shape).
 type Release struct {
@@ -44,10 +51,13 @@ type Store interface {
 // Fetcher is the device-keyed client to main (mainclient.Client).
 type Fetcher interface {
 	Get(ctx context.Context, key, path, rawQuery string) (int, []byte, error)
-	Download(ctx context.Context, key, path, rawQuery string) (int, []byte, error)
+	// DownloadTo streams the APK into w (≤ limit bytes; R-5: never whole in
+	// memory).
+	DownloadTo(ctx context.Context, key, path, rawQuery string, w io.Writer, limit int64) (int, int64, error)
 }
 
 type Updater struct {
+	app    string
 	dir    string
 	store  Store
 	fetch  Fetcher
@@ -57,13 +67,28 @@ type Updater struct {
 
 	mu  sync.RWMutex
 	cur *Release
+	// onCached runs (in the checking goroutine) after a newer release is
+	// cached.
+	onCached func(Release)
 }
 
-// New builds an Updater caching APKs in dir (created on demand).
+// New builds the Quibase Updater caching APKs in dir (created on demand).
 func New(dir string, store Store, fetch Fetcher, key func() string, logger zerolog.Logger) *Updater {
-	return &Updater{dir: dir, store: store, fetch: fetch, key: key, wake: make(chan struct{}, 1),
-		logger: logger.With().Str("module", "app-update").Logger()}
+	return NewFor(App, dir, store, fetch, key, logger)
 }
+
+// NewFor builds an Updater for one app (main's ?app=): its files are
+// <app>-<version code>.apk in dir, its metadata in store.
+func NewFor(app, dir string, store Store, fetch Fetcher, key func() string, logger zerolog.Logger) *Updater {
+	return &Updater{app: app, dir: dir, store: store, fetch: fetch, key: key, wake: make(chan struct{}, 1),
+		logger: logger.With().Str("module", "app-update").Str("app", app).Logger()}
+}
+
+// App is the app this Updater caches.
+func (u *Updater) App() string { return u.app }
+
+// OnCached registers a hook run after a newer release is cached.
+func (u *Updater) OnCached(fn func(Release)) { u.onCached = fn }
 
 // Load restores the cached release from the DB (ignored if its file is gone).
 func (u *Updater) Load(ctx context.Context) {
@@ -97,7 +122,7 @@ func (u *Updater) Current() *Release {
 
 // Path is where a release's APK lives.
 func (u *Updater) Path(r Release) string {
-	return filepath.Join(u.dir, fmt.Sprintf("%s-%d.apk", App, r.VersionCode))
+	return filepath.Join(u.dir, fmt.Sprintf("%s-%d.apk", u.app, r.VersionCode))
 }
 
 // Wake asks for a check now (e.g. after the SSE stream reconnects).
@@ -125,13 +150,30 @@ func (u *Updater) Run(ctx context.Context, every time.Duration) {
 	}
 }
 
+// MaxAPKBytes caps a cached app release (a release build with Square's SDK
+// is 100-170 MB).
+const MaxAPKBytes = 512 << 20
+
+// validSHA256: 64 hex characters.
+func validSHA256(s string) bool {
+	if len(s) != 64 {
+		return false
+	}
+	for _, c := range s {
+		if !(c >= '0' && c <= '9' || c >= 'a' && c <= 'f' || c >= 'A' && c <= 'F') {
+			return false
+		}
+	}
+	return true
+}
+
 // Check fetches main's newest release and caches it if it is newer.
 func (u *Updater) Check(ctx context.Context) error {
 	key := u.key()
 	if key == "" {
 		return nil // not provisioned yet
 	}
-	q := "app=" + App
+	q := "app=" + u.app
 	status, body, err := u.fetch.Get(ctx, key, "/store/v1/agent/app/latest", q)
 	if err != nil {
 		return err
@@ -147,26 +189,45 @@ func (u *Updater) Check(ctx context.Context) error {
 	if err := json.Unmarshal(body, &rel); err != nil || rel.VersionCode <= 0 {
 		return fmt.Errorf("latest: bad body")
 	}
+	// The security round (M9): a release is taken only with its sha256 (64
+	// hex: an empty one used to compare equal to nothing checked on the
+	// tablets) and a sane size; the download below stops at that size.
+	if !validSHA256(rel.SHA256) {
+		return fmt.Errorf("latest: release %d has no sha256", rel.VersionCode)
+	}
+	if rel.Size <= 0 || rel.Size > MaxAPKBytes {
+		return fmt.Errorf("latest: release %d has size %d (limit %d)", rel.VersionCode, rel.Size, int64(MaxAPKBytes))
+	}
 	if cur := u.Current(); cur != nil && rel.VersionCode <= cur.VersionCode {
 		return nil
 	}
 
-	status, apk, err := u.fetch.Download(ctx, key, "/store/v1/agent/app/releases/"+strconv.FormatInt(rel.VersionCode, 10)+"/apk", q)
-	if err != nil {
-		return err
-	}
-	if status != http.StatusOK {
-		return fmt.Errorf("download: HTTP %d", status)
-	}
-	sum := sha256.Sum256(apk)
-	if got := hex.EncodeToString(sum[:]); !strings.EqualFold(got, rel.SHA256) || int64(len(apk)) != rel.Size {
-		return fmt.Errorf("download: checksum/size mismatch")
-	}
+	// Streamed to the temp file and hashed on the way (R-5: an APK is tens of
+	// MB; the Pi used to hold it whole in memory).
 	if err := os.MkdirAll(u.dir, 0o755); err != nil {
 		return err
 	}
 	tmp := u.Path(rel) + ".tmp"
-	if err := os.WriteFile(tmp, apk, 0o644); err != nil {
+	f, err := os.OpenFile(tmp, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o644)
+	if err != nil {
+		return err
+	}
+	h := sha256.New()
+	status, n, err := u.fetch.DownloadTo(ctx, key, "/store/v1/agent/app/releases/"+strconv.FormatInt(rel.VersionCode, 10)+"/apk", q,
+		io.MultiWriter(f, h), rel.Size)
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	if err == nil && status != http.StatusOK {
+		err = fmt.Errorf("download: HTTP %d", status)
+	}
+	if err == nil {
+		if got := hex.EncodeToString(h.Sum(nil)); !strings.EqualFold(got, rel.SHA256) || n != rel.Size {
+			err = fmt.Errorf("download: checksum/size mismatch")
+		}
+	}
+	if err != nil {
+		_ = os.Remove(tmp)
 		return err
 	}
 	if err := os.Rename(tmp, u.Path(rel)); err != nil {
@@ -181,7 +242,10 @@ func (u *Updater) Check(ctx context.Context) error {
 	u.cur = &rel
 	u.mu.Unlock()
 	u.prune(rel, prev)
-	u.logger.Info().Ctx(ctx).Int64("version_code", rel.VersionCode).Str("version_name", rel.VersionName).Msg("New Quibase release cached for tablets")
+	u.logger.Info().Ctx(ctx).Int64("version_code", rel.VersionCode).Str("version_name", rel.VersionName).Msg("New app release cached for the store's devices")
+	if u.onCached != nil {
+		u.onCached(rel)
+	}
 	return nil
 }
 
@@ -191,7 +255,7 @@ func (u *Updater) prune(cur Release, prev *Release) {
 	if prev != nil {
 		keep[u.Path(*prev)] = true
 	}
-	matches, _ := filepath.Glob(filepath.Join(u.dir, App+"-*.apk"))
+	matches, _ := filepath.Glob(filepath.Join(u.dir, u.app+"-*.apk"))
 	for _, m := range matches {
 		if !keep[m] {
 			_ = os.Remove(m)

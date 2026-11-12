@@ -1,8 +1,8 @@
 // Package ssebroker fans out events to connected mobile clients (the counter
 // tablet + the web UI). Mirrors the broker in main/ but is agent-local.
 // Event types: order.arrived, order.updated, order.escalated,
-// drivers.updated, batch.closed (+ 2.1.0: order.added, settings.updated,
-// integration.status, integration.toast).
+// drivers.updated, batch.closed (+ 2.1.0: settings.updated,
+// integration.status).
 package ssebroker
 
 import (
@@ -146,8 +146,8 @@ func (b *Broker) PublishFloorChanged() {
 	b.publishJSON("floor.updated", map[string]any{})
 }
 
-// Publish sends any event (2.1.0: order.added, settings.updated,
-// integration.status, integration.toast).
+// Publish sends any event (2.1.0: settings.updated,
+// integration.status).
 func (b *Broker) Publish(typ string, v any) { b.publishJSON(typ, v) }
 
 func (b *Broker) publishJSON(typ string, v any) {

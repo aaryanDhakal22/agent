@@ -19,156 +19,7 @@ import (
 	"github.com/rs/zerolog"
 )
 
-// 2.1.0: POS orders, the hub feed, driver numbers, future orders, close batch.
-
-func posOrder(ftype, hash string) order.ExternalOrder {
-	sent := time.Now().Add(-time.Minute).UTC()
-	e := order.ExternalOrder{Source: order.ExtSourceSoftTouch, Hash: hash, DisplayNumber: 57, CheckType: ftype, SentAt: &sent,
-		Customer: order.ExternalCustomer{DisplayName: "Pat Doe", Phone: "4105550100"},
-		Items:    []order.ExternalItem{{Name: "14\" Cheese Pizza", Quantity: 1, UnitPriceCents: 1199, LineTotalCents: 1199}},
-		Money:    order.ExternalMoney{SubtotalCents: 1199, TaxCents: 72, TotalCents: 1271}, CashDueCents: 1271}
-	if ftype == "delivery" {
-		e.Address = &order.Address{Line1: "931 Taylor Ave", City: "Towson", State: "MD", PostalCode: "21286"}
-	}
-	return e
-}
-
-func upsertPOS(t *testing.T, r *OrderRepository, ref string, e order.ExternalOrder) order.ExternalResult {
-	t.Helper()
-	res, err := r.UpsertExternal(context.Background(), ref, e, order.ExternalMeta{OrderID: uuid.Must(uuid.NewV7()).String(),
-		TenantID: uuid.NewString(), LocationID: uuid.NewString(), PrepMinutes: 35, Now: time.Now()})
-	if err != nil {
-		t.Fatal(err)
-	}
-	return res
-}
-
-func feedTypes(t *testing.T, r *OrderRepository) []string {
-	t.Helper()
-	evs, _, err := r.ListFeed(context.Background(), 0, 1000)
-	if err != nil {
-		t.Fatal(err)
-	}
-	out := []string{}
-	for _, e := range evs {
-		out = append(out, e.Type)
-	}
-	return out
-}
-
-func TestUpsertExternalStoresLocalOnlyAccepted(t *testing.T) {
-	r := newFloorRepo(t)
-	e := posOrder("delivery", "h1")
-	res := upsertPOS(t, r, "1276237", e)
-	if !res.Created || res.Changed {
-		t.Fatalf("first upsert = %+v", res)
-	}
-	so := res.Order
-	st := so.Status
-	if st.State != order.StateAccepted || st.KitchenNumber != nil || st.DisplayNumber == nil || *st.DisplayNumber != 57 ||
-		!st.LocalOnly || st.ExtSource != "softtouch" || st.ExtRef != "1276237" || st.CashDueCents != 1271 {
-		t.Fatalf("status = %+v", st)
-	}
-	if so.Order.Source != order.SourcePOS || so.Order.SourceEventID != "softtouch:1276237" || so.Order.CashDue() != 1271 {
-		t.Fatalf("snapshot = %+v", so.Order)
-	}
-	if st.PrepMinutes == nil || *st.PrepMinutes != 35 || !st.EstimatedReadyAt.Equal(e.SentAt.Add(35*time.Minute).Truncate(time.Millisecond)) {
-		t.Fatalf("prep = %v est = %v, want 35 from sent %v", st.PrepMinutes, st.EstimatedReadyAt, e.SentAt)
-	}
-	if res := upsertPOS(t, r, "1276237", e); res.Created || res.Changed || res.Order.Order.ID != so.Order.ID {
-		t.Fatalf("same hash = %+v", res)
-	}
-	e2 := e
-	e2.Hash, e2.Paid, e2.CashDueCents = "h2", true, 0
-	e2.Items = append(e2.Items, order.ExternalItem{Name: "Wings", Quantity: 1, UnitPriceCents: 899, LineTotalCents: 899})
-	res = upsertPOS(t, r, "1276237", e2)
-	if res.Created || !res.Changed || res.AddressChanged || len(res.Order.Order.Items) != 2 || !res.Order.Status.Paid || res.Order.Order.CashDue() != 0 {
-		t.Fatalf("changed = %+v", res)
-	}
-	e3 := e2
-	e3.Hash, e3.Address = "h3", &order.Address{Line1: "1 Other St", City: "Towson"}
-	if res = upsertPOS(t, r, "1276237", e3); !res.AddressChanged {
-		t.Fatal("address change not reported")
-	}
-	// Never synced to main: no order.status (or anything naming it) in the outbox.
-	for _, ev := range eventsOf(t, r) {
-		if ev["order_id"] == so.Order.ID {
-			t.Fatalf("POS order reached the main outbox: %v", ev)
-		}
-	}
-}
-
-func TestVoidAndFinishedPOSOrders(t *testing.T) {
-	r := newFloorRepo(t)
-	ctx := context.Background()
-	res := upsertPOS(t, r, "900", posOrder("pickup", "a"))
-	so, changed, err := r.VoidExternal(ctx, "softtouch", "900")
-	if err != nil || !changed || so.Status.State != order.StateCancelled {
-		t.Fatalf("void = %+v %v %v", so, changed, err)
-	}
-	if _, changed, _ = r.VoidExternal(ctx, "softtouch", "900"); changed {
-		t.Fatal("second void changed something")
-	}
-	if _, _, err := r.VoidExternal(ctx, "softtouch", "nope"); !errors.Is(err, order.ErrNotFound) {
-		t.Fatalf("unknown void = %v", err)
-	}
-	// A finished order still takes paid + money, never re-opens.
-	e := posOrder("pickup", "b")
-	e.Paid, e.Money.TotalCents = true, 999
-	e.Items = nil
-	got := upsertPOS(t, r, "900", e)
-	if got.Created || !got.Changed || got.Order.Status.State != order.StateCancelled || !got.Order.Status.Paid ||
-		got.Order.Order.Money.Total != 999 || len(got.Order.Order.Items) != 1 || got.Order.Order.ID != res.Order.Order.ID {
-		t.Fatalf("finished upsert = %+v", got.Order)
-	}
-	if types := feedTypes(t, r); strings.Join(types, ",") != "order.cancelled" {
-		t.Fatalf("feed = %v", types)
-	}
-}
-
-func TestDriverPosNumberUnique(t *testing.T) {
-	r := newFloorRepo(t)
-	ctx := context.Background()
-	a, err := r.CreateDriver(ctx, "Ann", "12")
-	if err != nil || a.PosNumber != "12" {
-		t.Fatalf("create = %+v %v", a, err)
-	}
-	if _, err := r.CreateDriver(ctx, "Bob", "12"); !errors.Is(err, order.ErrPosNumberTaken) {
-		t.Fatalf("duplicate on create = %v", err)
-	}
-	b, _ := r.CreateDriver(ctx, "Bob", "")
-	c, _ := r.CreateDriver(ctx, "Cat", "") // two drivers without a number are fine
-	if err := r.SetDriverPosNumber(ctx, b.ID, "12"); !errors.Is(err, order.ErrPosNumberTaken) {
-		t.Fatalf("duplicate on set = %v", err)
-	}
-	if err := r.SetDriverPosNumber(ctx, b.ID, "13"); err != nil {
-		t.Fatal(err)
-	}
-	if err := r.SetDriverPosNumber(ctx, c.ID, ""); err != nil {
-		t.Fatal(err)
-	}
-	if d, err := r.DriverByPosNumber(ctx, "13"); err != nil || d.ID != b.ID {
-		t.Fatalf("by number = %+v %v", d, err)
-	}
-	// A removed driver's number is free again.
-	if _, err := r.RemoveDriver(ctx, a.ID); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := r.CreateDriver(ctx, "Dee", "12"); err != nil {
-		t.Fatalf("reuse after remove = %v", err)
-	}
-	if _, err := r.DriverByPosNumber(ctx, ""); !errors.Is(err, order.ErrDriverNotFound) {
-		t.Fatalf("empty number = %v", err)
-	}
-	ds, _ := r.ListDrivers(ctx)
-	got := map[string]string{}
-	for _, d := range ds {
-		got[d.Name] = d.PosNumber
-	}
-	if got["Bob"] != "13" || got["Dee"] != "12" || got["Cat"] != "" {
-		t.Fatalf("roster numbers = %v", got)
-	}
-}
+// 2.1.0: the hub feed, future orders, close batch.
 
 func TestFeedCursorAndPrune(t *testing.T) {
 	r := newFloorRepo(t)
@@ -212,51 +63,6 @@ func TestFeedCursorAndPrune(t *testing.T) {
 	}
 }
 
-func TestCloseBatchPOSAndScheduled(t *testing.T) {
-	r := newFloorRepo(t)
-	ctx := context.Background()
-	cooking := upsertPOS(t, r, "1", posOrder("delivery", "a")).Order
-	done := upsertPOS(t, r, "2", posOrder("pickup", "b")).Order
-	if _, err := r.MarkReady(ctx, done.Order.ID, true); err != nil {
-		t.Fatal(err)
-	}
-	future := arrive(t, r, "pickup")
-	if _, err := r.Schedule(ctx, future.Order.ID, 20, time.Now().Add(2*time.Hour)); err != nil {
-		t.Fatal(err)
-	}
-	old, _ := r.OpenBatch(ctx)
-
-	// Neither the scheduled order nor the cooking POS check blocks a plain
-	// close: the POS check is cancelled like at a forced one.
-	if _, _, err := r.CloseBatch(ctx, false); err != nil {
-		t.Fatal(err)
-	}
-	c := get(t, r, cooking.Order.ID)
-	if c.Status.State != order.StateCancelled || c.Order.Customer.DisplayName != "" || c.Order.Customer.Phone != "" ||
-		c.Order.Fulfillment.Address != nil || len(c.Order.Items) != 1 || c.Status.DisplayNumber == nil {
-		t.Fatalf("cancelled POS = %+v", c)
-	}
-	d := get(t, r, done.Order.ID)
-	if d.Status.State != order.StateReady || d.Order.Customer.DisplayName != "" || d.Order.Money.Total != 1271 {
-		t.Fatalf("wiped POS = %+v", d)
-	}
-	f := get(t, r, future.Order.ID)
-	nb, _ := r.OpenBatch(ctx)
-	if f.Status.State != order.StateScheduled || f.Status.BatchID != nb.ID || nb.ID == old.ID {
-		t.Fatalf("scheduled = %+v (batch %d)", f.Status, nb.ID)
-	}
-	types := feedTypes(t, r)
-	if strings.Join(types, ",") != "order.ready,order.cancelled,batch.closed" {
-		t.Fatalf("feed = %v", types)
-	}
-	// main hears about the scheduled online order, never about the POS ones.
-	for _, ev := range eventsOf(t, r) {
-		if ev["order_id"] == cooking.Order.ID || ev["order_id"] == done.Order.ID {
-			t.Fatalf("POS in outbox: %v", ev)
-		}
-	}
-}
-
 func TestScheduleAndRaiseDue(t *testing.T) {
 	r := newFloorRepo(t)
 	ctx := context.Background()
@@ -293,53 +99,6 @@ func TestScheduleAndRaiseDue(t *testing.T) {
 	}
 }
 
-// delivery.run reaches main with POS stops anonymous.
-func TestDeliveryRunAnonymousPOSStops(t *testing.T) {
-	r := newFloorRepo(t)
-	ctx := context.Background()
-	d, _ := r.CreateDriver(ctx, "Ann", "12")
-	clockIn(t, r, d.ID)
-	pos := upsertPOS(t, r, "777", posOrder("delivery", "a")).Order
-	online := accept(t, r, arriveDelivery(t, r, "Erik Davis", 0, 2000, true))
-	if _, err := r.MarkReady(ctx, online.Order.ID, true); err != nil {
-		t.Fatal(err)
-	}
-	if _, _, err := r.SendOut(ctx, d.ID, []string{pos.Order.ID, online.Order.ID}, true, order.RunMeta{SuggestedIDs: []string{pos.Order.ID}}); err != nil {
-		t.Fatal(err)
-	}
-	var run map[string]any
-	for _, ev := range eventsOf(t, r) {
-		if ev["type"] == "delivery.run" {
-			run = ev
-		}
-	}
-	raw, _ := json.Marshal(run)
-	if run == nil || strings.Contains(string(raw), pos.Order.ID) || strings.Contains(string(raw), "Taylor") || strings.Contains(string(raw), "Pat") {
-		t.Fatalf("run leaks the POS order: %s", raw)
-	}
-	opaque := order.PosOpaqueID(pos.Status.BatchID, "777")
-	if !strings.HasPrefix(opaque, "pos:") || len(opaque) != 16 || !strings.Contains(string(raw), `"opaque_id":"`+opaque+`"`) ||
-		!strings.Contains(string(raw), `"source":"pos"`) || !strings.Contains(string(raw), online.Order.ID) {
-		t.Fatalf("run = %s", raw)
-	}
-	// The hub's run.sent names both, the POS one by its check.
-	evs, _, _ := r.ListFeed(ctx, 0, 100)
-	var rs order.RunSentData
-	for _, e := range evs {
-		if e.Type == order.FeedRunSent {
-			_ = json.Unmarshal(e.Data, &rs)
-		}
-	}
-	if rs.Driver.PosNumber == nil || *rs.Driver.PosNumber != "12" || len(rs.Orders) != 2 || rs.RunID != run["event_id"] {
-		t.Fatalf("run.sent = %+v", rs)
-	}
-	for _, o := range rs.Orders {
-		if (o.OrderID == pos.Order.ID) != (o.ExtRef != nil && *o.ExtRef == "777") {
-			t.Fatalf("run.sent order = %+v", o)
-		}
-	}
-}
-
 // 00014 rebuilds orders: an upgraded DB keeps its orders (and pools).
 func TestMigrationTo00014KeepsOrders(t *testing.T) {
 	ctx := context.Background()
@@ -366,37 +125,11 @@ func TestMigrationTo00014KeepsOrders(t *testing.T) {
 	defer db.Close()
 	r := NewOrderRepository(db, zerolog.Nop())
 	so := get(t, r, "0198b4a6-0000-7000-8000-000000000001")
-	if so.Status.State != order.StateReady || so.Status.PoolSeq == nil || *so.Status.PoolSeq != 2 || so.Status.LocalOnly {
+	if so.Status.State != order.StateReady || so.Status.PoolSeq == nil || *so.Status.PoolSeq != 2 {
 		t.Fatalf("migrated = %+v", so.Status)
 	}
 	if set, err := r.IntegrationSettings(ctx); err != nil || !reflect.DeepEqual(set, order.DefaultIntegrationSettings()) {
 		t.Fatalf("settings = %+v %v", set, err)
-	}
-}
-
-// Leftovers: an unfinished online order blocks a plain close, a POS check
-// never does (it is still cancelled or finished at the forced close).
-func TestCloseBatchLeftoversSkipPOS(t *testing.T) {
-	r := newFloorRepo(t)
-	ctx := context.Background()
-	cooking := upsertPOS(t, r, "1", posOrder("pickup", "a")).Order
-	online := accept(t, r, arrive(t, r, "pickup"))
-	_, _, err := r.CloseBatch(ctx, false)
-	var lo *order.LeftoversError
-	if !errors.As(err, &lo) || len(lo.Orders) != 1 || lo.Orders[0].Order.ID != online.Order.ID {
-		t.Fatalf("leftovers = %v", err)
-	}
-	if got := get(t, r, cooking.Order.ID); got.Status.State != order.StateAccepted {
-		t.Fatalf("a refused close changed the POS check: %s", got.Status.State)
-	}
-	if _, _, err := r.CloseBatch(ctx, true); err != nil {
-		t.Fatal(err)
-	}
-	if got := get(t, r, cooking.Order.ID); got.Status.State != order.StateCancelled {
-		t.Fatalf("POS check after the close = %s", got.Status.State)
-	}
-	if got := get(t, r, online.Order.ID); got.Status.State != order.StateReady {
-		t.Fatalf("online order after the close = %s", got.Status.State)
 	}
 }
 
@@ -472,53 +205,70 @@ func TestCloseBatchMovesWaitingFutureOrders(t *testing.T) {
 	}
 }
 
-// AUTO's suggested_ids reach main with POS orders by their opaque id — sent
-// on this run or not — never their local id.
-func TestDeliveryRunSuggestedPOSOpaque(t *testing.T) {
-	r := newFloorRepo(t)
+// 00030 (H3): the POS checks still on the Pi go with their side rows, every
+// online order and driver stays, and the POS switches leave the settings.
+func TestMigration00030DropsSoftTouch(t *testing.T) {
 	ctx := context.Background()
-	d, _ := r.CreateDriver(ctx, "Ann", "")
-	clockIn(t, r, d.ID)
-	sent := upsertPOS(t, r, "801", posOrder("delivery", "a")).Order
-	left := upsertPOS(t, r, "802", posOrder("delivery", "b")).Order // suggested, not sent
-	online := accept(t, r, arriveDelivery(t, r, "Erik Davis", 0, 2000, true))
-	if _, err := r.MarkReady(ctx, online.Order.ID, true); err != nil {
+	path := filepath.Join(t.TempDir(), "agent.db")
+	if err := migrate.RunTo(ctx, path, 29); err != nil {
 		t.Fatal(err)
 	}
-	suggested := []string{sent.Order.ID, left.Order.ID, online.Order.ID, uuid.NewString()}
-	if _, _, err := r.SendOut(ctx, d.ID, []string{sent.Order.ID, online.Order.ID}, true, order.RunMeta{SuggestedIDs: suggested}); err != nil {
+	raw, err := sql.Open("sqlite", path)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if suggested[0] != sent.Order.ID || suggested[1] != left.Order.ID {
-		t.Fatal("the caller's suggestions were rewritten in place")
-	}
-	var run order.DeliveryRunEvent
-	for _, ev := range eventsOf(t, r) {
-		if ev["type"] == "delivery.run" {
-			raw, _ := json.Marshal(ev)
-			_ = json.Unmarshal(raw, &run)
+	const online, pos = "0198b4a6-0000-7000-8000-000000000011", "0198b4a6-0000-7000-8000-000000000012"
+	for _, q := range []string{
+		`INSERT INTO orders (id, tenant_id, location_id, source, source_event_id, snapshot, state, batch_id)
+		 VALUES ('` + online + `', 't', 'l', 'online', '1', '{"id":"` + online + `","fulfillment":{"type":"delivery"}}', 'accepted', 1)`,
+		`INSERT INTO orders (id, tenant_id, location_id, source, source_event_id, snapshot, state, batch_id, ext_source, ext_ref, local_only, display_number)
+		 VALUES ('` + pos + `', 't', 'l', 'pos', 'softtouch:7', '{"id":"` + pos + `","fulfillment":{"type":"delivery"}}', 'accepted', 1, 'softtouch', '7', true, 57)`,
+		`INSERT INTO order_geo (order_id, state, updated_at) VALUES ('` + pos + `', 'pending', '2026-11-12T00:00:00Z')`,
+		`INSERT INTO order_times (a, b, seconds) VALUES ('` + online + `', '` + pos + `', 60)`,
+		`INSERT INTO drivers (id, name, pos_number) VALUES ('d1', 'Ali', '12')`,
+		`UPDATE settings SET features = '{"pos_pull":true,"order_insert":false,"driver_writeback":true,"address_heal":true,"future_orders":false,"paid_wave":true}',
+		 ticket_toggles = '{"pos_delivery":true,"pos_takeout":false,"pos_counter":false,"online_cash_pickup":false,"online_cash_delivery":true,"online_card":true}'
+		 WHERE id = 1`,
+	} {
+		if _, err := raw.Exec(q); err != nil {
+			t.Fatalf("%s: %v", q, err)
 		}
 	}
-	want := []string{order.PosOpaqueID(sent.Status.BatchID, "801"), order.PosOpaqueID(left.Status.BatchID, "802"), online.Order.ID}
-	if strings.Join(run.SuggestedIDs, ",") != strings.Join(want, ",") {
-		t.Fatalf("suggested_ids = %v, want %v", run.SuggestedIDs, want)
+	raw.Close()
+	if err := migrate.Run(ctx, path); err != nil {
+		t.Fatal(err)
 	}
-}
-
-func TestUpsertExternalUpdateOnly(t *testing.T) {
-	r := newFloorRepo(t)
-	ctx := context.Background()
-	meta := order.ExternalMeta{OrderID: uuid.Must(uuid.NewV7()).String(), TenantID: uuid.NewString(), LocationID: uuid.NewString(),
-		PrepMinutes: 15, Now: time.Now(), UpdateOnly: true}
-	if _, err := r.UpsertExternal(ctx, "900", posOrder("pickup", "a"), meta); !errors.Is(err, order.ErrNotFound) {
-		t.Fatalf("update-only insert = %v, want ErrNotFound", err)
+	db, err := database.Open(ctx, path)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if _, err := r.GetByID(ctx, uuid.MustParse(meta.OrderID)); !errors.Is(err, order.ErrNotFound) {
-		t.Fatalf("row created: %v", err)
+	defer db.Close()
+	r := NewOrderRepository(db, zerolog.Nop())
+	if so := get(t, r, online); so.Status.State != order.StateAccepted {
+		t.Fatalf("online order = %+v", so.Status)
 	}
-	upsertPOS(t, r, "900", posOrder("pickup", "a"))
-	res, err := r.UpsertExternal(ctx, "900", posOrder("pickup", "b"), meta)
-	if err != nil || res.Created || !res.Changed {
-		t.Fatalf("update-only of a held check = %+v, %v", res, err)
+	if _, err := r.GetByID(ctx, uuid.MustParse(pos)); !errors.Is(err, order.ErrNotFound) {
+		t.Fatalf("the POS check is still there: %v", err)
+	}
+	var n int
+	if err := db.QueryRowContext(ctx, `SELECT count(*) FROM order_times`).Scan(&n); err != nil || n != 0 {
+		t.Fatalf("order_times left = %d %v", n, err)
+	}
+	ds, err := r.ListDrivers(ctx)
+	if err != nil || len(ds) != 1 || ds[0].Name != "Ali" {
+		t.Fatalf("drivers = %+v %v", ds, err)
+	}
+	set, err := r.IntegrationSettings(ctx)
+	if err != nil || set.Features.FutureOrders || !set.Features.PaidWave || set.Tickets.OnlineCashPickup || !set.Tickets.OnlineCashDelivery {
+		t.Fatalf("settings = %+v %v", set, err)
+	}
+	var features, tickets string
+	if err := db.QueryRowContext(ctx, `SELECT features, ticket_toggles FROM settings WHERE id = 1`).Scan(&features, &tickets); err != nil {
+		t.Fatal(err)
+	}
+	for _, k := range []string{"pos_pull", "order_insert", "driver_writeback", "address_heal", "pos_delivery", "pos_takeout", "pos_counter"} {
+		if strings.Contains(features+tickets, k) {
+			t.Fatalf("%s is still in the settings: %s %s", k, features, tickets)
+		}
 	}
 }

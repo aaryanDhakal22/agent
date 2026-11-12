@@ -6,10 +6,11 @@ skipped by default so CI / dev runs don't burn paper.
 
 import os
 import socket
-import time
 
 import pytest
 import requests
+
+from gatemark import intentional_sleep
 
 
 pytestmark = pytest.mark.real_printer
@@ -44,7 +45,7 @@ def test_reprint_against_real_store(agent_session: requests.Session, agent_base_
     order_id = newest["order"]["id"]  # canonical UUID (the Snapshot's `id`)
 
     # Give the printer a moment between potential prior ops.
-    time.sleep(1)
+    intentional_sleep(1, "a moment for the printer between jobs")
     resp = http.post(f"{agent_base_url}/api/orders/{order_id}/reprint", timeout=30)
     assert resp.status_code == 200, resp.text
     assert resp.json()["order"]["id"] == order_id  # reprint returns the stored order

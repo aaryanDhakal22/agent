@@ -13,23 +13,9 @@ import (
 	"github.com/google/uuid"
 )
 
-// 00019: terminal changes to POS checks, finishing orders, the update gate's
-// open count, callout feed events.
-
-func kitchenCheck(ftype, hash string, lines ...order.ExternalItem) order.ExternalOrder {
-	e := posOrder(ftype, hash)
-	if len(lines) == 0 {
-		lines = []order.ExternalItem{{Ref: "1", Name: "14\" Cheese Pizza", Quantity: 1, UnitPriceCents: 1199, LineTotalCents: 1199, Kitchen: true}}
-	}
-	e.Items = lines
-	return e
-}
+// 00019: finishing orders, the update gate's open count, callout feed events.
 
 var (
-	pizza  = order.ExternalItem{Ref: "1", Name: "14\" Cheese Pizza", Quantity: 1, UnitPriceCents: 1199, LineTotalCents: 1199, Kitchen: true}
-	knots  = order.ExternalItem{Ref: "2", Name: "Garlic Knots", Quantity: 1, UnitPriceCents: 499, LineTotalCents: 499, Kitchen: true}
-	cola   = order.ExternalItem{Ref: "3", Name: "Coke", Quantity: 1, UnitPriceCents: 199, LineTotalCents: 199}
-	wings  = order.ExternalItem{Ref: "4", Name: "Wings", Quantity: 1, UnitPriceCents: 899, LineTotalCents: 899, Kitchen: true}
 	expect = func(t *testing.T, ok bool, format string, a ...any) {
 		t.Helper()
 		if !ok {
@@ -37,177 +23,6 @@ var (
 		}
 	}
 )
-
-func TestPOSChangeKitchenAddRingsAndMarksAdded(t *testing.T) {
-	r := newFloorRepo(t)
-	upsertPOS(t, r, "900", kitchenCheck("pickup", "h1", pizza))
-	res := upsertPOS(t, r, "900", kitchenCheck("pickup", "h2", pizza, knots))
-	c := res.Change
-	expect(t, c != nil && c.Kind == order.ChangeCooking && c.Text == "#57 changed: +1 Garlic Knots", "change = %+v", c)
-	items := res.Order.Order.Items
-	expect(t, len(items) == 2 && !items[0].Added && items[1].Added && items[1].PosRef == "2", "marks = %+v", items)
-	expect(t, res.Order.Status.PosChange != nil && res.Order.Status.PosChange.ID == c.ID, "stored change = %+v", res.Order.Status.PosChange)
-
-	// A void before OK merges into the same bar; the voided line stays
-	// struck through and goes to the void ticket.
-	res = upsertPOS(t, r, "900", kitchenCheck("pickup", "h3", knots))
-	c2 := res.Change
-	expect(t, c2 != nil && c2.ID != c.ID && c2.Text == "#57 changed: +1 Garlic Knots, −1 14\" Cheese Pizza", "merged = %+v", c2)
-	so := res.Order
-	expect(t, len(so.Order.Items) == 1 && so.Order.Items[0].Added, "items = %+v", so.Order.Items)
-	expect(t, len(so.Order.RemovedItems) == 1 && so.Order.RemovedItems[0].PosRef == "1", "removed = %+v", so.Order.RemovedItems)
-	expect(t, len(res.VoidPrint) == 1 && res.VoidPrint[0].Name == pizza.Name, "void print = %+v", res.VoidPrint)
-
-	// OK on an older change id keeps ringing; the current one clears it.
-	ctx := context.Background()
-	if _, acked, err := r.AckPosChange(ctx, so.Order.ID, c.ID); err != nil || acked {
-		t.Fatalf("stale ack = %v %v", acked, err)
-	}
-	got, acked, err := r.AckPosChange(ctx, so.Order.ID, c2.ID)
-	expect(t, err == nil && acked && got.Status.PosChange != nil && !got.Status.PosChange.Pending(), "ack = %v %v %+v", acked, err, got)
-	// A change after OK starts a new bar (not merged into the old one).
-	res = upsertPOS(t, r, "900", kitchenCheck("pickup", "h4", knots, wings))
-	expect(t, res.Change != nil && res.Change.Pending() && res.Change.Text == "#57 changed: +1 Wings", "after OK = %+v", res.Change)
-	// The marks stay after OK.
-	expect(t, got.Order.Items[0].Added && len(got.Order.RemovedItems) == 1, "marks after ack = %+v", got.Order)
-}
-
-func TestPOSChangeDrinksOnlyIsQuiet(t *testing.T) {
-	r := newFloorRepo(t)
-	upsertPOS(t, r, "901", kitchenCheck("pickup", "h1", pizza))
-	res := upsertPOS(t, r, "901", kitchenCheck("pickup", "h2", pizza, cola))
-	expect(t, res.Change == nil && res.Order.Status.PosChange == nil, "a drink rang: %+v", res.Change)
-	expect(t, res.Order.Order.Items[1].Added, "drink not marked added")
-	res = upsertPOS(t, r, "901", kitchenCheck("pickup", "h3", pizza))
-	expect(t, res.Change == nil && len(res.VoidPrint) == 0 && len(res.Order.Order.RemovedItems) == 1, "drink void = %+v", res)
-}
-
-func TestPOSChangeReadyGoesBackToCooking(t *testing.T) {
-	ctx := context.Background()
-	r := newFloorRepo(t)
-	// A ready pickup.
-	so := upsertPOS(t, r, "902", kitchenCheck("pickup", "h1", pizza)).Order
-	if _, err := r.MarkReady(ctx, so.Order.ID, true); err != nil {
-		t.Fatal(err)
-	}
-	// 2.4.0: Garlic Knots ($4.99) are not worth reopening a takeout - it
-	// rings CHANGED and stays ready; Wings ($8.99) bring it back.
-	res := upsertPOS(t, r, "902", kitchenCheck("pickup", "h2", pizza, knots))
-	st := res.Order.Status
-	expect(t, !res.Reopened && st.State == order.StateReady && res.Change != nil && res.Change.Kind == order.ChangeReady,
-		"small addition = %+v / %+v", st, res.Change)
-	expect(t, res.Change.Added[0].PriceCents == 499, "price = %+v", res.Change.Added)
-	res = upsertPOS(t, r, "902", kitchenCheck("pickup", "h3", pizza, knots, wings))
-	st = res.Order.Status
-	expect(t, res.Reopened && st.State == order.StateAccepted && st.ReadyAt == nil, "pickup not back to cooking: %+v", st)
-	expect(t, res.Change != nil && res.Change.Kind == order.ChangeReopened, "change = %+v", res.Change)
-
-	// A ready delivery in a pool leaves the pool.
-	d, _ := r.CreateDriver(ctx, "Abdul", "")
-	clockIn(t, r, d.ID)
-	del := upsertPOS(t, r, "903", kitchenCheck("delivery", "h1", pizza)).Order
-	if _, err := r.MarkReady(ctx, del.Order.ID, true); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := r.PoolOrders(ctx, []string{del.Order.ID}, d.ID); err != nil {
-		t.Fatal(err)
-	}
-	res = upsertPOS(t, r, "903", kitchenCheck("delivery", "h2", pizza, wings))
-	st = res.Order.Status
-	expect(t, res.Reopened && st.State == order.StateAccepted && st.PoolDriverID == "", "delivery = %+v", st)
-
-	// Ready + only a removal: stays ready, still rings.
-	so2 := upsertPOS(t, r, "904", kitchenCheck("pickup", "h1", pizza, knots)).Order
-	if _, err := r.MarkReady(ctx, so2.Order.ID, true); err != nil {
-		t.Fatal(err)
-	}
-	res = upsertPOS(t, r, "904", kitchenCheck("pickup", "h2", pizza))
-	expect(t, !res.Reopened && res.Order.Status.State == order.StateReady && res.Change != nil && res.Change.Kind == order.ChangeReady,
-		"ready removal = %+v / %+v", res.Order.Status, res.Change)
-}
-
-func TestPOSChangeOutDeliveryAlertsOnly(t *testing.T) {
-	ctx := context.Background()
-	r := newFloorRepo(t)
-	d, _ := r.CreateDriver(ctx, "Abdul", "")
-	clockIn(t, r, d.ID)
-	so := upsertPOS(t, r, "905", kitchenCheck("delivery", "h1", pizza)).Order
-	if _, err := r.MarkReady(ctx, so.Order.ID, true); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := r.AssignDriver(ctx, d.ID, []string{so.Order.ID}); err != nil {
-		t.Fatal(err)
-	}
-	res := upsertPOS(t, r, "905", kitchenCheck("delivery", "h2", pizza, knots))
-	expect(t, res.Order.Status.State == order.StateOnDelivery && !res.Reopened, "state = %s", res.Order.Status.State)
-	expect(t, res.Change != nil && res.Change.Kind == order.ChangeOut && res.Change.Text == "Abdul already left with #57 — +1 Garlic Knots",
-		"change = %+v", res.Change)
-	expect(t, len(res.VoidPrint) == 0, "void print while out")
-}
-
-func TestPOSHiddenCheckShownLaterAndStaysShown(t *testing.T) {
-	r := newFloorRepo(t)
-	small := kitchenCheck("dine_in", "h1", cola)
-	small.BoardHidden = true
-	res := upsertPOS(t, r, "906", small)
-	expect(t, res.Order.Status.BoardHidden, "not hidden")
-	// A hidden check changing rings nobody.
-	grown := kitchenCheck("dine_in", "h2", cola, pizza)
-	res = upsertPOS(t, r, "906", grown)
-	expect(t, res.Shown && !res.Order.Status.BoardHidden && res.Change == nil, "shown = %+v", res)
-	expect(t, !res.Order.Order.Items[1].Added, "a newly shown check carries ADDED marks")
-	// Once shown it stays on Kitchen even when the hub says hidden again.
-	back := kitchenCheck("dine_in", "h3", cola)
-	back.BoardHidden = true
-	res = upsertPOS(t, r, "906", back)
-	expect(t, !res.Order.Status.BoardHidden && !res.Shown, "hidden again: %+v", res.Order.Status)
-	expect(t, res.Change != nil && len(res.Order.Order.RemovedItems) == 1, "removal on a shown check: %+v", res.Change)
-}
-
-func TestPOSClosedFinishes(t *testing.T) {
-	ctx := context.Background()
-	r := newFloorRepo(t)
-	// Ready, then closed at the POS.
-	so := upsertPOS(t, r, "910", kitchenCheck("pickup", "h1")).Order
-	if _, err := r.MarkReady(ctx, so.Order.ID, true); err != nil {
-		t.Fatal(err)
-	}
-	e := kitchenCheck("pickup", "h2")
-	e.Closed, e.Paid = true, true
-	res := upsertPOS(t, r, "910", e)
-	st := res.Order.Status
-	expect(t, res.Finished && st.FinishedAt != nil && st.FinishedBy == order.FinishedByPOS && st.PosClosed && st.State == order.StateReady, "ready+closed = %+v", st)
-
-	// Closed while cooking: stays on Kitchen, finished when marked ready.
-	so = upsertPOS(t, r, "911", kitchenCheck("dine_in", "h1")).Order
-	e = kitchenCheck("dine_in", "h2")
-	e.Closed = true
-	res = upsertPOS(t, r, "911", e)
-	expect(t, !res.Finished && res.Order.Status.State == order.StateAccepted && res.Order.Status.PosClosed, "cooking+closed = %+v", res.Order.Status)
-	got, err := r.MarkReady(ctx, so.Order.ID, true)
-	expect(t, err == nil && got.Status.FinishedAt != nil && got.Status.FinishedBy == order.FinishedByPOS, "ready after close = %+v %v", got, err)
-
-	// Never on Kitchen (hidden) and closed: ready + finished at once, and no
-	// order.ready on the feed (nothing to call out).
-	h := kitchenCheck("dine_in", "h1", cola)
-	h.BoardHidden, h.Closed = true, true
-	res = upsertPOS(t, r, "912", h)
-	expect(t, res.Created && res.Finished && res.Order.Status.State == order.StateReady && res.Order.Status.FinishedAt != nil, "hidden closed = %+v", res.Order.Status)
-
-	// A delivery is never finished by the POS (the driver returns it).
-	dl := kitchenCheck("delivery", "h1")
-	dl.Closed = true
-	res = upsertPOS(t, r, "913", dl)
-	expect(t, !res.Finished && res.Order.Status.FinishedAt == nil, "delivery finished")
-
-	n := 0
-	for _, typ := range feedTypes(t, r) {
-		if typ == order.FeedOrderReady {
-			n++
-		}
-	}
-	expect(t, n == 2, "order.ready events = %d, want 2 (910, 911)", n)
-}
 
 func TestFinishDueOnlinePickupsAndUpdateGate(t *testing.T) {
 	ctx := context.Background()
@@ -219,30 +34,22 @@ func TestFinishDueOnlinePickupsAndUpdateGate(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	// A POS takeout that is ready but still open at the POS.
-	posSo := upsertPOS(t, r, "920", kitchenCheck("pickup", "h1")).Order
-	if _, err := r.MarkReady(ctx, posSo.Order.ID, true); err != nil {
-		t.Fatal(err)
-	}
 	_, active, err := r.CountOpenBatchOrders(ctx)
-	expect(t, err == nil && active == 3, "active before = %d %v", active, err)
+	expect(t, err == nil && active == 2, "active before = %d %v", active, err)
 
 	// Not due yet.
 	now := time.Now()
 	list, err := r.FinishDueOnlinePickups(ctx, now.Add(-30*time.Minute), now)
 	expect(t, err == nil && len(list) == 0, "finished too early: %d %v", len(list), err)
-	// Due: only the online pickup (never the delivery, never a POS check).
+	// Due: only the online pickup (never the delivery).
 	list, err = r.FinishDueOnlinePickups(ctx, now.Add(time.Second), now)
 	expect(t, err == nil && len(list) == 1 && list[0].Order.ID == pick.Order.ID && list[0].Status.FinishedBy == order.FinishedByAuto,
 		"finished = %+v %v", list, err)
 	_, active, _ = r.CountOpenBatchOrders(ctx)
-	expect(t, active == 2, "active after the pickup = %d", active)
+	expect(t, active == 1, "active after the pickup = %d", active)
 
-	// The POS closes the takeout; the driver brings the delivery back.
-	e := kitchenCheck("pickup", "h2")
-	e.Closed, e.Paid = true, true
-	upsertPOS(t, r, "920", e)
-	d, _ := r.CreateDriver(ctx, "Abdul", "")
+	// The driver brings the delivery back.
+	d, _ := r.CreateDriver(ctx, "Abdul")
 	clockIn(t, r, d.ID)
 	if _, err := r.AssignDriver(ctx, d.ID, []string{dlv.Order.ID}); err != nil {
 		t.Fatal(err)
@@ -251,15 +58,13 @@ func TestFinishDueOnlinePickupsAndUpdateGate(t *testing.T) {
 		t.Fatal(err)
 	}
 	total, active, _ := r.CountOpenBatchOrders(ctx)
-	expect(t, total == 3 && active == 0, "a lull must read idle: total %d active %d", total, active)
+	expect(t, total == 2 && active == 0, "a lull must read idle: total %d active %d", total, active)
 }
 
 func TestFeedReadyCarriesMoneyAndCalloutTest(t *testing.T) {
 	ctx := context.Background()
 	r := newFloorRepo(t)
-	e := kitchenCheck("pickup", "h1")
-	e.Paid, e.CashDueCents = true, 0
-	so := upsertPOS(t, r, "930", e).Order
+	so := accept(t, r, arrive(t, r, "pickup")) // no payments: the whole total is cash due
 	if _, err := r.MarkReady(ctx, so.Order.ID, true); err != nil {
 		t.Fatal(err)
 	}
@@ -280,7 +85,8 @@ func TestFeedReadyCarriesMoneyAndCalloutTest(t *testing.T) {
 			_ = json.Unmarshal(ev.Data, &test)
 		}
 	}
-	expect(t, ready.ExtRef != nil && *ready.ExtRef == "930" && ready.Paid && ready.CashDueCents == 0 && ready.Number != nil && *ready.Number == 57 &&
+	expect(t, ready.OrderID == so.Order.ID && ready.Source == "test" && !ready.Paid && ready.CashDueCents == so.Order.Money.Total &&
+		ready.Number != nil && so.Status.KitchenNumber != nil && *ready.Number == *so.Status.KitchenNumber &&
 		ready.FulfillmentType == "pickup", "order.ready = %+v", ready)
 	expect(t, test.Number == 102 && test.Kind == "test" && test.Voice == "kokoro:af_heart", "callout.test = %+v", test)
 }
@@ -302,52 +108,4 @@ func TestCalloutAndFinishingSettingsRoundTrip(t *testing.T) {
 	expect(t, last.Type == order.FeedSettingsChanged && strings.Contains(string(last.Data), `"callout":{"enabled":false,"voice":"kokoro:bf_emma"`) &&
 		strings.Contains(string(last.Data), `"repeat":3,"voice_lines":{},"guest_chance":0,"guest_voices":""}`) &&
 		strings.Contains(string(last.Data), `"finishing":{"online_pickup_minutes":45}`), "settings.changed = %s", last.Data)
-}
-
-// 2.4.0: on a delivery every change rings - a drink, the total, the payment.
-func TestPOSChangeDeliveryEveryChangeRings(t *testing.T) {
-	r := newFloorRepo(t)
-	upsertPOS(t, r, "911", kitchenCheck("delivery", "h1", pizza))
-	res := upsertPOS(t, r, "911", kitchenCheck("delivery", "h2", pizza, cola))
-	expect(t, res.Change != nil && res.Change.Kind == order.ChangeCooking && len(res.Change.Added) == 1 && !res.Change.Added[0].Kitchen,
-		"a drink on a delivery = %+v", res.Change)
-	if _, _, err := r.AckPosChange(context.Background(), res.Order.Order.ID, ""); err != nil {
-		t.Fatal(err)
-	}
-	// Paid at the terminal now: CASH -> PAID.
-	paid := kitchenCheck("delivery", "h3", pizza, cola)
-	paid.Paid, paid.CashDueCents = true, 0
-	res = upsertPOS(t, r, "911", paid)
-	expect(t, res.Change != nil && res.Change.Money != nil && res.Change.Money.ToPaid && !res.Change.Money.FromPaid, "paid = %+v", res.Change)
-	expect(t, strings.HasSuffix(res.Change.Text, "→ PAID"), "text = %q", res.Change.Text)
-	// A pickup's payment is quiet (only kitchen items ring there).
-	upsertPOS(t, r, "912", kitchenCheck("pickup", "h1", pizza))
-	pp := kitchenCheck("pickup", "h2", pizza)
-	pp.Paid, pp.CashDueCents = true, 0
-	res = upsertPOS(t, r, "912", pp)
-	expect(t, res.Change == nil, "pickup payment rang: %+v", res.Change)
-}
-
-// 2.4.0: paid_at is when a check went from a balance due to paid - set on
-// payment, kept while paid, moved by a later re-payment.
-func TestPOSPaidAt(t *testing.T) {
-	r := newFloorRepo(t)
-	so := upsertPOS(t, r, "913", kitchenCheck("pickup", "h1", pizza)).Order
-	expect(t, so.Status.PaidAt == nil, "unpaid has paid_at")
-	p := kitchenCheck("pickup", "h2", pizza)
-	p.Paid, p.CashDueCents = true, 0
-	first := upsertPOS(t, r, "913", p).Order.Status.PaidAt
-	expect(t, first != nil, "no paid_at after payment")
-	// An addition puts a balance on it, then it is paid again.
-	due := kitchenCheck("pickup", "h3", pizza, wings)
-	expect(t, upsertPOS(t, r, "913", due).Order.Status.PaidAt.Equal(*first), "paid_at moved while due")
-	time.Sleep(5 * time.Millisecond)
-	again := kitchenCheck("pickup", "h4", pizza, wings)
-	again.Paid, again.CashDueCents = true, 0
-	second := upsertPOS(t, r, "913", again).Order.Status.PaidAt
-	expect(t, second != nil && second.After(*first), "re-payment: %v after %v", second, first)
-	// Paid on arrival: paid_at from the start.
-	paidNow := kitchenCheck("pickup", "h1", pizza)
-	paidNow.Paid = true
-	expect(t, upsertPOS(t, r, "914", paidNow).Order.Status.PaidAt != nil, "paid on arrival has no paid_at")
 }

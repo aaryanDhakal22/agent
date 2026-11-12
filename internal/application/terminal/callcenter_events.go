@@ -1,0 +1,196 @@
+package terminal
+
+import (
+	"context"
+	"encoding/json"
+	"sync"
+	"time"
+
+	"github.com/rs/zerolog"
+)
+
+// The call center's events (contract/agent.md §2.10ab "Events to main"):
+// while main asks for them (command terminal.events.want {seconds}, sent
+// again every minute while a call-center browser listens), every event the
+// Pi publishes on /api/events (and the seat events below) goes to main as the report terminal.events
+// {events: [{event, data, at}]}: batched every 200 ms, at most 100 per
+// report, dropped (never queued) when main is unreachable - the app
+// refetches its lists on reconnect.
+
+// Messages (mirror internal/rpc's constants).
+const (
+	MsgTerminalEventsWant = "terminal.events.want"
+	MsgTerminalEvents     = "terminal.events"
+)
+
+// Events forwarding limits.
+const (
+	EventsWantMaxSeconds = 300
+	eventsBatchEvery     = 200 * time.Millisecond
+	eventsBatchMax       = 100
+	eventsBacklogMax     = 1000 // waiting for the next report; older ones drop
+	eventsSendTimeout    = 5 * time.Second
+)
+
+// RelayEvent is one Pi event as main gets it.
+type RelayEvent struct {
+	Event string          `json:"event"`
+	Data  json.RawMessage `json:"data"`
+	At    time.Time       `json:"at"`
+}
+
+// Seat events: what only the call center may see (its own drafts: a seat's
+// edit lock, in the call-center app's body). They never go on /api/events
+// (no store terminal or tablet gets them); the forwarder takes them from
+// here and sends them to main with the rest. One Pi has one terminal
+// service and one forwarder, so the link is the package's.
+var seatBus = struct {
+	mu   sync.Mutex
+	taps map[chan RelayEvent]struct{}
+}{taps: map[chan RelayEvent]struct{}{}}
+
+// publishSeat sends a seat event to main's forwarder (dropped when main
+// isn't listening or the tap is full: the app refetches on reconnect).
+func publishSeat(typ string, v any) {
+	data, err := json.Marshal(v)
+	if err != nil {
+		return
+	}
+	ev := RelayEvent{Event: typ, Data: data, At: time.Now().UTC()}
+	seatBus.mu.Lock()
+	defer seatBus.mu.Unlock()
+	for ch := range seatBus.taps {
+		select {
+		case ch <- ev:
+		default:
+		}
+	}
+}
+
+// tapSeat subscribes to the seat events until cancel.
+func tapSeat() (<-chan RelayEvent, func()) {
+	ch := make(chan RelayEvent, 128)
+	seatBus.mu.Lock()
+	seatBus.taps[ch] = struct{}{}
+	seatBus.mu.Unlock()
+	return ch, func() {
+		seatBus.mu.Lock()
+		delete(seatBus.taps, ch)
+		seatBus.mu.Unlock()
+	}
+}
+
+// EventForwarder sends the Pi's events to main while main wants them.
+type EventForwarder struct {
+	// subscribe taps /api/events' broker: the events (the channel closes
+	// when the broker dropped a slow reader) and its cancel.
+	subscribe func() (<-chan RelayEvent, func())
+	report    func(ctx context.Context, msgType string, payload any) error
+	logger    zerolog.Logger
+	now       func() time.Time
+	every     time.Duration
+
+	mu      sync.Mutex
+	until   time.Time
+	running bool
+}
+
+// NewEventForwarder builds the forwarder; HandleWant starts it.
+func NewEventForwarder(subscribe func() (<-chan RelayEvent, func()), report func(ctx context.Context, msgType string, payload any) error,
+	logger zerolog.Logger) *EventForwarder {
+	return &EventForwarder{subscribe: subscribe, report: report, logger: logger.With().Str("module", "callcenter-events").Logger(),
+		now: time.Now, every: eventsBatchEvery}
+}
+
+// HandleWant is main's `terminal.events.want {seconds}` command: forward
+// events for that long from now (1-300 s; a later command moves the end).
+// No reply.
+func (f *EventForwarder) HandleWant(ctx context.Context, payload json.RawMessage) (any, error) {
+	var p struct {
+		Seconds int `json:"seconds"`
+	}
+	_ = json.Unmarshal(payload, &p)
+	if p.Seconds <= 0 {
+		f.mu.Lock()
+		f.until = time.Time{} // main stopped listening
+		f.mu.Unlock()
+		return nil, nil
+	}
+	secs := min(p.Seconds, EventsWantMaxSeconds)
+	f.mu.Lock()
+	f.until = f.now().Add(time.Duration(secs) * time.Second)
+	start := !f.running
+	f.running = true
+	f.mu.Unlock()
+	if start {
+		go f.run(context.WithoutCancel(ctx))
+	}
+	return nil, nil
+}
+
+// Wanted: main is listening now.
+func (f *EventForwarder) Wanted() bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.now().Before(f.until)
+}
+
+// run forwards until main's want runs out.
+func (f *EventForwarder) run(ctx context.Context) {
+	defer func() {
+		if v := recover(); v != nil {
+			f.logger.Error().Interface("panic", v).Msg("event forwarder panicked")
+			f.mu.Lock()
+			f.running = false
+			f.mu.Unlock()
+		}
+	}()
+	ch, cancel := f.subscribe()
+	defer func() { cancel() }()
+	seat, cancelSeat := tapSeat() // the call center's own (never on /api/events)
+	defer cancelSeat()
+	t := time.NewTicker(f.every)
+	defer t.Stop()
+	var pending []RelayEvent
+	for {
+		select {
+		case ev := <-seat:
+			pending = append(pending, ev)
+			if len(pending) > eventsBacklogMax {
+				pending = pending[len(pending)-eventsBacklogMax:]
+			}
+		case ev, ok := <-ch:
+			if !ok { // the broker dropped us (slow): tap again, what was missed is gone
+				cancel()
+				pending = nil
+				ch, cancel = f.subscribe()
+				continue
+			}
+			pending = append(pending, ev)
+			if len(pending) > eventsBacklogMax {
+				pending = pending[len(pending)-eventsBacklogMax:]
+			}
+		case <-t.C:
+			f.mu.Lock()
+			if !f.now().Before(f.until) {
+				f.running = false
+				f.mu.Unlock()
+				return
+			}
+			f.mu.Unlock()
+			if len(pending) == 0 {
+				continue
+			}
+			n := min(len(pending), eventsBatchMax)
+			batch := pending[:n:n]
+			pending = pending[n:]
+			sctx, done := context.WithTimeout(ctx, eventsSendTimeout)
+			err := f.report(sctx, MsgTerminalEvents, map[string]any{"events": batch})
+			done()
+			if err != nil { // main unreachable: dropped, never queued
+				f.logger.Debug().Err(err).Int("events", len(batch)+len(pending)).Msg("terminal.events not sent: dropped")
+				pending = nil
+			}
+		}
+	}
+}

@@ -22,8 +22,8 @@ import (
 	"github.com/rs/zerolog"
 )
 
-// 2.3.0: driver reports any time — the print route, the clock-out print and
-// the hub's driver-ledger PUT. Slips go to a fake raw-print printer.
+// 2.3.0: driver reports any time — the print route and the clock-out print.
+// Slips go to a fake raw-print printer.
 
 // fakeTCPPrinter keeps every job's bytes that contains want.
 type fakeTCPPrinter struct {
@@ -93,14 +93,14 @@ func withReportPrinting(t *testing.T, s *Server, addr string) {
 	}
 	d.Apply(ctx, []storeconfig.PrinterContext{{ID: "p-front", Name: "Front", IP: addr, IsReceipt: true}})
 	sc := storeconfig.StoreContext{Location: storeconfig.LocationContext{Name: "Lombardi's Pizza", Timezone: "America/New_York"}}
-	s.service.SetDocumentPrinting(d.PrintDocument, func(rep order.DriverReport, from string) []byte {
-		return receipt.BuildDriverReport(rep, sc, "", from, time.Now())
+	s.service.SetDocumentPrinting(d.PrintDocument, func(rep order.DriverReport, on domainprinter.Paper) []byte {
+		return receipt.BuildDriverReport(rep, sc, "", on, time.Now())
 	})
 }
 
-func newDriver(t *testing.T, s *Server, name, pos string) *order.Driver {
+func newDriver(t *testing.T, s *Server, name string) *order.Driver {
 	t.Helper()
-	d, err := s.service.CreateDriver(context.Background(), name, pos)
+	d, err := s.service.CreateDriver(context.Background(), name)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -114,7 +114,7 @@ func TestClockOutPrintsTheDriversReport(t *testing.T) {
 	s, h, key := diagServer(t)
 
 	// No printers wired: clock-out as before, no report_printing.
-	sam := newDriver(t, s, "Sam", "")
+	sam := newDriver(t, s, "Sam")
 	rec := call(h, "POST", "/api/drivers/"+sam.ID+"/clock-out", key, "")
 	if rec.Code != http.StatusOK || strings.Contains(rec.Body.String(), "report_printing") || !strings.Contains(rec.Body.String(), `"status":"off"`) {
 		t.Fatalf("unwired clock-out = %d %s", rec.Code, rec.Body)
@@ -122,7 +122,7 @@ func TestClockOutPrintsTheDriversReport(t *testing.T) {
 
 	fp := newFakeTCPPrinter(t, "DRIVER REPORT")
 	withReportPrinting(t, s, fp.addr)
-	juma := newDriver(t, s, "Juma", "31")
+	juma := newDriver(t, s, "Juma")
 	rec = call(h, "POST", "/api/drivers/"+juma.ID+"/clock-out", key, "")
 	var ans struct {
 		ID             string `json:"id"`
@@ -144,7 +144,7 @@ func TestClockOutPrintsTheDriversReport(t *testing.T) {
 func TestClockOutDoesNotWaitForThePrinter(t *testing.T) {
 	s, h, key := diagServer(t)
 	withReportPrinting(t, s, "") // nothing listens: the print fails in the background
-	juma := newDriver(t, s, "Juma", "31")
+	juma := newDriver(t, s, "Juma")
 	start := time.Now()
 	rec := call(h, "POST", "/api/drivers/"+juma.ID+"/clock-out", key, "")
 	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"report_printing":true`) || !strings.Contains(rec.Body.String(), `"status":"off"`) {
@@ -158,18 +158,10 @@ func TestClockOutDoesNotWaitForThePrinter(t *testing.T) {
 
 func TestDriverReportRoutes(t *testing.T) {
 	s, h, key := diagServer(t)
-	juma := newDriver(t, s, "Juma", "31")
+	juma := newDriver(t, s, "Juma")
 	base := "/api/drivers/" + juma.ID + "/report"
-	for _, rt := range []struct{ method, path string }{{"GET", base}, {"POST", base + "/print"}} {
-		if rec := call(h, rt.method, rt.path, "", ""); rec.Code != http.StatusUnauthorized {
-			t.Errorf("%s %s without a key = %d", rt.method, rt.path, rec.Code)
-		}
-	}
-	if rec := call(h, "GET", base, key, ""); rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"driver_name":"Juma"`) {
-		t.Fatalf("GET report = %d %s", rec.Code, rec.Body)
-	}
-	if rec := call(h, "GET", "/api/drivers/nope/report", key, ""); rec.Code != http.StatusNotFound || code(rec) != "driver_not_found" {
-		t.Fatalf("unknown driver = %d %s", rec.Code, rec.Body)
+	if rec := call(h, "POST", base+"/print", "", ""); rec.Code != http.StatusUnauthorized {
+		t.Errorf("POST %s/print without a key = %d", base, rec.Code)
 	}
 	// Not wired → 503.
 	if rec := call(h, "POST", base+"/print", key, ""); rec.Code != http.StatusServiceUnavailable || code(rec) != "printing_unavailable" {
@@ -178,7 +170,7 @@ func TestDriverReportRoutes(t *testing.T) {
 	fp := newFakeTCPPrinter(t, "DRIVER REPORT")
 	withReportPrinting(t, s, fp.addr)
 	rec := call(h, "POST", base+"/print", key, "")
-	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"printed_on":"Front"`) || !strings.Contains(rec.Body.String(), `"report":{`) {
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"printed_on":"Front"`) || !strings.Contains(rec.Body.String(), `"driver_name":"Juma"`) || !strings.Contains(rec.Body.String(), `"report":{`) {
 		t.Fatalf("print = %d %s", rec.Code, rec.Body)
 	}
 	fp.waitJobs(t, 1)
@@ -189,21 +181,5 @@ func TestDriverReportRoutes(t *testing.T) {
 	withReportPrinting(t, s, "")
 	if rec := call(h, "POST", base+"/print", key, ""); rec.Code != http.StatusBadGateway || code(rec) != "nothing_printed" {
 		t.Fatalf("print, printer off = %d %s", rec.Code, rec.Body)
-	}
-}
-
-func TestDriverLedgerRoute(t *testing.T) {
-	s, h, tablet := diagServer(t)
-	hub := integrationKey(t, s)
-	body := `{"operation_day":"2026-10-26","generated_at":"2026-10-26T22:00:00Z","checks":[{"check":"1277130","number":57,"driver_pos_number":"31","closed":true,"check_at":"2026-10-26T21:00:00Z","paid":true,"tip_cents":300,"total_cents":2400,"card_cents":2700}],"unknown_pos_numbers":[]}`
-	if rec := call(h, "PUT", "/api/integration/driver-ledger", tablet, body); rec.Code != http.StatusForbidden || code(rec) != "integration_required" {
-		t.Fatalf("tablet = %d %s", rec.Code, rec.Body)
-	}
-	if rec := call(h, "PUT", "/api/integration/driver-ledger", hub, body); rec.Code != http.StatusNoContent {
-		t.Fatalf("hub = %d %s", rec.Code, rec.Body)
-	}
-	bad := `{"checks":[{"check":"1","total_cents":-5}]}`
-	if rec := call(h, "PUT", "/api/integration/driver-ledger", hub, bad); rec.Code != http.StatusBadRequest {
-		t.Fatalf("bad ledger = %d %s", rec.Code, rec.Body)
 	}
 }

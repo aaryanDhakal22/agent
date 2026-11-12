@@ -72,4 +72,4 @@ def test_second_link_revokes_the_first_agent(admin, main_store, spawn_agent) -> 
     r = requests.post(f"{second.base}/api/setup/link", json={"username": user, "password": pw}, timeout=60)
     assert r.status_code == 200 and r.json()["revoked_agents"] == 1, r.text
     # The replaced agent notices (its stream is dropped, reconnect → 401) and wipes itself.
-    wait_until(lambda: first.session()["state"] == "unconfigured", timeout=45, what="old agent wiped itself")
+    wait_until(lambda: first.session()["state"] == "unconfigured", timeout=180, what="old agent wiped itself (F-4: confirmed a minute apart)")

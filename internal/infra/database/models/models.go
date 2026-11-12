@@ -21,6 +21,76 @@ type Batch struct {
 	ClosedAt sql.NullString `json:"closed_at"`
 }
 
+type Customer struct {
+	ID          string `json:"id"`
+	Phone       string `json:"phone"`
+	PhoneRev    string `json:"phone_rev"`
+	FirstName   string `json:"first_name"`
+	LastName    string `json:"last_name"`
+	Name        string `json:"name"`
+	Notes       string `json:"notes"`
+	Source      string `json:"source"`
+	UpdatedAt   string `json:"updated_at"`
+	LocalAt     string `json:"local_at"`
+	LastOrderAt string `json:"last_order_at"`
+}
+
+type CustomerAddress struct {
+	ID         string          `json:"id"`
+	CustomerID string          `json:"customer_id"`
+	Position   int64           `json:"position"`
+	Label      string          `json:"label"`
+	Line1      string          `json:"line1"`
+	Line2      string          `json:"line2"`
+	City       string          `json:"city"`
+	State      string          `json:"state"`
+	Zip        string          `json:"zip"`
+	Notes      string          `json:"notes"`
+	IsDefault  bool            `json:"is_default"`
+	CreatedAt  string          `json:"created_at"`
+	Lat        sql.NullFloat64 `json:"lat"`
+	Lng        sql.NullFloat64 `json:"lng"`
+}
+
+type CustomerSync struct {
+	ID         int64  `json:"id"`
+	LocationID string `json:"location_id"`
+	Cursor     string `json:"cursor"`
+	SyncedAt   string `json:"synced_at"`
+}
+
+type DrawerMovement struct {
+	ID          string `json:"id"`
+	DrawerID    string `json:"drawer_id"`
+	Kind        string `json:"kind"`
+	AmountCents int64  `json:"amount_cents"`
+	Reason      string `json:"reason"`
+	StaffID     string `json:"staff_id"`
+	ApprovedBy  string `json:"approved_by"`
+	ClientKey   string `json:"client_key"`
+	At          string `json:"at"`
+}
+
+type DrawerSession struct {
+	ID            string         `json:"id"`
+	DeviceID      string         `json:"device_id"`
+	DeviceName    string         `json:"device_name"`
+	StaffID       string         `json:"staff_id"`
+	StaffName     string         `json:"staff_name"`
+	BatchID       int64          `json:"batch_id"`
+	OpenedAt      string         `json:"opened_at"`
+	StartCents    int64          `json:"start_cents"`
+	HandoverFrom  string         `json:"handover_from"`
+	ClosedAt      sql.NullString `json:"closed_at"`
+	ClosedBy      string         `json:"closed_by"`
+	CloseReason   string         `json:"close_reason"`
+	CountedCents  sql.NullInt64  `json:"counted_cents"`
+	Denominations string         `json:"denominations"`
+	ExpectedCents sql.NullInt64  `json:"expected_cents"`
+	Flagged       bool           `json:"flagged"`
+	Auto          bool           `json:"auto"`
+}
+
 type Driver struct {
 	ID             string         `json:"id"`
 	Name           string         `json:"name"`
@@ -29,7 +99,6 @@ type Driver struct {
 	Status         string         `json:"status"`
 	LastReturnedAt sql.NullString `json:"last_returned_at"`
 	CreatedAt      string         `json:"created_at"`
-	PosNumber      string         `json:"pos_number"`
 	PushoverDevice string         `json:"pushover_device"`
 }
 
@@ -43,15 +112,32 @@ type DriverShift struct {
 	AutoOut    bool           `json:"auto_out"`
 }
 
+type FloorDeadLetter struct {
+	EventID        string         `json:"event_id"`
+	Subject        string         `json:"subject"`
+	Type           string         `json:"type"`
+	Result         string         `json:"result"`
+	Refusals       int64          `json:"refusals"`
+	FirstRefusedAt string         `json:"first_refused_at"`
+	ParkedAt       string         `json:"parked_at"`
+	LastError      string         `json:"last_error"`
+	RetriedAt      sql.NullString `json:"retried_at"`
+	RetriedBy      string         `json:"retried_by"`
+}
+
 type FloorEvent struct {
-	ID        string         `json:"id"`
-	OrderID   sql.NullString `json:"order_id"`
-	Type      string         `json:"type"`
-	Payload   string         `json:"payload"`
-	At        string         `json:"at"`
-	SyncedAt  sql.NullString `json:"synced_at"`
-	Attempts  int64          `json:"attempts"`
-	LastError string         `json:"last_error"`
+	ID             string         `json:"id"`
+	OrderID        sql.NullString `json:"order_id"`
+	Type           string         `json:"type"`
+	Payload        string         `json:"payload"`
+	At             string         `json:"at"`
+	SyncedAt       sql.NullString `json:"synced_at"`
+	Attempts       int64          `json:"attempts"`
+	LastError      string         `json:"last_error"`
+	Subject        string         `json:"subject"`
+	Refusals       int64          `json:"refusals"`
+	FirstRefusedAt sql.NullString `json:"first_refused_at"`
+	ParkedAt       sql.NullString `json:"parked_at"`
 }
 
 type IntegrationEvent struct {
@@ -59,6 +145,16 @@ type IntegrationEvent struct {
 	Type      string `json:"type"`
 	Payload   string `json:"payload"`
 	CreatedAt string `json:"created_at"`
+}
+
+type Journal struct {
+	ID       string `json:"id"`
+	At       string `json:"at"`
+	StaffID  string `json:"staff_id"`
+	DeviceID string `json:"device_id"`
+	Action   string `json:"action"`
+	OrderID  string `json:"order_id"`
+	Detail   string `json:"detail"`
 }
 
 type Order struct {
@@ -88,20 +184,10 @@ type Order struct {
 	PooledAt             sql.NullString `json:"pooled_at"`
 	PoolSeq              sql.NullInt64  `json:"pool_seq"`
 	PoolPlanID           sql.NullString `json:"pool_plan_id"`
-	ExtSource            string         `json:"ext_source"`
-	ExtRef               string         `json:"ext_ref"`
-	ExtHash              string         `json:"ext_hash"`
-	ExtDriverPos         string         `json:"ext_driver_pos"`
-	DisplayNumber        sql.NullInt64  `json:"display_number"`
 	Paid                 bool           `json:"paid"`
 	CashDueCents         sql.NullInt64  `json:"cash_due_cents"`
 	TipCents             sql.NullInt64  `json:"tip_cents"`
-	BoardHidden          bool           `json:"board_hidden"`
 	SentAt               sql.NullString `json:"sent_at"`
-	LocalOnly            bool           `json:"local_only"`
-	Flag                 string         `json:"flag"`
-	PosCheckNumber       sql.NullInt64  `json:"pos_check_number"`
-	PosDriverNote        string         `json:"pos_driver_note"`
 	ScheduledLeadMinutes sql.NullInt64  `json:"scheduled_lead_minutes"`
 	RingAt               sql.NullString `json:"ring_at"`
 	Rerung               bool           `json:"rerung"`
@@ -113,14 +199,20 @@ type Order struct {
 	RunSeq               sql.NullInt64  `json:"run_seq"`
 	FinishedAt           sql.NullString `json:"finished_at"`
 	FinishedBy           string         `json:"finished_by"`
-	PosClosed            bool           `json:"pos_closed"`
-	PosChange            string         `json:"pos_change"`
 	MarkedDelivered      string         `json:"marked_delivered"`
 	PaidAt               sql.NullString `json:"paid_at"`
 	EarlyKitchen         bool           `json:"early_kitchen"`
 	EarlyReceipt         bool           `json:"early_receipt"`
 	DueOverride          sql.NullString `json:"due_override"`
 	MadeNow              bool           `json:"made_now"`
+	AddedTipCents        int64          `json:"added_tip_cents"`
+	TipLocked            bool           `json:"tip_locked"`
+	CancelReason         string         `json:"cancel_reason"`
+	ClientKey            string         `json:"client_key"`
+	DoorTipCents         int64          `json:"door_tip_cents"`
+	RequestHash          string         `json:"request_hash"`
+	Carried              bool           `json:"carried"`
+	KitchenPending       bool           `json:"kitchen_pending"`
 }
 
 type OrderGeo struct {
@@ -140,6 +232,30 @@ type OrderGeo struct {
 	ConfirmedAddress string          `json:"confirmed_address"`
 	Corrected        bool            `json:"corrected"`
 	Note             string          `json:"note"`
+}
+
+type OrderPayment struct {
+	ID            string        `json:"id"`
+	OrderID       string        `json:"order_id"`
+	ClientKey     string        `json:"client_key"`
+	At            string        `json:"at"`
+	Tender        string        `json:"tender"`
+	AmountCents   int64         `json:"amount_cents"`
+	TipCents      int64         `json:"tip_cents"`
+	TenderedCents int64         `json:"tendered_cents"`
+	ChangeCents   int64         `json:"change_cents"`
+	Refund        bool          `json:"refund"`
+	Reason        string        `json:"reason"`
+	Ref           string        `json:"ref"`
+	Last4         string        `json:"last4"`
+	StaffID       string        `json:"staff_id"`
+	DeviceID      string        `json:"device_id"`
+	ApprovedBy    string        `json:"approved_by"`
+	DrawerID      string        `json:"drawer_id"`
+	Brand         string        `json:"brand"`
+	RefundKind    string        `json:"refund_kind"`
+	RequestHash   string        `json:"request_hash"`
+	BatchID       sql.NullInt64 `json:"batch_id"`
 }
 
 type OrderTime struct {
@@ -215,6 +331,16 @@ type Setting struct {
 	Finishing                  string  `json:"finishing"`
 	Callout                    string  `json:"callout"`
 	Look                       string  `json:"look"`
+	CounterNext                int64   `json:"counter_next"`
+	AutoCloseLast              string  `json:"auto_close_last"`
+	SyncParkRefusals           int64   `json:"sync_park_refusals"`
+	SyncParkHours              int64   `json:"sync_park_hours"`
+	SyncParkAlertedAt          string  `json:"sync_park_alerted_at"`
+	PinThrottle                string  `json:"pin_throttle"`
+	TerminalAppRelease         string  `json:"terminal_app_release"`
+	PrintRouting               string  `json:"print_routing"`
+	AdminPair                  string  `json:"admin_pair"`
+	DeviceSetups               string  `json:"device_setups"`
 }
 
 type SettingsLog struct {
@@ -231,4 +357,48 @@ type StoreConfig struct {
 	ID        int64  `json:"id"`
 	Context   string `json:"context"`
 	UpdatedAt string `json:"updated_at"`
+}
+
+type TerminalDraft struct {
+	ID               string `json:"id"`
+	LocationID       string `json:"location_id"`
+	Type             string `json:"type"`
+	Name             string `json:"name"`
+	Held             bool   `json:"held"`
+	HolderDeviceID   string `json:"holder_device_id"`
+	HolderDeviceName string `json:"holder_device_name"`
+	HolderStaffID    string `json:"holder_staff_id"`
+	HolderStaffName  string `json:"holder_staff_name"`
+	StaffID          string `json:"staff_id"`
+	StaffName        string `json:"staff_name"`
+	OrderID          string `json:"order_id"`
+	Draft            string `json:"draft"`
+	CreatedAt        string `json:"created_at"`
+	UpdatedAt        string `json:"updated_at"`
+}
+
+type TerminalDriverLink struct {
+	StaffID  string `json:"staff_id"`
+	DriverID string `json:"driver_id"`
+	LinkedAt string `json:"linked_at"`
+}
+
+type TerminalSnapshot struct {
+	Kind      string `json:"kind"`
+	Version   int64  `json:"version"`
+	Etag      string `json:"etag"`
+	Body      string `json:"body"`
+	FetchedAt string `json:"fetched_at"`
+}
+
+type ZReport struct {
+	BatchID   int64          `json:"batch_id"`
+	ID        string         `json:"id"`
+	Status    string         `json:"status"`
+	CloseKind string         `json:"close_kind"`
+	Forced    bool           `json:"forced"`
+	Report    string         `json:"report"`
+	CreatedAt string         `json:"created_at"`
+	BuiltAt   sql.NullString `json:"built_at"`
+	Flagged   bool           `json:"flagged"`
 }

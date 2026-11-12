@@ -3,6 +3,7 @@ package transport
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -24,6 +25,13 @@ import (
 // diagServer is a Server over a fresh SQLite DB with one paired tablet; it
 // returns the mux and that tablet's key.
 func diagServer(t *testing.T) (*Server, http.Handler, string) {
+	t.Helper()
+	s, h, key, _ := diagServerDB(t)
+	return s, h, key
+}
+
+// diagServerDB is diagServer + its database.
+func diagServerDB(t *testing.T) (*Server, http.Handler, string, *sql.DB) {
 	t.Helper()
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "agent.db")
@@ -50,7 +58,7 @@ func diagServer(t *testing.T) (*Server, http.Handler, string) {
 	}
 	mux := http.NewServeMux()
 	s.register(mux)
-	return s, mux, key
+	return s, mux, key, db
 }
 
 func call(h http.Handler, method, path, key, body string) *httptest.ResponseRecorder {

@@ -8,18 +8,19 @@ import (
 
 	"quiccpos/agent/internal/domain/order"
 	"quiccpos/agent/internal/domain/printer"
+	"quiccpos/agent/internal/safego"
 
 	"go.opentelemetry.io/otel/attribute"
 )
 
 // DocPrinter prints a non-order slip on the receipt printer with failover
-// (the printer.Dispatcher's PrintDocument). build gets the intended printer's
-// name when the slip went to a fallback.
-type DocPrinter = func(ctx context.Context, label string, build func(reroutedFrom string) []byte) (printer.TicketResult, error)
+// (the printer.Dispatcher's PrintDocument). build gets the paper it prints
+// on: that printer's width and, on a fallback, the intended printer's name.
+type DocPrinter = func(ctx context.Context, label string, build func(on printer.Paper) []byte) (printer.TicketResult, error)
 
 // ReportBuilder renders one finished driver report (receipt.BuildDriverReport
 // with the live store context).
-type ReportBuilder = func(rep order.DriverReport, reroutedFrom string) []byte
+type ReportBuilder = func(rep order.DriverReport, on printer.Paper) []byte
 
 // SetDocumentPrinting wires driver-report printing (cmd/main.go).
 func (s *Service) SetDocumentPrinting(print DocPrinter, build ReportBuilder) {
@@ -28,7 +29,7 @@ func (s *Service) SetDocumentPrinting(print DocPrinter, build ReportBuilder) {
 
 // UnassignedBuilder renders the UNASSIGNED slip (receipt.BuildUnassignedReport
 // with the live store context).
-type UnassignedBuilder = func(rep order.UnassignedReport, reroutedFrom string) []byte
+type UnassignedBuilder = func(rep order.UnassignedReport, on printer.Paper) []byte
 
 // SetUnassignedReport wires the UNASSIGNED slip (2.4.0, cmd/main.go).
 func (s *Service) SetUnassignedReport(build UnassignedBuilder) { s.buildUnassigned = build }
@@ -159,9 +160,9 @@ func (s *Service) UndoReturn(ctx context.Context, driverID string) (*order.Drive
 }
 
 // DriverReports returns the finished driver reports of a batch (0 = open),
-// merged with the store hub's POS driver ledger as it is now (2.3.0).
+// as they are now.
 func (s *Service) DriverReports(ctx context.Context, batchID int64) ([]order.DriverReport, error) {
-	return s.mergedReports(ctx, batchID, nil)
+	return s.driverReports(ctx, batchID, nil)
 }
 
 // ReportPrint is the outcome of printing one driver's slip.
@@ -179,19 +180,15 @@ func (s *Service) PrintDriverReports(ctx context.Context, batchID int64) ([]Repo
 	if !s.CanPrintReports() {
 		return nil, spanErr(span, ErrPrintingUnavailable)
 	}
-	s.RefreshLedger(ctx) // a fresh POS ledger first (2.3.0)
 	reps, err := s.DriverReports(ctx, batchID)
 	if err != nil {
 		return nil, spanErr(span, err)
-	}
-	if extra := ledgerNote(reps); extra != "" {
-		s.logger.Info().Ctx(ctx).Int64("batch", batchID).Str("pos_only", extra).Msg("Driver reports: POS-only deliveries added")
 	}
 	out := make([]ReportPrint, 0, len(reps))
 	var failed []string
 	for _, rep := range reps {
 		rep := rep
-		res, err := s.printDoc(ctx, "driver-report", func(from string) []byte { return s.buildReport(rep, from) })
+		res, err := s.printDoc(ctx, "driver-report", func(on printer.Paper) []byte { return s.buildReport(rep, on) })
 		if err != nil {
 			failed = append(failed, rep.DriverName)
 		}
@@ -203,7 +200,7 @@ func (s *Service) PrintDriverReports(ctx context.Context, batchID int64) ([]Repo
 		case err != nil:
 			s.logger.Warn().Ctx(ctx).Err(err).Int64("batch", batchID).Msg("UNASSIGNED report not built")
 		case un != nil:
-			res, err := s.printDoc(ctx, "unassigned-report", func(from string) []byte { return s.buildUnassigned(*un, from) })
+			res, err := s.printDoc(ctx, "unassigned-report", func(on printer.Paper) []byte { return s.buildUnassigned(*un, on) })
 			if err != nil {
 				failed = append(failed, "UNASSIGNED")
 			}
@@ -223,11 +220,12 @@ func (s *Service) PrintDriverReports(ctx context.Context, batchID int64) ([]Repo
 func (s *Service) printReportsAfterClose(ctx context.Context, batchID int64, then func(context.Context)) {
 	if s.printDoc == nil || s.buildReport == nil {
 		if then != nil {
-			go then(context.WithoutCancel(ctx))
+			safego.Go("order.after_close", func() { then(context.WithoutCancel(ctx)) })
 		}
 		return
 	}
 	go func(ctx context.Context) {
+		defer safego.Recover("order.reports_after_close")
 		if then != nil {
 			defer then(ctx)
 		}
@@ -248,6 +246,7 @@ func (s *Service) alertFloor(ctx context.Context, msg string) {
 		return
 	}
 	go func(ctx context.Context) {
+		defer safego.Recover("order.floor_alert")
 		if err := s.notifier.SendFloor(ctx, msg, "siren"); err != nil {
 			s.logger.Warn().Ctx(ctx).Err(err).Msg("Pushover alert failed (non-fatal)")
 		}

@@ -58,16 +58,16 @@ func TestSpacing_WhereTheFeedsGo(t *testing.T) {
 	s := string(Build(snap, storeconfig.StoreContext{}, tk, spaced))
 	im, mm, ii := feedDots(8), feedDots(4), feedDots(12)
 	for _, want := range []string{
-		"1 Pepperoni Pizza\n" + cmdBaseSz + cmdBoldOff + im + "  - Extra cheese\n" + mm + "  - Onions\n",
-		"1 Garlic Knots\n" + cmdBaseSz + cmdBoldOff + ii + cmdBoldOn, // item→item
-		"1 Cheese Pizza\n" + cmdBaseSz + cmdBoldOff + im + "  - Well done\n",
+		"1  PEPPERONI PIZZA\n" + cmdSizeReset + cmdBaseSz + cmdBoldOff + im + "   - Extra cheese\n" + mm + "   - Onions\n",
+		"1  GARLIC KNOTS\n" + cmdSizeReset + cmdBaseSz + cmdBoldOff + ii + cmdBoldOn, // item→item
+		"1  CHEESE PIZZA\n" + cmdSizeReset + cmdBaseSz + cmdBoldOff + im + "   - Well done\n",
 	} {
 		if !strings.Contains(s, want) {
 			t.Errorf("missing %q in %q", want, s)
 		}
 	}
 	// After an item WITH modifiers the item→item feed comes too (owner, 2026-10-26).
-	if !strings.Contains(s, "  - Onions\n"+ii) {
+	if !strings.Contains(s, "   - Onions\n"+ii) {
 		t.Error("item→item applies after an item with modifiers as well")
 	}
 	if feedDots(0) != "" || feedDots(8) != "\x1b\x4a\x08" {
@@ -81,10 +81,10 @@ func TestSpacing_WhereTheFeedsGo(t *testing.T) {
 
 // PRINT SAMPLE prints with the saved prefs, so it shows the spacing too.
 func TestSpacing_Sample(t *testing.T) {
-	if !strings.Contains(string(BuildSample(previewStore(), spaced, printed)), "\x1b\x4a") {
+	if !strings.Contains(string(BuildSample(previewStore(), spaced, printed, 0)), "\x1b\x4a") {
 		t.Error("the sample must reflect the spacing")
 	}
-	if strings.Contains(string(BuildSample(previewStore(), order.DefaultReceiptPrefs(), printed)), "\x1b\x4a") {
+	if strings.Contains(string(BuildSample(previewStore(), order.DefaultReceiptPrefs(), printed, 0)), "\x1b\x4a") {
 		t.Error("the default sample has no extra spacing")
 	}
 }

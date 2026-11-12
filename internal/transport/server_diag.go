@@ -15,6 +15,7 @@ import (
 	printerApp "quiccpos/agent/internal/application/printer"
 	"quiccpos/agent/internal/domain/device"
 	"quiccpos/agent/internal/domain/storeconfig"
+	"quiccpos/agent/internal/infra/printer/receipt"
 	agentrpc "quiccpos/agent/internal/rpc"
 
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
@@ -49,11 +50,18 @@ type DiagDeps struct {
 	AcksPending func() int
 	// TestSlip renders the test slip for one printer (receipt.BuildTestSlip
 	// with the live store context).
-	TestSlip func(printerName, tablet string, at time.Time) []byte
+	// cols is the printer's print width (the slip is laid out for it).
+	TestSlip func(printerName, tablet string, at time.Time, cols int) []byte
+	// WidthTest renders the width test's ruler slip (receipt.BuildWidthTest
+	// in the store's time zone).
+	WidthTest func(printerName string, at time.Time) []byte
 }
 
 // SetDiag wires the diagnostics routes.
-func (s *Server) SetDiag(d DiagDeps) { s.diag = d }
+func (s *Server) SetDiag(d DiagDeps) {
+	s.diag = d
+	s.wireSquare()
+}
 
 func (s *Server) storeContext() storeconfig.StoreContext {
 	if s.diag.StoreCtx == nil {
@@ -106,6 +114,9 @@ type diagMain struct {
 	LastError      string     `json:"last_error"`
 	Reconnects     int64      `json:"reconnects"`
 	Reachable      bool       `json:"reachable"`
+	// ClockSkewS (hardening F-13): main's clock minus the Pi's at the last
+	// connect, seconds (absent until a connect carried a Date header).
+	ClockSkewS *float64 `json:"clock_skew_s,omitempty"`
 }
 
 type diagHealth struct {
@@ -115,14 +126,17 @@ type diagHealth struct {
 }
 
 type diagPrinter struct {
-	ID          string     `json:"id"`
-	Name        string     `json:"name"`
-	IP          string     `json:"ip"`
-	Up          bool       `json:"up"`
-	IsReceipt   bool       `json:"is_receipt"`
-	LastError   string     `json:"last_error"`
-	LastChecked *time.Time `json:"last_checked"`
-	DownSince   *time.Time `json:"down_since"`
+	ID        string `json:"id"`
+	Name      string `json:"name"`
+	IP        string `json:"ip"`
+	Up        bool   `json:"up"`
+	IsReceipt bool   `json:"is_receipt"`
+	// PrintColumns: the width every slip on it is laid out for (48 / 42 / 32;
+	// contract §2.3c "Paper width").
+	PrintColumns int        `json:"print_columns"`
+	LastError    string     `json:"last_error"`
+	LastChecked  *time.Time `json:"last_checked"`
+	DownSince    *time.Time `json:"down_since"`
 }
 
 type diagOrders struct {
@@ -148,6 +162,13 @@ type diagResponse struct {
 	// Tablets (2.2.0): the paired tablets, their Quibase version and
 	// whether they are on /api/events now.
 	Tablets []TabletInfo `json:"tablets"`
+	// Terminals (contract 2.10y): the paired POS terminals, their
+	// Centurion version, whether they are on /api/events and their last
+	// setup result.
+	Terminals []TabletInfo `json:"terminals"`
+	// DBTrouble (hardening F-15): readonly | full | ioerr while the SD card
+	// is in trouble ("" = fine).
+	DBTrouble string `json:"db_trouble,omitempty"`
 }
 
 // sseState is the main-connection verdict shared by /api/session and /api/diag.
@@ -190,6 +211,10 @@ func (s *Server) handleDiag(w http.ResponseWriter, r *http.Request) {
 		st := s.sseController.Status()
 		out.Main.ConnectedSince, out.Main.LastEventAt = unixPtr(st.ConnectedSince), unixPtr(st.LastEventAt)
 		out.Main.LastError, out.Main.Reconnects = st.LastError, st.Reconnects
+		if st.SkewKnown {
+			skew := st.ClockSkewSeconds
+			out.Main.ClockSkewS = &skew
+		}
 	}
 	if s.mainClient != nil {
 		out.Main.Reachable = s.mainReach.reachable(ctx, s.mainClient.BaseURL())
@@ -206,7 +231,7 @@ func (s *Server) handleDiag(w http.ResponseWriter, r *http.Request) {
 	// Printers, in roster order, with the health check's last verdict.
 	if s.diag.Dispatcher != nil {
 		for _, e := range s.diag.Dispatcher.Roster() {
-			p := diagPrinter{ID: e.ID, Name: e.Name, IsReceipt: e.IsReceipt}
+			p := diagPrinter{ID: e.ID, Name: e.Name, IsReceipt: e.IsReceipt, PrintColumns: receipt.NormalizeCols(e.Cols)}
 			if st, ok := s.printers.Get(e.Name); ok {
 				p.IP, p.Up, p.LastError, p.LastChecked = st.IP, st.Up, st.LastError, st.LastChecked
 				if !st.Up && st.LastChecked != nil {
@@ -237,10 +262,21 @@ func (s *Server) handleDiag(w http.ResponseWriter, r *http.Request) {
 		out.OpenNow = &open
 	}
 
-	out.Tablets = s.Tablets(ctx)
+	out.Tablets = s.devicesOfKind(ctx, device.KindTablet, true)
+	out.Terminals = s.Terminals(ctx)
+	if s.dbHealth != nil {
+		out.DBTrouble = s.dbHealth().Trouble
+	}
 	out.Problems = diagProblems(out)
+	for _, fn := range s.problemHooks { // hardening: z_unbalanced, main_auth_failing, ...
+		out.Problems = append(out.Problems, fn(r.Context())...)
+	}
 	s.writeJSON(w, http.StatusOK, out)
 }
+
+// clockSkewProblemS: a Pi clock further off main's than this is the
+// clock_skew problem (hardening F-13; sse.SkewProblemSeconds).
+const clockSkewProblemS = 30
 
 // diagProblems lists short codes for what's wrong, most physical first. A
 // missing health file (dev box) isn't a problem; an old one is.
@@ -264,6 +300,12 @@ func diagProblems(d diagResponse) []string {
 	}
 	if d.Main.State != "unconfigured" && d.Main.State != "connected" {
 		p = append(p, "main_down")
+	}
+	if sk := d.Main.ClockSkewS; sk != nil && (*sk > clockSkewProblemS || *sk < -clockSkewProblemS) {
+		p = append(p, "clock_skew")
+	}
+	if d.DBTrouble != "" {
+		p = append(p, "db_"+d.DBTrouble)
 	}
 	for _, pr := range d.Printers {
 		if !pr.Up && pr.LastChecked != nil {
@@ -312,7 +354,7 @@ func (s *Server) handlePrinterTest(w http.ResponseWriter, r *http.Request) {
 			if s.diag.TestSlip == nil {
 				return nil
 			}
-			return s.diag.TestSlip(e.Name, tablet, now)
+			return s.diag.TestSlip(e.Name, tablet, now, e.Cols)
 		})
 	}
 	if results == nil {
@@ -468,6 +510,9 @@ func (s *Server) handleDiagReport(w http.ResponseWriter, r *http.Request) {
 		s.writeJSON(w, http.StatusBadRequest, errCodeMap("The report must be a JSON object.", "bad_request"))
 		return
 	}
+	// A setup / full-check result is kept here first (contract 2.10y): the
+	// Pi page and the next terminal's setup see it even when main is down.
+	s.noteSetupReport(r.Context(), d, raw)
 	key, err := s.settings.GetStoreAPIKey(r.Context())
 	if err != nil {
 		s.writeError(w, r, http.StatusInternalServerError, err)
@@ -481,7 +526,11 @@ func (s *Server) handleDiagReport(w http.ResponseWriter, r *http.Request) {
 	if s.diag.Health != nil {
 		pi["health"] = s.diag.Health.Snapshot(r.Context())
 	}
-	payload := map[string]any{"tablet_id": d.ID, "tablet_name": d.Name, "report": json.RawMessage(raw), "pi": pi}
+	kind := device.KindTablet
+	if d.Kind == device.KindTerminal {
+		kind = device.KindTerminal
+	}
+	payload := map[string]any{"tablet_id": d.ID, "tablet_name": d.Name, "device_kind": kind, "report": json.RawMessage(raw), "pi": pi}
 
 	ctx, cancel := context.WithTimeout(r.Context(), diagReportWait)
 	defer cancel()

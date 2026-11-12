@@ -85,17 +85,5 @@ func TestDriverReportLineSlipMoney(t *testing.T) {
 	if l := NewDriverReportLine(online(200, 2449, false)); !l.Cash || l.OrderTipCents != 200 || l.SlipTotalCents != 2249 || l.CashCents != 2249 {
 		t.Errorf("online cash: %+v", l)
 	}
-	pos := StoredOrder{Order: Snapshot{Source: SourcePOS, Money: Money{Total: 2400}},
-		Status: Status{ExtSource: ExtSourceSoftTouch, Paid: true, TipCents: 300}}
-	if l := NewDriverReportLine(pos); l.Cash || l.OrderTipCents != 300 || l.SlipTotalCents != 2700 {
-		t.Errorf("POS card: %+v", l)
-	}
-	pos.Status.Paid, pos.Status.CashDueCents = false, 2400
-	if l := NewDriverReportLine(pos); !l.Cash || l.SlipTotalCents != 2400 {
-		t.Errorf("POS cash: %+v", l)
-	}
-	l := DriverReportLine{}.withPOSMoney(LedgerCheck{Paid: true, TipCents: 300, TotalCents: 2400})
-	if l.SlipTotalCents != 2700 || l.OrderTipCents != 300 {
-		t.Errorf("ledger card: %+v", l)
-	}
+
 }

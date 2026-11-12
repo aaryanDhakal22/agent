@@ -14,9 +14,10 @@ import (
 	"quiccpos/agent/internal/domain/order"
 )
 
-// 2.1.0 store hub surface. Settings (features / kitchen tickets / default
-// times) are device routes (tablet or web session; an integration key may
-// read them). /api/integration/* is for the hub's integration key only.
+// 2.1.0 store hub surface (the callout box since H3). Settings (features /
+// kitchen tickets / default times / finishing / look / callout) are device
+// routes (tablet or web session; an integration key may read them).
+// /api/integration/* is for the hub's integration key only.
 
 // readJSON reads a JSON object body (400 on anything else).
 func readJSON(r *http.Request) ([]byte, error) {
@@ -54,7 +55,7 @@ func (s *Server) handleGetFeatures(w http.ResponseWriter, _ *http.Request) {
 	s.writeJSON(w, http.StatusOK, s.service.IntegrationSettings().Features)
 }
 
-// PUT /api/settings/features {pos_pull?, order_insert?, ...}
+// PUT /api/settings/features {future_orders?, paid_wave?}
 func (s *Server) handleSetFeatures(w http.ResponseWriter, r *http.Request) {
 	s.putSettings(w, r, func(set *order.IntegrationSettings) any { return &set.Features })
 }
@@ -64,7 +65,7 @@ func (s *Server) handleGetTickets(w http.ResponseWriter, _ *http.Request) {
 	s.writeJSON(w, http.StatusOK, s.service.IntegrationSettings().Tickets)
 }
 
-// PUT /api/settings/tickets {pos_delivery?, ...}
+// PUT /api/settings/tickets {online_cash_pickup?, online_cash_delivery?, online_card?, future_kitchen?, future_receipt?}
 func (s *Server) handleSetTickets(w http.ResponseWriter, r *http.Request) {
 	s.putSettings(w, r, func(set *order.IntegrationSettings) any { return &set.Tickets })
 }
@@ -258,85 +259,6 @@ func (s *Server) handleIntegrationCalloutAudio(w http.ResponseWriter, r *http.Re
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// POST /api/orders/{id}/change/ack {change_id?} -> StoredOrder | 409 no_change
-func (s *Server) handleAckChange(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		ChangeID string `json:"change_id"`
-	}
-	if r.ContentLength != 0 {
-		if err := decodeBody(r, &req); err != nil {
-			s.floorErr(w, r, err)
-			return
-		}
-	}
-	so, err := s.service.AckPosChange(r.Context(), r.PathValue("id"), req.ChangeID)
-	if err != nil {
-		s.floorErr(w, r, err)
-		return
-	}
-	s.writeJSON(w, http.StatusOK, so)
-}
-
-// --- future orders + ambiguous addresses (device routes) ---------------------------
-
-// POST /api/orders/{id}/schedule {lead_minutes} -> StoredOrder | 409 not_future.
-func (s *Server) handleSchedule(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		LeadMinutes *int `json:"lead_minutes"`
-	}
-	if err := decodeBody(r, &req); err != nil {
-		s.floorErr(w, r, err)
-		return
-	}
-	if req.LeadMinutes == nil {
-		s.writeJSON(w, http.StatusBadRequest, errCodeMap("lead_minutes is required", "bad_request"))
-		return
-	}
-	so, err := s.service.Schedule(r.Context(), r.PathValue("id"), *req.LeadMinutes)
-	if err != nil {
-		s.floorErr(w, r, err)
-		return
-	}
-	s.writeJSON(w, http.StatusOK, so)
-}
-
-// POST /api/orders/{id}/geo/choose {index} -> 202 {} (main answers with order.geo).
-func (s *Server) handleGeoChoose(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		Index *int `json:"index"`
-	}
-	if err := decodeBody(r, &req); err != nil {
-		s.floorErr(w, r, err)
-		return
-	}
-	if req.Index == nil {
-		s.writeJSON(w, http.StatusBadRequest, errCodeMap("index is required", "bad_request"))
-		return
-	}
-	if err := s.service.ChooseCandidate(r.Context(), r.PathValue("id"), *req.Index); err != nil {
-		s.floorErr(w, r, err)
-		return
-	}
-	s.writeJSON(w, http.StatusAccepted, map[string]any{})
-}
-
-// POST /api/orders/{id}/geo/search {query} -> 202 {} (main answers with
-// order.geo: check with places near the store, or not_found with a note).
-func (s *Server) handleGeoSearch(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		Query string `json:"query"`
-	}
-	if err := decodeBody(r, &req); err != nil {
-		s.floorErr(w, r, err)
-		return
-	}
-	if err := s.service.SearchAddress(r.Context(), r.PathValue("id"), req.Query); err != nil {
-		s.floorErr(w, r, err)
-		return
-	}
-	s.writeJSON(w, http.StatusAccepted, map[string]any{})
-}
-
 // --- /api/integration/* (integration key only) -------------------------------------
 
 type integrationLocation struct {
@@ -346,57 +268,17 @@ type integrationLocation struct {
 	Config   map[string]any `json:"config"`
 }
 
-type integrationDriver struct {
-	ID        string  `json:"id"`
-	Name      string  `json:"name"`
-	PosNumber *string `json:"pos_number"`
-	Status    string  `json:"status"`
-}
-
-type integrationPrinter struct {
-	ID        string `json:"id"`
-	Name      string `json:"name"`
-	IP        string `json:"ip"`
-	IsReceipt bool   `json:"is_receipt"`
-}
-
-// GET /api/integration/config — what the hub needs to work with this Pi.
+// GET /api/integration/config — what the hub (the callout box) needs to work
+// with this Pi: the location, the callout settings and the agent's version.
 func (s *Server) handleIntegrationConfig(w http.ResponseWriter, r *http.Request) {
 	sc := s.storeContext()
 	cfg := sc.Location.Config
 	if cfg == nil {
 		cfg = map[string]any{}
 	}
-	set := s.service.IntegrationSettings()
-	ds, err := s.service.ListDrivers(r.Context())
-	if err != nil {
-		s.floorErr(w, r, err)
-		return
-	}
-	drivers := make([]integrationDriver, 0, len(ds))
-	for _, d := range ds {
-		var pos *string
-		if d.PosNumber != "" {
-			p := d.PosNumber
-			pos = &p
-		}
-		drivers = append(drivers, integrationDriver{ID: d.ID, Name: d.Name, PosNumber: pos, Status: d.Status})
-	}
-	printers := []integrationPrinter{}
-	if s.diag.Dispatcher != nil {
-		for _, p := range s.diag.Dispatcher.RosterPrinters() {
-			printers = append(printers, integrationPrinter{ID: p.ID, Name: p.Name, IP: p.IP, IsReceipt: p.IsReceipt})
-		}
-	}
 	s.writeJSON(w, http.StatusOK, map[string]any{
 		"location":      integrationLocation{ID: sc.Location.ID, Name: sc.Location.Name, Timezone: sc.Location.Timezone, Config: cfg},
-		"features":      set.Features,
-		"tickets":       set.Tickets,
-		"times":         set.Times,
-		"finishing":     set.Finishing,
-		"callout":       set.Callout,
-		"drivers":       drivers,
-		"printers":      printers,
+		"callout":       s.service.IntegrationSettings().Callout,
 		"agent_version": s.version,
 	})
 }
@@ -413,69 +295,6 @@ func (s *Server) handleIntegrationStatus(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
-}
-
-// PUT /api/integration/orders/{ext_ref}[?if_exists=1] — upsert a POS check
-// -> {order_id, created, changed} | 409 pos_pull_off. With if_exists=1 (2.3.6)
-// a check the Pi doesn't hold is 404 not_found instead of created.
-func (s *Server) handleIntegrationUpsert(w http.ResponseWriter, r *http.Request) {
-	var in order.ExternalOrder
-	if err := decodeBody(r, &in); err != nil {
-		s.floorErr(w, r, err)
-		return
-	}
-	upsert := s.service.UpsertExternal
-	if v := r.URL.Query().Get("if_exists"); v == "1" || v == "true" {
-		upsert = s.service.UpdateExternal
-	}
-	res, err := upsert(r.Context(), r.PathValue("ext_ref"), in)
-	if err != nil {
-		s.floorErr(w, r, err)
-		return
-	}
-	s.writeJSON(w, http.StatusOK, res)
-}
-
-// POST /api/integration/orders/{ext_ref}/void -> the cancelled StoredOrder.
-func (s *Server) handleIntegrationVoid(w http.ResponseWriter, r *http.Request) {
-	so, err := s.service.VoidExternal(r.Context(), r.PathValue("ext_ref"))
-	if err != nil {
-		s.floorErr(w, r, err)
-		return
-	}
-	s.writeJSON(w, http.StatusOK, so)
-}
-
-// PATCH /api/integration/online-orders/{order_id} {paid?, pos_check_number?,
-// flag?: {text, severity} | null} -> StoredOrder.
-func (s *Server) handleIntegrationPatchOnline(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		Paid           *bool           `json:"paid"`
-		PosCheckNumber *int64          `json:"pos_check_number"`
-		Flag           json.RawMessage `json:"flag"`
-	}
-	if err := decodeBody(r, &req); err != nil {
-		s.floorErr(w, r, err)
-		return
-	}
-	p := order.OnlinePatch{Paid: req.Paid, PosCheckNumber: req.PosCheckNumber}
-	if len(req.Flag) > 0 {
-		p.SetFlag = true
-		if string(bytes.TrimSpace(req.Flag)) != "null" {
-			var f order.Flag
-			if err := json.Unmarshal(req.Flag, &f); err != nil {
-				s.writeJSON(w, http.StatusBadRequest, errCodeMap("flag must be {text, severity} or null", "bad_request"))
-				return
-			}
-			p.Flag = &f
-		}
-	}
-	so, err := s.service.PatchOnline(r.Context(), r.PathValue("order_id"), p)
-	if err != nil {
-		s.floorErr(w, r, err)
-		return
-	}
-	s.writeJSON(w, http.StatusOK, so)
 }
 
 // maxFeedWait caps the events long-poll (below the proxy idle timeouts).
@@ -506,95 +325,3 @@ func (s *Server) handleIntegrationEvents(w http.ResponseWriter, r *http.Request)
 }
 
 // --- future-order actions (2.4.3) ------------------------------------------------------------
-
-// POST /api/orders/{id}/make-now {prep_minutes}
-func (s *Server) handleMakeNow(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		PrepMinutes *int `json:"prep_minutes"`
-	}
-	if err := decodeBody(r, &req); err != nil {
-		s.floorErr(w, r, err)
-		return
-	}
-	if req.PrepMinutes == nil {
-		s.writeJSON(w, http.StatusBadRequest, errCodeMap("prep_minutes is required", "bad_request"))
-		return
-	}
-	so, err := s.service.MakeNow(r.Context(), r.PathValue("id"), *req.PrepMinutes)
-	if err != nil {
-		if errors.Is(err, orderApp.ErrNothingPrinted) {
-			s.writeJSON(w, http.StatusBadGateway, errCodeMap(err.Error(), "nothing_printed"))
-			return
-		}
-		s.floorErr(w, r, err)
-		return
-	}
-	s.writeJSON(w, http.StatusOK, so)
-}
-
-// POST /api/orders/{id}/due {promised_at}
-func (s *Server) handleChangeDue(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		PromisedAt *time.Time `json:"promised_at"`
-	}
-	if err := decodeBody(r, &req); err != nil {
-		s.floorErr(w, r, err)
-		return
-	}
-	if req.PromisedAt == nil {
-		s.writeJSON(w, http.StatusBadRequest, errCodeMap("promised_at is required", "bad_request"))
-		return
-	}
-	so, err := s.service.ChangeDue(r.Context(), r.PathValue("id"), *req.PromisedAt)
-	if err != nil {
-		s.floorErr(w, r, err)
-		return
-	}
-	s.writeJSON(w, http.StatusOK, so)
-}
-
-// POST /api/orders/{id}/print-now {kitchen, receipt}
-func (s *Server) handlePrintNow(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		Kitchen bool `json:"kitchen"`
-		Receipt bool `json:"receipt"`
-	}
-	if err := decodeBody(r, &req); err != nil {
-		s.floorErr(w, r, err)
-		return
-	}
-	so, out, err := s.service.PrintNow(r.Context(), r.PathValue("id"), req.Kitchen, req.Receipt)
-	switch {
-	case err == nil:
-	case errors.Is(err, orderApp.ErrNothingForKitchen):
-		s.writeJSON(w, http.StatusConflict, errCodeMap(err.Error(), "nothing_for_kitchen"))
-		return
-	case errors.Is(err, orderApp.ErrFuturePrintFailed):
-		s.writeJSON(w, http.StatusBadGateway, errCodeMap(err.Error(), "print_failed"))
-		return
-	default:
-		s.floorErr(w, r, err)
-		return
-	}
-	printed, failed, rerouted := []string{}, []string{}, []reroutedDTO{}
-	for _, p := range out.Printed {
-		printed = append(printed, p.Station)
-		if p.ReroutedFrom != "" {
-			rerouted = append(rerouted, reroutedDTO{Station: p.Station, PrintedOn: p.PrintedOn})
-		}
-	}
-	for _, f := range out.Failed {
-		failed = append(failed, f.Station)
-	}
-	s.writeJSON(w, http.StatusOK, map[string]any{"order": so, "printed": printed, "failed": failed, "rerouted": rerouted})
-}
-
-// POST /api/orders/{id}/cancel
-func (s *Server) handleCancelFuture(w http.ResponseWriter, r *http.Request) {
-	so, err := s.service.CancelFuture(r.Context(), r.PathValue("id"))
-	if err != nil {
-		s.floorErr(w, r, err)
-		return
-	}
-	s.writeJSON(w, http.StatusOK, so)
-}

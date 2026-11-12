@@ -162,8 +162,9 @@ textarea.field { resize: vertical; min-height: 84px; }
   display: flex; flex-direction: column; gap: 18px;
 }
 .brand { display: flex; align-items: center; gap: 10px; padding: 0 6px; min-width: 0; }
-.brand-tile { width: 36px; height: 36px; border-radius: 10px; background: #AC94F4; color: #241B47; display: flex; align-items: center; justify-content: center; font: 800 20px "JetBrains Mono", monospace; flex-shrink: 0; }
-.brand-tile.lg { width: 52px; height: 52px; border-radius: 14px; font-size: 28px; }
+/* The QuiccPOS icon (static/quiccpos-icon.svg, from the brand kit): scale it whole, never recolour. */
+.brand-tile { width: 36px; height: 36px; display: block; flex-shrink: 0; }
+.brand-tile.lg { width: 52px; height: 52px; }
 .brand-name { font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .conn { display: flex; align-items: center; gap: 6px; font: 700 11px "JetBrains Mono", monospace; letter-spacing: .04em; }
 .conn.ok { color: var(--ok); } .conn.warn { color: var(--warn); } .conn.bad { color: var(--bad); } .conn.mute { color: var(--muted); }

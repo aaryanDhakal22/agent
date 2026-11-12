@@ -459,7 +459,6 @@ func (s *Service) OnGeo(ctx context.Context, g order.GeoUpdate) (*order.StoredOr
 		return nil, spanErr(span, err)
 	}
 	s.publishUpdated(*so)
-	s.feedNotify() // a confirmed address goes to the hub
 	return so, nil
 }
 

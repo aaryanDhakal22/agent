@@ -39,21 +39,12 @@ CREATE TABLE orders (
     -- 00013_pool_seq: stop order inside the pool (1..n).
     pool_seq           integer,
     pool_plan_id       text,
-    -- 00014_integration: POS orders from the store hub + future orders.
-    ext_source             text    NOT NULL DEFAULT '',
-    ext_ref                text    NOT NULL DEFAULT '',
-    ext_hash               text    NOT NULL DEFAULT '',
-    ext_driver_pos         text    NOT NULL DEFAULT '',
-    display_number         integer,
+    -- 00014_integration: future orders + the money a terminal took (paid, cash due,
+    -- tip, sent_at); the POS columns went in 00030_softtouch_out.
     paid                   boolean NOT NULL DEFAULT false,
     cash_due_cents         integer,
     tip_cents              integer,
-    board_hidden           boolean NOT NULL DEFAULT false,
     sent_at                text,
-    local_only             boolean NOT NULL DEFAULT false,
-    flag                   text    NOT NULL DEFAULT '',
-    pos_check_number       integer,
-    pos_driver_note        text    NOT NULL DEFAULT '',
     scheduled_lead_minutes integer,
     ring_at                text,
     rerung                 boolean NOT NULL DEFAULT false,
@@ -65,14 +56,11 @@ CREATE TABLE orders (
     not_delivered_at        text,
     not_delivered_driver_id text    NOT NULL DEFAULT '',
     run_seq                 integer,
-    -- 00019_callout: finished (picked up) + by whom (pos | auto), the POS
-    -- closed the check, the unacknowledged terminal change (JSON).
+    -- 00019_callout: finished (picked up) + by whom (terminal | auto).
     finished_at             text,
     finished_by             text    NOT NULL DEFAULT '',
-    pos_closed              boolean NOT NULL DEFAULT false,
-    pos_change              text    NOT NULL DEFAULT '',
     -- 00022_floor_24: delivered with no driver (Unassigned; JSON) and when
-    -- a POS check was last paid.
+    -- the order was last paid.
     marked_delivered        text    NOT NULL DEFAULT '',
     paid_at                 text,
     -- 00022: a future order's tickets printed early (first ACCEPT).
@@ -81,6 +69,20 @@ CREATE TABLE orders (
     -- 00023: a future order's due time moved on the Pi / MADE NOW.
     due_override            text,
     made_now                boolean NOT NULL DEFAULT false,
+    -- 00024_weborder_floor: the tip added after the order (card channel
+    -- orders), locked once main charged it; why it was cancelled by hand.
+    added_tip_cents         integer NOT NULL DEFAULT 0,
+    tip_locked              boolean NOT NULL DEFAULT false,
+    cancel_reason           text    NOT NULL DEFAULT '',
+    -- 00025_terminal: a counter order's terminal idempotency key ('' = none).
+    client_key              text    NOT NULL DEFAULT '',
+    -- 00026_terminal_driver: a tip the driver got at the door (cash / counter).
+    door_tip_cents          integer NOT NULL DEFAULT 0,
+    -- 00033_hardening: a keyed request's fingerprint (409 key_reused), a check
+    -- carried past its batch's close, kitchen tickets still to print.
+    request_hash            text    NOT NULL DEFAULT '',
+    carried                 boolean NOT NULL DEFAULT false,
+    kitchen_pending         boolean NOT NULL DEFAULT false,
     CHECK (state IN ('arrived', 'scheduled', 'accepted', 'ready', 'on_delivery', 'delivered', 'cancelled'))
 );
 CREATE INDEX idx_orders_arrival_date ON orders (arrival_date DESC);
@@ -88,8 +90,8 @@ CREATE INDEX idx_orders_state_pending ON orders (arrival_date DESC) WHERE state 
 CREATE INDEX idx_orders_source_event ON orders (source, source_event_id);
 CREATE INDEX idx_orders_batch ON orders (batch_id, arrival_date DESC);
 CREATE INDEX idx_orders_pool ON orders (pool_driver_id) WHERE pool_driver_id IS NOT NULL;
-CREATE INDEX idx_orders_ext ON orders (ext_source, ext_ref) WHERE ext_ref <> '';
 CREATE INDEX idx_orders_scheduled ON orders (ring_at) WHERE state = 'scheduled';
+CREATE UNIQUE INDEX idx_orders_client_key ON orders (client_key) WHERE client_key <> '';
 
 CREATE TABLE drivers (
     id               text    PRIMARY KEY,
@@ -100,13 +102,10 @@ CREATE TABLE drivers (
     status           text    NOT NULL DEFAULT 'off',
     last_returned_at text,
     created_at       text    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
-    -- 00014_integration: the driver's POS login number (unique when set).
-    pos_number       text    NOT NULL DEFAULT '',
     -- 00020_driver_route: the driver's phone in Pushover ('' = none).
     pushover_device  text    NOT NULL DEFAULT '',
     CHECK (status IN ('off', 'available', 'out'))
 );
-CREATE UNIQUE INDEX idx_drivers_pos_number ON drivers (pos_number) WHERE pos_number <> '' AND active;
 
 CREATE TABLE driver_shifts (
     id          text    PRIMARY KEY,
@@ -127,9 +126,32 @@ CREATE TABLE floor_events (
     at         text    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     synced_at  text,
     attempts   integer NOT NULL DEFAULT 0,
-    last_error text    NOT NULL DEFAULT ''
+    last_error text    NOT NULL DEFAULT '',
+    -- 00029_drawers_z: the subject the event is about (order id,
+    -- "customer:<id>", "drawer:<id>", "z:<batch>"; '' = none), main's
+    -- refusals of a kept event and when it was parked (dead letter).
+    subject          text    NOT NULL DEFAULT '',
+    refusals         integer NOT NULL DEFAULT 0,
+    first_refused_at text,
+    parked_at        text
 );
 CREATE INDEX idx_floor_events_unsynced ON floor_events (at) WHERE synced_at IS NULL;
+CREATE INDEX idx_floor_events_parked ON floor_events (subject) WHERE parked_at IS NOT NULL AND synced_at IS NULL;
+
+-- 00029_drawers_z: why an event was parked, and its retry.
+CREATE TABLE floor_dead_letters (
+    event_id         text    PRIMARY KEY,
+    subject          text    NOT NULL DEFAULT '',
+    type             text    NOT NULL,
+    result           text    NOT NULL DEFAULT '',
+    refusals         integer NOT NULL DEFAULT 0,
+    first_refused_at text    NOT NULL DEFAULT '',
+    parked_at        text    NOT NULL,
+    last_error       text    NOT NULL DEFAULT '',
+    retried_at       text,
+    retried_by       text    NOT NULL DEFAULT ''
+);
+CREATE INDEX idx_floor_dead_letters_open ON floor_dead_letters (parked_at) WHERE retried_at IS NULL;
 
 CREATE TABLE paired_devices (
     id           text PRIMARY KEY,
@@ -139,8 +161,9 @@ CREATE TABLE paired_devices (
     created_at   text NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     last_seen_at text,
     revoked_at   text,
-    -- 00014_integration: tablet | integration (the store hub).
-    kind         text NOT NULL DEFAULT 'tablet' CHECK (kind IN ('tablet', 'integration')),
+    -- 00014_integration: tablet | integration (the store hub); 00025_terminal: | terminal; 00039_phone_pay: | phone;
+    -- 00042_callcenter: | callcenter (the one virtual call-center device, id 'callcenter', no key).
+    kind         text NOT NULL DEFAULT 'tablet' CHECK (kind IN ('tablet', 'integration', 'terminal', 'phone', 'callcenter')),
     -- 00016_v220: the Quibase version the tablet last sent (X-Quibase-Version).
     app_version         text NOT NULL DEFAULT '',
     app_version_seen_at text
@@ -223,6 +246,24 @@ CREATE TABLE settings (
     callout                   text NOT NULL DEFAULT '{}',
     -- 00023_future_actions: the store's colours (JSON).
     look                      text NOT NULL DEFAULT '{}',
+    -- 00025_terminal: the counter sequence's next number (0 = counter_start).
+    counter_next              integer NOT NULL DEFAULT 0,
+    -- 00026_terminal_driver: the last batch auto-close slot handled (UTC).
+    auto_close_last           text    NOT NULL DEFAULT '',
+    -- 00029_drawers_z: floor sync parking thresholds + the last parked alert.
+    sync_park_refusals        integer NOT NULL DEFAULT 8,
+    sync_park_hours           integer NOT NULL DEFAULT 2,
+    sync_park_alerted_at      text    NOT NULL DEFAULT '',
+    -- 00033_hardening: wrong PINs per terminal + per store (JSON).
+    pin_throttle              text    NOT NULL DEFAULT '',
+    -- 00035_terminal_app: the terminal APK this Pi has cached for its terminals (JSON).
+    terminal_app_release      text    NOT NULL DEFAULT '',
+    -- 00037_print_routing: routing + emergency reroute (JSON, '' = none).
+    print_routing             text    NOT NULL DEFAULT '',
+    -- 00038_setup_wizard: the admin pairing code for terminals (JSON {code, off},
+    -- '' = 1024 on) + each device's last setup result (JSON {device id: result}).
+    admin_pair                text    NOT NULL DEFAULT '',
+    device_setups             text    NOT NULL DEFAULT '',
     CHECK (id = 1)
 );
 
@@ -288,3 +329,250 @@ CREATE TABLE settings_log (
     changes    text    NOT NULL
 );
 CREATE INDEX settings_log_at ON settings_log(at);
+
+-- 00025_terminal
+-- The snapshots main sends for the terminals (kind counter_menu |
+-- terminal_config): the last good body, kept so both terminals get the same
+-- one, also offline.
+CREATE TABLE terminal_snapshots (
+    kind       text    PRIMARY KEY CHECK (kind IN ('counter_menu', 'terminal_config')),
+    version    integer NOT NULL,
+    etag       text    NOT NULL,
+    body       text    NOT NULL,
+    fetched_at text    NOT NULL
+);
+
+-- Money taken (or given back) on a counter order at a terminal.
+CREATE TABLE order_payments (
+    id             text    PRIMARY KEY,
+    order_id       text    NOT NULL,
+    client_key     text    NOT NULL DEFAULT '',
+    at             text    NOT NULL,
+    tender         text    NOT NULL,
+    amount_cents   integer NOT NULL,
+    tip_cents      integer NOT NULL DEFAULT 0,
+    tendered_cents integer NOT NULL DEFAULT 0,
+    change_cents   integer NOT NULL DEFAULT 0,
+    refund         boolean NOT NULL DEFAULT false,
+    reason         text    NOT NULL DEFAULT '',
+    ref            text    NOT NULL DEFAULT '',
+    last4          text    NOT NULL DEFAULT '',
+    staff_id       text    NOT NULL DEFAULT '',
+    device_id      text    NOT NULL DEFAULT '',
+    approved_by    text    NOT NULL DEFAULT '',
+    -- 00029_drawers_z: the terminal drawer a cash payment went in ('' = none).
+    drawer_id      text    NOT NULL DEFAULT '',
+    -- 00031_payment_brand: a card payment's brand (amex | discover |
+    -- mastercard | visa | other; '' = none given / not a card).
+    brand          text    NOT NULL DEFAULT '',
+    -- 00032_drawer_auto: a refund's kind ('' | goodwill | outside).
+    refund_kind    text    NOT NULL DEFAULT '',
+    -- 00033_hardening: the keyed request's fingerprint; the batch it was taken in.
+    request_hash   text    NOT NULL DEFAULT '',
+    batch_id       integer
+);
+CREATE INDEX idx_order_payments_order ON order_payments (order_id, at);
+CREATE INDEX idx_order_payments_batch ON order_payments (batch_id);
+CREATE INDEX idx_order_payments_drawer ON order_payments (drawer_id) WHERE drawer_id <> '';
+
+-- 00040_payment_cards: Square's answer for an in-app card payment / a refund
+-- through Square, as JSON (contract 2.10r).
+CREATE TABLE payment_cards (
+    payment_id text PRIMARY KEY,
+    card       text NOT NULL
+);
+CREATE UNIQUE INDEX idx_order_payments_key ON order_payments (order_id, client_key) WHERE client_key <> '';
+
+-- Every terminal action (login, lock, order, payment, void, no sale, ...):
+-- one row each, synced to main as the floor event journal.entries.
+CREATE TABLE journal (
+    id        text PRIMARY KEY,
+    at        text NOT NULL,
+    staff_id  text NOT NULL DEFAULT '',
+    device_id text NOT NULL DEFAULT '',
+    action    text NOT NULL,
+    order_id  text NOT NULL DEFAULT '',
+    detail    text NOT NULL DEFAULT '{}'
+);
+CREATE INDEX idx_journal_at ON journal (at);
+
+-- 00026_terminal_driver: a driver staff member's Pi driver.
+CREATE TABLE terminal_driver_links (
+    staff_id  text PRIMARY KEY,
+    driver_id text NOT NULL UNIQUE,
+    linked_at text NOT NULL
+);
+
+-- 00027_terminal_drafts: the terminals' shared drafts (hold + take over).
+CREATE TABLE terminal_drafts (
+    id                 text    PRIMARY KEY,
+    location_id        text    NOT NULL DEFAULT '',
+    type               text    NOT NULL,
+    name               text    NOT NULL DEFAULT '',
+    held               boolean NOT NULL DEFAULT true,
+    holder_device_id   text    NOT NULL DEFAULT '',
+    holder_device_name text    NOT NULL DEFAULT '',
+    holder_staff_id    text    NOT NULL DEFAULT '',
+    holder_staff_name  text    NOT NULL DEFAULT '',
+    staff_id           text    NOT NULL DEFAULT '',
+    staff_name         text    NOT NULL DEFAULT '',
+    order_id           text    NOT NULL DEFAULT '',
+    draft              text    NOT NULL DEFAULT '{}',
+    created_at         text    NOT NULL,
+    updated_at         text    NOT NULL,
+    -- 00043_draft_origin: '' = a store terminal, 'callcenter' = a call-center seat (read with raw SQL,
+    -- repositories/terminal_draft_repo.go: the sqlc queries name their columns).
+    origin             text    NOT NULL DEFAULT ''
+);
+
+-- 00028_customers: the store's customers (main's feed + the terminals).
+CREATE TABLE customers (
+    id            text NOT NULL PRIMARY KEY,
+    phone         text NOT NULL,
+    phone_rev     text NOT NULL,
+    first_name    text NOT NULL DEFAULT '',
+    last_name     text NOT NULL DEFAULT '',
+    name          text NOT NULL DEFAULT '',
+    notes         text NOT NULL DEFAULT '',
+    source        text NOT NULL DEFAULT '',
+    updated_at    text NOT NULL DEFAULT '',
+    local_at      text NOT NULL DEFAULT '',
+    last_order_at text NOT NULL DEFAULT ''
+);
+CREATE UNIQUE INDEX idx_customers_phone ON customers (phone);
+CREATE INDEX idx_customers_phone_rev ON customers (phone_rev);
+
+CREATE TABLE customer_addresses (
+    id          text    NOT NULL PRIMARY KEY,
+    customer_id text    NOT NULL,
+    position    integer NOT NULL DEFAULT 0,
+    label       text    NOT NULL DEFAULT '',
+    line1       text    NOT NULL,
+    line2       text    NOT NULL DEFAULT '',
+    city        text    NOT NULL DEFAULT '',
+    state       text    NOT NULL DEFAULT '',
+    zip         text    NOT NULL DEFAULT '',
+    notes       text    NOT NULL DEFAULT '',
+    is_default  boolean NOT NULL DEFAULT false,
+    created_at  text    NOT NULL DEFAULT '',
+    lat         real,
+    lng         real
+);
+CREATE INDEX idx_customer_addresses_customer ON customer_addresses (customer_id);
+
+CREATE TABLE customer_sync (
+    id          integer NOT NULL PRIMARY KEY CHECK (id = 1),
+    location_id text    NOT NULL DEFAULT '',
+    cursor      text    NOT NULL DEFAULT '',
+    synced_at   text    NOT NULL DEFAULT ''
+);
+
+-- 00029_drawers_z: cash drawer sessions (terminal + cashier shift), their
+-- pay-ins / pay-outs, and the Z report per closed batch.
+CREATE TABLE drawer_sessions (
+    id                 text    PRIMARY KEY,
+    device_id          text    NOT NULL,
+    device_name        text    NOT NULL DEFAULT '',
+    staff_id           text    NOT NULL,
+    staff_name         text    NOT NULL DEFAULT '',
+    batch_id           integer NOT NULL,
+    opened_at          text    NOT NULL,
+    start_cents        integer NOT NULL,
+    handover_from      text    NOT NULL DEFAULT '',
+    closed_at          text,
+    closed_by          text    NOT NULL DEFAULT '',
+    close_reason       text    NOT NULL DEFAULT '',
+    counted_cents      integer,
+    denominations      text    NOT NULL DEFAULT '',
+    expected_cents     integer,
+    flagged            boolean NOT NULL DEFAULT false,
+    -- 00032_drawer_auto: opened by itself with the terminal's first payment.
+    auto               boolean NOT NULL DEFAULT false
+);
+CREATE UNIQUE INDEX idx_drawer_sessions_open_device ON drawer_sessions (device_id) WHERE closed_at IS NULL;
+CREATE INDEX idx_drawer_sessions_batch ON drawer_sessions (batch_id);
+
+CREATE TABLE drawer_movements (
+    id           text    PRIMARY KEY,
+    drawer_id    text    NOT NULL,
+    kind         text    NOT NULL CHECK (kind IN ('pay_in', 'pay_out')),
+    amount_cents integer NOT NULL,
+    reason       text    NOT NULL DEFAULT '',
+    staff_id     text    NOT NULL DEFAULT '',
+    approved_by  text    NOT NULL DEFAULT '',
+    client_key   text    NOT NULL DEFAULT '',
+    at           text    NOT NULL
+);
+CREATE INDEX idx_drawer_movements_drawer ON drawer_movements (drawer_id, at);
+CREATE UNIQUE INDEX idx_drawer_movements_key ON drawer_movements (drawer_id, client_key) WHERE client_key <> '';
+
+CREATE TABLE z_reports (
+    batch_id   integer PRIMARY KEY,
+    id         text    NOT NULL,
+    status     text    NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'done')),
+    close_kind text    NOT NULL DEFAULT 'manual',
+    forced     boolean NOT NULL DEFAULT false,
+    report     text    NOT NULL DEFAULT '',
+    created_at text    NOT NULL,
+    built_at   text,
+    -- 00033_hardening: doesn't balance (paged once).
+    flagged    boolean NOT NULL DEFAULT false
+);
+
+-- 00033_hardening: CREATE INDEX idx_orders_carried ON orders (carried) WHERE carried;
+-- and the S-6 triggers (order_payments_money_ins / _order_ins / _money_upd,
+-- drawer_sessions_money_ins, drawer_movements_ins, batches_one_open) live in
+-- the migration only (sqlc doesn't need them; the drift test compares tables
+-- and indexes).
+CREATE INDEX idx_orders_carried ON orders (carried) WHERE carried;
+
+-- 00034_journal_key: a terminal's journal rows deduplicated by detail.client_key.
+CREATE INDEX idx_journal_client_key ON journal (device_id, action, json_extract(detail, '$.client_key'))
+WHERE json_extract(detail, '$.client_key') IS NOT NULL;
+
+-- 00039_phone_pay ("Send to phone", contract/agent.md §2.10z): a card charge a
+-- terminal sends to a cashier's phone, which charges it with Square's Point
+-- of Sale app (Tap to Pay on the phone) and reports Square's answer back.
+-- One row per charge; the payment it records is an order_payments row
+-- (tender square_app, client_key = the charge's client_key).
+CREATE TABLE phone_charges (
+    id                    text    PRIMARY KEY,
+    client_key            text    NOT NULL,
+    request_hash          text    NOT NULL DEFAULT '',
+    order_id              text    NOT NULL,
+    number                integer NOT NULL DEFAULT 0,
+    phone_id              text    NOT NULL,
+    phone_name            text    NOT NULL DEFAULT '',
+    device_id             text    NOT NULL DEFAULT '',
+    device_name           text    NOT NULL DEFAULT '',
+    staff_id              text    NOT NULL DEFAULT '',
+    staff_name            text    NOT NULL DEFAULT '',
+    amount_cents          integer NOT NULL,
+    tip_cents             integer NOT NULL DEFAULT 0,
+    code                  text    NOT NULL,
+    note                  text    NOT NULL DEFAULT '',
+    status                text    NOT NULL,
+    message               text    NOT NULL DEFAULT '',
+    created_at            text    NOT NULL,
+    updated_at            text    NOT NULL,
+    expires_at            text    NOT NULL,
+    opened_at             text,
+    finished_at           text,
+    transaction_id        text    NOT NULL DEFAULT '',
+    client_transaction_id text    NOT NULL DEFAULT '',
+    error_code            text    NOT NULL DEFAULT '',
+    payment_id            text    NOT NULL DEFAULT '',
+    square_payment_id     text    NOT NULL DEFAULT '',
+    brand                 text    NOT NULL DEFAULT '',
+    last4                 text    NOT NULL DEFAULT '',
+    entry                 text    NOT NULL DEFAULT '',
+    extra_tip_cents       integer NOT NULL DEFAULT 0,
+    -- 00041_phone_pay_cart: a charge for a cart not sent yet (placed when paid).
+    order_key             text    NOT NULL DEFAULT '',
+    order_body            text    NOT NULL DEFAULT '',
+    approved_by           text    NOT NULL DEFAULT ''
+);
+CREATE UNIQUE INDEX idx_phone_charges_key ON phone_charges (client_key);
+CREATE INDEX idx_phone_charges_phone ON phone_charges (phone_id, status);
+CREATE INDEX idx_phone_charges_order ON phone_charges (order_id);
+CREATE INDEX idx_phone_charges_order_key ON phone_charges (order_key) WHERE order_key <> '';
