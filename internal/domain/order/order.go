@@ -143,7 +143,7 @@ type LineItem struct {
 	// the station printer this line prints on, and how it was matched.
 	MenuItemID string `json:"menu_item_id,omitempty"`
 	PrinterID  string `json:"printer_id,omitempty"`
-	Routing    string `json:"routing,omitempty"` // matched | unmatched | unassigned | "" (pre-routing)
+	Routing    string `json:"routing,omitempty"` // matched | unmatched | unassigned | none | "" (pre-routing)
 
 	// POS orders only: PosRef is the POS line's own id (stable across
 	// edits), Kitchen says the POS sends it to a kitchen station, Added marks
@@ -185,6 +185,11 @@ const (
 	RoutingMatched    = "matched"
 	RoutingUnmatched  = "unmatched"
 	RoutingUnassigned = "unassigned"
+	// RoutingNone: the menu item is marked "no kitchen ticket" in main
+	// (the owner, 2026-11-12): no station ticket of its own and never in
+	// "Also on this order"; it still prints on the customer receipt /
+	// delivery ticket.
+	RoutingNone = "none"
 )
 
 // PaymentSummary mirrors main/'s PaymentSummary. method ∈ {card, cash, other}.

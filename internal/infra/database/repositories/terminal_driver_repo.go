@@ -105,7 +105,7 @@ func (r *OrderRepository) DeliverOne(ctx context.Context, driverID, orderID stri
 // Drivers tab moving an Unassigned delivery to a driver, in one tx: one
 // order.status event per order (delivered, his name), the hub's
 // order.driver_changed for a POS check. His status never changes.
-func (r *OrderRepository) ClaimDelivered(ctx context.Context, driverID string, ids []string, cutoff time.Time, by order.MarkedBy) (claimed []order.StoredOrder, err error) {
+func (r *OrderRepository) ClaimDelivered(ctx context.Context, driverID string, ids []string, rule order.ClaimRule, by order.MarkedBy) (claimed []order.StoredOrder, err error) {
 	ctx, _, end := dbSpan(ctx, "floor.claim_delivered")
 	defer end(&err)
 	ids = dedupe(ids)
@@ -133,7 +133,7 @@ func (r *OrderRepository) ClaimDelivered(ctx context.Context, driverID string, i
 			switch {
 			case so.Status.State == order.StateDelivered && so.Status.DriverID == d.ID:
 				// already his
-			case order.ClaimableLate(so, b.ID, cutoff):
+			case order.ClaimableLate(so, b.ID, rule):
 				todo = append(todo, so)
 			default:
 				taken = append(taken, id)

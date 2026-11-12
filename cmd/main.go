@@ -340,6 +340,8 @@ func main() {
 	// Close batch closes the drawers and queues the Z report (§2.10k-l):
 	// built right after, and at start for one a crash left pending.
 	termSvc.SetZDrivers(orderService.DriverReports)
+	termSvc.SetReports(orderService) // the Manager tab (§2.10m)
+	termSvc.SetStoreName(func() string { sc, _ := storeCtx.Load().(storeconfig.StoreContext); return sc.StoreName() })
 	orderService.OnClosed(termSvc.AfterBatchClose)
 	go termSvc.BuildPendingZ(ctx)
 	termStore.Load(ctx)

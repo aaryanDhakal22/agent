@@ -3,8 +3,8 @@
   * GET /api/terminal/pickups: every pickup source (counter, online), paid / cash due
   * an online cash pickup paid at the terminal, then POST …/picked-up (order.status to main)
   * shared drafts: two terminals racing for one draft (one wins, 409 open_elsewhere), TAKE OVER
-  * comp needs a manager on the Pi (403 manager_required {action: comp})
-  * the Employee meal at 50 % by a cashier (cashier_discount_pct is 10)
+  * a cashier comps without a manager (the owner, 2026-11-12: comp was manager-only)
+  * the Employee meal at the Pi's default 20 % by a cashier (cashier_discount_pct is 10)
 
 Uses test_terminal.py's rig (a throwaway agent behind the fake main, fake printers only).
 """
@@ -190,7 +190,7 @@ def test_drafts_race_and_take_over(rig):  # noqa: F811
         ev.close()
 
 
-def test_comp_needs_a_manager(rig):  # noqa: F811
+def test_comp_by_a_cashier_needs_no_manager(rig):  # noqa: F811
     agent, term = rig["agent"], rig["term"]
     base = agent.base
     r = term.post(f"{base}/api/terminal/orders", json={"client_key": f"k-{uuid.uuid4()}", "type": "counter",
@@ -198,40 +198,35 @@ def test_comp_needs_a_manager(rig):  # noqa: F811
     assert r.status_code == 201, r.text
     oid, total = r.json()["order"]["order"]["id"], r.json()["order"]["order"]["money"]["total_cents"]
     r = term.post(f"{base}/api/terminal/orders/{oid}/payments", json={"tender": "comp", "amount_cents": total}, timeout=5)
-    assert r.status_code == 403 and r.json()["code"] == "manager_required" and r.json()["action"] == "comp", r.text
-    r = term.post(f"{base}/api/terminal/orders/{oid}/payments", json={"tender": "comp", "amount_cents": total, "manager_pin": "1234"}, timeout=5)
-    assert r.status_code == 403 and r.json()["code"] == "manager_pin_invalid"
-    r = term.post(f"{base}/api/terminal/orders/{oid}/payments", json={"tender": "comp", "amount_cents": total, "manager_pin": "9876"}, timeout=5)
-    assert r.status_code == 200 and r.json()["payment"]["approved_by"] == "s-manager" and r.json()["balance_cents"] == 0
+    assert r.status_code == 200 and r.json()["payment"].get("approved_by") is None and r.json()["balance_cents"] == 0, r.text
     # A comp line ($0 on a set-price item) too.
     cart = {"lines": [{"item_id": SODA, "qty": 1, "price_cents": 0}]}
-    r = term.post(f"{base}/api/terminal/orders", json={"client_key": f"k-{uuid.uuid4()}", "type": "counter", "cart": cart}, timeout=10)
-    assert r.status_code == 403 and r.json()["action"] == "comp"
     q = term.post(f"{base}/api/terminal/quote", json={"cart": cart}, timeout=5).json()
-    assert q["needs_manager"] and q["price_changes"][0]["comp"]
-    r = term.post(f"{base}/api/terminal/orders", json={"client_key": f"k-{uuid.uuid4()}", "type": "counter", "cart": cart,
-                  "manager_pin": "9876"}, timeout=10)
+    assert not q["needs_manager"] and q["price_changes"][0]["comp"]
+    r = term.post(f"{base}/api/terminal/orders", json={"client_key": f"k-{uuid.uuid4()}", "type": "counter", "cart": cart}, timeout=10)
     assert r.status_code == 201, r.text
-    actions = [e["action"] for e in term.get(f"{base}/api/terminal/journal", timeout=5).json()]
-    assert "comp" in actions and actions.count("override") >= 2
+    entries = term.get(f"{base}/api/terminal/journal", timeout=5).json()
+    assert any(e["action"] == "comp" and e["staff_id"] == "s-cashier" for e in entries)
+    assert not any(e["action"] == "override" for e in entries)
 
 
-def test_employee_meal_at_50_by_a_cashier(rig):  # noqa: F811
+def test_employee_meal_at_20_by_a_cashier(rig):  # noqa: F811
     agent, term = rig["agent"], rig["term"]
     base = agent.base
-    meal = {"pct": 50, "reason": "Employee meal", "kind": "employee_meal"}
+    meal = {"pct": 20, "reason": "Employee meal", "kind": "employee_meal"}
     q = term.post(f"{base}/api/terminal/quote", json={"cart": {"lines": [pizza_line()], "discount": meal}}, timeout=5).json()
-    assert not q["needs_manager"] and q["discount_pct"] == 50
-    assert [d["label"] for d in q["quote"]["discounts"]] == ["Employee meal 50%"]
+    assert not q["needs_manager"] and q["discount_pct"] == 20
+    assert [d["label"] for d in q["quote"]["discounts"]] == ["Employee meal 20%"]
     r = term.post(f"{base}/api/terminal/orders", json={"client_key": f"k-{uuid.uuid4()}", "type": "counter",
                   "cart": {"lines": [pizza_line()], "discount": meal}}, timeout=10)
     assert r.status_code == 201, r.text
-    # Over the store's 50 % it needs a manager; a typed 50 % follows the cashier's 10 %.
+    # Over the Pi's default 20 % (main sends no employee_meal_pct here) it needs a manager; a typed 50 %
+    # follows the cashier's 10 %.
     r = term.post(f"{base}/api/terminal/orders", json={"client_key": f"k-{uuid.uuid4()}", "type": "counter",
-                  "cart": {"lines": [pizza_line()], "discount": {**meal, "pct": 60}}}, timeout=10)
-    assert r.status_code == 403 and r.json()["action"] == "employee_meal" and r.json()["limit"] == 50
+                  "cart": {"lines": [pizza_line()], "discount": {**meal, "pct": 30}}}, timeout=10)
+    assert r.status_code == 403 and r.json()["action"] == "employee_meal" and r.json()["limit"] == 20
     r = term.post(f"{base}/api/terminal/orders", json={"client_key": f"k-{uuid.uuid4()}", "type": "counter",
                   "cart": {"lines": [pizza_line()], "discount": {"pct": 50, "reason": "friend"}}}, timeout=10)
     assert r.status_code == 403 and r.json()["action"] == "discount"
     entries = term.get(f"{base}/api/terminal/journal", timeout=5).json()
-    assert any(e["action"] == "employee_meal" and e["detail"]["pct"] == 50 for e in entries)
+    assert any(e["action"] == "employee_meal" and e["detail"]["pct"] == 20 for e in entries)

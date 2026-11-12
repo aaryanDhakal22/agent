@@ -186,10 +186,10 @@ type ZReconcile struct {
 	RefundsCents       int64 `json:"refunds_cents"`
 	UnpaidCents        int64 `json:"unpaid_cents"`
 	SalesTotalCents    int64 `json:"sales_total_cents"`
-	TipsCents          int64 `json:"tips_cents"`          // net tips taken with terminal payments
-	OnCancelledCents   int64 `json:"on_cancelled_cents"`  // terminal amounts (not tips) left on cancelled / voided orders
-	DifferenceCents    int64 `json:"difference_cents"`    // left side - right side
-	DrawersCashCents   int64 `json:"drawers_cash_cents"`  // the drawers' cash flows + cash outside them
+	TipsCents          int64 `json:"tips_cents"`         // net tips taken with terminal payments
+	OnCancelledCents   int64 `json:"on_cancelled_cents"` // terminal amounts (not tips) left on cancelled / voided orders
+	DifferenceCents    int64 `json:"difference_cents"`   // left side - right side
+	DrawersCashCents   int64 `json:"drawers_cash_cents"` // the drawers' cash flows + cash outside them
 	DrawersDifferences int64 `json:"drawers_difference_cents"`
 }
 
@@ -216,6 +216,8 @@ type ZInput struct {
 	Journal   []Entry   // the batch's journal rows
 	Drivers   []order.DriverReport
 	Now       time.Time
+	// Open: the batch is still open (ClosedAt is then the read time).
+	Open bool
 }
 
 func isVoided(so order.StoredOrder) bool {

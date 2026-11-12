@@ -1060,10 +1060,12 @@ SELECT * FROM orders WHERE source = 'counter' AND batch_id = ? ORDER BY arrival_
 
 -- name: InsertOrderPayment :exec
 INSERT INTO order_payments (id, order_id, client_key, at, tender, amount_cents, tip_cents, tendered_cents,
-                            change_cents, refund, reason, ref, last4, staff_id, device_id, approved_by, drawer_id)
+                            change_cents, refund, reason, ref, last4, staff_id, device_id, approved_by, drawer_id, brand,
+                            refund_kind)
 VALUES (sqlc.arg(id), sqlc.arg(order_id), sqlc.arg(client_key), sqlc.arg(at), sqlc.arg(tender), sqlc.arg(amount_cents),
         sqlc.arg(tip_cents), sqlc.arg(tendered_cents), sqlc.arg(change_cents), sqlc.arg(refund), sqlc.arg(reason),
-        sqlc.arg(ref), sqlc.arg(last4), sqlc.arg(staff_id), sqlc.arg(device_id), sqlc.arg(approved_by), sqlc.arg(drawer_id));
+        sqlc.arg(ref), sqlc.arg(last4), sqlc.arg(staff_id), sqlc.arg(device_id), sqlc.arg(approved_by), sqlc.arg(drawer_id),
+        sqlc.arg(brand), sqlc.arg(refund_kind));
 
 -- name: ListOrderPayments :many
 SELECT * FROM order_payments WHERE order_id = ? ORDER BY at, rowid;
@@ -1249,8 +1251,11 @@ ORDER BY o.arrival_date DESC LIMIT 2000;
 -- Cash drawers (00029_drawers_z) ---------------------------------------------
 
 -- name: InsertDrawerSession :exec
-INSERT INTO drawer_sessions (id, device_id, device_name, staff_id, staff_name, batch_id, opened_at, start_cents, handover_from)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
+INSERT INTO drawer_sessions (id, device_id, device_name, staff_id, staff_name, batch_id, opened_at, start_cents, handover_from, auto)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+
+-- name: GetPairedDeviceName :one
+SELECT name FROM paired_devices WHERE id = ?;
 
 -- name: GetDrawerSession :one
 SELECT * FROM drawer_sessions WHERE id = ?;

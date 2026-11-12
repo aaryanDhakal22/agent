@@ -153,7 +153,7 @@ func placedSnapshot(so order.StoredOrder, in terminal.NewCounterOrder) (map[stri
 
 func insertPayment(ctx context.Context, q *models.Queries, p *terminal.Payment) error {
 	// A cash payment (or refund) goes in the paying terminal's open drawer.
-	drawer, err := drawerForPayment(ctx, q, p.Tender, p.DeviceID)
+	drawer, err := drawerForPayment(ctx, q, p)
 	if err != nil {
 		return err
 	}
@@ -161,7 +161,7 @@ func insertPayment(ctx context.Context, q *models.Queries, p *terminal.Payment) 
 	err = q.InsertOrderPayment(ctx, models.InsertOrderPaymentParams{ID: p.ID, OrderID: p.OrderID, ClientKey: p.ClientKey,
 		At: fmtTS(p.At), Tender: p.Tender, AmountCents: p.AmountCents, TipCents: p.TipCents, TenderedCents: p.TenderedCents,
 		ChangeCents: p.ChangeCents, Refund: p.Refund, Reason: p.Reason, Ref: p.Ref, Last4: p.Last4, StaffID: p.StaffID,
-		DeviceID: p.DeviceID, ApprovedBy: p.ApprovedBy, DrawerID: drawer})
+		DeviceID: p.DeviceID, ApprovedBy: p.ApprovedBy, DrawerID: drawer, Brand: p.Brand, RefundKind: p.RefundKind})
 	if err != nil {
 		return fmt.Errorf("insert payment: %w", err)
 	}
@@ -176,7 +176,7 @@ func paymentFromRow(row models.OrderPayment) (terminal.Payment, error) {
 	return terminal.Payment{ID: row.ID, OrderID: row.OrderID, ClientKey: row.ClientKey, At: at, Tender: row.Tender,
 		AmountCents: row.AmountCents, TipCents: row.TipCents, TenderedCents: row.TenderedCents, ChangeCents: row.ChangeCents,
 		Refund: row.Refund, Reason: row.Reason, Ref: row.Ref, Last4: row.Last4, StaffID: row.StaffID, DeviceID: row.DeviceID,
-		ApprovedBy: row.ApprovedBy, DrawerID: row.DrawerID}, nil
+		ApprovedBy: row.ApprovedBy, DrawerID: row.DrawerID, Brand: row.Brand, RefundKind: row.RefundKind}, nil
 }
 
 func listPayments(ctx context.Context, q *models.Queries, orderID string) ([]terminal.Payment, error) {

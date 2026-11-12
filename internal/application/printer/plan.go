@@ -230,6 +230,9 @@ func stationTickets(snap order.Snapshot, roster []RosterEntry, receipt RosterEnt
 		if pos && it.PrinterID == "" {
 			continue // a POS line with no Pi printer: not for this kitchen
 		}
+		if it.Routing == order.RoutingNone {
+			continue // "no kitchen ticket": no station, not in "Also on this order"; on the receipt only
+		}
 		if it.Routing == order.RoutingMatched && known[it.PrinterID] {
 			assigned[it.PrinterID] = append(assigned[it.PrinterID], i)
 			continue

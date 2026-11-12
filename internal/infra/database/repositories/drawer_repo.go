@@ -48,7 +48,7 @@ func drawerTotals(ctx context.Context, q *models.Queries, row models.DrawerSessi
 func drawerOf(ctx context.Context, q *models.Queries, row models.DrawerSession, withMoves bool) (terminal.Drawer, error) {
 	d := terminal.Drawer{ID: row.ID, DeviceID: row.DeviceID, DeviceName: row.DeviceName, StaffID: row.StaffID, StaffName: row.StaffName,
 		BatchID: row.BatchID, StartCents: row.StartCents, HandoverFrom: row.HandoverFrom, ClosedBy: row.ClosedBy,
-		CloseReason: row.CloseReason, Flagged: row.Flagged}
+		CloseReason: row.CloseReason, Flagged: row.Flagged, Auto: row.Auto}
 	var err error
 	if d.OpenedAt, err = parseTS(row.OpenedAt); err != nil {
 		return d, err
@@ -184,7 +184,7 @@ func openDrawerTx(ctx context.Context, q *models.Queries, d *terminal.Drawer, jo
 	} else if !errors.Is(err, sql.ErrNoRows) {
 		return err
 	}
-	if row, err := q.GetOpenDrawerByStaff(ctx, d.StaffID); err == nil {
+	if row, err := q.GetOpenDrawerByStaff(ctx, d.StaffID); err == nil && !d.Auto {
 		cur, err := drawerOf(ctx, q, row, false)
 		if err != nil {
 			return err
@@ -200,7 +200,7 @@ func openDrawerTx(ctx context.Context, q *models.Queries, d *terminal.Drawer, jo
 	d.BatchID = b.ID
 	if err := q.InsertDrawerSession(ctx, models.InsertDrawerSessionParams{ID: d.ID, DeviceID: d.DeviceID, DeviceName: d.DeviceName,
 		StaffID: d.StaffID, StaffName: d.StaffName, BatchID: d.BatchID, OpenedAt: fmtTS(d.OpenedAt), StartCents: d.StartCents,
-		HandoverFrom: d.HandoverFrom}); err != nil {
+		HandoverFrom: d.HandoverFrom, Auto: d.Auto}); err != nil {
 		return fmt.Errorf("open drawer: %w", err)
 	}
 	d.Finish()
@@ -417,16 +417,49 @@ func closeOpenDrawers(ctx context.Context, q *models.Queries, at time.Time) ([]t
 
 // drawerForPayment is the open session a cash payment taken on a terminal
 // goes in ("" = no drawer open there, or not cash).
-func drawerForPayment(ctx context.Context, q *models.Queries, tender, deviceID string) (string, error) {
-	if tender != terminal.TenderCash || deviceID == "" {
+func drawerForPayment(ctx context.Context, q *models.Queries, p *terminal.Payment) (string, error) {
+	if p.DeviceID == "" {
 		return "", nil
 	}
-	row, err := q.GetOpenDrawerByDevice(ctx, deviceID)
-	if errors.Is(err, sql.ErrNoRows) {
-		return "", nil
-	}
-	if err != nil {
+	row, err := q.GetOpenDrawerByDevice(ctx, p.DeviceID)
+	id := row.ID
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		// The owner, 2026-11-12: a drawer = a terminal; its session for the
+		// batch opens by itself with the terminal's first payment.
+		if id, err = autoOpenDrawer(ctx, q, p); err != nil {
+			return "", err
+		}
+	case err != nil:
 		return "", err
 	}
-	return row.ID, nil
+	if p.Tender != terminal.TenderCash {
+		return "", nil // only cash is in a drawer
+	}
+	return id, nil
+}
+
+// autoOpenDrawer opens the terminal's session (start 0, auto) for the
+// payment, in its transaction: drawer.opened to main + journal drawer.open.
+func autoOpenDrawer(ctx context.Context, q *models.Queries, p *terminal.Payment) (string, error) {
+	name := "Pi web page"
+	if p.DeviceID != "web" {
+		if n, err := q.GetPairedDeviceName(ctx, p.DeviceID); err == nil {
+			name = n
+		} else if !errors.Is(err, sql.ErrNoRows) {
+			return "", err
+		}
+	}
+	at := p.At
+	if at.IsZero() {
+		at = time.Now()
+	}
+	d := terminal.Drawer{ID: uuid.Must(uuid.NewV7()).String(), DeviceID: p.DeviceID, DeviceName: name, StaffID: p.StaffID,
+		OpenedAt: at.UTC().Truncate(time.Millisecond), Auto: true}
+	journal := []terminal.Entry{{StaffID: p.StaffID, DeviceID: p.DeviceID, Action: terminal.ActionDrawerOpen,
+		Detail: jsonDetail(map[string]any{"drawer_id": d.ID, "start_cents": 0, "auto": true})}}
+	if err := openDrawerTx(ctx, q, &d, journal, at); err != nil {
+		return "", err
+	}
+	return d.ID, nil
 }

@@ -142,6 +142,7 @@ type Querier interface {
 	GetOrderGeo(ctx context.Context, orderID string) (OrderGeo, error)
 	GetOrderPaymentByKey(ctx context.Context, arg GetOrderPaymentByKeyParams) (OrderPayment, error)
 	GetPairedDeviceByHash(ctx context.Context, keyHash string) (PairedDevice, error)
+	GetPairedDeviceName(ctx context.Context, id string) (string, error)
 	GetReceiptPrefs(ctx context.Context) (string, error)
 	GetSessionSecret(ctx context.Context) (string, error)
 	GetStoreAPIKey(ctx context.Context) (string, error)

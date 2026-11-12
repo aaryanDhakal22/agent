@@ -21,7 +21,7 @@ func ready(t *testing.T, r *OrderRepository, so order.StoredOrder) order.StoredO
 	return *got
 }
 
-// The Dispatch claim: unassigned deliveries past the cutoff become his,
+// The Dispatch claim: unassigned deliveries past their promised time become his,
 // delivered; he never goes out. All or nothing, first come first served.
 func TestClaimDeliveredLateUnassignedOnly(t *testing.T) {
 	ctx := context.Background()
@@ -43,8 +43,9 @@ func TestClaimDeliveredLateUnassignedOnly(t *testing.T) {
 	}
 	fresh := arrive(t, r, "delivery")
 	by := order.MarkedBy{Kind: order.ByTerminal, Name: "Ann", DeviceID: "dev-2"}
-	early := time.Now().Add(-45 * time.Minute) // nothing has waited 45 minutes yet
-	late := time.Now().Add(time.Minute)        // everything has
+	// The claim rule: past the order's promised time (estimated_ready_at = accept + prep).
+	early := order.ClaimRule{Now: time.Now(), Fallback: 45 * time.Minute}                   // nothing is late yet
+	late := order.ClaimRule{Now: time.Now().Add(6 * time.Hour), Fallback: 45 * time.Minute} // everything is
 
 	var tk *order.ErrTaken
 	if _, err := r.ClaimDelivered(ctx, a.ID, ids(os[0], os[1]), early, by); !errors.As(err, &tk) || len(tk.IDs) != 2 {

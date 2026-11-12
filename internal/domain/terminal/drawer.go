@@ -140,6 +140,9 @@ type Drawer struct {
 	// OverShortCents = counted - expected (nil when not counted).
 	OverShortCents *int64 `json:"over_short_cents"`
 	Flagged        bool   `json:"flagged"`
+	// Auto: opened by itself with the terminal's first payment (the owner,
+	// 2026-11-12: a drawer = a terminal, no "start a drawer" step).
+	Auto bool `json:"auto"`
 	DrawerTotals
 	Movements []Movement `json:"movements,omitempty"`
 }

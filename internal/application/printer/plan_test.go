@@ -421,3 +421,42 @@ func TestPlanTypeChange(t *testing.T) {
 		t.Fatalf("change with lines: %+v", tickets)
 	}
 }
+
+// "No kitchen ticket" (main's item flag, routing none; the owner 2026-11-12):
+// no station ticket of its own, never in "Also on this order", not unrouted;
+// still on the customer receipt. An order of only such lines prints just the
+// receipt (and nothing on a kitchen resend).
+func TestPlan_NoKitchenTicket(t *testing.T) {
+	snap := order.Snapshot{Items: []order.LineItem{
+		item("Pepperoni", order.RoutingMatched, pizza.ID),
+		item("Coke", order.RoutingNone, ""),
+		item("Ranch", order.RoutingMatched, wings.ID),
+		item("Cannoli", order.RoutingNone, ""),
+	}}
+	tk, un := Plan(snap, []RosterEntry{front, pizza, wings})
+	if un != nil || len(tk) != 3 {
+		t.Fatalf("want 2 stations + receipt, no unrouted: %+v %v", tk, un)
+	}
+	if !reflect.DeepEqual(names(tk[0].Mine), []string{"Pepperoni"}) || !reflect.DeepEqual(names(tk[0].Others), []string{"Ranch"}) {
+		t.Fatalf("pizza ticket: %+v", tk[0])
+	}
+	if !reflect.DeepEqual(names(tk[1].Mine), []string{"Ranch"}) || !reflect.DeepEqual(names(tk[1].Others), []string{"Pepperoni"}) {
+		t.Fatalf("wings ticket: %+v", tk[1])
+	}
+	if tk[2].Kind != printer.TicketReceipt {
+		t.Fatalf("receipt: %+v", tk[2])
+	}
+	only := order.Snapshot{Items: []order.LineItem{item("Coke", order.RoutingNone, "")}}
+	tk, un = Plan(only, []RosterEntry{front, pizza, wings})
+	if un != nil || len(tk) != 1 || tk[0].Kind != printer.TicketReceipt {
+		t.Fatalf("only no-kitchen lines: just the receipt: %+v %v", tk, un)
+	}
+	if tk, _ := PlanFor(only, []RosterEntry{front, pizza, wings}, printer.ModeKitchen); len(tk) != 0 {
+		t.Fatalf("kitchen resend: nothing: %+v", tk)
+	}
+	// The sole printer (the receipt printer is the kitchen too): still no station ticket for them.
+	tk, _ = Plan(only, []RosterEntry{front})
+	if len(tk) != 1 || tk[0].Kind != printer.TicketReceipt {
+		t.Fatalf("sole printer: %+v", tk)
+	}
+}

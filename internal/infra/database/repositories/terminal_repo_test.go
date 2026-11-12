@@ -74,7 +74,8 @@ func TestCounterSequenceAndIdempotency(t *testing.T) {
 		snap["payments"].([]any)[0].(map[string]any)["method"] != "cash" {
 		t.Fatalf("placed snapshot: %v", snap)
 	}
-	if j := eventsOfType(t, r, terminal.EventJournalEntries); len(j) != 2 {
+	// Two placings + the drawer the paid one's terminal opened by itself (2026-11-12).
+	if j := eventsOfType(t, r, terminal.EventJournalEntries); len(j) != 3 {
 		t.Fatalf("journal.entries events: %d", len(j))
 	}
 	// No order.status event for a counter order's placing.

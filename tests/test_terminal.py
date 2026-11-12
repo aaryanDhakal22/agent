@@ -521,3 +521,29 @@ def test_price_change_and_manager_check(rig):
     assert sum(1 for e in journal if e["action"] == "manager_check") == 3
     wait_until(lambda: any(e["action"] == "price_change" for ev in fm.of_type("journal.entries") for e in ev["entries"]),
                what="price_change journaled to main")
+
+
+def test_no_kitchen_ticket_item(rig):
+    """main marks an item "no kitchen ticket" (counter menu route {printer_id: "", no_kitchen: true}; the owner
+    2026-11-12): its line gets no station ticket and is not in "Also on this order"; an unrouted item would
+    print on every station."""
+    agent, term, fm, fakes = rig["agent"], rig["term"], rig["fm"], rig["fakes"]
+    menu = counter_menu(rig["pizza_id"], version=9)
+    menu["routes"][SODA] = {"printer_id": "", "no_kitchen": True}
+    fm.counter_menu = menu
+    fm.command("menu.changed", {"version": 9})
+    wait_until(lambda: term.get(f"{agent.base}/api/terminal/menu", timeout=5).json()["menu_version"] == 9, what="menu v9")
+    r = place(rig, cart={"lines": [pizza_line(), {"item_id": SODA, "qty": 2}]})
+    assert r.status_code == 201, r.text
+    items = r.json()["order"]["order"]["items"]
+    assert [i["routing"] for i in items] == ["matched", "none"]
+    wait_until(lambda: fakes["Pizza"].jobs, what="pizza station ticket")
+    ticket = fakes["Pizza"].text()
+    soda_name = items[1]["name"].upper()
+    assert soda_name not in ticket and "ALSO ON THIS ORDER" not in ticket.upper(), ticket
+    # Only the soda: no station ticket at all (the receipt is the terminal's own).
+    before = len(fakes["Pizza"].jobs)
+    assert place(rig, cart={"lines": [{"item_id": SODA, "qty": 1}]}).status_code == 201
+    from gatemark import intentional_sleep
+    intentional_sleep(1.5, "absence check: a soda-only order prints no station ticket")
+    assert len(fakes["Pizza"].jobs) == before and not fakes["Front"].jobs

@@ -1195,7 +1195,7 @@ func (q *Queries) GetDrawerMovementByKey(ctx context.Context, arg GetDrawerMovem
 }
 
 const getDrawerSession = `-- name: GetDrawerSession :one
-SELECT id, device_id, device_name, staff_id, staff_name, batch_id, opened_at, start_cents, handover_from, closed_at, closed_by, close_reason, counted_cents, denominations, expected_cents, flagged FROM drawer_sessions WHERE id = ?
+SELECT id, device_id, device_name, staff_id, staff_name, batch_id, opened_at, start_cents, handover_from, closed_at, closed_by, close_reason, counted_cents, denominations, expected_cents, flagged, auto FROM drawer_sessions WHERE id = ?
 `
 
 func (q *Queries) GetDrawerSession(ctx context.Context, id string) (DrawerSession, error) {
@@ -1218,6 +1218,7 @@ func (q *Queries) GetDrawerSession(ctx context.Context, id string) (DrawerSessio
 		&i.Denominations,
 		&i.ExpectedCents,
 		&i.Flagged,
+		&i.Auto,
 	)
 	return i, err
 }
@@ -1438,7 +1439,7 @@ func (q *Queries) GetOpenBatch(ctx context.Context) (Batch, error) {
 }
 
 const getOpenDrawerByDevice = `-- name: GetOpenDrawerByDevice :one
-SELECT id, device_id, device_name, staff_id, staff_name, batch_id, opened_at, start_cents, handover_from, closed_at, closed_by, close_reason, counted_cents, denominations, expected_cents, flagged FROM drawer_sessions WHERE device_id = ? AND closed_at IS NULL
+SELECT id, device_id, device_name, staff_id, staff_name, batch_id, opened_at, start_cents, handover_from, closed_at, closed_by, close_reason, counted_cents, denominations, expected_cents, flagged, auto FROM drawer_sessions WHERE device_id = ? AND closed_at IS NULL
 `
 
 func (q *Queries) GetOpenDrawerByDevice(ctx context.Context, deviceID string) (DrawerSession, error) {
@@ -1461,12 +1462,13 @@ func (q *Queries) GetOpenDrawerByDevice(ctx context.Context, deviceID string) (D
 		&i.Denominations,
 		&i.ExpectedCents,
 		&i.Flagged,
+		&i.Auto,
 	)
 	return i, err
 }
 
 const getOpenDrawerByStaff = `-- name: GetOpenDrawerByStaff :one
-SELECT id, device_id, device_name, staff_id, staff_name, batch_id, opened_at, start_cents, handover_from, closed_at, closed_by, close_reason, counted_cents, denominations, expected_cents, flagged FROM drawer_sessions WHERE staff_id = ? AND closed_at IS NULL
+SELECT id, device_id, device_name, staff_id, staff_name, batch_id, opened_at, start_cents, handover_from, closed_at, closed_by, close_reason, counted_cents, denominations, expected_cents, flagged, auto FROM drawer_sessions WHERE staff_id = ? AND closed_at IS NULL
 `
 
 func (q *Queries) GetOpenDrawerByStaff(ctx context.Context, staffID string) (DrawerSession, error) {
@@ -1489,6 +1491,7 @@ func (q *Queries) GetOpenDrawerByStaff(ctx context.Context, staffID string) (Dra
 		&i.Denominations,
 		&i.ExpectedCents,
 		&i.Flagged,
+		&i.Auto,
 	)
 	return i, err
 }
@@ -1776,7 +1779,7 @@ func (q *Queries) GetOrderGeo(ctx context.Context, orderID string) (OrderGeo, er
 }
 
 const getOrderPaymentByKey = `-- name: GetOrderPaymentByKey :one
-SELECT id, order_id, client_key, at, tender, amount_cents, tip_cents, tendered_cents, change_cents, refund, reason, ref, last4, staff_id, device_id, approved_by, drawer_id FROM order_payments WHERE order_id = ? AND client_key = ? AND client_key <> ''
+SELECT id, order_id, client_key, at, tender, amount_cents, tip_cents, tendered_cents, change_cents, refund, reason, ref, last4, staff_id, device_id, approved_by, drawer_id, brand, refund_kind FROM order_payments WHERE order_id = ? AND client_key = ? AND client_key <> ''
 `
 
 type GetOrderPaymentByKeyParams struct {
@@ -1805,6 +1808,8 @@ func (q *Queries) GetOrderPaymentByKey(ctx context.Context, arg GetOrderPaymentB
 		&i.DeviceID,
 		&i.ApprovedBy,
 		&i.DrawerID,
+		&i.Brand,
+		&i.RefundKind,
 	)
 	return i, err
 }
@@ -1829,6 +1834,17 @@ func (q *Queries) GetPairedDeviceByHash(ctx context.Context, keyHash string) (Pa
 		&i.AppVersionSeenAt,
 	)
 	return i, err
+}
+
+const getPairedDeviceName = `-- name: GetPairedDeviceName :one
+SELECT name FROM paired_devices WHERE id = ?
+`
+
+func (q *Queries) GetPairedDeviceName(ctx context.Context, id string) (string, error) {
+	row := q.db.QueryRowContext(ctx, getPairedDeviceName, id)
+	var name string
+	err := row.Scan(&name)
+	return name, err
 }
 
 const getReceiptPrefs = `-- name: GetReceiptPrefs :one
@@ -2221,8 +2237,8 @@ func (q *Queries) InsertDrawerMovement(ctx context.Context, arg InsertDrawerMove
 
 const insertDrawerSession = `-- name: InsertDrawerSession :exec
 
-INSERT INTO drawer_sessions (id, device_id, device_name, staff_id, staff_name, batch_id, opened_at, start_cents, handover_from)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+INSERT INTO drawer_sessions (id, device_id, device_name, staff_id, staff_name, batch_id, opened_at, start_cents, handover_from, auto)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `
 
 type InsertDrawerSessionParams struct {
@@ -2235,6 +2251,7 @@ type InsertDrawerSessionParams struct {
 	OpenedAt     string `json:"opened_at"`
 	StartCents   int64  `json:"start_cents"`
 	HandoverFrom string `json:"handover_from"`
+	Auto         bool   `json:"auto"`
 }
 
 // Cash drawers (00029_drawers_z) ---------------------------------------------
@@ -2249,6 +2266,7 @@ func (q *Queries) InsertDrawerSession(ctx context.Context, arg InsertDrawerSessi
 		arg.OpenedAt,
 		arg.StartCents,
 		arg.HandoverFrom,
+		arg.Auto,
 	)
 	return err
 }
@@ -2393,10 +2411,12 @@ func (q *Queries) InsertJournal(ctx context.Context, arg InsertJournalParams) er
 
 const insertOrderPayment = `-- name: InsertOrderPayment :exec
 INSERT INTO order_payments (id, order_id, client_key, at, tender, amount_cents, tip_cents, tendered_cents,
-                            change_cents, refund, reason, ref, last4, staff_id, device_id, approved_by, drawer_id)
+                            change_cents, refund, reason, ref, last4, staff_id, device_id, approved_by, drawer_id, brand,
+                            refund_kind)
 VALUES (?1, ?2, ?3, ?4, ?5, ?6,
         ?7, ?8, ?9, ?10, ?11,
-        ?12, ?13, ?14, ?15, ?16, ?17)
+        ?12, ?13, ?14, ?15, ?16, ?17,
+        ?18, ?19)
 `
 
 type InsertOrderPaymentParams struct {
@@ -2417,6 +2437,8 @@ type InsertOrderPaymentParams struct {
 	DeviceID      string `json:"device_id"`
 	ApprovedBy    string `json:"approved_by"`
 	DrawerID      string `json:"drawer_id"`
+	Brand         string `json:"brand"`
+	RefundKind    string `json:"refund_kind"`
 }
 
 func (q *Queries) InsertOrderPayment(ctx context.Context, arg InsertOrderPaymentParams) error {
@@ -2438,6 +2460,8 @@ func (q *Queries) InsertOrderPayment(ctx context.Context, arg InsertOrderPayment
 		arg.DeviceID,
 		arg.ApprovedBy,
 		arg.DrawerID,
+		arg.Brand,
+		arg.RefundKind,
 	)
 	return err
 }
@@ -2953,7 +2977,7 @@ func (q *Queries) ListBatchLeftovers(ctx context.Context, batchID int64) ([]Orde
 }
 
 const listBatchPayments = `-- name: ListBatchPayments :many
-SELECT p.id, p.order_id, p.client_key, p.at, p.tender, p.amount_cents, p.tip_cents, p.tendered_cents, p.change_cents, p.refund, p.reason, p.ref, p.last4, p.staff_id, p.device_id, p.approved_by, p.drawer_id FROM order_payments p JOIN orders o ON o.id = p.order_id WHERE o.batch_id = ? ORDER BY p.at, p.rowid
+SELECT p.id, p.order_id, p.client_key, p.at, p.tender, p.amount_cents, p.tip_cents, p.tendered_cents, p.change_cents, p.refund, p.reason, p.ref, p.last4, p.staff_id, p.device_id, p.approved_by, p.drawer_id, p.brand, p.refund_kind FROM order_payments p JOIN orders o ON o.id = p.order_id WHERE o.batch_id = ? ORDER BY p.at, p.rowid
 `
 
 func (q *Queries) ListBatchPayments(ctx context.Context, batchID int64) ([]OrderPayment, error) {
@@ -2983,6 +3007,8 @@ func (q *Queries) ListBatchPayments(ctx context.Context, batchID int64) ([]Order
 			&i.DeviceID,
 			&i.ApprovedBy,
 			&i.DrawerID,
+			&i.Brand,
+			&i.RefundKind,
 		); err != nil {
 			return nil, err
 		}
@@ -3308,7 +3334,7 @@ func (q *Queries) ListDrawerMovements(ctx context.Context, drawerID string) ([]D
 }
 
 const listDrawersByBatch = `-- name: ListDrawersByBatch :many
-SELECT id, device_id, device_name, staff_id, staff_name, batch_id, opened_at, start_cents, handover_from, closed_at, closed_by, close_reason, counted_cents, denominations, expected_cents, flagged FROM drawer_sessions WHERE batch_id = ? ORDER BY opened_at, rowid
+SELECT id, device_id, device_name, staff_id, staff_name, batch_id, opened_at, start_cents, handover_from, closed_at, closed_by, close_reason, counted_cents, denominations, expected_cents, flagged, auto FROM drawer_sessions WHERE batch_id = ? ORDER BY opened_at, rowid
 `
 
 func (q *Queries) ListDrawersByBatch(ctx context.Context, batchID int64) ([]DrawerSession, error) {
@@ -3337,6 +3363,7 @@ func (q *Queries) ListDrawersByBatch(ctx context.Context, batchID int64) ([]Draw
 			&i.Denominations,
 			&i.ExpectedCents,
 			&i.Flagged,
+			&i.Auto,
 		); err != nil {
 			return nil, err
 		}
@@ -3988,7 +4015,7 @@ func (q *Queries) ListOpenDeliveries(ctx context.Context) ([]Order, error) {
 }
 
 const listOpenDrawers = `-- name: ListOpenDrawers :many
-SELECT id, device_id, device_name, staff_id, staff_name, batch_id, opened_at, start_cents, handover_from, closed_at, closed_by, close_reason, counted_cents, denominations, expected_cents, flagged FROM drawer_sessions WHERE closed_at IS NULL ORDER BY opened_at
+SELECT id, device_id, device_name, staff_id, staff_name, batch_id, opened_at, start_cents, handover_from, closed_at, closed_by, close_reason, counted_cents, denominations, expected_cents, flagged, auto FROM drawer_sessions WHERE closed_at IS NULL ORDER BY opened_at
 `
 
 func (q *Queries) ListOpenDrawers(ctx context.Context) ([]DrawerSession, error) {
@@ -4017,6 +4044,7 @@ func (q *Queries) ListOpenDrawers(ctx context.Context) ([]DrawerSession, error) 
 			&i.Denominations,
 			&i.ExpectedCents,
 			&i.Flagged,
+			&i.Auto,
 		); err != nil {
 			return nil, err
 		}
@@ -4121,7 +4149,7 @@ func (q *Queries) ListOrderGeo(ctx context.Context, ids []string) ([]OrderGeo, e
 }
 
 const listOrderPayments = `-- name: ListOrderPayments :many
-SELECT id, order_id, client_key, at, tender, amount_cents, tip_cents, tendered_cents, change_cents, refund, reason, ref, last4, staff_id, device_id, approved_by, drawer_id FROM order_payments WHERE order_id = ? ORDER BY at, rowid
+SELECT id, order_id, client_key, at, tender, amount_cents, tip_cents, tendered_cents, change_cents, refund, reason, ref, last4, staff_id, device_id, approved_by, drawer_id, brand, refund_kind FROM order_payments WHERE order_id = ? ORDER BY at, rowid
 `
 
 func (q *Queries) ListOrderPayments(ctx context.Context, orderID string) ([]OrderPayment, error) {
@@ -4151,6 +4179,8 @@ func (q *Queries) ListOrderPayments(ctx context.Context, orderID string) ([]Orde
 			&i.DeviceID,
 			&i.ApprovedBy,
 			&i.DrawerID,
+			&i.Brand,
+			&i.RefundKind,
 		); err != nil {
 			return nil, err
 		}

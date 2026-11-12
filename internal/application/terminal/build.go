@@ -297,6 +297,8 @@ func buildItems(menu *terminal.CounterMenu, p priced) (items []order.LineItem, o
 		switch rt, ok := menu.Routes[b.route]; {
 		case b.route == "":
 			it.Routing = order.RoutingUnmatched
+		case ok && rt.NoKitchen:
+			it.MenuItemID, it.Routing = b.route, order.RoutingNone // no kitchen ticket
 		case !ok || rt.PrinterID == "":
 			it.MenuItemID, it.Routing = b.route, order.RoutingUnassigned
 		default:

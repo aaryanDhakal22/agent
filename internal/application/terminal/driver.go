@@ -46,7 +46,7 @@ type Floor interface {
 	UnassignedDelivered(ctx context.Context) ([]order.StoredOrder, error)
 	ListByBatch(ctx context.Context, batchID int64, offset, limit int) ([]order.StoredOrder, error)
 	GetOrder(ctx context.Context, id string) (*order.StoredOrder, error)
-	ClaimDelivered(ctx context.Context, driverID string, ids []string, cutoff time.Time, by order.MarkedBy) ([]order.StoredOrder, error)
+	ClaimDelivered(ctx context.Context, driverID string, ids []string, rule order.ClaimRule, by order.MarkedBy) ([]order.StoredOrder, error)
 	DeliverOne(ctx context.Context, driverID, orderID string) (*order.StoredOrder, bool, error)
 	SetTip(ctx context.Context, id string, cents int64) (*order.StoredOrder, error)
 	SetDoorTip(ctx context.Context, id string, cents int64) (*order.StoredOrder, error)
@@ -245,19 +245,23 @@ type AvailableOrder struct {
 	Address *DriverAddress `json:"address"`
 	// Since: the clock the rule counts from (order.ClaimSince: accepted,
 	// else arrived); WaitingMinutes = whole minutes since then.
-	Since          time.Time  `json:"since"`
-	WaitingMinutes int64      `json:"waiting_minutes"`
-	ReadyAt        *time.Time `json:"ready_at"`
-	Payment        string     `json:"payment"`
-	CashDueCents   int64      `json:"cash_due_cents"`
-	TotalCents     int64      `json:"total_cents"`
+	Since          time.Time `json:"since"`
+	WaitingMinutes int64     `json:"waiting_minutes"`
+	// PromisedAt: the order's promised time (order.PromisedAt), the claim
+	// rule's clock; LateMinutes = whole minutes past it.
+	PromisedAt   time.Time  `json:"promised_at"`
+	LateMinutes  int64      `json:"late_minutes"`
+	ReadyAt      *time.Time `json:"ready_at"`
+	Payment      string     `json:"payment"`
+	CashDueCents int64      `json:"cash_due_cents"`
+	TotalCents   int64      `json:"total_cents"`
 }
 
-// claimCutoff: an order waiting since at or before this may be claimed
-// (now - the store's driver_claim_after_minutes, default 45).
-func (s *Service) claimCutoff(now time.Time) time.Time {
-	cfg, _ := s.store.Config()
-	return now.Add(-time.Duration(cfg.DriverClaimAfterMinutes()) * time.Minute)
+// claimRule: an order may be claimed once now is past its promised time
+// (order.PromisedAt; the owner, 2026-11-12); one with none counts the Pi's
+// default delivery minutes from when it went to the kitchen.
+func (s *Service) claimRule(now time.Time) order.ClaimRule {
+	return order.ClaimRule{Now: now, Fallback: time.Duration(s.orders.PrepMinutesFor("delivery")) * time.Minute}
 }
 
 // Available is GET /api/terminal/driver/available: the Dispatch list -
@@ -278,20 +282,25 @@ func (s *Service) Available(ctx context.Context, a Actor) ([]AvailableOrder, err
 		return nil, err
 	}
 	now := s.now()
-	cutoff := s.claimCutoff(now)
+	rule := s.claimRule(now)
 	var list []order.StoredOrder
 	for _, so := range append(open, done...) {
-		if order.ClaimableLate(so, so.Status.BatchID, cutoff) {
+		if order.ClaimableLate(so, so.Status.BatchID, rule) {
 			list = append(list, so)
 		}
 	}
-	sort.SliceStable(list, func(i, j int) bool { return order.ClaimSince(list[i]).Before(order.ClaimSince(list[j])) })
+	// Longest past its promised time first (first come, first served).
+	sort.SliceStable(list, func(i, j int) bool {
+		return order.PromisedAt(list[i], rule.Fallback).Before(order.PromisedAt(list[j], rule.Fallback))
+	})
 	out := make([]AvailableOrder, 0, len(list))
 	for _, so := range list {
 		addr, street := addressOf(so)
 		since := order.ClaimSince(so)
+		promised := order.PromisedAt(so, rule.Fallback).UTC()
 		out = append(out, AvailableOrder{OrderID: so.Order.ID, Number: so.Number(), State: string(so.Status.State), Street: street,
-			Address: addr, Since: since, WaitingMinutes: int64(now.Sub(since) / time.Minute), ReadyAt: so.Status.ReadyAt,
+			Address: addr, Since: since, WaitingMinutes: int64(now.Sub(since) / time.Minute), PromisedAt: promised,
+			LateMinutes: int64(now.Sub(promised) / time.Minute), ReadyAt: so.Status.ReadyAt,
 			Payment: paymentOf(so), CashDueCents: so.Status.CashDueCents, TotalCents: so.Order.Money.Total})
 	}
 	return out, nil
@@ -435,7 +444,7 @@ func (s *Service) Claim(ctx context.Context, a Actor, in ClaimIn) (*ClaimResult,
 		return nil, badRequest(fmt.Sprintf("order_ids: 1-%d orders", MaxClaim))
 	}
 	by := order.MarkedBy{Kind: order.ByTerminal, Name: d.Name, DeviceID: a.DeviceID}
-	got, err := s.drv.floor.ClaimDelivered(ctx, d.ID, ids, s.claimCutoff(s.now()), by)
+	got, err := s.drv.floor.ClaimDelivered(ctx, d.ID, ids, s.claimRule(s.now()), by)
 	if err != nil {
 		var tk *order.ErrTaken
 		if errors.As(err, &tk) {

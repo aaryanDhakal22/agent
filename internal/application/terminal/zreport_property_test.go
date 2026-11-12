@@ -115,10 +115,22 @@ type model struct {
 	orders  []*mOrder
 	drawers map[string]*mDrawer
 	open    map[string]*mDrawer // by terminal
+	// openOnPi: the Pi's open session on a terminal ("" = none).
+	openOnPi func(deviceID string) string
 }
 
 func (m *model) record(o *mOrder, a Actor, pays ...terminal.Payment) {
 	for _, p := range pays {
+		if m.open[a.DeviceID] == nil {
+			// The owner, 2026-11-12: a terminal's session opens by itself
+			// with its first payment (start 0).
+			id := m.openOnPi(a.DeviceID)
+			if id == "" {
+				panic(fmt.Sprintf("payment %s on %s: no session opened by itself", p.ID, a.DeviceID))
+			}
+			md := &mDrawer{id: id, open: true, staff: p.StaffID, terminalDeviceID: a.DeviceID}
+			m.drawers[id], m.open[a.DeviceID] = md, md
+		}
 		mp := mPay{tender: p.Tender, amount: p.AmountCents, tip: p.TipCents, refund: p.Refund}
 		if p.Tender == terminal.TenderCash {
 			if d := m.open[a.DeviceID]; d != nil {
@@ -142,6 +154,12 @@ var tenders = []string{terminal.TenderCash, terminal.TenderCash, terminal.Tender
 func runDay(t *testing.T, r *rig, rng *rand.Rand, day int) *model {
 	t.Helper()
 	m := &model{drawers: map[string]*mDrawer{}, open: map[string]*mDrawer{}}
+	m.openOnPi = func(dev string) string {
+		if d, err := r.repo.DrawerByDevice(r.ctx, dev); err == nil && d != nil {
+			return d.ID
+		}
+		return ""
+	}
 	// Till 1: Cara (cashier), Till 2: Khawar (manager). Ben (cashier) takes
 	// over Till 1 now and then.
 	pins := map[string]string{till.DeviceID: "1234", till2.DeviceID: "9876"}

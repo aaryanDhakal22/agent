@@ -88,6 +88,7 @@ type DrawerSession struct {
 	Denominations string         `json:"denominations"`
 	ExpectedCents sql.NullInt64  `json:"expected_cents"`
 	Flagged       bool           `json:"flagged"`
+	Auto          bool           `json:"auto"`
 }
 
 type Driver struct {
@@ -261,6 +262,8 @@ type OrderPayment struct {
 	DeviceID      string `json:"device_id"`
 	ApprovedBy    string `json:"approved_by"`
 	DrawerID      string `json:"drawer_id"`
+	Brand         string `json:"brand"`
+	RefundKind    string `json:"refund_kind"`
 }
 
 type OrderTime struct {

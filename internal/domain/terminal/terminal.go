@@ -130,8 +130,16 @@ func (c *Config) DefaultPickupMinutes() (int64, bool) {
 }
 
 // DefaultEmployeeMealPct is the Employee meal's percent when main's settings
-// don't say (main's own default, TERMINAL-PLAN "Preset discounts").
-const DefaultEmployeeMealPct = 50
+// don't say (main's own default since 00039, the owner's 2026-11-12: 20 %).
+const DefaultEmployeeMealPct = 20
+
+// The cashier's limits when main's settings say nothing (main's own
+// defaults, the owner's X, 2026-11-12): cash refunds up to $20 in all per
+// order, typed discounts up to 20 %.
+const (
+	DefaultCashierRefundCents = 2000
+	DefaultCashierDiscountPct = 20
+)
 
 // EmployeeMealPct is how far (percent) an Employee meal goes without a
 // manager.
@@ -142,9 +150,11 @@ func (c *Config) EmployeeMealPct() int {
 	return DefaultEmployeeMealPct
 }
 
-// MayComp: a comp (tender or line) needs a manager - logged in, or anyone
-// main made unlimited; anyone else needs a manager's PIN.
-func (c *Config) MayComp(s Staff) bool { return c.LimitsOf(s).Unlimited }
+// MayComp: a cashier or a manager comps without anyone's PIN (the owner,
+// 2026-11-12: comp was manager-only); a driver needs a manager's PIN.
+func (c *Config) MayComp(s Staff) bool {
+	return c.LimitsOf(s).Unlimited || s.Role == RoleCashier || s.Role == RoleManager
+}
 
 // DefaultPriceDropPct is the cashier's price-drop limit when main's settings
 // don't say (main's own default, TERMINAL-PLAN "Item price change").
@@ -286,7 +296,7 @@ func (c *Config) LimitsOf(s Staff) Limits {
 		return l
 	}
 	if c != nil && s.Role == RoleCashier && (c.parsed.CashierRefundCents != nil || c.parsed.CashierDiscountPct != nil) {
-		var l Limits
+		l := Limits{RefundCents: DefaultCashierRefundCents, DiscountPct: DefaultCashierDiscountPct}
 		if v := c.parsed.CashierRefundCents; v != nil {
 			l.RefundCents = *v
 		}
@@ -300,6 +310,9 @@ func (c *Config) LimitsOf(s Staff) Limits {
 			l.Unlimited = false
 			return l
 		}
+	}
+	if s.Role == RoleCashier {
+		return Limits{RefundCents: DefaultCashierRefundCents, DiscountPct: DefaultCashierDiscountPct}
 	}
 	return Limits{}
 }
@@ -335,6 +348,10 @@ type CounterMenu struct {
 type Route struct {
 	PrinterID string `json:"printer_id"`
 	Name      string `json:"name,omitempty"`
+	// NoKitchen: the item (or its category) is marked "no kitchen ticket" in
+	// main: its lines print on no station and never in "Also on this order"
+	// (order.RoutingNone); the receipt still lists them.
+	NoKitchen bool `json:"no_kitchen,omitempty"`
 }
 
 // ParseCounterMenu decodes a counter menu body. The pricing context's menu
@@ -425,6 +442,56 @@ type Payment struct {
 	// DrawerID: the terminal drawer session a cash payment went in (set by
 	// the Pi; "" = none open, or not cash).
 	DrawerID string `json:"drawer_id,omitempty"`
+	// Brand: a card payment's brand (BrandAmex ... BrandOther; "" = none
+	// given: the till report counts it as Credit Other).
+	Brand string `json:"brand,omitempty"`
+	// RefundKind: a refund's kind (contract 2.10n): "" plain | RefundGoodwill
+	// (money back, no item removed: an adjustment on the order) |
+	// RefundOutside (refunded in Square's dashboard, recorded here).
+	RefundKind string `json:"refund_kind,omitempty"`
+}
+
+// Refund kinds (Payment.RefundKind).
+const (
+	RefundGoodwill = "goodwill"
+	RefundOutside  = "outside"
+)
+
+// Card brands (Payment.Brand, the till report's cards).
+const (
+	BrandAmex       = "amex"
+	BrandDiscover   = "discover"
+	BrandMastercard = "mastercard"
+	BrandVisa       = "visa"
+	BrandOther      = "other"
+)
+
+// Brands are the till report's card brands, in order.
+var Brands = []string{BrandAmex, BrandDiscover, BrandMastercard, BrandVisa, BrandOther}
+
+// IsCard: a card tender (the reader, the Square app, manual entry).
+func IsCard(tender string) bool {
+	return tender == TenderCard || tender == TenderSquareApp || tender == TenderManualCard
+}
+
+// NormBrand maps a brand as a terminal (or Square) names it to ours: "" stays
+// "" (none given), anything unknown is BrandOther.
+func NormBrand(b string) string {
+	k := strings.ToLower(strings.TrimSpace(b))
+	k = strings.NewReplacer(" ", "", "_", "", "-", "").Replace(k)
+	switch k {
+	case "":
+		return ""
+	case "amex", "americanexpress":
+		return BrandAmex
+	case "discover", "discoverdiners", "diners", "dinersclub":
+		return BrandDiscover
+	case "mastercard", "mc":
+		return BrandMastercard
+	case "visa":
+		return BrandVisa
+	}
+	return BrandOther
 }
 
 // Wire is the payment as main's order.payment / order.placed carry it
@@ -491,6 +558,11 @@ const (
 	ActionDrawerClose    = "drawer.close"
 	ActionDrawerHandover = "drawer.handover"
 	ActionZReport        = "z.report"
+	// The Manager tab (contract 2.10m): a driver-report print {kind, batch_id,
+	// driver_id?, printed, failed} and the day's close from a terminal
+	// {batch_id, forced, approved_by?}.
+	ActionReportPrint = "report.print"
+	ActionBatchClose  = "batch.close"
 	// ActionNoSale is the terminal's own no-sale row (it posts it; the Pi
 	// adds the open drawer's id and counts them per drawer).
 	ActionNoSale = "no_sale"
@@ -502,7 +574,8 @@ var reserved = map[string]bool{ActionLogin: true, ActionLoginFailed: true, Actio
 	ActionDraftTakeOver: true,
 	ActionDriverLinked:  true, ActionDriverClaim: true, ActionDriverTip: true, ActionDriverClose: true, ActionDriverReport: true,
 	ActionSyncParked: true, ActionSyncRetry: true, ActionDrawerOpen: true, ActionDrawerPayIn: true, ActionDrawerPayOut: true,
-	ActionDrawerClose: true, ActionDrawerHandover: true, ActionZReport: true, ActionCustomLine: true}
+	ActionDrawerClose: true, ActionDrawerHandover: true, ActionZReport: true, ActionCustomLine: true,
+	ActionReportPrint: true, ActionBatchClose: true}
 
 var actionRe = regexp.MustCompile(`^[a-z][a-z0-9_.]{1,39}$`)
 
@@ -559,9 +632,81 @@ var (
 // ManagerRequired: the action is over the staff member's limit and needs a
 // manager's PIN in the same request (manager_pin).
 type ManagerRequired struct {
-	Action    string // discount | employee_meal | refund | void | price_change | comp
-	Limit     int64  // cents (refund, void) or percent (discount, price_change)
+	Action    string // discount | employee_meal | refund | card_refund | cash_for_card | void | price_change | comp | pay_out | drawer_close | close_batch
+	Limit     int64  // cents (refund, void, cash_for_card) or percent (discount, price_change)
 	Requested int64
+}
+
+// Manager-only refund actions (the owner, 2026-11-12).
+const (
+	// NeedCardRefund: money back to a card (card, Square app, manual entry),
+	// any amount.
+	NeedCardRefund = "card_refund"
+	// NeedCashForCard: cash given back for more than the order took in cash
+	// (a card sale refunded from the drawer).
+	NeedCashForCard = "cash_for_card"
+	// NeedCloseBatch: the day's close (Close batch = the Z) from a terminal.
+	NeedCloseBatch = "close_batch"
+)
+
+// CashierRefunded is what the order's refunds gave back without a manager
+// (amount + tip): refunds no manager approved, made by someone with a limit
+// (a manager's own refunds never count against a cashier's limit).
+func CashierRefunded(c *Config, paid []Payment) int64 {
+	var n int64
+	for _, p := range paid {
+		if !p.Refund || p.ApprovedBy != "" {
+			continue
+		}
+		if st, ok := c.Find(p.StaffID); ok && c.LimitsOf(st).Unlimited {
+			continue
+		}
+		n += p.AmountCents + p.TipCents
+	}
+	return n
+}
+
+// RefundNeed is what a manager must approve for refunds about to be made
+// on an order (nil = nothing), the owner's rules of 2026-11-12: a cashier
+// refunds cash only, on the open batch's orders (older ones are never
+// payable), up to the cashier limit for the whole order (the refunds before
+// count: several small refunds can't go past it); a card refund (any
+// amount) and cash given back for a card sale need a manager. A manager (or
+// anyone main made unlimited) needs no one. A comp's refund moves no money
+// and is free. overLimit names the action for the limit (refund | void).
+func RefundNeed(c *Config, st Staff, paid, refunds []Payment, overLimit string) *ManagerRequired {
+	lim := c.LimitsOf(st)
+	if lim.Unlimited {
+		return nil
+	}
+	var card, cash, cashNet int64
+	for _, r := range refunds {
+		switch {
+		case IsCard(r.Tender):
+			card += r.AmountCents + r.TipCents
+		case r.Tender == TenderCash:
+			cash += r.AmountCents + r.TipCents
+		}
+	}
+	if card > 0 {
+		return &ManagerRequired{Action: NeedCardRefund, Requested: card}
+	}
+	if cash <= 0 {
+		return nil
+	}
+	for _, p := range paid {
+		if p.Tender == TenderCash {
+			a, t := p.Signed()
+			cashNet += a + t
+		}
+	}
+	if cash > cashNet {
+		return &ManagerRequired{Action: NeedCashForCard, Limit: max(cashNet, 0), Requested: cash}
+	}
+	if total := CashierRefunded(c, paid) + cash; total > lim.RefundCents {
+		return &ManagerRequired{Action: overLimit, Limit: lim.RefundCents, Requested: total}
+	}
+	return nil
 }
 
 func (e *ManagerRequired) Error() string {

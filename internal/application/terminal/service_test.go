@@ -447,8 +447,9 @@ func TestPaymentsRefundsAndVoid(t *testing.T) {
 	if err != nil || p.BalanceCents != 500 || p.Order.Status.Paid {
 		t.Fatalf("small refund: %+v %v", p, err)
 	}
-	// Void of a paid order over the limit: manager; then refunds by tender.
-	if _, err := r.svc.Void(r.ctx, till, id, VoidIn{Reason: "customer left"}); !errors.As(err, &mr) || mr.Action != terminal.ActionVoid {
+	// Void of an order paid partly by card: the card refund needs a manager;
+	// then refunds by tender.
+	if _, err := r.svc.Void(r.ctx, till, id, VoidIn{Reason: "customer left"}); !errors.As(err, &mr) || mr.Action != terminal.NeedCardRefund {
 		t.Fatalf("void needs a manager: %v", err)
 	}
 	v, err := r.svc.Void(r.ctx, till, id, VoidIn{Reason: "customer left", ManagerPIN: "9876"})

@@ -130,15 +130,15 @@ func TestDriverClaimMineTipCloseReport(t *testing.T) {
 		t.Fatal(err)
 	}
 	me := res.Driver.ID
-	// Nothing has waited 45 minutes (the default) yet.
+	// Nothing is past its promised time (SEND + 15 minutes here) yet.
 	if list, err := r.svc.Available(r.ctx, till2); err != nil || len(list) != 0 {
 		t.Fatalf("available before 45 min: %+v %v", list, err)
 	}
 	var tk *order.ErrTaken
 	if _, err := r.svc.Claim(r.ctx, till2, ClaimIn{OrderIDs: []string{cash}}); !errors.As(err, &tk) {
-		t.Fatalf("claim before 45 min: %v", err)
+		t.Fatalf("claim before the promised time: %v", err)
 	}
-	// 46 minutes later: every unassigned one, cooking too, longest waiting first.
+	// 46 minutes later: every unassigned one, cooking too, longest past its promised time first.
 	r.later(46 * time.Minute)
 	list, err := r.svc.Available(r.ctx, till2)
 	if err != nil || len(list) != 3 || list[0].OrderID != cooking || list[1].OrderID != cash || list[2].OrderID != paid {
@@ -221,27 +221,21 @@ func TestDriverClaimMineTipCloseReport(t *testing.T) {
 	}
 }
 
-// The store's driver_claim_after_minutes (main's terminal setting).
-func TestDriverClaimAfterSetting(t *testing.T) {
-	var nilCfg *terminal.Config
-	if nilCfg.DriverClaimAfterMinutes() != 45 {
-		t.Fatal("no config = 45")
-	}
-	for body, want := range map[string]int{
-		`{"version":1,"staff":[],"settings":{}}`:                                 45,
-		`{"version":1,"staff":[],"settings":{"driver_claim_after_minutes":20}}`:  20,
-		`{"version":1,"staff":[],"settings":{"driver_claim_after_minutes":0}}`:   0,
-		`{"version":1,"staff":[],"settings":{"driver_claim_after_minutes":900}}`: terminal.MaxDriverClaimAfterMinutes,
-	} {
-		c, err := terminal.ParseConfig([]byte(body))
-		if err != nil || c.DriverClaimAfterMinutes() != want {
-			t.Fatalf("%s: %d %v", body, c.DriverClaimAfterMinutes(), err)
-		}
-	}
+// The claim rule (the owner, 2026-11-12): past the order's promised time on
+// the Pi, not a fixed wait; main's old driver_claim_after_minutes is ignored.
+func TestDriverClaimAtPromisedTime(t *testing.T) {
 	r := newDriverRig(t)
-	id := r.delivery(t, "k-set-00001", false, true)
+	r.login(t, till, "1234")
+	thirty := int64(30)
+	res, err := r.svc.PlaceOrder(r.ctx, till, OrderIn{ClientKey: "k-prom-0001", Type: "delivery", PrepMinutes: &thirty,
+		Cart:     Cart{Cart: pricing.Cart{Lines: []pricing.Line{pizzaLine()}}},
+		Customer: &Customer{Name: "Erik Davis", Phone: "4105550101", Address: &Address{Line1: "12 Main St", City: "Towson"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := res.Order.Order.ID
 	cfg := staffConfig(t, 3, terminal.Staff{ID: "drv-1", FirstName: "Ali", LastName: "Khan", Role: terminal.RoleDriver, PinHash: hash(t, "77")})
-	cfg["settings"].(map[string]any)["driver_claim_after_minutes"] = 10
+	cfg["settings"].(map[string]any)["driver_claim_after_minutes"] = 10 // retired: no effect
 	r.main.set(PathTerminalConfig, cfg)
 	if _, err := r.svc.store.Refresh(r.ctx, terminal.KindTerminalConfig); err != nil {
 		t.Fatal(err)
@@ -249,13 +243,37 @@ func TestDriverClaimAfterSetting(t *testing.T) {
 	if _, err := r.svc.Login(r.ctx, till2, "77"); err != nil {
 		t.Fatal(err)
 	}
-	r.later(9 * time.Minute)
+	r.later(29 * time.Minute)
 	if list, _ := r.svc.Available(r.ctx, till2); len(list) != 0 {
-		t.Fatalf("9 of 10 minutes: %+v", list)
+		t.Fatalf("29 of 30 minutes: %+v", list)
 	}
-	r.later(11 * time.Minute)
-	if list, _ := r.svc.Available(r.ctx, till2); len(list) != 1 || list[0].OrderID != id {
-		t.Fatalf("11 of 10 minutes: %+v", list)
+	var tk *order.ErrTaken
+	if _, err := r.svc.Claim(r.ctx, till2, ClaimIn{OrderIDs: []string{id}}); !errors.As(err, &tk) {
+		t.Fatalf("claim before the promised time: %v", err)
+	}
+	r.later(32 * time.Minute)
+	list, _ := r.svc.Available(r.ctx, till2)
+	if len(list) != 1 || list[0].OrderID != id || list[0].LateMinutes < 1 || list[0].WaitingMinutes < 31 ||
+		!list[0].PromisedAt.Equal(res.Order.Status.EstimatedReadyAt.UTC()) {
+		t.Fatalf("past the promised time: %+v", list)
+	}
+	if c, err := r.svc.Claim(r.ctx, till2, ClaimIn{OrderIDs: []string{id}}); err != nil || len(c.Orders) != 1 {
+		t.Fatalf("claim: %+v %v", c, err)
+	}
+	// An order with no promised time counts the Pi's default delivery minutes (15 here).
+	so := order.StoredOrder{}
+	so.Order.Fulfillment.Type = "delivery"
+	at := time.Date(2026, 11, 12, 18, 0, 0, 0, time.UTC)
+	so.Status.AcceptedAt = &at
+	if got := order.PromisedAt(so, 15*time.Minute); !got.Equal(at.Add(15 * time.Minute)) {
+		t.Fatalf("fallback: %v", got)
+	}
+	later := at.Add(time.Hour)
+	so.Order.Fulfillment.PromisedAt = &later // a customer's later promised time wins
+	est := at.Add(20 * time.Minute)
+	so.Status.EstimatedReadyAt = &est
+	if got := order.PromisedAt(so, 15*time.Minute); !got.Equal(later) {
+		t.Fatalf("promised_at: %v", got)
 	}
 }
 

@@ -48,7 +48,7 @@ func (r *OrderRepository) ZInputs(ctx context.Context, batchID int64) (in termin
 	if in.OpenedAt, err = parseTS(b.OpenedAt); err != nil {
 		return in, err
 	}
-	in.ClosedAt = time.Now()
+	in.ClosedAt, in.Open = time.Now(), !b.ClosedAt.Valid
 	if b.ClosedAt.Valid {
 		if in.ClosedAt, err = parseTS(b.ClosedAt.String); err != nil {
 			return in, err
@@ -163,4 +163,3 @@ func (r *OrderRepository) ZReports(ctx context.Context, limit int) (out []termin
 	}
 	return out, nil
 }
-

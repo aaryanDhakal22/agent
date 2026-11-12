@@ -68,6 +68,9 @@ type Service struct {
 	// The Z report (contract 2.10l): driver reports + one build at a time.
 	zDrivers func(ctx context.Context, batchID int64) ([]order.DriverReport, error)
 	zMu      sync.Mutex
+	// The Manager tab (contract 2.10m): batches, driver reports, the close.
+	reports   ReportFloor
+	storeName func() string
 }
 
 // NewService wires the terminal flow; the store's config changes reach the
@@ -553,6 +556,9 @@ type PaymentIn struct {
 	Refund        bool   `json:"refund"`
 	Reason        string `json:"reason"`
 	ManagerPIN    string `json:"manager_pin"`
+	// Brand: a card payment's brand (contract 2.10m; amex | discover |
+	// mastercard | visa | other, Square's names too). Ignored on cash / comp.
+	Brand string `json:"brand"`
 }
 
 // payment checks a payment in and makes the stored one.
@@ -576,6 +582,9 @@ func (p PaymentIn) payment(a Actor, st terminal.Staff, orderID string, at time.T
 	out := terminal.Payment{ID: uuid.Must(uuid.NewV7()).String(), OrderID: orderID, ClientKey: p.ClientKey, At: at.UTC().Truncate(time.Millisecond),
 		Tender: p.Tender, AmountCents: p.AmountCents, TipCents: p.TipCents, Ref: p.Ref, Last4: p.Last4, Refund: p.Refund,
 		Reason: reason, StaffID: st.ID, DeviceID: a.DeviceID}
+	if terminal.IsCard(p.Tender) {
+		out.Brand = terminal.NormBrand(p.Brand)
+	}
 	if p.Tender == terminal.TenderCash && !p.Refund {
 		out.TenderedCents = max(p.TenderedCents, p.AmountCents+p.TipCents)
 		out.ChangeCents = out.TenderedCents - p.AmountCents - p.TipCents
@@ -881,8 +890,10 @@ func netPaid(pays []terminal.Payment) (amount, tip int64) {
 }
 
 // AddPayment takes a payment (or, with refund, gives money back) on a
-// counter order of the open batch. A refund over the staff member's limit
-// needs manager_pin. Idempotent by the payment's client_key.
+// counter order of the open batch. A refund follows terminal.RefundNeed (a
+// card refund, cash back for a card sale, or the order's cashier refunds
+// past the cashier limit need manager_pin). Idempotent by the payment's
+// client_key.
 func (s *Service) AddPayment(ctx context.Context, a Actor, orderID string, in PaymentIn) (*PaymentResult, error) {
 	st, cfg, err := s.staffOf(a)
 	if err != nil {
@@ -897,12 +908,17 @@ func (s *Service) AddPayment(ctx context.Context, a Actor, orderID string, in Pa
 	}
 	var approver *terminal.Staff
 	var need *terminal.ManagerRequired
-	lim := cfg.LimitsOf(st)
 	switch {
-	case pay.Refund && !lim.Unlimited && pay.AmountCents+pay.TipCents > lim.RefundCents:
-		need = &terminal.ManagerRequired{Action: terminal.ActionRefund, Limit: lim.RefundCents, Requested: pay.AmountCents + pay.TipCents}
-	case !pay.Refund && pay.Tender == terminal.TenderComp && !cfg.MayComp(st):
-		// A comp needs a manager on the Pi too (contract §2.10i).
+	case pay.Refund:
+		// Decided before the transaction (a manager's PIN is a bcrypt
+		// check); the transaction checks it again.
+		before, err := s.repo.OrderPayments(ctx, orderID)
+		if err != nil {
+			return nil, err
+		}
+		need = terminal.RefundNeed(cfg, st, before, []terminal.Payment{pay}, terminal.ActionRefund)
+	case pay.Tender == terminal.TenderComp && !cfg.MayComp(st):
+		// A driver's comp needs a manager (contract §2.10i).
 		need = &terminal.ManagerRequired{Action: terminal.ActionComp, Requested: pay.AmountCents}
 	}
 	if need != nil {
@@ -916,6 +932,11 @@ func (s *Service) AddPayment(ctx context.Context, a Actor, orderID string, in Pa
 		if pay.Refund {
 			if pay.AmountCents > amount || pay.TipCents > tip {
 				return nil, nil, fmt.Errorf("%w: %d paid", terminal.ErrRefundTooBig, amount)
+			}
+			if approver == nil {
+				if n := terminal.RefundNeed(cfg, st, paid, []terminal.Payment{pay}, terminal.ActionRefund); n != nil {
+					return nil, nil, n // another refund raced this one
+				}
 			}
 		} else if due := terminal.DueOf(cur); pay.AmountCents > due {
 			return nil, nil, fmt.Errorf("%w: the balance is %d", terminal.ErrOverBalance, due)
@@ -953,6 +974,58 @@ func (s *Service) AddPayment(ctx context.Context, a Actor, orderID string, in Pa
 // order holds). Cash last: the drawer keeps what it was paid.
 var voidReduceOrder = []string{terminal.TenderComp, terminal.TenderManualCard, terminal.TenderSquareApp, terminal.TenderCard, terminal.TenderCash}
 
+// voidRefunds are the refunds a void makes: one per tender, of what that
+// tender still holds. A tender refunded past zero (a tender change: card
+// paid, cash given back) already returned money for the others: what it
+// gave back over its own comes off the other tenders' refunds (comp first,
+// cash last), so the void returns exactly the order's net amount and net
+// tip. approver (nil = none) is set on each.
+func voidRefunds(paid []terminal.Payment, id, reason string, st terminal.Staff, a Actor, now time.Time, approver *terminal.Staff) []terminal.Payment {
+	type net struct{ amount, tip int64 }
+	by := map[string]*net{}
+	var tenders []string
+	for _, p := range paid {
+		n := by[p.Tender]
+		if n == nil {
+			n = &net{}
+			by[p.Tender] = n
+			tenders = append(tenders, p.Tender)
+		}
+		pa, pt := p.Signed()
+		n.amount += pa
+		n.tip += pt
+	}
+	amtBack, tipBack := map[string]int64{}, map[string]int64{}
+	var amtDeficit, tipDeficit int64
+	for _, t := range tenders {
+		n := by[t]
+		amtBack[t], tipBack[t] = max(n.amount, 0), max(n.tip, 0)
+		amtDeficit += max(-n.amount, 0)
+		tipDeficit += max(-n.tip, 0)
+	}
+	for _, t := range voidReduceOrder {
+		cut := min(amtBack[t], amtDeficit)
+		amtBack[t] -= cut
+		amtDeficit -= cut
+		cut = min(tipBack[t], tipDeficit)
+		tipBack[t] -= cut
+		tipDeficit -= cut
+	}
+	var refunds []terminal.Payment
+	for _, t := range tenders {
+		if amtBack[t] <= 0 && tipBack[t] <= 0 {
+			continue
+		}
+		r := terminal.Payment{ID: uuid.Must(uuid.NewV7()).String(), OrderID: id, At: now, Tender: t, AmountCents: amtBack[t],
+			TipCents: tipBack[t], Refund: true, Reason: reason, StaffID: st.ID, DeviceID: a.DeviceID}
+		if approver != nil {
+			r.ApprovedBy = approver.ID
+		}
+		refunds = append(refunds, r)
+	}
+	return refunds
+}
+
 // VoidIn is POST /api/terminal/orders/{id}/void.
 type VoidIn struct {
 	Reason     string `json:"reason"`
@@ -989,76 +1062,26 @@ func (s *Service) Void(ctx context.Context, a Actor, id string, in VoidIn) (*Voi
 	if err != nil {
 		return nil, err
 	}
-	lim := cfg.LimitsOf(st)
-	allowed := int64(-1) // -1 = no limit
-	if !lim.Unlimited {
-		allowed = lim.RefundCents
-	}
+	now := s.now().UTC().Truncate(time.Millisecond)
 	var approver *terminal.Staff
-	var need *terminal.ManagerRequired
-	if amt, tip := netPaid(paid); allowed >= 0 && amt+tip > allowed {
-		need = &terminal.ManagerRequired{Action: terminal.ActionVoid, Limit: lim.RefundCents, Requested: amt + tip}
+	need := terminal.RefundNeed(cfg, st, paid, voidRefunds(paid, id, reason, st, a, now, nil), terminal.ActionVoid)
+	if need != nil {
 		if approver, err = s.manager(a, cfg, in.ManagerPIN, need); err != nil {
 			return nil, err
 		}
-		allowed = -1
 	}
-	now := s.now().UTC().Truncate(time.Millisecond)
 	so, prev, refunds, returned, err := s.repo.VoidCounterOrder(ctx, id, reason, st.ID, a.DeviceID, func(cur order.StoredOrder, paid []terminal.Payment) ([]terminal.Payment, []terminal.Entry, error) {
 		amount, tip := netPaid(paid)
-		if allowed >= 0 && amount+tip > allowed {
-			return nil, nil, &terminal.ManagerRequired{Action: terminal.ActionVoid, Limit: lim.RefundCents, Requested: amount + tip}
-		}
-		// One refund per tender, of what that tender still holds.
-		type net struct{ amount, tip int64 }
-		by := map[string]*net{}
-		var tenders []string
-		for _, p := range paid {
-			n := by[p.Tender]
-			if n == nil {
-				n = &net{}
-				by[p.Tender] = n
-				tenders = append(tenders, p.Tender)
+		refunds := voidRefunds(paid, id, reason, st, a, now, approver)
+		if approver == nil {
+			if n := terminal.RefundNeed(cfg, st, paid, refunds, terminal.ActionVoid); n != nil {
+				return nil, nil, n // a payment raced the void
 			}
-			pa, pt := p.Signed()
-			n.amount += pa
-			n.tip += pt
 		}
-		// A tender refunded past zero (a tender change: card paid, cash given
-		// back) already returned money for the others: what it gave back
-		// over its own comes off the other tenders' refunds (comp first,
-		// cash last), so the void returns exactly the order's net amount and
-		// net tip.
-		amtBack, tipBack := map[string]int64{}, map[string]int64{}
-		var amtDeficit, tipDeficit int64
-		for _, t := range tenders {
-			n := by[t]
-			amtBack[t], tipBack[t] = max(n.amount, 0), max(n.tip, 0)
-			amtDeficit += max(-n.amount, 0)
-			tipDeficit += max(-n.tip, 0)
-		}
-		for _, t := range voidReduceOrder {
-			cut := min(amtBack[t], amtDeficit)
-			amtBack[t] -= cut
-			amtDeficit -= cut
-			cut = min(tipBack[t], tipDeficit)
-			tipBack[t] -= cut
-			tipDeficit -= cut
-		}
-		var refunds []terminal.Payment
 		entries := []terminal.Entry{}
-		for _, t := range tenders {
-			if amtBack[t] <= 0 && tipBack[t] <= 0 {
-				continue
-			}
-			r := terminal.Payment{ID: uuid.Must(uuid.NewV7()).String(), OrderID: id, At: now, Tender: t, AmountCents: amtBack[t],
-				TipCents: tipBack[t], Refund: true, Reason: reason, StaffID: st.ID, DeviceID: a.DeviceID}
-			if approver != nil {
-				r.ApprovedBy = approver.ID
-			}
-			refunds = append(refunds, r)
+		for _, r := range refunds {
 			entries = append(entries, terminal.Entry{StaffID: st.ID, DeviceID: a.DeviceID, Action: terminal.ActionRefund, OrderID: id,
-				Detail: detail(map[string]any{"payment_id": r.ID, "tender": t, "amount_cents": r.AmountCents, "tip_cents": r.TipCents, "reason": reason, "void": true})})
+				Detail: detail(map[string]any{"payment_id": r.ID, "tender": r.Tender, "amount_cents": r.AmountCents, "tip_cents": r.TipCents, "reason": reason, "void": true})})
 		}
 		d := map[string]any{"reason": reason, "refunded_cents": amount + tip, "number": numberOf(cur), "state": cur.Status.State}
 		if approver != nil {

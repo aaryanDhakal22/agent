@@ -3,11 +3,11 @@
 A throwaway agent behind test_terminal's FAKE MAIN (dev main for everything
 else), fake printers only. A cashier places counter deliveries on one
 terminal; drivers log in with their own PIN on others and claim (Dispatch:
-deliveries nobody took past the store's driver_claim_after_minutes become
-theirs, delivered), see their tickets, tip, close and print their report. The
-fixture sets driver_claim_after_minutes to 0 so fresh orders are listed; the
-45-minute default with a moved clock is covered by the Go tests
-(internal/application/terminal/driver_test.go). The batch auto-close (§2.10c) is
+deliveries nobody took once past their promised time become theirs,
+delivered), see their tickets, tip, close and print their report. The helper
+places deliveries quoted 0 minutes (prep_minutes 0) so they are past their
+promised time at once; the clock moving past a later promised time is covered
+by the Go tests (internal/application/terminal/driver_test.go). The batch auto-close (§2.10c) is
 covered by the Go tests with an injected clock
 (internal/application/order/autoclose_test.go).
 """
@@ -29,10 +29,8 @@ DRIVER_HASHES = {"5511": "$2a$04$YucRH1Wg.1UMR/8ccruyweBklSB5AW6T5DkOe9pnGX6aAN5
                  "6622": "$2a$04$TIEmQPTjtxNku3EImy1N4eN4VqYEl3cddctcFkazy.mN0vGacXlAa"}
 
 
-def driver_config(version: int = 1, claim_after: int | None = 0) -> dict:
+def driver_config(version: int = 1) -> dict:
     cfg = staff_config(version=version)
-    if claim_after is not None:
-        cfg["settings"]["driver_claim_after_minutes"] = claim_after
     cfg["staff"] += [{"id": "s-driver-1", "first_name": "Ali", "last_name": "Khan", "role": "driver", "pin_hash": DRIVER_HASHES["5511"]},
                      {"id": "s-driver-2", "first_name": "Sam", "last_name": "", "role": "driver", "pin_hash": DRIVER_HASHES["6622"]}]
     return cfg
@@ -75,9 +73,9 @@ def drig(admin, main_store, spawn_agent, fakes):
     fm.stop()
 
 
-def delivery(drig, *, ready: bool = True, paid: bool = False) -> str:
+def delivery(drig, *, ready: bool = True, paid: bool = False, prep_minutes: int = 0) -> str:
     agent, till = drig["agent"], drig["till"]
-    body = {"client_key": f"k-{uuid.uuid4()}", "type": "delivery", "cart": {"lines": [pizza_line()]},
+    body = {"client_key": f"k-{uuid.uuid4()}", "type": "delivery", "cart": {"lines": [pizza_line()]}, "prep_minutes": prep_minutes,
             "customer": {"name": "Erik Davis", "phone": "4105550101",
                          "address": {"line1": "12 Main St, Apt 3", "city": "Towson", "zip": "21286", "notes": "ring twice"}}}
     if paid:
@@ -193,22 +191,18 @@ def test_claim_mine_tip_close_report(drig):
                what="driver journal synced")
 
 
-def test_claim_waits_for_the_store_setting(drig):
-    """driver_claim_after_minutes from main's terminal config: at 45 a fresh delivery isn't listed or claimable;
-    back to 0 it is."""
-    agent, ali, fm = drig["agent"], drig["ali"], drig["fm"]
+def test_claim_waits_for_the_promised_time(drig):
+    """The claim rule (the owner, 2026-11-12): past the order's promised time on the Pi (SEND + the quoted
+    minutes), not a fixed wait. A delivery quoted 45 minutes isn't listed or claimable now; one quoted 0 is."""
+    agent, ali = drig["agent"], drig["ali"]
     base = agent.base
-    oid = delivery(drig)
-    assert [a["order_id"] for a in ali.get(f"{base}/api/terminal/driver/available", timeout=5).json()] == [oid]
-    fm.terminal_config = driver_config(version=2, claim_after=None)  # missing = 45
-    fm.command("terminal.changed", {"version": 2})
-    wait_until(lambda: ali.get(f"{base}/api/terminal/driver/available", timeout=5).json() == [], what="45-minute rule")
-    r = ali.post(f"{base}/api/terminal/driver/claim", json={"order_ids": [oid]}, timeout=5)
-    assert r.status_code == 409 and r.json()["code"] == "taken" and r.json()["order_ids"] == [oid], r.text
-    fm.terminal_config = driver_config(version=3, claim_after=0)
-    fm.command("terminal.changed", {"version": 3})
-    wait_until(lambda: len(ali.get(f"{base}/api/terminal/driver/available", timeout=5).json()) == 1, what="0-minute rule")
-    assert ali.post(f"{base}/api/terminal/driver/claim", json={"order_ids": [oid]}, timeout=5).status_code == 200
+    later = delivery(drig, prep_minutes=45)
+    now = delivery(drig)
+    avail = ali.get(f"{base}/api/terminal/driver/available", timeout=5).json()
+    assert [a["order_id"] for a in avail] == [now] and avail[0]["late_minutes"] >= 0 and avail[0]["promised_at"]
+    r = ali.post(f"{base}/api/terminal/driver/claim", json={"order_ids": [later]}, timeout=5)
+    assert r.status_code == 409 and r.json()["code"] == "taken" and r.json()["order_ids"] == [later], r.text
+    assert ali.post(f"{base}/api/terminal/driver/claim", json={"order_ids": [now]}, timeout=5).status_code == 200
 
 
 def test_claim_race_one_wins(drig):

@@ -3,7 +3,6 @@ package order
 import (
 	"context"
 	"fmt"
-	"time"
 
 	"quiccpos/agent/internal/application/devlog"
 	"quiccpos/agent/internal/domain/order"
@@ -44,10 +43,10 @@ func (s *Service) UnassignedDelivered(ctx context.Context) ([]order.StoredOrder,
 // weren't), in one transaction, all or nothing (*order.ErrTaken). Not a
 // send-out: he never goes out, nothing is printed and no route is sent. The
 // orders count on his driver report (cash, tips) like any delivery of his.
-func (s *Service) ClaimDelivered(ctx context.Context, driverID string, ids []string, cutoff time.Time, by order.MarkedBy) ([]order.StoredOrder, error) {
+func (s *Service) ClaimDelivered(ctx context.Context, driverID string, ids []string, rule order.ClaimRule, by order.MarkedBy) ([]order.StoredOrder, error) {
 	ctx, span := s.span(ctx, "delivery.claim_delivered", attribute.String("driver.id", driverID), attribute.Int("orders", len(ids)))
 	defer span.End()
-	claimed, err := s.repo.ClaimDelivered(ctx, driverID, dedupeIDs(ids), cutoff, by)
+	claimed, err := s.repo.ClaimDelivered(ctx, driverID, dedupeIDs(ids), rule, by)
 	if err != nil {
 		return nil, spanErr(span, err)
 	}

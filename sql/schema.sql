@@ -361,7 +361,12 @@ CREATE TABLE order_payments (
     device_id      text    NOT NULL DEFAULT '',
     approved_by    text    NOT NULL DEFAULT '',
     -- 00029_drawers_z: the terminal drawer a cash payment went in ('' = none).
-    drawer_id      text    NOT NULL DEFAULT ''
+    drawer_id      text    NOT NULL DEFAULT '',
+    -- 00031_payment_brand: a card payment's brand (amex | discover |
+    -- mastercard | visa | other; '' = none given / not a card).
+    brand          text    NOT NULL DEFAULT '',
+    -- 00032_drawer_auto: a refund's kind ('' | goodwill | outside).
+    refund_kind    text    NOT NULL DEFAULT ''
 );
 CREATE INDEX idx_order_payments_order ON order_payments (order_id, at);
 CREATE INDEX idx_order_payments_drawer ON order_payments (drawer_id) WHERE drawer_id <> '';
@@ -466,10 +471,11 @@ CREATE TABLE drawer_sessions (
     counted_cents      integer,
     denominations      text    NOT NULL DEFAULT '',
     expected_cents     integer,
-    flagged            boolean NOT NULL DEFAULT false
+    flagged            boolean NOT NULL DEFAULT false,
+    -- 00032_drawer_auto: opened by itself with the terminal's first payment.
+    auto               boolean NOT NULL DEFAULT false
 );
 CREATE UNIQUE INDEX idx_drawer_sessions_open_device ON drawer_sessions (device_id) WHERE closed_at IS NULL;
-CREATE UNIQUE INDEX idx_drawer_sessions_open_staff ON drawer_sessions (staff_id) WHERE closed_at IS NULL;
 CREATE INDEX idx_drawer_sessions_batch ON drawer_sessions (batch_id);
 
 CREATE TABLE drawer_movements (

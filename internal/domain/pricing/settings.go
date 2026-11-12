@@ -78,8 +78,9 @@ const DefaultDeliveryFeeCents = 400
 
 // DefaultStore are a new store's settings: Maryland's 6% food tax, a $4
 // delivery fee ($3 of it the driver's), no service fee, tips off, no card
-// fee, the best single discount. (Stores that existed before the $4 default
-// had their old defaults saved by migration 00037: their fee stays $0.)
+// fee, the best single discount. (Migration 00037 saved the old $0 defaults
+// for stores that existed before; 00039 moved every store still exactly on
+// them to the $4 fee with the driver's $3.)
 func DefaultStore() StoreSettings {
 	driver := int64(DefaultDriverShareCents)
 	return StoreSettings{TaxBps: 600, Stacking: StackBest,

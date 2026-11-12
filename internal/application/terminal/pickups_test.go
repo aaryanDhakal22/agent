@@ -159,7 +159,8 @@ func TestOnlineCashPickupPaidAtTheTerminalThenPickedUp(t *testing.T) {
 	}
 }
 
-func TestCompNeedsAManager(t *testing.T) {
+func TestCompByACashierNeedsNoManager(t *testing.T) {
+	// The owner, 2026-11-12: comp was manager-only; a cashier comps alone now.
 	r := newRig(t)
 	r.login(t, till, "1234") // cashier
 	soda1 := pricing.Line{Qty: 1, Selection: pricing.Selection{ItemID: soda}}
@@ -169,42 +170,34 @@ func TestCompNeedsAManager(t *testing.T) {
 		t.Fatal(err)
 	}
 	id, total := res.Order.Order.ID, res.Order.Order.Money.Total
-	var mgr *terminal.ManagerRequired
-	if _, err := r.svc.AddPayment(r.ctx, till, id, PaymentIn{Tender: terminal.TenderComp, AmountCents: total}); !errors.As(err, &mgr) ||
-		mgr.Action != terminal.ActionComp || mgr.Requested != total {
-		t.Fatalf("comp tender by a cashier: %v", err)
+	pay, err := r.svc.AddPayment(r.ctx, till, id, PaymentIn{Tender: terminal.TenderComp, AmountCents: total})
+	if err != nil || pay.Payment.ApprovedBy != "" || pay.BalanceCents != 0 {
+		t.Fatalf("comp tender by a cashier: %+v %v", pay, err)
 	}
-	if _, err := r.svc.AddPayment(r.ctx, till, id, PaymentIn{Tender: terminal.TenderComp, AmountCents: total, ManagerPIN: "55"}); !errors.Is(err, terminal.ErrManagerPINWrong) {
-		t.Fatalf("a cashier's PIN: %v", err)
-	}
-	pay, err := r.svc.AddPayment(r.ctx, till, id, PaymentIn{Tender: terminal.TenderComp, AmountCents: total, ManagerPIN: "9876"})
-	if err != nil || pay.Payment.ApprovedBy != "mgr-1" || pay.BalanceCents != 0 {
-		t.Fatalf("with a manager: %+v %v", pay, err)
-	}
-	if o := journalOf(t, r, terminal.ActionOverride); len(o) != 1 || o[0]["for"] != terminal.ActionComp {
-		t.Fatalf("override: %v", o)
+	if o := journalOf(t, r, terminal.ActionOverride); len(o) != 0 {
+		t.Fatalf("no override: %v", o)
 	}
 	// A comp tender with the order, and a comp line ($0), the same.
 	if _, err := r.svc.PlaceOrder(r.ctx, till, OrderIn{ClientKey: "k-comp-0002", Cart: cart,
-		Payments: []PaymentIn{{Tender: terminal.TenderComp, AmountCents: total}}}); !errors.As(err, &mgr) || mgr.Action != terminal.ActionComp {
+		Payments: []PaymentIn{{Tender: terminal.TenderComp, AmountCents: total}}}); err != nil {
 		t.Fatalf("comp tender at placing: %v", err)
 	}
 	compCart := Cart{Cart: pricing.Cart{Lines: []pricing.Line{atPrice(soda1, 0)}}}
 	q, err := r.svc.Quote(r.ctx, till, QuoteIn{Cart: compCart})
-	if err != nil || !q.NeedsManager || !q.PriceChanges[0].Comp {
+	if err != nil || q.NeedsManager || !q.PriceChanges[0].Comp {
 		t.Fatalf("quote: %+v %v", q, err)
 	}
-	if _, err := r.svc.PlaceOrder(r.ctx, till, OrderIn{ClientKey: "k-comp-0003", Cart: compCart}); !errors.As(err, &mgr) || mgr.Action != terminal.ActionComp {
+	if _, err := r.svc.PlaceOrder(r.ctx, till, OrderIn{ClientKey: "k-comp-0003", Cart: compCart}); err != nil {
 		t.Fatalf("comp line: %v", err)
 	}
-	// A manager logged in needs no PIN.
+	if c := journalOf(t, r, terminal.ActionComp); len(c) != 1 || c[0]["_staff"] != "cash-1" || c[0]["approved_by"] != nil {
+		t.Fatalf("comp journaled: %v", c)
+	}
+	// A manager logged in, the same.
 	mgrTill := Actor{DeviceID: "dev-2", DeviceName: "Till 2"}
 	r.login(t, mgrTill, "9876")
 	if _, err := r.svc.PlaceOrder(r.ctx, mgrTill, OrderIn{ClientKey: "k-comp-0004", Cart: compCart}); err != nil {
 		t.Fatalf("manager comp line: %v", err)
-	}
-	if c := journalOf(t, r, terminal.ActionComp); len(c) != 1 || c[0]["_staff"] != "mgr-1" {
-		t.Fatalf("comp journaled: %v", c)
 	}
 }
 
@@ -214,19 +207,20 @@ func TestEmployeeMealUpToItsPercent(t *testing.T) {
 	meal := func(pct int, kind string) Cart {
 		return Cart{Cart: pricing.Cart{Lines: []pricing.Line{pizzaLine()}}, Discount: &Discount{Pct: pct, Reason: "", Kind: kind}}
 	}
-	res, err := r.svc.PlaceOrder(r.ctx, till, OrderIn{ClientKey: "k-meal-0001", Cart: meal(50, KindEmployeeMeal)})
+	// main's settings say nothing: the Pi's fallback, 20 % (the owner's default).
+	res, err := r.svc.PlaceOrder(r.ctx, till, OrderIn{ClientKey: "k-meal-0001", Cart: meal(20, KindEmployeeMeal)})
 	if err != nil {
-		t.Fatalf("employee meal 50 %% by a cashier: %v", err)
+		t.Fatalf("employee meal 20 %% by a cashier: %v", err)
 	}
-	if d := res.Order.Order.Money.Discounts; len(d) != 1 || d[0].Label != "Employee meal 50%" || d[0].Amount != 1112 {
+	if d := res.Order.Order.Money.Discounts; len(d) != 1 || d[0].Label != "Employee meal 20%" || d[0].Amount != pricing.Pct(2224, 2000) {
 		t.Fatalf("discount: %+v", d)
 	}
-	if j := journalOf(t, r, terminal.ActionEmployeeMeal); len(j) != 1 || j[0]["pct"] != float64(50) || j[0]["reason"] != "Employee meal" {
+	if j := journalOf(t, r, terminal.ActionEmployeeMeal); len(j) != 1 || j[0]["pct"] != float64(20) || j[0]["reason"] != "Employee meal" {
 		t.Fatalf("journal: %v", j)
 	}
 	var mgr *terminal.ManagerRequired
-	if _, err := r.svc.PlaceOrder(r.ctx, till, OrderIn{ClientKey: "k-meal-0002", Cart: meal(60, KindEmployeeMeal)}); !errors.As(err, &mgr) ||
-		mgr.Action != terminal.ActionEmployeeMeal || mgr.Limit != 50 || mgr.Requested != 60 {
+	if _, err := r.svc.PlaceOrder(r.ctx, till, OrderIn{ClientKey: "k-meal-0002", Cart: meal(30, KindEmployeeMeal)}); !errors.As(err, &mgr) ||
+		mgr.Action != terminal.ActionEmployeeMeal || mgr.Limit != 20 || mgr.Requested != 30 {
 		t.Fatalf("over employee_meal_pct: %v", err)
 	}
 	typed := meal(50, "")
@@ -234,7 +228,7 @@ func TestEmployeeMealUpToItsPercent(t *testing.T) {
 	if _, err := r.svc.PlaceOrder(r.ctx, till, OrderIn{ClientKey: "k-meal-0003", Cart: typed}); !errors.As(err, &mgr) || mgr.Action != terminal.ActionDiscount {
 		t.Fatalf("a typed 50 %% follows the cashier's 10 %%: %v", err)
 	}
-	if q, err := r.svc.Quote(r.ctx, till, QuoteIn{Cart: meal(50, KindEmployeeMeal)}); err != nil || q.NeedsManager {
+	if q, err := r.svc.Quote(r.ctx, till, QuoteIn{Cart: meal(20, KindEmployeeMeal)}); err != nil || q.NeedsManager {
 		t.Fatalf("quote: %+v %v", q, err)
 	}
 	if _, err := r.svc.Quote(r.ctx, till, QuoteIn{Cart: meal(50, "staff")}); !errors.Is(err, ErrBadRequest) {
