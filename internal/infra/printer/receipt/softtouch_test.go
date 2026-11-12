@@ -57,8 +57,9 @@ func slipSnap(kind string) order.Snapshot {
 // the pickup receipt, card with no tip (the signature block), card with a tip, cash; with and without the
 // store's logo.
 func TestSoftTouchSlipGoldens(t *testing.T) {
+	prevNow := deliveryNow
 	deliveryNow = func() time.Time { return time.Date(2026, 11, 12, 22, 41, 0, 0, time.UTC) }
-	defer func() { deliveryNow = time.Now }()
+	defer func() { deliveryNow = prevNow }()
 	defer SetReceiptLogo(nil, "")
 	sc, prefs := deliveryStoreCtx(), order.DefaultReceiptPrefs()
 	for _, logo := range []bool{false, true} {

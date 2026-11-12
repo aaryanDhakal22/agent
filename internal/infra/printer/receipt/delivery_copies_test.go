@@ -69,8 +69,9 @@ func textOf(b []byte) string {
 }
 
 func TestDeliveryCopies(t *testing.T) {
+	prevNow := deliveryNow
 	deliveryNow = func() time.Time { return time.Date(2026, 11, 12, 22, 41, 0, 0, time.UTC) }
-	defer func() { deliveryNow = time.Now }()
+	defer func() { deliveryNow = prevNow }()
 	prefs := order.DefaultReceiptPrefs()
 	for _, card := range []bool{true, false} {
 		name := "cash"
