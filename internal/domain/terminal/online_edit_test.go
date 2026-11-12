@@ -39,3 +39,24 @@ func TestOnlineMatchAndMoney(t *testing.T) {
 		t.Fatalf("owed %d due %d", owed, due)
 	}
 }
+
+// The Z / till count an edited online order's online money only as far as it
+// still covers the order: a refund owed moves no money and the identity holds.
+func TestOnlineBaseDue(t *testing.T) {
+	snap := order.Snapshot{Source: "online", Money: order.Money{Total: 135}}
+	snap.SourceMeta = snap.WithPiMeta(map[string]any{"online": order.OnlineBase{PaidCents: 1299, Money: order.Money{Total: 1299}}})
+	// 135 cash taken for an added Coke, then the online pizza removed: owed 1299, nothing due.
+	if got := OnlineBaseDue(snap, 135); got != 135 {
+		t.Fatalf("base due %d, want 135 (the cash covers the Coke, the online money counts 0)", got)
+	}
+	// Before the removal: total 1434, the cash paid the balance.
+	snap.Money.Total = 1434
+	if got := OnlineBaseDue(snap, 135); got != 135 {
+		t.Fatalf("base due %d", got)
+	}
+	// Never edited: the one cash rule.
+	plain := order.Snapshot{Source: "online", Money: order.Money{Total: 900}}
+	if got := OnlineBaseDue(plain, 0); got != 900 {
+		t.Fatalf("cash order %d", got)
+	}
+}

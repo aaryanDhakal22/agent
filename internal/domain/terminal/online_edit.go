@@ -228,3 +228,16 @@ type RefundDueLine struct {
 const ActionRefundOwed = "refund.owed"
 
 func init() { reserved[ActionRefundOwed] = true }
+
+// OnlineBaseDue is what an order from main owed at the counter / door before
+// what the terminals took (terminalNet), for the Z and the till: the one cash
+// rule; for an online order edited at a terminal, its total less what it
+// arrived paid with as far as that still covers it (a refund owed lowers the
+// online money counted, so the identities hold with no money moved).
+func OnlineBaseDue(snap order.Snapshot, terminalNet int64) int64 {
+	ob := snap.OnlineBase()
+	if ob == nil {
+		return snap.CashDue()
+	}
+	return snap.Money.Total - min(ob.PaidCents, max(snap.Money.Total-terminalNet, 0))
+}

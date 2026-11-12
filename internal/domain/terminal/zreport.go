@@ -455,7 +455,7 @@ func BuildZ(in ZInput) Z {
 			z.Sales.TipsInTotalCents += m.Tip
 			z.Tips.OnlineCents += m.Tip
 			z.Tips.AddedCents += so.Status.AddedTipCents
-			baseDue = snap.CashDue()
+			baseDue = OnlineBaseDue(snap, netAmt)
 			if pre := m.Total - baseDue; pre != 0 {
 				t := tender(TenderOnline)
 				t.Count++

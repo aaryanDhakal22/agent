@@ -535,9 +535,13 @@ func BuildTill(in TillInput) Till {
 		rest.Amount += m.Subtotal - lines
 
 		// What was owed here and what came in for it.
+		var tk taken
+		if p := byOrder[snap.ID]; p != nil {
+			tk = *p
+		}
 		baseDue := m.Total
 		if !counter {
-			baseDue = snap.CashDue()
+			baseDue = OnlineBaseDue(snap, tk.paid-tk.refunded)
 			if pre := m.Total - baseDue; pre != 0 {
 				if other[TenderOnline] == nil {
 					other[TenderOnline] = &TillCount{}
@@ -545,10 +549,6 @@ func BuildTill(in TillInput) Till {
 				other[TenderOnline].Count++
 				other[TenderOnline].Amount += pre
 			}
-		}
-		var tk taken
-		if p := byOrder[snap.ID]; p != nil {
-			tk = *p
 		}
 		short := baseDue - (tk.paid - tk.refunded)
 		refundPart := min(tk.refunded, max(short, 0))
