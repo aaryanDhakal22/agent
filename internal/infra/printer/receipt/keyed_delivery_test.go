@@ -45,14 +45,39 @@ func TestKeyedDeliveryOfTheStoresOwnOrderPrintsTipEntryAndSquareID(t *testing.T)
 			t.Errorf("cols %d: Square's id as the Transaction ID %d times, want 2\n%s", cols, n, text)
 		}
 	}
-	// The pickup's customer receipt says how the card was taken and adds the tip too.
-	p := d
-	p.Fulfillment = order.Fulfillment{Type: "pickup"}
-	text := textOf(Build(p, sc, printer.Ticket{Kind: printer.TicketReceipt, Station: "Front"}, prefs))
-	for _, want := range []string{"MANUALLY ENTERED", "$3.00", "$38.25"} {
-		if !strings.Contains(text, want) {
-			t.Errorf("customer receipt: no %q\n%s", want, text)
+	// The customer receipt (the Reprint layout, staging 2026-11-12): one card line per payment with
+	// what it was charged + its entry + Square's id, ONE total (Total = Order Total, the tip in it),
+	// and a reprint says REPRINT / REIMPRESION on top.
+	for _, typ := range []string{"pickup", "delivery"} {
+		p := d
+		p.Fulfillment.Type = typ
+		text := textOf(Build(p, sc, printer.Ticket{Kind: printer.TicketReceipt, Station: "Front", Reprint: true}, prefs))
+		for want, n := range map[string]int{
+			"MANUALLY ENTERED": 2, "Card ****1111": 2, "$19.44": 1, "$18.81": 1, "Tips :": 1,
+			"Transaction ID: s9EkUvdx48VTZ3C3MZVZOXVpwpZZY": 1, "Transaction ID: 4RDCNrVavBjANQ7boscUFg60hoXZY": 1,
+			"$38.25":  2, // Total: and Order Total:, the same
+			"$35.25":  0, // never the total without the tip
+			"REPRINT": 1, "REIMPRESION": 1,
+		} {
+			if got := strings.Count(text, want); got != n {
+				t.Errorf("%s receipt: %q printed %d times, want %d\n%s", typ, want, got, n, text)
+			}
 		}
+		if strings.Index(text, "REPRINT") > strings.Index(text, "Lombardi") {
+			t.Errorf("%s receipt: the REPRINT band isn't on top\n%s", typ, text)
+		}
+		first := textOf(Build(p, sc, printer.Ticket{Kind: printer.TicketReceipt, Station: "Front"}, prefs))
+		if strings.Contains(first, "REPRINT") {
+			t.Errorf("%s: the first receipt says REPRINT", typ)
+		}
+	}
+	// Printed again after a change: both copies say UPDATED / ACTUALIZADO on top; the first print doesn't.
+	up := textOf(Build(d, sc, printer.Ticket{Kind: printer.TicketDeliveryCopies, Station: "Front", Updated: true}, prefs))
+	if strings.Count(up, "UPDATED") != 2 || strings.Count(up, "ACTUALIZADO") != 2 {
+		t.Errorf("updated copies: the band on each copy\n%s", up)
+	}
+	if first := textOf(Build(d, sc, printer.Ticket{Kind: printer.TicketDeliveryCopies, Station: "Front"}, prefs)); strings.Contains(first, "UPDATED") {
+		t.Error("the copies at placement say UPDATED")
 	}
 	// A website order's money already holds its tip: nothing is added twice.
 	w := deliverySnap(true)

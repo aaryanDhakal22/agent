@@ -51,6 +51,16 @@ type Orders interface {
 	DevEvent(text string)
 }
 
+// deliveryUpdated prints a sent delivery's copies again after its payments
+// changed (the order service's PrintDeliveryUpdate, when the floor has it).
+func (s *Service) deliveryUpdated(ctx context.Context, so order.StoredOrder) {
+	if p, ok := s.orders.(interface {
+		PrintDeliveryUpdate(ctx context.Context, so order.StoredOrder)
+	}); ok {
+		p.PrintDeliveryUpdate(ctx, so)
+	}
+}
+
 // Actor is the terminal (device) a request came from; the web-UI session
 // counts as one device, "web".
 type Actor struct {
@@ -1653,6 +1663,7 @@ func (s *Service) addPayment(ctx context.Context, a Actor, orderID string, in Pa
 	if !dup {
 		s.orders.CounterOrderChanged(ctx, so, nil, false)
 		s.publish(EventOrderPaid, map[string]any{"order": so, "payment": got})
+		s.deliveryUpdated(ctx, so)
 	}
 	return &PaymentResult{Order: so, Payment: got, Duplicate: dup, BalanceCents: so.Status.CashDueCents,
 		KickDrawer: !dup && kicks([]terminal.Payment{got}) > 0}, nil

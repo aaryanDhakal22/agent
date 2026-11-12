@@ -507,3 +507,29 @@ func TestPlan_OrderReceipt(t *testing.T) {
 		t.Fatalf("no printers: nothing: %+v", tk)
 	}
 }
+
+// Every ModeReceipt caller is a Reprint (the receipt says so); ModeDeliveryUpdate
+// prints a delivery's copies again marked updated, and nothing for a pickup.
+func TestPlan_ReprintAndDeliveryUpdate(t *testing.T) {
+	roster := []RosterEntry{pizza, front, wings}
+	d := order.Snapshot{Fulfillment: order.Fulfillment{Type: "delivery"}, Items: []order.LineItem{item("Pepperoni", order.RoutingMatched, pizza.ID)}}
+	tk, _ := PlanFor(d, roster, printer.ModeReceipt)
+	if len(tk) != 1 || !tk[0].Reprint || tk[0].Kind != printer.TicketReceipt {
+		t.Fatalf("reprint: %+v", tk)
+	}
+	if tk, _ := PlanFor(order.Snapshot{Items: []order.LineItem{item("Old", "", "")}}, roster, printer.ModeReceipt); len(tk) != 1 || !tk[0].Reprint {
+		t.Fatalf("legacy reprint: %+v", tk)
+	}
+	tk, _ = PlanFor(d, roster, printer.ModeDeliveryUpdate)
+	if len(tk) != 1 || tk[0].Kind != printer.TicketDeliveryCopies || !tk[0].Updated || tk[0].TargetID != front.ID {
+		t.Fatalf("delivery update: %+v", tk)
+	}
+	if tk, _ := PlanFor(d, roster, printer.ModePlaced); tk[len(tk)-1].Updated || tk[len(tk)-1].Reprint {
+		t.Fatalf("the placement's copies are neither updated nor a reprint: %+v", tk)
+	}
+	p := d
+	p.Fulfillment.Type = "pickup"
+	if tk, _ := PlanFor(p, roster, printer.ModeDeliveryUpdate); len(tk) != 0 {
+		t.Fatalf("a pickup: %+v", tk)
+	}
+}

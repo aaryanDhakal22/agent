@@ -47,6 +47,15 @@ type fakeOrders struct {
 	typeFrom []string
 	changed  int
 	journal  int
+	// deliveryUpdates: the orders whose delivery copies were printed again
+	// after a payment changed (PrintDeliveryUpdate).
+	deliveryUpdates []string
+}
+
+func (f *fakeOrders) PrintDeliveryUpdate(_ context.Context, so order.StoredOrder) {
+	f.mu.Lock()
+	f.deliveryUpdates = append(f.deliveryUpdates, so.Order.ID)
+	f.mu.Unlock()
 }
 
 func (f *fakeOrders) PrintCounterTickets(_ context.Context, so order.StoredOrder) {

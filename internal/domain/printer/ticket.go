@@ -78,6 +78,11 @@ const (
 	// Merchant + Customer Copy, anything else's customer receipt, on the
 	// receipt printer. No station tickets (they print as a terminal SEND's).
 	ModeOrderReceipt Mode = "order_receipt"
+	// ModeDeliveryUpdate (2026-11-12): a sent delivery's items or payments
+	// changed (a store terminal or the call center): its Merchant + Customer
+	// Copy again on the receipt printer, marked UPDATED / ACTUALIZADO. Only
+	// for a delivery; anything else plans nothing.
+	ModeDeliveryUpdate Mode = "delivery_update"
 )
 
 // Ticket is one thing to print for an order. A planned order is a set of
@@ -120,6 +125,13 @@ type Ticket struct {
 	// kitchen ticket says DO NOT MAKE and when it is due, a receipt has a
 	// FUTURE bar on top.
 	Future bool
+	// Reprint (ModeReceipt, every caller is a Reprint): the customer receipt
+	// carries a REPRINT / REIMPRESION band on top.
+	Reprint bool
+	// Updated (ModeDeliveryUpdate): a delivery's copies printed again after
+	// a sent delivery's items or payments changed - an UPDATED / ACTUALIZADO
+	// band on each copy, so the driver throws the old pair away.
+	Updated bool
 }
 
 // Paper is the printer a non-order slip (a driver report, the unsettled
@@ -128,6 +140,8 @@ type Ticket struct {
 type Paper struct {
 	Cols         int    // 48 / 42 / 32 font A characters; 0 = 48
 	ReroutedFrom string // non-empty on a stand-in printer
+	// Updated: a delivery's copies printed again after a change (Ticket.Updated).
+	Updated bool
 }
 
 // TicketResult records where one ticket printed (or why it didn't).

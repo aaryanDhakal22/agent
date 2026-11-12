@@ -115,6 +115,7 @@ func (s *Service) AddTip(ctx context.Context, a Actor, orderID, paymentID string
 	if !dup {
 		s.orders.CounterOrderChanged(ctx, so, nil, false)
 		s.publish(EventOrderPaid, map[string]any{"order": so, "payment": got})
+		s.deliveryUpdated(ctx, so)
 	}
 	pays, _ := s.repo.OrderPayments(ctx, orderID)
 	_, total, _ := tipOf(pays, paymentID)

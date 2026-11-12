@@ -216,6 +216,16 @@ func BuildDeliveryCopies(snap order.Snapshot, sc storeconfig.StoreContext, prefs
 	p.raw(cmdInit + cmdNormalSz)
 	st := storeOf(sc, prefs.Normalize())
 	for _, copy := range []string{MerchantCopy, CustomerCopy} {
+		if on.Updated { // printed again after the order changed: the driver drops the old pair
+			for _, l := range []string{"UPDATED", "ACTUALIZADO"} {
+				p.center()
+				p.raw(cmdInvertOn + cmdBoldOn + gsTall)
+				p.line(" " + l + " ")
+				p.raw(gsNormal + cmdInvertOff + cmdBoldOff)
+				p.left()
+			}
+			p.feed(1)
+		}
 		if reroutedFrom != "" {
 			for _, l := range RerouteLines(reroutedFrom, lay.cols) {
 				p.center()
