@@ -90,9 +90,9 @@ func buildFull(snap order.Snapshot, sc storeconfig.StoreContext, reroutedFrom st
 	var buf bytes.Buffer
 	w := func(s string) {
 		if len(s) > 0 && (s[0] == '\x1b' || s[0] == '\x1d' || s[0] == '\x0a') {
-			buf.WriteString(s)
+			buf.WriteString(toPC437(s))
 		} else {
-			buf.WriteString(margin(s))
+			buf.WriteString(toPC437(margin(s)))
 		}
 	}
 	nl := func() { buf.WriteString(cmdFeed) }
@@ -107,17 +107,14 @@ func buildFull(snap order.Snapshot, sc storeconfig.StoreContext, reroutedFrom st
 	// order number, then the order type (same sizes as before) ------------
 	w(cmdCenter)
 	if prefs.ShowStoreAddress {
-		if sc.Location.Name != "" {
-			w(sc.Location.Name)
-			nl()
-		}
-		if sc.Location.AddressLine1 != "" {
-			w(sc.Location.AddressLine1)
-			nl()
-		}
-		if sc.Location.AddressLine2 != "" {
-			w(sc.Location.AddressLine2)
-			nl()
+		for _, t := range []string{sc.Location.Name, sc.Location.AddressLine1, sc.Location.AddressLine2} {
+			if t == "" {
+				continue
+			}
+			for _, l := range wrapped(t, paperWidth, "") {
+				w(l)
+				nl()
+			}
 		}
 	}
 	w(cmdBoldOn)
@@ -157,7 +154,12 @@ func buildFull(snap order.Snapshot, sc storeconfig.StoreContext, reroutedFrom st
 		w(cmdBoldOn)
 		w(cmdDoubleSz)
 		w(cmdCenter)
-		w(" " + lastFirst(name) + " ")
+		for i, l := range padBand(lastFirst(name), bigLineWidth) {
+			if i > 0 {
+				nl()
+			}
+			w(l)
+		}
 		w(cmdBaseSz)
 		w(cmdBoldOff)
 		nl()
@@ -187,16 +189,21 @@ func buildFull(snap order.Snapshot, sc storeconfig.StoreContext, reroutedFrom st
 		w(cmdLeft)
 		w(cmdDoubleSz)
 		w(cmdBoldOn)
-		w("St: " + addr.Line1)
+		for i, l := range wrapped("St: "+addr.Line1, bigLineWidth, "    ") {
+			if i > 0 {
+				nl()
+			}
+			w(l)
+		}
 		w(cmdBoldOff)
 		w(cmdBaseSz)
 		nl()
-		w("Apt: " + addr.Line2)
-		nl()
-		w("City: " + addr.City)
-		nl()
-		w("Zip: " + addr.PostalCode)
-		nl()
+		for _, t := range []string{"Apt: " + addr.Line2, "City: " + addr.City, "Zip: " + addr.PostalCode} {
+			for _, l := range wrapped(t, paperWidth, "      ") {
+				w(l)
+				nl()
+			}
+		}
 		nl()
 	}
 
@@ -205,8 +212,10 @@ func buildFull(snap order.Snapshot, sc storeconfig.StoreContext, reroutedFrom st
 		w(cmdCenter)
 		w(separator())
 		nl()
-		w("Notes: " + snap.Notes)
-		nl()
+		for _, l := range wrapped("Notes: "+snap.Notes, paperWidth, "") {
+			w(l)
+			nl()
+		}
 	}
 
 	// --- Payment -------------------------------------------------------
@@ -302,17 +311,24 @@ func buildFull(snap order.Snapshot, sc storeconfig.StoreContext, reroutedFrom st
 			nl()
 		}
 		w(cmdBoldOn)
+		head := item.Name
 		if size != "" {
-			line(itemLine(item.Quantity, size, item.UnitPrice))
-		} else {
-			line(itemLine(item.Quantity, item.Name, item.UnitPrice))
+			head = size
 		}
-		w(cmdBoldOff)
-		end()
+		for k, l := range receiptItemLines(item.Quantity, head, item.UnitPrice) {
+			if k > 0 {
+				w(cmdBoldOn)
+			}
+			line(l)
+			w(cmdBoldOff)
+			end()
+		}
 		if size != "" {
 			w(cmdLeft)
-			line("    " + item.Name)
-			end()
+			for _, l := range wrapped("    "+item.Name, lineWidth, "    ") {
+				line(l)
+				end()
+			}
 		}
 
 		mods := item.Children
@@ -334,16 +350,20 @@ func buildFull(snap order.Snapshot, sc storeconfig.StoreContext, reroutedFrom st
 			if side {
 				w(cmdBoldOn)
 			}
-			line(modifierLine(label, mod.UnitPrice))
+			for _, l := range receiptModLines(label, mod.UnitPrice) {
+				line(l)
+				end()
+			}
 			if side {
 				w(cmdBoldOff)
 			}
-			end()
 			itemSum += mod.UnitPrice * int64(max(mod.Quantity, 1))
 		}
 		if strings.TrimSpace(item.Notes) != "" {
-			line("    Note: " + item.Notes)
-			end()
+			for _, l := range wrapped("    Note: "+item.Notes, lineWidth, "          ") {
+				line(l)
+				end()
+			}
 		}
 		w(rightAlign("Sum: "+dollars(itemSum), lineWidth))
 		nl()
@@ -361,8 +381,10 @@ func buildFull(snap order.Snapshot, sc storeconfig.StoreContext, reroutedFrom st
 		if strings.ToLower(snap.Fulfillment.Type) != "delivery" && strings.EqualFold(fee.Type, "delivery") {
 			continue
 		}
-		w(rightPair(label+":", dollars(fee.Amount)))
-		nl()
+		for _, l := range pairLines(label+":", dollars(fee.Amount)) {
+			w(l)
+			nl()
+		}
 	}
 
 	// --- Totals --------------------------------------------------------
@@ -381,8 +403,10 @@ func buildFull(snap order.Snapshot, sc storeconfig.StoreContext, reroutedFrom st
 		if label == "" {
 			label = d.Type
 		}
-		w(rightPair(label+":", "-"+dollars(d.Amount)))
-		nl()
+		for _, l := range pairLines(label+":", "-"+dollars(d.Amount)) {
+			w(l)
+			nl()
+		}
 	}
 	w(rightPair("Total:", dollars(snap.Money.Total)))
 
@@ -755,10 +779,12 @@ func writeCondensedItems(w func(string), nl func(), items []order.LineItem, sp o
 			sum += mod.UnitPrice * int64(max(mod.Quantity, 1))
 		}
 		name := strings.TrimSpace(strings.TrimSpace(item.Size) + " " + strings.TrimSpace(item.Name))
-		w(cmdBoldOn)
-		w(itemLine(item.Quantity, name, sum))
-		w(cmdBoldOff)
-		nl()
+		for _, l := range receiptItemLines(item.Quantity, name, sum) {
+			w(cmdBoldOn)
+			w(l)
+			w(cmdBoldOff)
+			nl()
+		}
 		if item.HasHalves() { // half and half: the kitchen summary instead
 			w(feedDots(sp.ItemMod))
 			w(cmdLeft)
@@ -777,13 +803,17 @@ func writeCondensedItems(w func(string), nl func(), items []order.LineItem, sp o
 					label = fmt.Sprintf("(x%d) %s", mod.Quantity, label)
 				}
 				w(cmdLeft)
-				w("    - " + truncRunes(label, lineWidth-6))
-				nl()
+				for _, l := range wrapped("    - "+label, lineWidth, "      ") {
+					w(l)
+					nl()
+				}
 			}
 		}
 		if strings.TrimSpace(item.Notes) != "" {
-			w("    Note: " + item.Notes)
-			nl()
+			for _, l := range wrapped("    Note: "+item.Notes, lineWidth, "          ") {
+				w(l)
+				nl()
+			}
 		}
 	}
 }
@@ -897,7 +927,9 @@ func couponStarts(items []order.LineItem, i int) bool {
 func writeCouponHeader(w func(string), nl func(), name string) {
 	w(cmdBoldOn)
 	w(cmdLeft)
-	w(printable(truncRunes("** "+strings.TrimSpace(name)+" **", lineWidth)))
+	for _, l := range wrapped("** "+strings.TrimSpace(name)+" **", lineWidth, "   ") {
+		w(printable(l))
+		nl()
+	}
 	w(cmdBoldOff)
-	nl()
 }

@@ -25,7 +25,7 @@ func BuildDriverReport(rep order.DriverReport, sc storeconfig.StoreContext, size
 		loc = tz
 	}
 	var buf bytes.Buffer
-	w := func(s string) { buf.WriteString(s) }
+	w := func(s string) { buf.WriteString(toPC437(s)) }
 	nl := func() { buf.WriteString(cmdFeed) }
 	bold := func(s string) { w(cmdBoldOn); w(s); w(cmdBoldOff); nl() }
 	// Headers, groups and totals print large (the base size of the other
@@ -48,12 +48,12 @@ func BuildDriverReport(rep order.DriverReport, sc storeconfig.StoreContext, size
 	w("DRIVER REPORT")
 	nl()
 	w(cmdQuadSz)
-	w(truncRunes(strings.ToUpper(rep.DriverName), 12))
+	w(wrapJoin(strings.ToUpper(rep.DriverName), 12, ""))
 	nl()
 	w(cmdBaseSz)
 	w(cmdBoldOff)
 	if sc.Location.Name != "" {
-		w(truncRunes(sc.Location.Name, lineWidth))
+		w(wrapJoin(sc.Location.Name, lineWidth, ""))
 		nl()
 	}
 	w(fmt.Sprintf("Batch #%d", rep.BatchID))
@@ -93,7 +93,7 @@ func BuildDriverReport(rep order.DriverReport, sc storeconfig.StoreContext, size
 			num = fmt.Sprintf("%d", *l.KitchenNumber)
 		}
 		w(itemSize)
-		bold(truncRunes(strings.TrimSpace(num+" "+l.Street), itemWidth))
+		bold(wrapJoin(strings.TrimSpace(num+" "+l.Street), itemWidth, strings.Repeat(" ", len(num)+1)))
 		tip := "Tip: " + dollars(l.OrderTipCents)
 		if l.TipPending { // a website card tip ADD TIP can still change
 			tip += " (pending)"

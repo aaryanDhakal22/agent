@@ -31,7 +31,7 @@ func BuildTestSlip(printerName string, sc storeconfig.StoreContext, tablet strin
 	nl()
 	nl()
 	w(cmdQuadSz)
-	w(truncRunes(strings.ToUpper(asciiOnly(printerName)), 12))
+	w(wrapJoin(strings.ToUpper(asciiOnly(printerName)), 12, ""))
 	nl()
 	w(cmdBaseSz)
 	w(cmdBoldOff)
@@ -40,11 +40,11 @@ func BuildTestSlip(printerName string, sc storeconfig.StoreContext, tablet strin
 	w(separator())
 	nl()
 	if store := asciiOnly(sc.StoreName()); store != "" {
-		w(truncRunes("Store:   "+store, lineWidth))
+		w(wrapJoin("Store:   "+store, lineWidth, "         "))
 		nl()
 	}
 	if t := asciiOnly(tablet); t != "" {
-		w(truncRunes("Tablet:  "+t, lineWidth))
+		w(wrapJoin("Tablet:  "+t, lineWidth, "         "))
 		nl()
 	}
 	w("Printed: " + at.In(loc).Format("Mon Jan 2 3:04 PM"))

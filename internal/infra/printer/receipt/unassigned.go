@@ -22,7 +22,7 @@ func BuildUnassignedReport(rep order.UnassignedReport, sc storeconfig.StoreConte
 		loc = tz
 	}
 	var buf bytes.Buffer
-	w := func(s string) { buf.WriteString(s) }
+	w := func(s string) { buf.WriteString(toPC437(s)) }
 	nl := func() { buf.WriteString(cmdFeed) }
 	bold := func(s string) { w(cmdBoldOn); w(s); w(cmdBoldOff); nl() }
 	itemWidth := driverReportWidth(size)
@@ -52,7 +52,7 @@ func BuildUnassignedReport(rep order.UnassignedReport, sc storeconfig.StoreConte
 	nl()
 	w(cmdBoldOff)
 	if sc.Location.Name != "" {
-		w(truncRunes(sc.Location.Name, lineWidth))
+		w(wrapJoin(sc.Location.Name, lineWidth, ""))
 		nl()
 	}
 	w(fmt.Sprintf("Batch #%d", rep.BatchID))
@@ -97,7 +97,7 @@ func BuildUnassignedReport(rep order.UnassignedReport, sc storeconfig.StoreConte
 			nl()
 		}
 		if l.FromDriver != "" {
-			w(truncRunes("Taken off "+l.FromDriver, itemWidth))
+			w(wrapJoin("Taken off "+l.FromDriver, itemWidth, "  "))
 			nl()
 		}
 		inStore := "nobody"

@@ -22,7 +22,7 @@ func BuildUnsettledList(l order.UnsettledList, sc storeconfig.StoreContext, size
 		loc = tz
 	}
 	var buf bytes.Buffer
-	w := func(s string) { buf.WriteString(s) }
+	w := func(s string) { buf.WriteString(toPC437(s)) }
 	nl := func() { buf.WriteString(cmdFeed) }
 	bold := func(s string) { w(cmdBoldOn); w(s); w(cmdBoldOff); nl() }
 	itemWidth := driverReportWidth(size)
@@ -44,7 +44,7 @@ func BuildUnsettledList(l order.UnsettledList, sc storeconfig.StoreContext, size
 	w(cmdBaseSz)
 	w(cmdBoldOff)
 	if sc.Location.Name != "" {
-		w(truncRunes(sc.Location.Name, lineWidth))
+		w(wrapJoin(sc.Location.Name, lineWidth, ""))
 		nl()
 	}
 	w(fmt.Sprintf("Batch #%d closed", l.BatchID))
@@ -61,20 +61,20 @@ func BuildUnsettledList(l order.UnsettledList, sc storeconfig.StoreContext, size
 		if c.Carried {
 			head += " (KEPT OPEN)"
 		}
-		bold(truncRunes(head, itemWidth))
+		bold(wrapJoin(head, itemWidth, "  "))
 		who := strings.TrimSpace(c.Customer.Name)
 		if c.Customer.Phone != "" {
 			who = strings.TrimSpace(who + " " + c.Customer.Phone)
 		}
 		if who != "" {
-			w(truncRunes(who, itemWidth))
+			w(wrapJoin(who, itemWidth, "  "))
 			nl()
 		}
 		placed := c.PlacedAt.In(loc).Format("Jan 2 3:04 PM")
 		if c.StaffName != "" {
 			placed += " by " + c.StaffName
 		}
-		w(truncRunes(placed, itemWidth))
+		w(wrapJoin(placed, itemWidth, "  "))
 		nl()
 		for _, it := range c.Items {
 			for _, line := range wordWrap(fmt.Sprintf("%d %s", it.Qty, it.Name), itemWidth, "  ") {

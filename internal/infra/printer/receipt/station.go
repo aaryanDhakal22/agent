@@ -68,7 +68,7 @@ func BuildStation(snap order.Snapshot, t printer.Ticket) []byte {
 
 func buildStation(snap order.Snapshot, t printer.Ticket, prefs order.ReceiptPrefs) []byte {
 	var buf bytes.Buffer
-	w := func(s string) { buf.WriteString(s) }
+	w := func(s string) { buf.WriteString(toPC437(s)) }
 	nl := func() { buf.WriteString(cmdFeed) }
 
 	added, removed := t.Mine, t.Removed
@@ -100,8 +100,10 @@ func buildStation(snap order.Snapshot, t printer.Ticket, prefs order.ReceiptPref
 	w(cmdSizeReset)
 	w(cmdBaseSz)
 	if name := strings.TrimSpace(snap.Customer.DisplayName); name != "" {
-		w(lastFirst(name))
-		nl()
+		for _, l := range wrapped(lastFirst(name), stationWidth, "") {
+			w(l)
+			nl()
+		}
 	}
 	w(cmdBoldOff)
 	if t.ReroutedFrom != "" {

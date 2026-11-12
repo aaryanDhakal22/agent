@@ -26,7 +26,7 @@ const (
 // Characters outside the font print as "?".
 func strikeImage(text string) string {
 	f := basicfont.Face7x13
-	runes := []rune(text)
+	runes := []rune(foldASCII(text))
 	cols := len(runes) * strikeCharDots
 	data := make([]byte, cols*3)
 	set := func(x, y int) { data[x*3+y/8] |= 0x80 >> (y % 8) }
@@ -79,7 +79,7 @@ func inked(m image.Image, x, y int) bool {
 // own: no line feed after it.
 func strikeRaster(line string, tall bool) string {
 	f := basicfont.Face7x13
-	runes := []rune(line)
+	runes := []rune(foldASCII(line))
 	cols := len(runes) * strikeCharDots
 	wb := (cols + 7) / 8
 	data := make([]byte, wb*strikeRows)
