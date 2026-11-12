@@ -39,8 +39,8 @@ const (
 
 // Build renders one planned ticket with the store's receipt settings: a
 // kitchen station ticket (BuildStation) or the customer receipt (repeated for
-// prefs.Copies, each copy cut), with a "REROUTED from X" banner when it
-// printed on a fallback printer. order.DefaultReceiptPrefs() prints exactly
+// prefs.Copies, each copy cut), with the reroute bands (writeRerouted) when
+// it printed on a stand-in printer. order.DefaultReceiptPrefs() prints exactly
 // what the agent printed before the settings existed.
 func Build(snap order.Snapshot, sc storeconfig.StoreContext, t printer.Ticket, prefs order.ReceiptPrefs) []byte {
 	snap = localize(snap, sc)
@@ -216,7 +216,12 @@ func buildFull(snap order.Snapshot, sc storeconfig.StoreContext, reroutedFrom st
 	w(cmdBoldOn)
 	w(cmdDoubleSz)
 	cashDue := snap.CashDue()
+	if snap.Voided != "" {
+		cashDue = 0 // nothing to collect on a voided / cancelled order
+	}
 	switch {
+	case snap.Voided != "":
+		w(snap.Voided + " - NOT CHARGED")
 	case cashDue > 0:
 		w("CASH - " + dollars(cashDue))
 	case !hasCardPayment(snap.Payments):
@@ -552,18 +557,51 @@ func writeOrderNumbers(w func(string), nl func(), snap order.Snapshot) {
 	nl()
 }
 
-// writeRerouted prints the inverted "REROUTED from X" banner that tops a
-// ticket printed on a fallback printer.
+// rerouteBandWidth is the reroute bands' width in double-size characters:
+// 21 fits the narrowest printer a ticket can land on (the store's 72 mm
+// Online printer: 512 dots = 21 characters at double width), so a band never
+// wraps; the text wraps at rerouteTextWidth so the black band always has a
+// space either side of it.
+const (
+	rerouteBandWidth = 21
+	rerouteTextWidth = rerouteBandWidth - 2
+)
+
+// RerouteLines is the reroute banner's text, one band per line: the English
+// line, then its Spanish counterpart (the owner, 2026-11-12: like ADD /
+// AGREGAR and REMOVE / QUITAR), each wrapped at rerouteTextWidth:
+// "REROUTED FROM PIZZA", "REDIRIGIDO DE PIZZA".
+func RerouteLines(from string) []string {
+	name := strings.ToUpper(strings.Join(strings.Fields(from), " "))
+	var out []string
+	for _, l := range wordWrap("REROUTED FROM "+name, rerouteTextWidth, "") {
+		out = append(out, printable(l))
+	}
+	for _, l := range wordWrap("REDIRIGIDO DE "+name, rerouteTextWidth, "") {
+		out = append(out, printable(l))
+	}
+	return out
+}
+
+// writeRerouted prints the reroute banner on any ticket or slip that printed
+// on a stand-in printer (spec §4.41): each RerouteLines line as a band like
+// the change ticket's ADD / REMOVE ones — centred, bold, double size,
+// reverse (white on black), padded to the band width — then a blank line.
+// It leaves the text left-aligned at the base size, bold off.
 func writeRerouted(w func(string), nl func(), from string) {
-	w(cmdCenter)
-	w(cmdBoldOn)
-	w(cmdDoubleSz)
-	w(cmdInvertOn)
-	w(" REROUTED from " + strings.ToUpper(from) + " ")
-	w(cmdInvertOff)
-	w(cmdBaseSz)
-	w(cmdBoldOff)
-	nl()
+	for _, l := range RerouteLines(from) {
+		w(cmdCenter)
+		w(cmdBoldOn)
+		w(cmdDoubleSz)
+		w(cmdInvertOn)
+		w(pad(l, rerouteBandWidth))
+		w(cmdInvertOff)
+		w(cmdSizeReset)
+		w(cmdBaseSz)
+		w(cmdBoldOff)
+		nl()
+	}
+	w(cmdLeft)
 	nl()
 }
 
