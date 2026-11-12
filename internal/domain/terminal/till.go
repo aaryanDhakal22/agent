@@ -191,6 +191,9 @@ type TillDetail struct {
 	Employees       []TillEmployee   `json:"employees"`
 	// Waste: Void waste in this scope (contract 2.10s §5).
 	Waste ZWaste `json:"waste"`
+	// GeneralRefunds: cash given back with no order in this scope (contract
+	// 2.10x; amount negative, inside Summary.Refunds and the cash).
+	GeneralRefunds TillCount `json:"general_refunds"`
 }
 
 // CategoryIndex maps a line's menu item id to its category on the counter
@@ -375,6 +378,28 @@ func BuildTill(in TillInput) Till {
 	type taken struct{ paid, refunded int64 } // amounts only (tips apart)
 	byOrder := map[string]*taken{}
 	for _, p := range z.Payments {
+		if IsGeneralRefund(p) {
+			// No order (contract 2.10x): cash out, a refund of no sale.
+			if !inPay(p) {
+				continue
+			}
+			cents := p.AmountCents + p.TipCents
+			cash.Amount -= cents
+			e := emp[p.StaffID]
+			if e == nil {
+				name := in.StaffNames[p.StaffID]
+				if name == "" {
+					name = "Unknown"
+				}
+				e = &TillEmployee{StaffID: p.StaffID, Name: name}
+				emp[p.StaffID] = e
+			}
+			e.Amount -= cents
+			t.Summary.Refunds -= cents
+			t.Detail.GeneralRefunds.Count++
+			t.Detail.GeneralRefunds.Amount -= cents
+			continue
+		}
 		so, ok := held[p.OrderID]
 		if !ok || !inPay(p) {
 			continue

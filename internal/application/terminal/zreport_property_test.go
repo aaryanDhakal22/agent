@@ -116,6 +116,7 @@ func (d *mDrawer) expected() int64 { return d.start + d.in - d.out + d.payIns - 
 
 type model struct {
 	orders  []*mOrder
+	general []mPay // general refunds (contract 2.10x: no order)
 	drawers map[string]*mDrawer
 	open    map[string]*mDrawer // by terminal
 	// openOnPi: the Pi's open session on a terminal ("" = none).
@@ -124,32 +125,37 @@ type model struct {
 
 func (m *model) record(o *mOrder, a Actor, pays ...terminal.Payment) {
 	for _, p := range pays {
-		if m.open[a.DeviceID] == nil {
-			// The owner, 2026-11-12: a terminal's session opens by itself
-			// with its first payment (start 0).
-			id := m.openOnPi(a.DeviceID)
-			if id == "" {
-				panic(fmt.Sprintf("payment %s on %s: no session opened by itself", p.ID, a.DeviceID))
-			}
-			md := &mDrawer{id: id, start: terminal.DefaultDrawerStartCents, open: true, staff: p.StaffID, terminalDeviceID: a.DeviceID}
-			m.drawers[id], m.open[a.DeviceID] = md, md
-		}
-		mp := mPay{tender: p.Tender, amount: p.AmountCents, tip: p.TipCents, refund: p.Refund}
-		if p.Tender == terminal.TenderCash {
-			if d := m.open[a.DeviceID]; d != nil {
-				mp.drawer = d.id
-				if p.Refund {
-					d.out += p.AmountCents + p.TipCents
-				} else {
-					d.in += p.AmountCents + p.TipCents
-				}
-			}
-		}
-		if mp.drawer != p.DrawerID {
-			panic(fmt.Sprintf("payment %s: the Pi put it in drawer %q, the model in %q", p.ID, p.DrawerID, mp.drawer))
-		}
-		o.pays = append(o.pays, mp)
+		o.pays = append(o.pays, m.place(a, p))
 	}
+}
+
+// place puts a payment the Pi took on terminal a in the model's drawers.
+func (m *model) place(a Actor, p terminal.Payment) mPay {
+	if m.open[a.DeviceID] == nil {
+		// The owner, 2026-11-12: a terminal's session opens by itself
+		// with its first payment (start 0).
+		id := m.openOnPi(a.DeviceID)
+		if id == "" {
+			panic(fmt.Sprintf("payment %s on %s: no session opened by itself", p.ID, a.DeviceID))
+		}
+		md := &mDrawer{id: id, start: terminal.DefaultDrawerStartCents, open: true, staff: p.StaffID, terminalDeviceID: a.DeviceID}
+		m.drawers[id], m.open[a.DeviceID] = md, md
+	}
+	mp := mPay{tender: p.Tender, amount: p.AmountCents, tip: p.TipCents, refund: p.Refund}
+	if p.Tender == terminal.TenderCash {
+		if d := m.open[a.DeviceID]; d != nil {
+			mp.drawer = d.id
+			if p.Refund {
+				d.out += p.AmountCents + p.TipCents
+			} else {
+				d.in += p.AmountCents + p.TipCents
+			}
+		}
+	}
+	if mp.drawer != p.DrawerID {
+		panic(fmt.Sprintf("payment %s: the Pi put it in drawer %q, the model in %q", p.ID, p.DrawerID, mp.drawer))
+	}
+	return mp
 }
 
 var tenders = []string{terminal.TenderCash, terminal.TenderCash, terminal.TenderCard, terminal.TenderSquareApp, terminal.TenderManualCard, terminal.TenderComp}
@@ -358,6 +364,17 @@ func runDay(t *testing.T, r *rig, rng *rand.Rand, day int) *model {
 			d.counted, d.open, d.reason = &counted, false, terminal.DrawerClosedHandover
 			nd := &mDrawer{id: ho.Drawer.ID, start: counted, open: true, staff: nextStaff, terminalDeviceID: till.DeviceID}
 			m.drawers[nd.id], m.open[till.DeviceID] = nd, nd
+		case op < 97: // a general refund (contract 2.10x): cash back, no order
+			amt := 1 + rng.Int63n(4000)
+			res, err := r.svc.GeneralRefund(r.ctx, a, GeneralRefundIn{ClientKey: nextKey(), AmountCents: amt, Reason: "property",
+				ManagerPIN: "9876"})
+			if err != nil {
+				t.Fatalf("general refund %d: %v", amt, err)
+			}
+			if !res.KickDrawer || res.Payment.OrderID != "" || res.Payment.RefundKind != terminal.RefundGeneral {
+				t.Fatalf("general refund %+v", res)
+			}
+			m.general = append(m.general, m.place(a, res.Payment))
 		default: // no sale
 			if _, err := r.svc.PostJournal(r.ctx, a, JournalIn{Action: "no_sale"}); err != nil {
 				t.Fatal(err)
@@ -396,6 +413,23 @@ func (m *model) check(t *testing.T, where string, z *terminal.Z) {
 	want := map[string]*tot{}
 	var sales, unpaid, driverCash, tips, onCancelled, cashOutside int64
 	var counts terminal.ZCounts
+	var general terminal.ZAmount
+	for _, g := range m.general {
+		w := want[g.tender]
+		if w == nil {
+			w = &tot{}
+			want[g.tender] = w
+		}
+		w.refunded += g.amount
+		if g.drawer == "" {
+			cashOutside -= g.amount
+		}
+		general.Count++
+		general.Cents += g.amount
+	}
+	if z.GeneralRefunds != general || rec.GeneralRefundsCents != general.Cents {
+		t.Fatalf("%s: general refunds %+v (%d), model %+v", where, z.GeneralRefunds, rec.GeneralRefundsCents, general)
+	}
 	for _, o := range m.orders {
 		amt, tip := o.net()
 		for _, p := range o.pays {

@@ -17,7 +17,7 @@ import (
 // Money identity (the reconciliation, checked by BuildZ and the property
 // test):
 //
-//	tenders.collected - refunds + unpaid = sales.total + tips_on_payments + on_cancelled
+//	tenders.collected - refunds + general_refunds + unpaid = sales.total + tips_on_payments + on_cancelled
 //
 // where the tenders are the terminals' (cash, card, square_app, manual_card,
 // comp: amount + tip as taken), "online" (what the order arrived paid with:
@@ -25,7 +25,10 @@ import (
 // on a delivered order), unpaid is the cash still due on kept orders at the
 // close, and on_cancelled is the net the terminals hold on cancelled /
 // voided orders (amounts only: their tips are in tips_on_payments; 0 when
-// every void refunded). And for the cash:
+// every void refunded). general_refunds = the cash given back with no order
+// (contract 2.10x): in refunds (and the cash tender's refunded) like any
+// refund, added back on the left because no order's money holds it. And
+// for the cash:
 //
 //	sum over drawers (expected - start - pay-ins + pay-outs) + cash outside drawers = the cash tender's net
 
@@ -80,6 +83,9 @@ type Z struct {
 	Reconcile     ZReconcile `json:"reconcile"`
 	GeneratedAt   time.Time  `json:"generated_at"`
 	POSChecksLeft int64      `json:"pos_checks"` // always 0 since H3 (the old POS's checks; kept for the shape)
+	// GeneralRefunds: the part of Refunds given back with no order
+	// (contract 2.10x, "General refund").
+	GeneralRefunds ZAmount `json:"general_refunds"`
 }
 
 // ZCounts are order counts by type (counter / pickup / delivery are the
@@ -243,6 +249,9 @@ type ZReconcile struct {
 	DifferenceCents    int64 `json:"difference_cents"`     // left side - right side
 	DrawersCashCents   int64 `json:"drawers_cash_cents"`   // the drawers' cash flows + cash outside them
 	DrawersDifferences int64 `json:"drawers_difference_cents"`
+	// GeneralRefundsCents: cash given back with no order (in RefundsCents
+	// too; added back on the left side).
+	GeneralRefundsCents int64 `json:"general_refunds_cents"`
 }
 
 // ZPending is a Z report Close batch queued (built right after).
@@ -309,6 +318,24 @@ func BuildZ(in ZInput) Z {
 		earlier[so.Order.ID] = true
 	}
 	for _, p := range in.Payments {
+		if IsGeneralRefund(p) {
+			// No order (contract 2.10x): a refund on its tender, cash out of
+			// its drawer, nothing else (never a tip).
+			cents := p.AmountCents + p.TipCents
+			t := tender(p.Tender)
+			t.RefundedCents += cents
+			z.Refunds.Count++
+			z.Refunds.Cents += cents
+			z.GeneralRefunds.Count++
+			z.GeneralRefunds.Cents += cents
+			z.Reconcile.GeneralRefundsCents += cents
+			if p.Tender == TenderCash {
+				if p.DrawerID == "" {
+					z.CashOutside -= cents
+				}
+			}
+			continue
+		}
 		if !held[p.OrderID] && !earlier[p.OrderID] {
 			continue // an order the Pi no longer holds (never on a fresh close)
 		}
@@ -473,7 +500,7 @@ func BuildZ(in ZInput) Z {
 	}
 	z.Reconcile.UnpaidCents = z.Unpaid.Cents
 	z.Reconcile.SalesTotalCents = z.Sales.TotalCents
-	z.Reconcile.DifferenceCents = z.Reconcile.TendersCents - z.Reconcile.RefundsCents + z.Reconcile.UnpaidCents -
+	z.Reconcile.DifferenceCents = z.Reconcile.TendersCents - z.Reconcile.RefundsCents + z.Reconcile.GeneralRefundsCents + z.Reconcile.UnpaidCents -
 		(z.Reconcile.SalesTotalCents + z.Reconcile.TipsCents + z.Reconcile.OnCancelledCents + z.Reconcile.EarlierChecksCents)
 
 	z.Waste = WasteOf(in.Journal)

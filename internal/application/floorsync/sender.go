@@ -403,13 +403,15 @@ func (s *Sender) send(ctx context.Context, events []order.FloorEvent) (err error
 
 // MoneyTypes are the events that exist only on the Pi until main takes them
 // (contract 2.10s §3, HARDENING-PLAN M-2): the counter orders and their
-// money, changes and voids, the customers, the drawers, the Z and the
-// journal. A refusal of one (invalid / not_found, or a 400 / 413) never
+// money, changes and voids, general refunds, the customers, the drawers,
+// the Z and the journal. A refusal of one (invalid / not_found, or a 400 / 413) never
 // marks it synced: it is kept, retried and parked past the thresholds.
 var MoneyTypes = map[string]bool{
 	"order.placed": true, "order.payment": true, "order.changed": true, "order.void": true,
 	"customer.upsert": true, "drawer.opened": true, "drawer.closed": true, "drawer.movement": true,
 	"z.report": true, "journal.entries": true,
+	// A general refund (contract 2.10x): cash back with no order.
+	"refund.general": true,
 }
 
 // KeepRefused reports whether an event main refused stays queued instead of

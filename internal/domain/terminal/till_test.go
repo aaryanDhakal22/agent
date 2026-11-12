@@ -262,9 +262,27 @@ func TestTillProperty(t *testing.T) {
 				pays = append(pays, p)
 			}
 		}
+		// General refunds (contract 2.10x): cash back with no order.
+		var general int64
+		for k := 0; k < rng.Intn(3); k++ {
+			pdev := devices[rng.Intn(3)]
+			p := Payment{ID: fmt.Sprintf("g-%d", k), At: at(), Tender: TenderCash, Refund: true, RefundKind: RefundGeneral,
+				AmountCents: 1 + rng.Int63n(5000), StaffID: "s1", DeviceID: pdev}
+			if pdev == "t1" {
+				p.DrawerID = "d0"
+			} else if pdev == "t2" {
+				p.DrawerID = "d1"
+			}
+			general += p.AmountCents
+			pays = append(pays, p)
+		}
 		z := ZInput{BatchID: 1, OpenedAt: tillT0, ClosedAt: tillT0.Add(700 * time.Minute), Now: tillT0.Add(700 * time.Minute), Loc: time.UTC,
 			Orders: orders, Payments: pays, Drawers: drawers, Journal: journal}
-		checkTill(t, fmt.Sprintf("seed %d batch", seed), BuildTill(TillInput{Z: z, Categories: cats}))
+		batch := BuildTill(TillInput{Z: z, Categories: cats})
+		if batch.Detail.GeneralRefunds.Amount != -general {
+			t.Fatalf("seed %d: general refunds %+v, want -%d", seed, batch.Detail.GeneralRefunds, general)
+		}
+		checkTill(t, fmt.Sprintf("seed %d batch", seed), batch)
 		for i := range drawers {
 			checkTill(t, fmt.Sprintf("seed %d drawer %d", seed, i), BuildTill(TillInput{Z: z, Drawer: &drawers[i], Categories: cats}))
 		}
