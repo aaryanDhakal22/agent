@@ -220,10 +220,11 @@ func (s *Service) changeCart(ctx context.Context, a Actor, id string, in ChangeI
 		typ = to
 	}
 	now := s.now()
-	// M-15: kept lines keep their rung prices (kept_prices.go).
-	p, _, err := keepRungPrices(m, s.orders.StoreLocation(), typ, cur.Order.Order, in.Cart, now, s.toppingMax())
+	// M-15 / §2.10u: kept lines keep their rung prices, gone ones are sold
+	// as custom lines (rung.go).
+	p, _, err := priceRung(m, s.orders.StoreLocation(), typ, &cur.Order.Order, in.Cart, now, s.toppingMax())
 	if err != nil {
-		return nil, badRequest(err.Error())
+		return nil, asBadRequest(err)
 	}
 	if len(p.quote.Errors) > 0 {
 		return nil, &terminal.CartInvalid{Issues: p.quote.Errors}
@@ -313,6 +314,7 @@ func (s *Service) changeCart(ctx context.Context, a Actor, id string, in ChangeI
 		entries = append(entries, overrides...)
 		entries = append(entries, priceEntries(a, st, p.changes, approver, id)...)
 		entries = append(entries, customEntries(a, st, p, id, keptCustom(cur.Order))...)
+		entries = append(entries, rungEntries(a, st, p, id, keptCustom(cur.Order))...)
 		entries[0].Detail = detail(d)
 		return &snap, entries, nil
 	})

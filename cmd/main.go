@@ -431,6 +431,7 @@ func main() {
 		return terminalApp.StoreInfo(sc, orderService.PrintPrefs())
 	})
 	orderService.OnClosed(termSvc.AfterBatchClose)
+	termSvc.SetDispatch(orderService) // the terminal's Dispatch / Pickup bars (contract §2.10v)
 	safego.Go("terminal.pending_z", func() { termSvc.BuildPendingZ(ctx) })
 	// M-11: counter orders a restart cut off between commit and print.
 	safego.Go("terminal.kitchen_pending", func() { termSvc.ResumeKitchenPrints(ctx) })
@@ -543,7 +544,14 @@ func main() {
 	// Pi auto-update (2.2.0): after a successful Close batch (its driver
 	// reports printed), a newer agent in the manifest is installed through
 	// the normal update path (requested_by auto) when auto_update is on.
+	var termAppUpdater *appupdate.Updater // set below (the terminal's APK cache)
 	orderService.OnBatchClosed(func(rc context.Context) {
+		// A good moment for the terminals to install a cached APK (§2.10w).
+		if termAppUpdater != nil {
+			if rel := termAppUpdater.Current(); rel != nil {
+				termSvc.AnnounceApp(terminalApp.EventAppInstall, *rel, "batch_closed")
+			}
+		}
 		rep, reason := updater.AfterClose(rc)
 		switch {
 		case rep != nil && rep.Accepted:
@@ -667,6 +675,18 @@ func main() {
 	appUpdater := appupdate.New(filepath.Join(filepath.Dir(cfg.AgentDBPath), "apk"), orderRepo, mainClient, sseCtrl.CurrentKey, logger)
 	appUpdater.Load(ctx)
 	safego.Go("appupdate", func() { appUpdater.Run(ctx, 5*time.Minute) })
+	// The counter terminal's APK (contract §2.10w): cached the same way,
+	// served on /api/terminal/app/*, announced when cached and after Close
+	// batch. AGENT_TERMINAL_APP renames main's app (pytest only).
+	termAppName := os.Getenv("AGENT_TERMINAL_APP")
+	if termAppName == "" {
+		termAppName = appupdate.AppTerminal
+	}
+	termAppUpdater = appupdate.NewFor(termAppName, filepath.Join(filepath.Dir(cfg.AgentDBPath), "apk"),
+		repositories.TerminalAppStore{R: orderRepo}, mainClient, sseCtrl.CurrentKey, logger)
+	termAppUpdater.OnCached(func(rel appupdate.Release) { termSvc.AnnounceApp(terminalApp.EventAppAvailable, rel, "cached") })
+	termAppUpdater.Load(ctx)
+	safego.Go("appupdate.terminal", func() { termAppUpdater.Run(ctx, 5*time.Minute) })
 	recoverySvc := recovery.New(settingsRepo, orderRepo, mainClient, logger)
 	pushoverFromEnv := os.Getenv("PUSHOVER_APP_TOKEN") != "" || os.Getenv("PUSHOVER_USER_KEY") != ""
 	recoverySvc.OnSecrets = func(sec order.Secrets) {
@@ -686,6 +706,7 @@ func main() {
 		stateSync.Reset()
 		heartbeat.Wake()
 		appUpdater.Wake()
+		termAppUpdater.Wake()
 		if _, err := recoverySvc.RefreshManagerHash(ctx); err != nil {
 			logger.Debug().Err(err).Msg("manager login refresh failed")
 		}
@@ -765,6 +786,10 @@ func main() {
 	httpServer.SetSettingsLog(repositories.NewSettingsLogRepository(db))
 	httpRef.Store(httpServer)
 	httpServer.SetAppUpdater(appUpdater)
+	httpServer.SetTerminalAppUpdater(termAppUpdater, func(rc context.Context) bool {
+		total, _, err := orderRepo.CountOpenBatchOrders(rc) // right after Close batch, until the first order
+		return err == nil && total == 0
+	})
 	httpServer.SetMap(mapFile)
 	httpServer.SetUpdates(updater, printerWatcher)
 	httpServer.SetDiag(transport.DiagDeps{

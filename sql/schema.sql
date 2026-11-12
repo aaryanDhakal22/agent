@@ -255,6 +255,8 @@ CREATE TABLE settings (
     sync_park_alerted_at      text    NOT NULL DEFAULT '',
     -- 00033_hardening: wrong PINs per terminal + per store (JSON).
     pin_throttle              text    NOT NULL DEFAULT '',
+    -- 00035_terminal_app: the terminal APK this Pi has cached for its terminals (JSON).
+    terminal_app_release      text    NOT NULL DEFAULT '',
     CHECK (id = 1)
 );
 

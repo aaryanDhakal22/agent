@@ -84,6 +84,8 @@ type Service struct {
 	pinRepo PinRepo
 	// approvals: single-use manager approvals (X-5).
 	approvals approvalBook
+	// dispatch: the Dispatch / Pickup bars' floor (dispatch.go).
+	dispatch Dispatch
 }
 
 // NewService wires the terminal flow; the store's config changes reach the
@@ -91,8 +93,27 @@ type Service struct {
 func NewService(store *Store, repo Repo, orders Orders, pub Publisher, logger zerolog.Logger) *Service {
 	s := &Service{store: store, repo: repo, orders: orders, pub: pub, logger: logger.With().Str("module", "terminal").Logger(),
 		staff: newStaffBook(), now: time.Now, cm: observability.Counter()}
-	store.OnConfig(s.staff.configChanged)
+	store.OnConfig(s.configChanged)
 	return s
+}
+
+// EventSessionEnded tells the terminals a staff session ended on the Pi's
+// side (contract §2.10u): {device_id, staff_id, reason}. The terminal it
+// names locks at once; any call with it answers 401 login_required.
+const EventSessionEnded = "terminal.session.ended"
+
+// configChanged: a new terminal config is in use. The sessions it ends are
+// announced and journaled (session.ended) right away.
+func (s *Service) configChanged(cfg *terminal.Config) {
+	ended := s.staff.configChanged(cfg)
+	ctx := context.Background()
+	for _, e := range ended {
+		s.publish(EventSessionEnded, e)
+		s.journal(ctx, terminal.Entry{StaffID: e.StaffID, DeviceID: e.DeviceID, Action: terminal.ActionSessionEnded,
+			Detail: detail(map[string]any{"reason": e.Reason})})
+		s.logger.Info().Str("staff_id", e.StaffID).Str("device_id", e.DeviceID).Str("reason", e.Reason).
+			Msg("Terminal staff session ended by main's config")
+	}
 }
 
 // SetCounterMeters swaps the counter instruments (tests).
@@ -182,7 +203,7 @@ func (s *Service) Login(ctx context.Context, a Actor, pin string) (*LoginResult,
 		return nil, terminal.ErrWrongPIN
 	}
 	s.staff.hit(a.DeviceID)
-	s.staff.login(a.DeviceID, st.ID)
+	s.staff.login(a.DeviceID, st.ID, st.PinHash)
 	s.journal(ctx, terminal.Entry{StaffID: st.ID, DeviceID: a.DeviceID, Action: terminal.ActionLogin,
 		Detail: detail(map[string]any{"role": st.Role, "device_name": a.DeviceName})})
 	res := &LoginResult{Staff: st.Public(), Role: st.Role, Limits: cfg.LimitsOf(st), Settings: s.withStore(cfg.Settings)}
@@ -208,12 +229,12 @@ func (s *Service) Logout(ctx context.Context, a Actor) {
 // staffOf is the staff member logged in on the terminal.
 func (s *Service) staffOf(a Actor) (terminal.Staff, *terminal.Config, error) {
 	cfg, _ := s.store.Config()
-	id, ok := s.staff.current(a.DeviceID)
+	cur, ok := s.staff.current(a.DeviceID)
 	if !ok || cfg == nil {
 		return terminal.Staff{}, cfg, terminal.ErrLoginRequired
 	}
-	st, ok := cfg.Find(id)
-	if !ok {
+	st, ok := cfg.Find(cur.staffID)
+	if !ok || st.PinHash != cur.pinHash { // gone, switched off or a new PIN (§2.10u)
 		s.staff.logout(a.DeviceID)
 		return terminal.Staff{}, cfg, terminal.ErrLoginRequired
 	}
@@ -244,7 +265,8 @@ func (s *Service) manager(ctx context.Context, a Actor, cfg *terminal.Config, pi
 	st, ok := s.staff.match(cfg, pin)
 	if !ok || st.Role != terminal.RoleManager {
 		// L-1 / X-2: an inline manager miss is journaled and counted too.
-		who, _ := s.staff.current(a.DeviceID)
+		cur, _ := s.staff.current(a.DeviceID)
+		who := cur.staffID
 		s.pinMiss(ctx, a, "inline_manager", who)
 		s.journal(ctx, terminal.Entry{StaffID: who, DeviceID: a.DeviceID, Action: terminal.ActionManagerCheck,
 			Detail: detail(map[string]any{"for": need.Action, "ok": false, "inline": true})})
@@ -503,6 +525,19 @@ type QuoteView struct {
 	// PriceChanges are the lines rung at another price than the menu's,
 	// each with needs_manager for the logged-in staff member.
 	PriceChanges []terminal.PriceChange `json:"price_changes,omitempty"`
+	// MenuGone: lines whose item left the menu, priced as custom lines at
+	// their rung_cents; KeptPrices: lines kept at their rung price (§2.10u).
+	MenuGone   []terminal.GoneLine  `json:"menu_gone,omitempty"`
+	KeptPrices []terminal.KeptPrice `json:"kept_prices,omitempty"`
+}
+
+// asBadRequest wraps a pricing input error as a 400 (one already wrapped
+// stays as it is).
+func asBadRequest(err error) error {
+	if errors.Is(err, ErrBadRequest) {
+		return err
+	}
+	return badRequest(err.Error())
 }
 
 // ErrBadRequest wraps a request the terminal must fix.
@@ -531,20 +566,21 @@ func (s *Service) Quote(ctx context.Context, a Actor, in QuoteIn) (*QuoteView, e
 	if m == nil {
 		return nil, terminal.ErrNoMenu
 	}
-	var p priced
+	var placed *order.Snapshot
 	if id := strings.TrimSpace(in.OrderID); id != "" {
 		cur, err := s.Order(ctx, id)
 		if err != nil {
 			return nil, err
 		}
-		p, _, err = keepRungPrices(m, s.orders.StoreLocation(), typ, cur.Order.Order, in.Cart, s.now(), s.toppingMax())
-		if err != nil {
-			return nil, badRequest(err.Error())
-		}
-	} else if p, err = priceCart(m, s.orders.StoreLocation(), typ, in.Cart, s.now(), s.toppingMax()); err != nil {
-		return nil, badRequest(err.Error())
+		placed = &cur.Order.Order
 	}
-	v := &QuoteView{Quote: p.quote, MenuVersion: ms.Version, DiscountPct: p.manualPct, PriceChanges: p.changes}
+	// Rung prices kept, gone items sold as custom lines (rung.go, §2.10u).
+	p, _, err := priceRung(m, s.orders.StoreLocation(), typ, placed, in.Cart, s.now(), s.toppingMax())
+	if err != nil {
+		return nil, asBadRequest(err)
+	}
+	v := &QuoteView{Quote: p.quote, MenuVersion: ms.Version, DiscountPct: p.manualPct, PriceChanges: p.changes,
+		MenuGone: p.gone, KeptPrices: p.kept}
 	if p.manualCents > 0 || len(p.changes) > 0 {
 		st, cfg, err := s.staffOf(a)
 		if p.manualCents > 0 {
@@ -907,9 +943,9 @@ func (s *Service) placeOrder(ctx context.Context, a Actor, in OrderIn) (*PlaceRe
 		return nil, terminal.ErrNoMenu
 	}
 	now := s.now()
-	p, err := priceCart(m, s.orders.StoreLocation(), typ, in.Cart, now, s.toppingMax())
+	p, _, err := priceRung(m, s.orders.StoreLocation(), typ, nil, in.Cart, now, s.toppingMax())
 	if err != nil {
-		return nil, badRequest(err.Error())
+		return nil, asBadRequest(err)
 	}
 	if len(p.quote.Errors) > 0 {
 		return nil, &terminal.CartInvalid{Issues: p.quote.Errors}
@@ -988,6 +1024,7 @@ func (s *Service) placeOrder(ctx context.Context, a Actor, in OrderIn) (*PlaceRe
 		Detail: detail(map[string]any{"type": typ, "total_cents": money.Total, "paid_cents": paidCents, "lines": len(items), "client_key": in.ClientKey})})
 	journal = append(journal, priceEntries(a, st, p.changes, approver, id)...)
 	journal = append(journal, customEntries(a, st, p, id, nil)...)
+	journal = append(journal, rungEntries(a, st, p, id, nil)...)
 	if p.manualCents > 0 {
 		journal = append(journal, discountEntry(a, st, in.Cart.Discount, p, dNeed, approver, id))
 	}

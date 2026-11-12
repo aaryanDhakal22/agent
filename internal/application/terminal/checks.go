@@ -40,10 +40,30 @@ type Check struct {
 	StaffName     string        `json:"staff_name"`
 	DeviceID      string        `json:"device_id"`
 	DeviceName    string        `json:"device_name"`
+	// The Dispatch / Pickup bars (2026-11-12): the delivery's full address
+	// (null for a pickup / counter check), its driver (the run's, else the
+	// pool's; "" = none), how many payments (refunds and added tips
+	// included) and the promised time (order.PromisedAt: the later of the
+	// ready time and the customer's promised time; null when neither).
+	Address       *CheckAddress `json:"address"`
+	DriverID      string        `json:"driver_id"`
+	DriverName    string        `json:"driver_name"`
+	PaymentsCount int           `json:"payments_count"`
+	PromisedAt    *time.Time    `json:"promised_at"`
 
 	// What the filters look at besides the fields above.
 	staffs, devices map[string]bool
 	search          string
+}
+
+// CheckAddress is a delivery's address on the overview.
+type CheckAddress struct {
+	Line1 string `json:"line1"`
+	Line2 string `json:"line2"`
+	City  string `json:"city"`
+	State string `json:"state"`
+	Zip   string `json:"zip"`
+	Notes string `json:"notes"`
 }
 
 // CheckCustomer is the check's customer.
@@ -248,6 +268,14 @@ func (s *Service) checksOf(ctx context.Context, batchID int64, staffNames map[st
 	if err != nil {
 		return nil, in, err
 	}
+	driverNames := map[string]string{} // a pooled delivery's driver
+	if s.drv.floor != nil {
+		if ds, err := s.drv.floor.ListDrivers(ctx); err == nil {
+			for _, d := range ds {
+				driverNames[d.ID] = d.Name
+			}
+		}
+	}
 	pays := map[string][]terminal.Payment{}
 	for _, p := range in.Payments {
 		pays[p.OrderID] = append(pays[p.OrderID], p)
@@ -294,6 +322,18 @@ func (s *Service) checksOf(ctx context.Context, batchID int64, staffNames map[st
 		}
 		if a := snap.Fulfillment.Address; a != nil {
 			c.Street = order.StreetOnly(a.Line1)
+			if c.Type == terminal.TypeDelivery {
+				c.Address = &CheckAddress{Line1: a.Line1, Line2: a.Line2, City: a.City, State: a.State, Zip: a.PostalCode, Notes: a.Notes}
+			}
+		}
+		c.DriverID, c.DriverName = so.Status.DriverID, so.Status.DriverName
+		if c.DriverID == "" && so.Status.PoolDriverID != "" {
+			c.DriverID, c.DriverName = so.Status.PoolDriverID, driverNames[so.Status.PoolDriverID]
+		}
+		c.PaymentsCount = len(pays[snap.ID])
+		if t := order.PromisedAt(so, 0); !t.IsZero() && (so.Status.EstimatedReadyAt != nil || snap.Fulfillment.PromisedAt != nil) {
+			u := t.UTC()
+			c.PromisedAt = &u
 		}
 		words := []string{c.Customer.Name, c.Customer.Phone, c.Street, snap.Notes}
 		for _, it := range snap.Items {

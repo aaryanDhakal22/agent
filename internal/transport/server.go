@@ -68,6 +68,8 @@ type Server struct {
 	port          string
 	altPort       string // second port with the same handler (HTTP_ALT_PORT), "" = off
 	apps          *appupdate.Updater
+	termApps      *appupdate.Updater             // the counter terminal's APK cache (contract 2.10w)
+	installWindow func(ctx context.Context) bool // a quiet moment to install: the open batch has no orders
 	recovery      *recovery.Service
 	onLinked      func(*recovery.Outcome)
 	linkMu        sync.Mutex
@@ -110,6 +112,12 @@ type Server struct {
 
 // SetAppUpdater wires the tablet-app release cache (/api/app/*).
 func (s *Server) SetAppUpdater(u *appupdate.Updater) { s.apps = u }
+
+// SetTerminalAppUpdater wires the terminal-app release cache
+// (/api/terminal/app/*) and the install-window check.
+func (s *Server) SetTerminalAppUpdater(u *appupdate.Updater, window func(ctx context.Context) bool) {
+	s.termApps, s.installWindow = u, window
+}
 
 // SetAltPort makes Start also serve everything on port p (HTTP_ALT_PORT).
 func (s *Server) SetAltPort(p string) { s.altPort = p }

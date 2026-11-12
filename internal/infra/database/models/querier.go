@@ -142,6 +142,7 @@ type Querier interface {
 	// Store config (starter pack from main/'s SSE handshake) --------------------
 	GetStoreConfig(ctx context.Context) (GetStoreConfigRow, error)
 	GetSyncParkSettings(ctx context.Context) (GetSyncParkSettingsRow, error)
+	GetTerminalAppRelease(ctx context.Context) (string, error)
 	// The terminals' shared drafts (00027, contract 2.10i) -------------------------
 	GetTerminalDraft(ctx context.Context, id string) (TerminalDraft, error)
 	// Terminal driver view + batch auto-close (00026_terminal_driver) ----------------
@@ -395,12 +396,16 @@ type Querier interface {
 	SetPoolSeq(ctx context.Context, arg SetPoolSeqParams) (int64, error)
 	// The Pushover part of the link secrets, refreshed from main (2.3.7).
 	SetPushoverSecrets(ctx context.Context, arg SetPushoverSecretsParams) error
+	// A terminal moved an order's ready / delivery time (contract 2.10v): the
+	// estimate and the prep minutes it implies, while the order is cooking or ready.
+	SetReadyAt(ctx context.Context, arg SetReadyAtParams) (int64, error)
 	SetReceiptPrefs(ctx context.Context, receiptPrefs string) error
 	SetRunSeq(ctx context.Context, arg SetRunSeqParams) error
 	SetSessionSecret(ctx context.Context, sessionSecret string) error
 	SetStoreAPIKey(ctx context.Context, storeApiKey string) error
 	SetSyncParkAlertedAt(ctx context.Context, syncParkAlertedAt string) error
 	SetSyncParkSettings(ctx context.Context, arg SetSyncParkSettingsParams) error
+	SetTerminalAppRelease(ctx context.Context, terminalAppRelease string) error
 	// A payment taken at a terminal on an online pickup (contract 2.10i): the
 	// money columns only; the snapshot stays main's.
 	SetTerminalPaidMoney(ctx context.Context, arg SetTerminalPaidMoneyParams) error

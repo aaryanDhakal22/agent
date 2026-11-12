@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"regexp"
+	"sort"
 	"sync"
 	"time"
 
@@ -54,7 +55,7 @@ type pinState struct {
 
 type staffBook struct {
 	mu       sync.Mutex
-	sessions map[string]string // device id -> staff id
+	sessions map[string]session // device id -> who is on it
 	pins     pinState
 	// cache: sha256(PIN) -> the staff member it matched (cleared with every
 	// new config), so a login doesn't bcrypt every staff member each time.
@@ -62,7 +63,7 @@ type staffBook struct {
 }
 
 func newStaffBook() *staffBook {
-	return &staffBook{sessions: map[string]string{}, pins: pinState{Devices: map[string][]time.Time{}}, cache: map[[32]byte]cached{}}
+	return &staffBook{sessions: map[string]session{}, pins: pinState{Devices: map[string][]time.Time{}}, cache: map[[32]byte]cached{}}
 }
 
 func recent(ts []time.Time, now time.Time, window time.Duration) []time.Time {
@@ -207,36 +208,76 @@ func (b *staffBook) match(cfg *terminal.Config, pin string) (terminal.Staff, boo
 	return terminal.Staff{}, false
 }
 
-func (b *staffBook) login(device, staffID string) {
+// session is one staff member logged in on a terminal: the PIN hash they
+// logged in with (a new PIN in main ends the session).
+type session struct {
+	staffID string
+	pinHash string
+}
+
+func (b *staffBook) login(device, staffID, pinHash string) {
 	b.mu.Lock()
-	b.sessions[device] = staffID
+	b.sessions[device] = session{staffID: staffID, pinHash: pinHash}
 	b.mu.Unlock()
 }
 
 func (b *staffBook) logout(device string) (string, bool) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	id, ok := b.sessions[device]
+	s, ok := b.sessions[device]
 	delete(b.sessions, device)
-	return id, ok
+	return s.staffID, ok
 }
 
-func (b *staffBook) current(device string) (string, bool) {
+func (b *staffBook) current(device string) (session, bool) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	id, ok := b.sessions[device]
-	return id, ok
+	s, ok := b.sessions[device]
+	return s, ok
 }
 
-// configChanged drops the PIN cache and the sessions of staff who are gone
-// (removed or switched off in main).
-func (b *staffBook) configChanged(cfg *terminal.Config) {
+// endedSession is a session a new config ended.
+type endedSession struct {
+	DeviceID string `json:"device_id"`
+	StaffID  string `json:"staff_id"`
+	Reason   string `json:"reason"` // removed | deactivated | pin_changed
+}
+
+// endReason: why a config ends this session ("" = it goes on).
+func endReason(cfg *terminal.Config, s session) string {
+	var found *terminal.Staff
+	if cfg != nil {
+		for i := range cfg.Staff {
+			if cfg.Staff[i].ID == s.staffID {
+				found = &cfg.Staff[i]
+			}
+		}
+	}
+	switch {
+	case found == nil:
+		return terminal.SessionRemoved
+	case !found.IsActive():
+		return terminal.SessionDeactivated
+	case found.PinHash != s.pinHash:
+		return terminal.SessionPinChanged
+	}
+	return ""
+}
+
+// configChanged drops the PIN cache and ends the sessions of staff who are
+// gone, switched off or have a new PIN in main (contract §2.10u): returned
+// so the service tells the terminals at once.
+func (b *staffBook) configChanged(cfg *terminal.Config) []endedSession {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.cache = map[[32]byte]cached{}
-	for dev, id := range b.sessions {
-		if _, ok := cfg.Find(id); !ok {
+	var out []endedSession
+	for dev, s := range b.sessions {
+		if r := endReason(cfg, s); r != "" {
 			delete(b.sessions, dev)
+			out = append(out, endedSession{DeviceID: dev, StaffID: s.staffID, Reason: r})
 		}
 	}
+	sort.Slice(out, func(i, j int) bool { return out[i].DeviceID < out[j].DeviceID })
+	return out
 }

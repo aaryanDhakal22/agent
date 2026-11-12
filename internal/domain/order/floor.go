@@ -516,6 +516,10 @@ type FloorRepository interface {
 	// UndoReady puts an order marked ready at or after since back to
 	// cooking (2.3.8); ErrInvalidState when it isn't (any more).
 	UndoReady(ctx context.Context, id string, since time.Time) (*StoredOrder, error)
+	// SetReadyAt moves an accepted / ready order's ready time (a terminal's
+	// time change, contract 2.10v) with an order.status event; prev = the
+	// time before. ErrInvalidState in any other state.
+	SetReadyAt(ctx context.Context, id string, at, now time.Time) (so *StoredOrder, prev *time.Time, err error)
 	AssignDriver(ctx context.Context, driverID string, orderIDs []string) ([]StoredOrder, error)
 	DriverReturned(ctx context.Context, driverID string) ([]StoredOrder, error)
 	// CloseBatch closes the open batch and opens the next. Without force it

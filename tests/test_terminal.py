@@ -218,6 +218,11 @@ def pizza_line() -> dict:
 def rig(admin, main_store, spawn_agent, fakes):
     """A linked throwaway agent behind the fake main, a Pizza station + a
     receipt printer (fake), a paired terminal logged in as the cashier."""
+    yield from make_rig(admin, main_store, spawn_agent, fakes)
+
+
+def make_rig(admin, main_store, spawn_agent, fakes, **env):
+    """rig's body; env = extra agent environment (another test file's own rig)."""
     fm = FakeMain()
     mgr = manager_session(admin, main_store)
     fakes["Pizza"], fakes["Front"] = FakePrinter(), FakePrinter()
@@ -229,7 +234,7 @@ def rig(admin, main_store, spawn_agent, fakes):
     assert r.status_code == 201 and not r.json()["is_receipt"], r.text
     pizza_id = r.json()["id"]
     fm.counter_menu, fm.terminal_config = counter_menu(pizza_id), staff_config()
-    agent = spawn_agent(MAIN_SERVER_URL=fm.url)
+    agent = spawn_agent(MAIN_SERVER_URL=fm.url, **env)
     provision(agent, main_store)
     # The printers reached the Pi through store_config, Front as the receipt printer.
     wait_until(lambda: {(p["name"], p["is_receipt"]) for p in agent.http.get(f"{agent.base}/api/diag", timeout=5).json()["printers"]}

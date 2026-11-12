@@ -120,3 +120,18 @@ func (s *Service) StoreLocation() *time.Location { return s.tz() }
 
 // DevEvent notes a terminal event in the developer-mode ring (no PII).
 func (s *Service) DevEvent(text string) { s.devEvent(devlog.Info, devlog.KindOrder, "%s", text) }
+
+// SetReadyAt moves an accepted / ready order's ready time (a terminal's
+// pickup ready time / delivery time change, contract 2.10v): main gets the
+// order.status event, the tablets order.updated. prev = the time before.
+func (s *Service) SetReadyAt(ctx context.Context, id string, at time.Time) (*order.StoredOrder, *time.Time, error) {
+	ctx, span := s.span(ctx, "order.set_ready_at")
+	defer span.End()
+	so, prev, err := s.repo.SetReadyAt(ctx, id, at.UTC(), time.Now())
+	if err != nil {
+		return nil, nil, spanErr(span, err)
+	}
+	s.floorChanged()
+	s.publishUpdated(*so)
+	return so, prev, nil
+}

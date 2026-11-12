@@ -92,14 +92,28 @@ func (f *fakeOrders) StoreLocation() *time.Location { return time.UTC }
 func (f *fakeOrders) DevEvent(string)               {}
 
 type fakePub struct {
-	mu     sync.Mutex
-	events []string
+	mu       sync.Mutex
+	events   []string
+	payloads []any
 }
 
-func (p *fakePub) Publish(typ string, _ any) {
+func (p *fakePub) Publish(typ string, v any) {
 	p.mu.Lock()
 	p.events = append(p.events, typ)
+	p.payloads = append(p.payloads, v)
 	p.mu.Unlock()
+}
+
+// last is the newest payload published as typ (nil when none).
+func (p *fakePub) last(typ string) any {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for i := len(p.events) - 1; i >= 0; i-- {
+		if p.events[i] == typ {
+			return p.payloads[i]
+		}
+	}
+	return nil
 }
 
 func (p *fakePub) count(typ string) int {
@@ -139,12 +153,20 @@ func (m *fakeMain) set(path string, v any) {
 	m.mu.Unlock()
 }
 
+// hashes: one bcrypt hash per PIN, as main keeps a staff member's pin_hash
+// until the PIN changes (a new hash ends their session, §2.10u).
+var hashes sync.Map
+
 func hash(t *testing.T, pin string) string {
+	if h, ok := hashes.Load(pin); ok {
+		return h.(string)
+	}
 	h, err := bcrypt.GenerateFromPassword([]byte(pin), bcrypt.MinCost)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return string(h)
+	got, _ := hashes.LoadOrStore(pin, string(h))
+	return got.(string)
 }
 
 func caseContext(t *testing.T) pricing.Context {

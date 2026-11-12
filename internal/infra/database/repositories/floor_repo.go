@@ -1273,3 +1273,15 @@ func (r *OrderRepository) GetAppRelease(ctx context.Context) (string, error) {
 func (r *OrderRepository) SetAppRelease(ctx context.Context, raw string) error {
 	return models.New(r.db).SetAppRelease(ctx, raw)
 }
+
+// TerminalAppStore persists the cached counter-terminal release (JSON,
+// settings.terminal_app_release): the terminal app's appupdate.Store.
+type TerminalAppStore struct{ R *OrderRepository }
+
+func (s TerminalAppStore) GetAppRelease(ctx context.Context) (string, error) {
+	return models.New(s.R.db).GetTerminalAppRelease(ctx)
+}
+
+func (s TerminalAppStore) SetAppRelease(ctx context.Context, raw string) error {
+	return models.New(s.R.db).SetTerminalAppRelease(ctx, raw)
+}

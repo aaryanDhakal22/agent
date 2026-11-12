@@ -1316,3 +1316,17 @@ SELECT * FROM journal
 WHERE device_id = sqlc.arg(device_id) AND action = sqlc.arg(action)
   AND json_extract(detail, '$.client_key') = sqlc.arg(client_key)
 LIMIT 1;
+
+-- name: SetReadyAt :execrows
+-- A terminal moved an order's ready / delivery time (contract 2.10v): the
+-- estimate and the prep minutes it implies, while the order is cooking or ready.
+UPDATE orders
+SET estimated_ready_at = sqlc.arg(estimated_ready_at),
+    prep_minutes       = sqlc.arg(prep_minutes)
+WHERE id = sqlc.arg(id) AND state IN ('accepted', 'ready');
+
+-- name: GetTerminalAppRelease :one
+SELECT terminal_app_release FROM settings WHERE id = 1;
+
+-- name: SetTerminalAppRelease :exec
+UPDATE settings SET terminal_app_release = ? WHERE id = 1;

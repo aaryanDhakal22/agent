@@ -337,6 +337,7 @@ type Setting struct {
 	SyncParkHours              int64   `json:"sync_park_hours"`
 	SyncParkAlertedAt          string  `json:"sync_park_alerted_at"`
 	PinThrottle                string  `json:"pin_throttle"`
+	TerminalAppRelease         string  `json:"terminal_app_release"`
 }
 
 type SettingsLog struct {

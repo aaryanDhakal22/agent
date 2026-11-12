@@ -18,6 +18,9 @@ import (
 type Cart struct {
 	pricing.Cart
 	Discount *Discount `json:"discount,omitempty"`
+	// Rungs: each line's rung_cents / rung_name / rung_mods (same index;
+	// rung.go reads and writes them on the lines).
+	Rungs []Rung `json:"-"`
 }
 
 // Discount is a discount on the food: a percent OR an amount, with a
@@ -79,6 +82,10 @@ type priced struct {
 	manualPct   int // the manual discount as a percent of the food (rounded up)
 	// changes are the lines rung at another price than the menu's.
 	changes []terminal.PriceChange
+	// gone / kept: lines sold as custom lines because their item is gone,
+	// and lines kept at their rung price (rung.go).
+	gone []terminal.GoneLine
+	kept []terminal.KeptPrice
 }
 
 // priceCart prices a cart with the Pi's engine copy. typ: counter | pickup |
@@ -101,14 +108,7 @@ func priceCart(menu *terminal.CounterMenu, tz *time.Location, typ string, c Cart
 	if pc.Payment == "" {
 		pc.Payment = "cash"
 	}
-	ctx := menu.Pricing
-	ctx.Types = pricing.Types{Pickup: true, Delivery: true}
-	ctx.PriceOverrides = true
-	ctx.Counter = true
-	ctx.MaxRepeat = maxRepeat
-	if ctx.Timezone == "" && tz != nil {
-		ctx.Timezone = tz.String()
-	}
+	ctx := counterCtx(menu, tz, maxRepeat)
 	q := pricing.Price(ctx, pc, now)
 	out := priced{quote: q, ctx: ctx, cart: pc, changes: priceChanges(pc, q)}
 	if d := c.Discount; d != nil && len(q.Errors) == 0 {
@@ -167,7 +167,7 @@ func customLineKey(name string, cents int64) string { return fmt.Sprintf("%s|%d"
 func customEntries(a Actor, st terminal.Staff, p priced, orderID string, kept map[string]int) []terminal.Entry {
 	var out []terminal.Entry
 	for i, l := range p.cart.Lines {
-		if !l.Custom || i >= len(p.quote.Lines) {
+		if !l.Custom || i >= len(p.quote.Lines) || p.isGone(i) { // a gone line is menu_gone_line
 			continue
 		}
 		ql := p.quote.Lines[i]

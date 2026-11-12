@@ -1795,6 +1795,17 @@ func (q *Queries) GetSyncParkSettings(ctx context.Context) (GetSyncParkSettingsR
 	return i, err
 }
 
+const getTerminalAppRelease = `-- name: GetTerminalAppRelease :one
+SELECT terminal_app_release FROM settings WHERE id = 1
+`
+
+func (q *Queries) GetTerminalAppRelease(ctx context.Context) (string, error) {
+	row := q.db.QueryRowContext(ctx, getTerminalAppRelease)
+	var terminal_app_release string
+	err := row.Scan(&terminal_app_release)
+	return terminal_app_release, err
+}
+
 const getTerminalDraft = `-- name: GetTerminalDraft :one
 
 SELECT id, location_id, type, name, held, holder_device_id, holder_device_name, holder_staff_id, holder_staff_name, staff_id, staff_name, order_id, draft, created_at, updated_at FROM terminal_drafts WHERE id = ?
@@ -6663,6 +6674,29 @@ func (q *Queries) SetPushoverSecrets(ctx context.Context, arg SetPushoverSecrets
 	return err
 }
 
+const setReadyAt = `-- name: SetReadyAt :execrows
+UPDATE orders
+SET estimated_ready_at = ?1,
+    prep_minutes       = ?2
+WHERE id = ?3 AND state IN ('accepted', 'ready')
+`
+
+type SetReadyAtParams struct {
+	EstimatedReadyAt sql.NullString `json:"estimated_ready_at"`
+	PrepMinutes      sql.NullInt64  `json:"prep_minutes"`
+	ID               string         `json:"id"`
+}
+
+// A terminal moved an order's ready / delivery time (contract 2.10v): the
+// estimate and the prep minutes it implies, while the order is cooking or ready.
+func (q *Queries) SetReadyAt(ctx context.Context, arg SetReadyAtParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, setReadyAt, arg.EstimatedReadyAt, arg.PrepMinutes, arg.ID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const setReceiptPrefs = `-- name: SetReceiptPrefs :exec
 UPDATE settings SET receipt_prefs = ? WHERE id = 1
 `
@@ -6730,6 +6764,15 @@ type SetSyncParkSettingsParams struct {
 
 func (q *Queries) SetSyncParkSettings(ctx context.Context, arg SetSyncParkSettingsParams) error {
 	_, err := q.db.ExecContext(ctx, setSyncParkSettings, arg.SyncParkRefusals, arg.SyncParkHours)
+	return err
+}
+
+const setTerminalAppRelease = `-- name: SetTerminalAppRelease :exec
+UPDATE settings SET terminal_app_release = ? WHERE id = 1
+`
+
+func (q *Queries) SetTerminalAppRelease(ctx context.Context, terminalAppRelease string) error {
+	_, err := q.db.ExecContext(ctx, setTerminalAppRelease, terminalAppRelease)
 	return err
 }
 
