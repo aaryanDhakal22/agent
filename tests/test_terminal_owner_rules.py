@@ -1,5 +1,7 @@
 """The owner's 2026-11-12 Pi round for the terminal (contract §2.10u, §2.10v).
 
+  * (M3, the security round) a new order's rung_cents that isn't today's price is a price change, never a
+    kept price; a line whose item left the menu is still sold at its rung as a custom line
   * prices don't move under an order being taken: a cart line's rung_cents
     keeps its price when main's menu moves; a line whose item left the menu
     becomes an open-price custom line at that price (never unknown_item)
@@ -69,11 +71,18 @@ def test_prices_dont_move_under_an_order(rig):  # noqa: F811
     _new_menu(rig, 8, _raise_pizzas)
     moved = term.post(f"{base}/api/terminal/quote", json={"cart": {"lines": [pizza_line()]}}, timeout=5).json()
     assert moved["quote"]["lines"][0]["unit_cents"] == ql["unit_cents"] + 300
+    # The security round (M3): a new order has nothing to keep. The rung isn't today's price any more, so it is a
+    # price change to it (here $3 off a $25.24 pizza: inside the cashier's 20 %, no manager), never a kept price.
     kept = term.post(f"{base}/api/terminal/quote", json={"cart": {"lines": [rung]}}, timeout=5).json()
-    assert kept["quote"]["lines"][0]["unit_cents"] == ql["unit_cents"] and not kept["needs_manager"]
-    assert kept["kept_prices"] == [{"line": 0, "item_id": CHEESE, "name": ql["name"], "menu_cents": ql["unit_cents"] + 300,
-                                    "rung_cents": ql["unit_cents"], "from": "terminal"}]
-    assert "price_changes" not in kept
+    assert kept["quote"]["lines"][0]["unit_cents"] == ql["unit_cents"] and not kept["needs_manager"], kept
+    assert "kept_prices" not in kept, kept
+    assert [(c["line"], c["needs_manager"]) for c in kept["price_changes"]] == [(0, False)], kept
+    # A made-up rung far under the price is a manager's call, like any price drop.
+    forged = {**pizza_line(), "rung_cents": 1000, "rung_name": ql["name"]}
+    q = term.post(f"{base}/api/terminal/quote", json={"cart": {"lines": [forged]}}, timeout=5).json()
+    assert q["needs_manager"] and q["price_changes"][0]["needs_manager"], q
+    r = term.post(f"{base}/api/terminal/orders", json={"client_key": f"k-{uuid.uuid4()}", "type": "counter", "cart": {"lines": [forged]}}, timeout=10)
+    assert r.status_code == 403 and r.json()["code"] == "manager_required" and r.json()["action"] == "price_change", r.text
 
     # The item leaves the menu: without rung_cents a 422 as before, with it a custom line.
     _new_menu(rig, 9, _drop_cheese)

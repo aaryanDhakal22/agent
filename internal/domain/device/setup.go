@@ -19,7 +19,30 @@ const DefaultAdminPairCode = "1024"
 type AdminPair struct {
 	Code string `json:"code,omitempty"`
 	Off  bool   `json:"off,omitempty"`
+	// WindowMinutes: how long a manager's pairing window stays open (0 =
+	// DefaultPairWindowMinutes; the owner's "X means configurable").
+	WindowMinutes int `json:"window_minutes,omitempty"`
 }
+
+// The pairing window (contract 2.10y "Pairing window"): the admin code pairs
+// a terminal only while a manager's window is open.
+const (
+	DefaultPairWindowMinutes = 15
+	MinPairWindowMinutes     = 1
+	MaxPairWindowMinutes     = 120
+)
+
+// Window is how long a manager's pairing window stays open.
+func (a AdminPair) Window() time.Duration {
+	m := a.WindowMinutes
+	if m < MinPairWindowMinutes || m > MaxPairWindowMinutes {
+		m = DefaultPairWindowMinutes
+	}
+	return time.Duration(m) * time.Minute
+}
+
+// IsDefault: the store never set its own code.
+func (a AdminPair) IsDefault() bool { return a.Code == "" }
 
 // Effective is the code that pairs a terminal ("" = turned off).
 func (a AdminPair) Effective() string {

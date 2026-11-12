@@ -881,13 +881,26 @@
           </div>
           <div class="srow top" style="flex-direction:column;align-items:stretch">
             <div class="lblcol"><div class="lbl">Admin pairing code for counter terminals</div>
-              <p class="help">A new counter terminal can also pair with this code (its setup's "Admin code"). It works only on the store's network, and too many wrong tries pause it.</p>
+              <p class="help">A new counter terminal can also pair with this code (its setup's "Admin code"), but only while pairing is open: tap <b>Open pairing</b> here (or in Quibase: Help, Pair a counter terminal), then type the code on the terminal. Too many wrong tries pause it.</p>
+              <p class="help" x-show="adminCode && adminCode.window && adminCode.enabled" aria-live="polite"><b x-text="pairWindowLine"></b></p>
               <p class="help" x-show="adminCode" x-text="adminCode ? (adminCode.enabled ? (adminCode.is_default ? 'On: the standard code 1024.' : 'On: the store\'s own ' + adminCode.length + '-digit code.') : 'Off: terminals pair with the manager login or a code from this page.') : ''"></p></div>
             <div class="hrow" style="margin-top:8px;gap:8px;flex-wrap:wrap">
+              <button type="button" class="btn btn-p" x-show="adminCode && adminCode.enabled && adminCode.window && !pairWindowOpen" @click="openPairing()">Open pairing</button>
+              <button type="button" class="btn" x-show="pairWindowOpen" @click="closePairing()">Close pairing</button>
+              <button type="button" class="btn" x-show="adminCode && adminCode.window" @click="changePairMinutes()" x-text="'Open for ' + (adminCode ? adminCode.window_minutes : 15) + ' min'"></button>
               <button type="button" class="btn" @click="changeAdminCode()">Change code</button>
               <button type="button" class="btn" x-show="adminCode && !adminCode.is_default" @click="saveAdminCode({code: ''})">Back to 1024</button>
               <button type="button" class="btn" x-show="adminCode && adminCode.enabled" @click="saveAdminCode({enabled: false})">Turn off</button>
               <button type="button" class="btn" x-show="adminCode && !adminCode.enabled" @click="saveAdminCode({enabled: true})">Turn on</button>
+            </div>
+          </div>
+          <div class="srow top" style="flex-direction:column;align-items:stretch" x-show="pinGuard">
+            <div class="lblcol"><div class="lbl">Terminal PIN pads</div>
+              <p class="help">Too many wrong PINs in a day lock every terminal's PIN pad until a manager unlocks it here (or in Quibase: Help). Staff already logged in keep working.</p>
+              <p class="help" aria-live="polite"><b x-text="pinGuardLine" :style="pinGuard && pinGuard.locked ? 'color:var(--bad, #c0392b)' : ''"></b></p></div>
+            <div class="hrow" style="margin-top:8px;gap:8px;flex-wrap:wrap">
+              <button type="button" class="btn btn-p" x-show="pinGuard && pinGuard.locked" @click="unlockPins()">Unlock the PIN pads</button>
+              <button type="button" class="btn" @click="changePinCeiling()">Change the limit</button>
             </div>
           </div>
           <div class="srow">

@@ -675,6 +675,10 @@ func (s *Service) lookup(ctx context.Context, c pp.Charge, txID string) (*Found,
 	return nil, availability{ok: true}
 }
 
+// lookupRetries: the waits before asking Square again about a transaction
+// it didn't show at once (a var: tests shorten it).
+var lookupRetries = []time.Duration{700 * time.Millisecond, 1500 * time.Millisecond}
+
 // record handles an ok / went_through answer.
 func (s *Service) record(ctx context.Context, c pp.Charge, txID, clientTx string, wentThrough, late bool) (pp.Charge, error) {
 	if txID != "" {
@@ -684,7 +688,27 @@ func (s *Service) record(ctx context.Context, c pp.Charge, txID, clientTx string
 		c.ClientTransactionID = clientTx
 	}
 	lk, avail := s.lookup(ctx, c, c.TransactionID)
-	if lk == nil && c.TransactionID == "" && c.ClientTransactionID == "" || lk == nil && wentThrough && c.TransactionID == "" {
+	// Square can take a moment to show a payment its app just took: ask
+	// again before calling it not found (only when a transaction id came).
+	for _, wait := range lookupRetries {
+		if lk != nil || !avail.ok || c.TransactionID == "" {
+			break
+		}
+		select {
+		case <-ctx.Done():
+		case <-time.After(wait):
+		}
+		lk, avail = s.lookup(ctx, c, c.TransactionID)
+	}
+	// The phone's word is never enough when Square can be asked (the
+	// security round, M1: a forged "ok" with a made-up transaction id marked
+	// the order paid): the lookup reached Square and found nothing = the
+	// charge stays unrecorded; Record it looks again. Only when Square can't
+	// be asked from here (main unreachable / not set up) does a transaction
+	// id from the phone record the payment, as before.
+	notFound := lk == nil && avail.ok
+	noWord := lk == nil && (c.TransactionID == "" && c.ClientTransactionID == "" || wentThrough && c.TransactionID == "")
+	if notFound || noWord {
 		// The cashier says it went through; Square doesn't show it (yet).
 		msg := "Square doesn't show this charge yet. If the Square app shows it approved, press Record it on the terminal."
 		if !avail.ok {
@@ -694,7 +718,11 @@ func (s *Service) record(ctx context.Context, c pp.Charge, txID, clientTx string
 		if err := s.save(ctx, c); err != nil {
 			return c, err
 		}
-		s.journal(ctx, c, "unrecorded", map[string]any{"why": "not_found", "lookup": avail.reason})
+		s.journal(ctx, c, "unrecorded", map[string]any{"why": "not_found", "lookup": avail.reason, "transaction_id": c.TransactionID})
+		if notFound && c.TransactionID != "" {
+			s.d.Logger.Warn().Ctx(ctx).Str("charge_id", c.ID).Str("order_id", c.OrderID).Int64("amount_cents", c.TotalCents()).
+				Msg("Phone charge reported paid but Square doesn't know the transaction: left unrecorded")
+		}
 		return c, nil
 	}
 	return s.recordFound(ctx, c, c.TransactionID, c.ClientTransactionID, lk, late, false)

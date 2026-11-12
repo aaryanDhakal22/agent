@@ -259,6 +259,15 @@ func terminalMayUse(r *http.Request) bool {
 	// The width test of a kitchen printer (contract 2.3c "Paper width").
 	case r.Method == http.MethodPost && (p == "/api/printers/width-test" || p == "/api/printers/width"):
 		return true
+	// The security round: the pairing window's and the PIN guard's state
+	// (read only), and the admin code check for admin mode.
+	case r.Method == http.MethodGet && (p == "/api/pairing/window" || p == "/api/pin-guard"):
+		return true
+	case r.Method == http.MethodPost && p == "/api/admin-code/check":
+		return true
+	// Its own refusal (terminal_only, with the words for it): the handler answers.
+	case p == "/api/pairing/window" || (r.Method == http.MethodPost && p == "/api/pin-guard/unlock"):
+		return true
 	}
 	return false
 }
@@ -274,7 +283,13 @@ func (s *Server) terminal(h http.HandlerFunc) http.HandlerFunc {
 		}
 		switch {
 		case ok && d.Kind == device.KindTerminal:
-			h(w, r.WithContext(context.WithValue(r.Context(), deviceCtxKey{}, d)))
+			r = r.WithContext(context.WithValue(r.Context(), deviceCtxKey{}, d))
+			// A key alone doesn't read the store's data: a staff member is
+			// logged in on the terminal (server_security.go).
+			if !s.staffGate(w, r) {
+				return
+			}
+			h(w, r)
 		case ok:
 			s.writeJSON(w, http.StatusForbidden, errCodeMap("only a paired POS terminal can use this route", "terminal_required"))
 		case s.session != nil && s.session.valid(r):
@@ -421,16 +436,16 @@ func (s *Server) handlePair(w http.ResponseWriter, r *http.Request) {
 
 // pairDevice creates a paired device and answers 201 with its key — the
 // tail of POST /api/pair and POST /api/pair/manager.
-func (s *Server) pairDevice(w http.ResponseWriter, r *http.Request, name, kind, how string) {
+func (s *Server) pairDevice(w http.ResponseWriter, r *http.Request, name, kind, how string) (paired bool) {
 	key, err := newDeviceKey()
 	if err != nil {
 		s.writeError(w, r, http.StatusInternalServerError, err)
-		return
+		return false
 	}
 	id := uuid.NewString()
 	if err := s.devices.Create(r.Context(), id, name, kind, hashDeviceKey(key), key[:len(deviceKeyPrefix)+6]); err != nil {
 		s.writeError(w, r, http.StatusInternalServerError, err)
-		return
+		return false
 	}
 	s.logger.Info().Ctx(r.Context()).Str("device_id", id).Str("name", name).Str("kind", kind).Str("with", how).Msg("Device paired")
 	s.journalPaired(r.Context(), id, name, how)
@@ -439,6 +454,7 @@ func (s *Server) pairDevice(w http.ResponseWriter, r *http.Request, name, kind, 
 	}
 	// device_key is the same key under the name the integration contract uses.
 	s.writeJSON(w, http.StatusCreated, map[string]any{"device_id": id, "name": name, "kind": kind, "key": key, "device_key": key})
+	return true
 }
 
 // POST /api/pair/manager {username, password, tablet_name} (open, 2.4.2) — a

@@ -2,6 +2,7 @@ package terminal
 
 import (
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 
@@ -94,14 +95,30 @@ func (r *rig) quote(t *testing.T, c Cart) *QuoteView {
 
 func rq(v *QuoteView) pricing.Quote { return v.Quote.(pricing.Quote) }
 
-// A draft's line keeps the price of its first quote when the menu price
-// moves (base, half and option prices all in it): no price change, no
-// manager, journaled price_kept once the order is placed.
-func TestRungKeepsADraftsPrice(t *testing.T) {
+// The security round (M3): a new order has nothing to keep, so a rung is
+// never a price by itself. A rung that isn't today's menu price (the menu
+// moved since the quote, or a made-up number) is a price change to it under
+// the price-drop rule: over the cashier's limit a manager, journaled
+// price_change, never price_kept. A rung at today's price is nothing.
+func TestRungOnANewOrderIsAPriceChange(t *testing.T) {
 	r := newRig(t)
 	r.login(t, till, "1234")
 	first := rq(r.quote(t, Cart{Cart: pricing.Cart{Lines: []pricing.Line{pizzaLine()}}}))
 	was := first.Lines[0].UnitCents
+	// A made-up rung on an untouched menu: the 2224-cent pizza at 1000 (at
+	// 225, the price of its one topping, the pizza itself would be $0: a
+	// comp, journaled as one, which a cashier may give).
+	forged := int64(1000)
+	fc := Cart{Cart: pricing.Cart{Lines: []pricing.Line{pizzaLine()}}, Rungs: []Rung{{Cents: &forged, Name: "Cheese Pizza"}}}
+	v := r.quote(t, fc)
+	if !v.NeedsManager || len(v.PriceChanges) != 1 || !v.PriceChanges[0].NeedsManager || len(v.KeptPrices) != 0 {
+		t.Fatalf("a forged rung is a price drop for a manager: %+v", v)
+	}
+	var mr *terminal.ManagerRequired
+	if _, err := r.svc.PlaceOrder(r.ctx, till, OrderIn{ClientKey: tk(), Type: "counter", Cart: fc}); !errors.As(err, &mr) || mr.Action != terminal.ActionPriceChange {
+		t.Fatalf("a forged rung placed without a manager: %v", err)
+	}
+	// The menu moves up while the order is taken.
 	r.editMenu(t, 20, raise(cheese, 100))
 	r.editMenu(t, 21, func(m map[string]any) { raise(cheese, 100)(m); raise(hawaiian, 300)(m) })
 	plain := rq(r.quote(t, Cart{Cart: pricing.Cart{Lines: []pricing.Line{pizzaLine()}}}))
@@ -110,31 +127,55 @@ func TestRungKeepsADraftsPrice(t *testing.T) {
 	}
 	l, rg := rungLine(pizzaLine(), first.Lines[0])
 	c := Cart{Cart: pricing.Cart{Lines: []pricing.Line{l}}, Rungs: []Rung{rg}}
-	v := r.quote(t, c)
+	v = r.quote(t, c)
 	q := rq(v)
-	if q.Lines[0].UnitCents != was || len(q.Errors) != 0 || v.NeedsManager || len(v.PriceChanges) != 0 {
-		t.Fatalf("kept quote: %+v %+v", q.Lines[0], v)
+	if q.Lines[0].UnitCents != was || len(q.Errors) != 0 || len(v.PriceChanges) != 1 || len(v.KeptPrices) != 0 {
+		t.Fatalf("the old price is a price change now: %+v %+v", q.Lines[0], v)
 	}
-	if len(v.KeptPrices) != 1 || v.KeptPrices[0].RungCents != was || v.KeptPrices[0].MenuCents != plain.Lines[0].UnitCents {
-		t.Fatalf("kept_prices %+v", v.KeptPrices)
+	if !v.NeedsManager { // 31 % under today's price, the cashier's limit is 20 %
+		t.Fatalf("over the cashier's limit: %+v", v.PriceChanges)
 	}
-	res, err := r.svc.PlaceOrder(r.ctx, till, OrderIn{ClientKey: tk(), Type: "counter", Cart: c})
+	if _, err := r.svc.PlaceOrder(r.ctx, till, OrderIn{ClientKey: tk(), Type: "counter", Cart: c}); !errors.As(err, &mr) || mr.Action != terminal.ActionPriceChange {
+		t.Fatalf("the old price without a manager: %v", err)
+	}
+	res, err := r.svc.PlaceOrder(r.ctx, till, OrderIn{ClientKey: tk(), Type: "counter", Cart: c, ManagerPIN: "9876"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if it := res.Order.Order.Items[0]; it.LineTotal != was || it.SKU == order.SKUCustom || it.PrinterID != pizzaPrn {
 		t.Fatalf("placed line %+v", it)
 	}
-	if j := journalOf(t, r, terminal.ActionPriceKept); len(j) != 1 || j[0]["rung_cents"] != float64(was) {
-		t.Fatalf("price_kept %v", j)
+	if j := journalOf(t, r, terminal.ActionPriceKept); len(j) != 0 {
+		t.Fatalf("a new order keeps no price: %v", j)
 	}
-	if j := journalOf(t, r, terminal.ActionPriceChange); len(j) != 0 {
-		t.Fatalf("a kept price is no price change: %v", j)
+	if j := journalOf(t, r, terminal.ActionPriceChange); len(j) != 1 || j[0]["approved_by"] != "mgr-1" {
+		t.Fatalf("price_change %v", j)
 	}
 	// The stored cart keeps the rung fields (a reopened order reads them).
 	sc, ok := storedCart(res.Order.Order)
 	if !ok || len(sc.Rungs) != 1 || sc.Rungs[0].Cents == nil || *sc.Rungs[0].Cents != was {
 		t.Fatalf("stored cart %+v", sc)
+	}
+	// A rung at today's price: no change, no manager.
+	l2, rg2 := rungLine(pizzaLine(), plain.Lines[0])
+	v = r.quote(t, Cart{Cart: pricing.Cart{Lines: []pricing.Line{l2}}, Rungs: []Rung{rg2}})
+	if v.NeedsManager || len(v.PriceChanges) != 0 || len(v.KeptPrices) != 0 {
+		t.Fatalf("today's price as the rung: %+v", v)
+	}
+	// An edit of the sent order: its own line keeps the price stored with
+	// it whatever the terminal sends (a lower rung is ignored); a new line
+	// with a made-up rung is a price change for a manager.
+	low := int64(100)
+	own := Cart{Cart: pricing.Cart{Lines: []pricing.Line{l}}, Rungs: []Rung{{Cents: &low, Name: "Cheese Pizza"}}}
+	ch, err := r.svc.ChangeCart(r.ctx, till, res.Order.Order.ID, ChangeIn{ClientKey: tk(), Cart: own})
+	if err != nil || ch.Order.Order.Items[0].LineTotal != was {
+		t.Fatalf("the order's own line keeps its stored price: %+v %v", ch, err)
+	}
+	soda1 := pricing.Line{Qty: 1, Selection: pricing.Selection{ItemID: soda}}
+	one := int64(1)
+	added := Cart{Cart: pricing.Cart{Lines: []pricing.Line{l, soda1}}, Rungs: []Rung{rg, {Cents: &one, Name: "Soda"}}}
+	if _, err := r.svc.ChangeCart(r.ctx, till, res.Order.Order.ID, ChangeIn{ClientKey: tk(), Cart: added}); !errors.As(err, &mr) || mr.Action != terminal.ActionPriceChange {
+		t.Fatalf("a made-up rung on an added line: %v", err)
 	}
 }
 

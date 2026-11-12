@@ -386,9 +386,61 @@ func TestDeclinedCancelledAndWords(t *testing.T) {
 	}
 }
 
+func init() { lookupRetries = []time.Duration{time.Millisecond, time.Millisecond} }
+
+// unreachable: main can't be asked (the Pi's link is down).
+func (r *rig) unreachable() {
+	r.rpc.mu.Lock()
+	defer r.rpc.mu.Unlock()
+	r.rpc.reply[MsgPosLookup] = func(map[string]any) (int, any, error) { return 0, nil, errors.New("down") }
+}
+
+// The security round (M1): a phone's "ok" with a transaction id Square
+// doesn't know (the lookup reached Square and found nothing) never marks
+// the order paid: the charge stays unrecorded, nothing is recorded, and
+// Record it records it once Square shows it.
+func TestForgedResultStaysUnrecorded(t *testing.T) {
+	r := newRig(t, "prod")
+	r.notFound()
+	c := r.create(t, "ph-key-0351", "ph-1", 1500, 0)
+	got, _, err := r.svc.Result(r.ctx, "ph-1", c.ID, pp.Result{Status: "ok", TransactionID: "tx-made-up", ClientTransactionID: "ctx-made-up"})
+	if err != nil || got.Status != pp.StatusUnrecorded || got.PaymentID != "" {
+		t.Fatalf("a made-up transaction: %+v %v", got, err)
+	}
+	if len(r.term.payments) != 0 {
+		t.Fatalf("a payment was recorded on the phone's word: %+v", r.term.payments)
+	}
+	if _, err := r.svc.Record(r.ctx, c.ID); refusalCode(err) != "not_found_in_square" {
+		t.Fatalf("record it while Square doesn't know it: %v", err)
+	}
+	// Square shows it a moment later (a real payment): Record it records it.
+	r.found(0)
+	got, err = r.svc.Record(r.ctx, c.ID)
+	if err != nil || got.Status != pp.StatusPaid || len(r.term.payments) != 1 {
+		t.Fatalf("record it: %+v %v", got, err)
+	}
+	// Square lagging behind its own app: the Pi asks again before giving up.
+	c2 := r.create(t, "ph-key-0352", "ph-1", 500, 0)
+	calls := 0
+	r.rpc.mu.Lock()
+	r.rpc.reply[MsgPosLookup] = func(map[string]any) (int, any, error) {
+		calls++
+		if calls < 3 {
+			return 200, map[string]any{"found": false, "code": "not_found"}, nil
+		}
+		return 200, map[string]any{"found": true, "payment": map[string]any{"id": "sqpay-2", "transaction_id": "tx-2", "status": "COMPLETED",
+			"brand": "VISA", "last4": "1111", "entry": "CONTACTLESS", "amount_cents": 500, "total_cents": 500}}, nil
+	}
+	r.rpc.mu.Unlock()
+	got, _, err = r.svc.Result(r.ctx, "ph-1", c2.ID, pp.Result{Status: "ok", TransactionID: "tx-2"})
+	if err != nil || got.Status != pp.StatusPaid || calls != 3 {
+		t.Fatalf("found on the third ask: %+v %v (%d asks)", got, err, calls)
+	}
+}
+
 func TestExpiredThenALateTapIsRecorded(t *testing.T) {
 	r := newRig(t, "prod")
-	r.notFound() // main can't find it: recorded from Square's word alone
+	r.unreachable() // Square can't be asked from here: recorded from Square's word alone
 	c := r.create(t, "ph-key-0301", "ph-1", 1200, 300)
 	r.now = r.now.Add(179 * time.Second)
 	r.svc.Sweep(r.ctx)

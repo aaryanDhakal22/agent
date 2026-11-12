@@ -1,10 +1,11 @@
 """Centurion's first-time setup, the Pi's side (contract/agent.md §2.10y).
 
-  * pairing a terminal with the store's admin pairing code (default 1024, a Pi setting, throttled)
+  * pairing a terminal with the store's admin pairing code (default 1024, a Pi setting, throttled), only while a
+    manager's pairing window is open
   * GET /api/terminal/setup: store, menu, routing, staff counts, printers, setups
   * a terminal key reads /api/diag (+ terminals[]) and prints test slips (no failover)
   * a setup report is kept on the Pi (per device) and relayed to main with device_kind
-  * POST /api/terminal/print: raw bytes to one named printer, journaled
+  * POST /api/terminal/print: a receipt's bytes (checked) or the Pi's own test slip on one named printer, journaled
   * POST /api/terminal/square/test-refund: the setup's $1 test charge refunded through main
   * setup.* journal rows with nobody logged in
 
@@ -23,22 +24,41 @@ from conftest import wait_until
 from test_terminal import rig  # noqa: F401  (rig is a fixture)
 
 
+def _open_pairing(agent) -> dict:
+    r = agent.http.post(f"{agent.base}/api/pairing/window", timeout=5)
+    assert r.status_code == 200 and r.json()["open"] and r.json()["reason"] == "manager", r.text
+    return r.json()
+
+
 def test_pair_with_the_admin_code(rig):  # noqa: F811
     agent = rig["agent"]
     base = agent.base
+    # The security round (C1a): the code works only while a manager's pairing window is open (this Pi has a
+    # terminal already, so no first-setup window). Closed = 403 whatever the code, and nothing is counted.
+    for code in ("1024", "4444") * 8:
+        r = requests.post(f"{base}/api/pair/admin", json={"code": code, "name": "Counter 2"}, timeout=5)
+        assert r.status_code == 403 and r.json()["code"] == "pairing_closed", r.text
+    w = _open_pairing(agent)
+    assert w["minutes"] == 15 and w["until"], w
     r = requests.post(f"{base}/api/pair/admin", json={"code": "4444", "name": "Counter 2"}, timeout=5)
     assert r.status_code == 401 and r.json()["code"] == "wrong_admin_code", r.text
     r = requests.post(f"{base}/api/pair/admin", json={"code": "1024", "name": "Counter 2", "kind": "terminal"}, timeout=5)
     assert r.status_code == 201 and r.json()["kind"] == "terminal", r.text
     key = r.json()["device_key"]
     assert requests.get(f"{base}/api/terminal/session", headers={"X-Agent-Device-Key": key}, timeout=5).status_code == 200
+    # One pairing per window.
+    r = requests.post(f"{base}/api/pair/admin", json={"code": "1024", "name": "Counter 2b"}, timeout=5)
+    assert r.status_code == 403 and r.json()["code"] == "pairing_closed", r.text
+    assert agent.http.get(f"{base}/api/pairing/window", timeout=5).json()["open"] is False
     # Only terminals.
     assert requests.post(f"{base}/api/pair/admin", json={"code": "1024", "name": "Tab", "kind": "tablet"}, timeout=5).status_code == 400
     # The store's own code (the web page's setting); the code is never answered back.
     view = agent.http.get(f"{base}/api/settings/admin-code", timeout=5).json()
-    assert view == {"enabled": True, "is_default": True, "length": 4}
+    assert {k: view[k] for k in ("enabled", "is_default", "length", "window_minutes")} == {"enabled": True, "is_default": True, "length": 4, "window_minutes": 15}
+    assert view["window"]["open"] is False
     r = agent.http.put(f"{base}/api/settings/admin-code", json={"code": "908172"}, timeout=5)
     assert r.status_code == 200 and "908172" not in r.text and r.json()["length"] == 6, r.text
+    _open_pairing(agent)
     assert requests.post(f"{base}/api/pair/admin", json={"code": "1024", "name": "Counter 3"}, timeout=5).status_code == 401
     assert requests.post(f"{base}/api/pair/admin", json={"code": "908172", "name": "Counter 3"}, timeout=5).status_code == 201
     # Off.
@@ -49,8 +69,9 @@ def test_pair_with_the_admin_code(rig):  # noqa: F811
     hist = agent.http.get(f"{base}/api/settings/history", timeout=5)
     if hist.status_code == 200:
         assert "908172" not in hist.text
-    # Wrong guesses pause the address (5 in 15 min), even for the right code.
+    # Wrong guesses (in an open window) pause the address (5 in 15 min), even for the right code.
     agent.http.put(f"{base}/api/settings/admin-code", json={"enabled": True, "code": ""}, timeout=5)
+    _open_pairing(agent)
     # (two misses above already count: at most 5 more until the pause)
     for _ in range(5):
         r = requests.post(f"{base}/api/pair/admin", json={"code": "0000", "name": "X"}, timeout=5)
@@ -60,7 +81,12 @@ def test_pair_with_the_admin_code(rig):  # noqa: F811
     r = requests.post(f"{base}/api/pair/admin", json={"code": "1024", "name": "X"}, timeout=5)
     assert r.status_code == 429 and int(r.headers["Retry-After"]) > 0, r.text
     names = {d["name"] for d in agent.http.get(f"{base}/api/devices", timeout=5).json() if d["kind"] == "terminal"}
-    assert {"Counter 2", "Counter 3"} <= names and "X" not in names
+    assert {"Counter 2", "Counter 3"} <= names and "X" not in names and "Counter 2b" not in names
+    # The window is a setting (X): 1-120 minutes; the Pi page closes it too.
+    assert agent.http.put(f"{base}/api/settings/admin-code", json={"window_minutes": 0}, timeout=5).json()["code"] == "bad_window"
+    assert agent.http.put(f"{base}/api/settings/admin-code", json={"window_minutes": 2}, timeout=5).json()["window_minutes"] == 2
+    assert _open_pairing(agent)["minutes"] == 2
+    assert agent.http.delete(f"{base}/api/pairing/window", timeout=5).json()["open"] is False
 
 
 def test_setup_summary_and_diagnostics(rig):  # noqa: F811
@@ -133,15 +159,28 @@ def test_setup_report_kept_and_relayed(rig):  # noqa: F811
 def test_terminal_print_to_a_named_printer(rig):  # noqa: F811
     agent, term, fakes = rig["agent"], rig["term"], rig["fakes"]
     base = agent.base
-    job = b"\x1b@BACKUP RECEIPT TEST\n\n\n\x1dV\x00"
+    job = b"\x1b@BACKUP RECEIPT\n\n\n\x1dV\x00"
     fakes["Front"].clear()
     fakes["Pizza"].clear()
-    r = term.post(f"{base}/api/terminal/print", json={"printer": "Front", "kind": "test",
+    # A receipt's bytes (the terminal is logged in): the exact bytes on the named printer.
+    r = term.post(f"{base}/api/terminal/print", json={"printer": "Front", "kind": "receipt",
                                                        "bytes_b64": base64.b64encode(job).decode()}, timeout=20)
     assert r.status_code == 200 and r.json() == {"ok": True, "printer": "Front"}, r.text
     wait_until(lambda: job in fakes["Front"].jobs, what="the exact bytes on Front")
     assert fakes["Pizza"].jobs == []
-    r = term.post(f"{base}/api/terminal/print", json={"printer": "Nowhere", "kind": "test", "bytes_b64": "G0A="}, timeout=5)
+    # The security round (C1b): nothing but a receipt's commands goes through (no drawer kick, no set-up commands).
+    for bad in (b"\x1b@\x1bp\x00\x19\xfa", b"\x10\x14\x01\x00\x05", b"\x1d(E\x03\x00\x01IN", b"hello\x00"):
+        r = term.post(f"{base}/api/terminal/print", json={"printer": "Front", "kind": "receipt",
+                                                           "bytes_b64": base64.b64encode(bad).decode()}, timeout=5)
+        assert r.status_code == 400 and r.json()["code"] == "bad_bytes", r.text
+    # A test slip is the Pi's own: the label, never the terminal's bytes (here a drawer kick, ignored).
+    fakes["Front"].clear()
+    r = term.post(f"{base}/api/terminal/print", json={"printer": "Front", "kind": "test", "label": "Backup for Till 1",
+                                                       "bytes_b64": base64.b64encode(b"\x1bp\x00\x19\xfa").decode()}, timeout=20)
+    assert r.status_code == 200, r.text
+    wait_until(lambda: "TEST SLIP" in fakes["Front"].text() and "Backup for Till 1" in fakes["Front"].text(), what="the Pi's test slip on Front")
+    assert all(b"\x1bp" not in j for j in fakes["Front"].jobs)
+    r = term.post(f"{base}/api/terminal/print", json={"printer": "Nowhere", "kind": "test"}, timeout=5)
     assert r.status_code == 404 and r.json()["code"] == "unknown_printer"
     # A dead printer: 502, never another printer.
     fakes["Front"].stop()
@@ -149,7 +188,12 @@ def test_terminal_print_to_a_named_printer(rig):  # noqa: F811
     assert r.status_code == 502 and r.json()["code"] == "print_failed", r.text
     assert fakes["Pizza"].jobs == []
     rows = [e for e in term.get(f"{base}/api/terminal/journal?limit=50", timeout=5).json() if e["action"] == "terminal_print"]
-    assert len(rows) == 2 and {r["detail"]["ok"] for r in rows} == {True, False}
+    assert len(rows) == 3 and sorted(r["detail"]["ok"] for r in rows) == [False, True, True]
+    # Locked (nobody logged in): a test slip still prints, a receipt needs the login.
+    term.post(f"{base}/api/terminal/logout", timeout=5)
+    r = term.post(f"{base}/api/terminal/print", json={"printer": "Pizza", "kind": "receipt", "bytes_b64": "G0A="}, timeout=5)
+    assert r.status_code == 401 and r.json()["code"] == "login_required", r.text
+    assert term.post(f"{base}/api/terminal/print", json={"printer": "Pizza", "kind": "test"}, timeout=20).status_code == 200
 
 
 def test_test_refund_through_main(rig):  # noqa: F811

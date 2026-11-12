@@ -37,7 +37,9 @@ const phoneCookieMaxAge = 400 * 24 * 60 * 60
 func (s *Server) SetPhonePay(p *phoneApp.Service) { s.phonePay = p }
 
 // routes is the whole table: the base routes + Send to phone's.
-func (s *Server) routes() []routeDef { return append(s.baseRoutes(), s.phoneRoutes()...) }
+func (s *Server) routes() []routeDef {
+	return append(append(s.baseRoutes(), s.phoneRoutes()...), s.securityRoutes()...)
+}
 
 func (s *Server) phoneRoutes() []routeDef {
 	return []routeDef{

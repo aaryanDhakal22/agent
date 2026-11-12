@@ -16,10 +16,12 @@ import (
 // contract/agent.md §2.10u, extending §2.10s §6 / M-15).
 //
 //   - A cart line may carry Rung: the unit price (rung_cents), name and mods
-//     the terminal first got for that line from a quote. When the menu's
-//     price moved since, the Pi prices the line at rung_cents (a price
-//     override the Pi makes itself: never a price change, no manager; the
-//     options and halves are in it too, as the quote's unit_cents was).
+//     the terminal first got for that line from a quote. Since the security
+//     round (M3) a rung never sets a price by itself: on a new order, or a
+//     line the sent order didn't have, a rung_cents that isn't today's menu
+//     price is a PRICE CHANGE to it (the price-drop rule: raising is free, a
+//     cashier lowers up to the limit, else a manager). The name and mods
+//     still name a line whose item is gone (below).
 //   - A line whose item, size, choice, half, option or deal is no longer on
 //     the menu is priced as an open-price custom line at rung_cents named
 //     rung_name (the mods go in its note), journaled menu_gone_line, never
@@ -378,6 +380,7 @@ func priceRung(menu *terminal.CounterMenu, tz *time.Location, typ string, cur *o
 	// override replaces the item's price with its halves; its options still
 	// add, so the override is the rung less today's options).
 	implicit = map[int]bool{}
+	explicit := false // a terminal's rung that became a price change
 	var kept []terminal.KeptPrice
 	for _, i := range idx {
 		l, r := cart.Lines[i], rungs[i]
@@ -394,12 +397,23 @@ func priceRung(menu *terminal.CounterMenu, tz *time.Location, typ string, cur *o
 		}
 		base := min(max(r.unit-(res.UnitCents-res.BaseCents), 0), pricing.MaxOpenPriceCents)
 		cart.Lines[i].PriceCents = &base
+		if r.from == terminal.RungFromTerminal {
+			// The security round (M3): a number from the terminal never
+			// sets a price by itself (a cashier sent a 2224-cent pizza at
+			// 225 with no manager). A rung that isn't today's menu price is
+			// a price change to it, under the price-drop rule like any
+			// other: raising is free, a cashier lowers up to the limit,
+			// else a manager. Only a sent order's own lines keep a price
+			// (from the Pi's copy of the order, never a client number).
+			explicit = true
+			continue
+		}
 		cart.Lines[i].KeepPrice = true // a kept price stays in its coupon (and the automatic deals)
 		implicit[i] = true
 		kept = append(kept, terminal.KeptPrice{Line: i, ItemID: l.ItemID, Name: ql.Name, MenuCents: ql.UnitCents, RungCents: r.unit, From: r.from})
 	}
 	p = first
-	if len(implicit) > 0 {
+	if len(implicit) > 0 || explicit {
 		if p, err = priceCart(menu, tz, typ, cart, now, maxRepeat); err != nil {
 			return p, nil, err
 		}

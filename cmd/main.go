@@ -827,6 +827,7 @@ func main() {
 	httpServer.SetDevLog(devRing)
 	httpServer.SetSettingsLog(repositories.NewSettingsLogRepository(db))
 	httpServer.SetSetup(repositories.NewSetupRepository(db)) // admin pairing code + setup results (2.10y)
+	httpServer.SetAppEnv(cfg.AppEnv)                         // a prod Pi refuses the default admin code outside a manager's pairing window
 	// Send to phone (2.10z): cashier phones charge with Square's app.
 	phonePay := phoneApp.New(phoneApp.Deps{Repo: repositories.NewPhoneChargeRepository(db), Term: termSvc, Devices: deviceRepo,
 		RPC: func() phoneApp.Sender { return registry }, Publish: broker.Publish, AppEnv: cfg.AppEnv, Logger: logger})

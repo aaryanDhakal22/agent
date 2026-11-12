@@ -49,7 +49,8 @@ type FlaggedZRepo interface {
 
 // Problems are the Pi page's "Needs attention" codes from the terminal
 // side: z_unbalanced (a kept Z that doesn't balance, M-9) and pin_lockout
-// (a PIN pad paused in the last hour, X-2).
+// (a PIN pad paused in the last hour, X-2), pin_locked (the daily ceiling
+// of wrong PINs: every PIN check refused until a manager unlocks).
 func (s *Service) Problems(ctx context.Context) []string {
 	var out []string
 	if fz, ok := s.repo.(FlaggedZRepo); ok {
@@ -59,6 +60,9 @@ func (s *Service) Problems(ctx context.Context) []string {
 	}
 	if s.staff.lockedRecently(s.now()) {
 		out = append(out, "pin_lockout")
+	}
+	if s.PinGuard().Locked { // the daily ceiling: locked until a manager unlocks (H3)
+		out = append(out, "pin_locked")
 	}
 	return out
 }

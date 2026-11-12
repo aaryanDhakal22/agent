@@ -66,6 +66,48 @@ func (b *approvalBook) take(ids []string, device string, need *terminal.ManagerR
 	return nil, false
 }
 
+// match pairs each need with its own approval among ids (this device,
+// that action, the amount, not expired, a manager still: stillManager) and
+// answers the approval id per need ("" = none). Nothing is used up: use
+// consumes one once the whole request is covered (M2).
+func (b *approvalBook) match(ids []string, device string, needs []*terminal.ManagerRequired, now time.Time,
+	stillManager func(terminal.Staff) bool) []string {
+	out := make([]string, len(needs))
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	taken := map[string]bool{}
+	for i, need := range needs {
+		for _, id := range ids {
+			ap, ok := b.byID[id]
+			if !ok || taken[id] || ap.device != device || now.After(ap.expires) || ap.action != need.Action {
+				continue
+			}
+			if ap.amount > 0 && need.Requested > ap.amount {
+				continue
+			}
+			if !stillManager(ap.manager) {
+				continue
+			}
+			out[i], taken[id] = id, true
+			break
+		}
+	}
+	return out
+}
+
+// use consumes one approval (false = gone meanwhile).
+func (b *approvalBook) use(id string) (*terminal.Staff, bool) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	ap, ok := b.byID[id]
+	if !ok {
+		return nil, false
+	}
+	delete(b.byID, id)
+	m := ap.manager
+	return &m, true
+}
+
 type approvalsKey struct{}
 
 // WithApprovals puts a request's approval ids on ctx (manager() reads them).

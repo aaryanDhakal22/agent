@@ -226,22 +226,31 @@ func (s *Service) Login(ctx context.Context, a Actor, pin string) (*LoginResult,
 	if !pinRe.MatchString(pin) {
 		return nil, terminal.ErrBadPIN
 	}
-	now := s.now()
-	if wait := s.staff.throttled(a.DeviceID, now); wait > 0 {
-		return nil, &terminal.Throttled{Wait: wait}
+	release, err := s.staff.begin(ctx, a.DeviceID, s.now) // one check at a time, reserved before bcrypt (H3)
+	if err != nil {
+		return nil, err
 	}
+	defer release()
 	cfg, _ := s.store.Config()
 	if cfg == nil {
 		return nil, terminal.ErrNoConfig
 	}
 	st, ok := s.staff.match(cfg, pin)
-	if !ok {
+	short := ok && shortManagerPIN(st, pin)
+	if !ok || short {
 		s.pinMiss(ctx, a, "login", "")
-		s.journal(ctx, terminal.Entry{DeviceID: a.DeviceID, Action: terminal.ActionLoginFailed, Detail: detail(map[string]any{"device_name": a.DeviceName})})
+		d := map[string]any{"device_name": a.DeviceName}
+		if short {
+			d["reason"] = "manager_pin_short"
+		}
+		s.journal(ctx, terminal.Entry{DeviceID: a.DeviceID, Action: terminal.ActionLoginFailed, Detail: detail(d)})
+		if short {
+			return nil, terminal.ErrManagerPINShort
+		}
 		return nil, terminal.ErrWrongPIN
 	}
 	s.staff.hit(a.DeviceID)
-	s.staff.login(a.DeviceID, st.ID, st.PinHash)
+	s.staff.login(a.DeviceID, st.ID, st.PinHash, s.now())
 	s.journal(ctx, terminal.Entry{StaffID: st.ID, DeviceID: a.DeviceID, Action: terminal.ActionLogin,
 		Detail: detail(map[string]any{"role": st.Role, "device_name": a.DeviceName})})
 	res := &LoginResult{Staff: st.Public(), Role: st.Role, Limits: cfg.LimitsOf(st), Settings: s.withStore(cfg.Settings)}
@@ -257,6 +266,12 @@ func (s *Service) Login(ctx context.Context, a Actor, pin string) (*LoginResult,
 	return res, nil
 }
 
+// shortManagerPIN: the PIN is a manager's but not ManagerPINDigits long
+// (main's Staff API refuses such a PIN now; one set before is refused here).
+func shortManagerPIN(st terminal.Staff, pin string) bool {
+	return st.Role == terminal.RoleManager && len(pin) != terminal.ManagerPINDigits
+}
+
 // Logout ends the staff session on a terminal (the terminal locked).
 func (s *Service) Logout(ctx context.Context, a Actor) {
 	if id, ok := s.staff.logout(a.DeviceID); ok {
@@ -270,7 +285,10 @@ func (s *Service) staffOf(a Actor) (terminal.Staff, *terminal.Config, error) {
 		return s.callcenterStaff(a)
 	}
 	cfg, _ := s.store.Config()
-	cur, ok := s.staff.current(a.DeviceID)
+	cur, ok, expired := s.staff.live(a.DeviceID, cfg, s.now())
+	if expired { // idle past the auto-lock + a margin (M4): over on the Pi too
+		s.sessionIdled(a, cur)
+	}
 	if !ok || cfg == nil {
 		return terminal.Staff{}, cfg, terminal.ErrLoginRequired
 	}
@@ -280,6 +298,26 @@ func (s *Service) staffOf(a Actor) (terminal.Staff, *terminal.Config, error) {
 		return terminal.Staff{}, cfg, terminal.ErrLoginRequired
 	}
 	return st, cfg, nil
+}
+
+// sessionIdled journals a session the Pi ended for idling (once: live
+// dropped it).
+func (s *Service) sessionIdled(a Actor, cur session) {
+	ctx := context.Background()
+	s.journal(ctx, terminal.Entry{StaffID: cur.staffID, DeviceID: a.DeviceID, Action: terminal.ActionSessionEnded,
+		Detail: detail(map[string]any{"reason": terminal.SessionIdle, "device_name": a.DeviceName})})
+	s.logger.Info().Str("staff_id", cur.staffID).Str("device_id", a.DeviceID).Str("reason", terminal.SessionIdle).
+		Msg("Terminal staff session ended: no call from the terminal past the auto-lock time")
+}
+
+// Touch notes a call from a terminal (any /api/terminal/* request): its
+// staff session stays alive while the terminal talks to the Pi (M4).
+func (s *Service) Touch(a Actor) {
+	if a.Callcenter {
+		return
+	}
+	cfg, _ := s.store.Config()
+	s.staff.touch(a.DeviceID, cfg, s.now())
 }
 
 // manager checks a manager's PIN given to go over a limit (a wrong one
@@ -299,32 +337,39 @@ func (s *Service) manager(ctx context.Context, a Actor, cfg *terminal.Config, pi
 	if strings.TrimSpace(pin) == "" {
 		return nil, need
 	}
-	now := s.now()
-	if wait := s.staff.throttled(a.DeviceID, now); wait > 0 {
-		return nil, &terminal.Throttled{Wait: wait}
+	mgr, err := s.managerPIN(ctx, a, cfg, pin, need)
+	if err != nil {
+		return nil, err
 	}
+	s.overrideUsed(ctx, a, need, mgr, "manager_pin")
+	return mgr, nil
+}
+
+// managerPIN checks a manager's PIN sent with a request (manager_pin).
+func (s *Service) managerPIN(ctx context.Context, a Actor, cfg *terminal.Config, pin string, need *terminal.ManagerRequired) (*terminal.Staff, error) {
+	release, err := s.staff.begin(ctx, a.DeviceID, s.now) // reserved before bcrypt (H3)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
 	if !pinRe.MatchString(pin) {
 		return nil, terminal.ErrManagerPINWrong
 	}
 	st, ok := s.staff.match(cfg, pin)
-	if !ok || st.Role != terminal.RoleManager {
+	short := ok && shortManagerPIN(st, pin)
+	if !ok || st.Role != terminal.RoleManager || short {
 		// L-1 / X-2: an inline manager miss is journaled and counted too.
 		cur, _ := s.staff.current(a.DeviceID)
 		who := cur.staffID
 		s.pinMiss(ctx, a, "inline_manager", who)
 		s.journal(ctx, terminal.Entry{StaffID: who, DeviceID: a.DeviceID, Action: terminal.ActionManagerCheck,
 			Detail: detail(map[string]any{"for": need.Action, "ok": false, "inline": true})})
+		if short {
+			return nil, terminal.ErrManagerPINShortInline
+		}
 		return nil, terminal.ErrManagerPINWrong
 	}
 	s.staff.hit(a.DeviceID)
-	var cents int64
-	switch need.Action {
-	case terminal.ActionRefund, terminal.ActionVoid, terminal.NeedCardRefund, terminal.NeedCashForCard, terminal.MovePayOut, terminal.ActionComp:
-		cents = need.Requested
-	}
-	s.cm.Override(ctx, need.Action, "manager_pin", cents)
-	s.logger.Info().Ctx(ctx).Str("action", need.Action).Str("approver_id", st.ID).Str("device_id", a.DeviceID).
-		Int64("limit", need.Limit).Int64("requested", need.Requested).Msg("Manager override")
 	return &st, nil
 }
 
@@ -336,17 +381,60 @@ func (s *Service) pinMiss(ctx context.Context, a Actor, kind, staffID string) {
 	s.savePins(ctx)
 	s.cm.PinFailure(ctx, kind, r.Lockout)
 	s.logger.Warn().Ctx(ctx).Str("device_id", a.DeviceID).Str("device_name", a.DeviceName).Str("kind", kind).Str("staff_id", staffID).
-		Int("device_misses", r.DeviceMisses).Int("store_misses", r.StoreMisses).Msg("PIN failed")
+		Int("device_misses", r.DeviceMisses).Int("store_misses", r.StoreMisses).Int("day_misses", r.DayMisses).Msg("PIN failed")
 	if r.Lockout {
 		s.logger.Warn().Ctx(ctx).Str("device_id", a.DeviceID).Str("kind", kind).Int("device_misses", r.DeviceMisses).
 			Int("store_misses", r.StoreMisses).Msg("PIN lockout")
 		s.journal(ctx, terminal.Entry{StaffID: staffID, DeviceID: a.DeviceID, Action: terminal.ActionPinLockout,
 			Detail: detail(map[string]any{"kind": kind, "device_misses": r.DeviceMisses, "store_misses": r.StoreMisses})})
 	}
+	if r.DayLocked {
+		// The daily ceiling (H3): every PIN check is refused until a manager
+		// unlocks them; the owner is paged.
+		s.logger.Error().Ctx(ctx).Str("device_id", a.DeviceID).Str("device_name", a.DeviceName).Int("day_misses", r.DayMisses).
+			Int("daily_ceiling", r.Ceiling).Msg("PIN logins locked: the daily ceiling of wrong PINs was reached")
+		s.journal(ctx, terminal.Entry{StaffID: staffID, DeviceID: a.DeviceID, Action: terminal.ActionPinLocked,
+			Detail: detail(map[string]any{"misses_24h": r.DayMisses, "daily_ceiling": r.Ceiling, "device_name": a.DeviceName})})
+		s.publish(EventPins, map[string]any{"locked": true})
+		s.page(ctx, fmt.Sprintf("%d wrong PINs at the store's terminals in 24 hours (latest on %s). PIN logins are locked: a manager unlocks them on the Pi page (Settings > Tablets) or in Quibase (Help).",
+			r.DayMisses, a.DeviceName))
+		return
+	}
 	if r.Page {
 		s.page(ctx, fmt.Sprintf("%d wrong PINs at the store's terminals in 10 minutes (latest on %s). The PIN pads pause; check who is trying.",
 			r.StoreMisses, a.DeviceName))
 	}
+}
+
+// EventPins tells the terminals and tablets the PIN checks locked /
+// unlocked ({locked}).
+const EventPins = "terminal.pins"
+
+// PinGuard is the daily ceiling's state (GET /api/pin-guard).
+func (s *Service) PinGuard() PinGuard { return s.staff.guard(s.now()) }
+
+// UnlockPins: a manager unlocked the PIN checks (the store manager login on
+// the Pi page or Quibase); every counted miss is cleared.
+func (s *Service) UnlockPins(ctx context.Context, by string) PinGuard {
+	was := s.staff.unlock()
+	s.savePins(ctx)
+	if was {
+		s.journal(ctx, terminal.Entry{Action: terminal.ActionPinUnlocked, Detail: detail(map[string]any{"by": by})})
+		s.logger.Warn().Ctx(ctx).Str("by", by).Msg("PIN logins unlocked by a manager")
+		s.publish(EventPins, map[string]any{"locked": false})
+	}
+	return s.PinGuard()
+}
+
+// SetPinCeiling stores the daily ceiling of wrong PINs (MinPinDailyCeiling
+// to MaxPinDailyCeiling).
+func (s *Service) SetPinCeiling(ctx context.Context, n int) (PinGuard, error) {
+	if n < MinPinDailyCeiling || n > MaxPinDailyCeiling {
+		return PinGuard{}, badRequest(fmt.Sprintf("daily_ceiling is %d-%d", MinPinDailyCeiling, MaxPinDailyCeiling))
+	}
+	s.staff.setCeiling(n)
+	s.savePins(ctx)
+	return s.PinGuard(), nil
 }
 
 // PinRepo keeps the PIN throttle (repositories.SettingsRepository).
@@ -400,30 +488,43 @@ var forRe = regexp.MustCompile(`^[a-z][a-z0-9_.]{0,39}$`)
 // with the terminal's logins (a wrong or non-manager PIN is a miss, 401
 // wrong_pin either way, so it never tells whose PIN it was); journaled.
 func (s *Service) ManagerCheck(ctx context.Context, a Actor, in ManagerCheckIn) (*ManagerCheckResult, error) {
+	what := strings.TrimSpace(in.Action)
+	if what == "" {
+		what = terminal.ActionPriceChange
+	}
 	st, cfg, err := s.staffOf(a)
 	if err != nil {
-		return nil, err
+		// A device-level action (admin mode's drawer test, Unpair, opening
+		// the pairing window) is asked with nobody logged in (M7).
+		if !errors.Is(err, terminal.ErrLoginRequired) || !deviceLevelChecks[what] || a.Callcenter {
+			return nil, err
+		}
+		if cfg == nil {
+			return nil, terminal.ErrNoConfig
+		}
+		st = terminal.Staff{}
 	}
 	pin := strings.TrimSpace(in.PIN)
 	if !pinRe.MatchString(pin) {
 		return nil, terminal.ErrBadPIN
 	}
-	what := strings.TrimSpace(in.Action)
-	if what == "" {
-		what = terminal.ActionPriceChange
-	}
 	if !forRe.MatchString(what) {
 		return nil, badRequest("action is 1-40 lowercase letters, digits, underscores or dots")
 	}
-	now := s.now()
-	if wait := s.staff.throttled(a.DeviceID, now); wait > 0 {
-		return nil, &terminal.Throttled{Wait: wait}
+	release, err := s.staff.begin(ctx, a.DeviceID, s.now) // reserved before bcrypt (H3)
+	if err != nil {
+		return nil, err
 	}
+	defer release()
 	mgr, ok := s.staff.match(cfg, pin)
-	if !ok || mgr.Role != terminal.RoleManager {
+	short := ok && shortManagerPIN(mgr, pin)
+	if !ok || mgr.Role != terminal.RoleManager || short {
 		s.pinMiss(ctx, a, "manager_check", st.ID)
 		s.journal(ctx, terminal.Entry{StaffID: st.ID, DeviceID: a.DeviceID, Action: terminal.ActionManagerCheck,
 			Detail: detail(map[string]any{"for": what, "ok": false})})
+		if short {
+			return nil, terminal.ErrManagerPINShort
+		}
 		return nil, terminal.ErrWrongPIN
 	}
 	s.staff.hit(a.DeviceID)
@@ -432,6 +533,11 @@ func (s *Service) ManagerCheck(ctx context.Context, a Actor, in ManagerCheckIn) 
 	return &ManagerCheckResult{OK: true, Staff: mgr.Public(), ApprovalID: s.newApproval(a, mgr, what, in.AmountCents),
 		ExpiresAt: s.now().Add(ApprovalTTL).UTC()}, nil
 }
+
+// deviceLevelChecks: the manager-check actions a terminal may ask with
+// nobody logged in (contract 2.10y "Admin mode"): its admin-mode drawer
+// test, Unpair, and opening the pairing window.
+var deviceLevelChecks = map[string]bool{"admin_drawer_test": true, "unpair": true, terminal.NeedPairingWindow: true}
 
 func overrideEntry(a Actor, staff terminal.Staff, mgr *terminal.Staff, need *terminal.ManagerRequired, orderID string) terminal.Entry {
 	return terminal.Entry{StaffID: staff.ID, DeviceID: a.DeviceID, Action: terminal.ActionOverride, OrderID: orderID,
@@ -755,30 +861,85 @@ func priceEntries(a Actor, st terminal.Staff, changes []terminal.PriceChange, ap
 	return out
 }
 
-// approve checks one manager's PIN for everything in this request that is
-// over the staff member's limits (nil needs are skipped) and returns the
-// manager (nil when nothing needed one) with an override row per need.
+// approve covers everything in this request that is over the staff member's
+// limits (nil needs are skipped) and returns the manager (nil when nothing
+// needed one) with an override row per need. Each need takes its own
+// single-use approval (M2: one approval used to cover every other need of
+// the request); the needs without one are covered by the request's
+// manager_pin (one PIN, checked once, is that manager approving the whole
+// request). A need left uncovered refuses the request with that need, and
+// nothing is used up.
 func (s *Service) approve(ctx context.Context, a Actor, st terminal.Staff, cfg *terminal.Config, pin, orderID string, needs ...*terminal.ManagerRequired) (*terminal.Staff, []terminal.Entry, error) {
-	var first *terminal.ManagerRequired
-	for _, n := range needs {
-		if n != nil && first == nil {
-			first = n
-		}
-	}
-	if first == nil {
-		return nil, nil, nil
-	}
-	mgr, err := s.manager(ctx, a, cfg, pin, first)
-	if err != nil {
-		return nil, nil, err
-	}
-	var rows []terminal.Entry
+	var live []*terminal.ManagerRequired
 	for _, n := range needs {
 		if n != nil {
-			rows = append(rows, overrideEntry(a, st, mgr, n, orderID))
+			live = append(live, n)
 		}
 	}
-	return mgr, rows, nil
+	if len(live) == 0 {
+		return nil, nil, nil
+	}
+	by := make([]*terminal.Staff, len(live))
+	if mgr, ok := preApproved(ctx, cfg); ok { // a phone charge's cart, approved at its creation
+		for i := range by {
+			by[i] = mgr
+		}
+	} else {
+		isManager := func(m terminal.Staff) bool {
+			cur, found := cfg.Find(m.ID)
+			return found && cur.Role == terminal.RoleManager
+		}
+		ids := s.approvals.match(approvalsOf(ctx), a.DeviceID, live, s.now(), isManager)
+		var uncovered *terminal.ManagerRequired
+		for i, id := range ids {
+			if id == "" && uncovered == nil {
+				uncovered = live[i]
+			}
+		}
+		var pinMgr *terminal.Staff
+		if uncovered != nil {
+			if strings.TrimSpace(pin) == "" {
+				return nil, nil, uncovered
+			}
+			var err error
+			if pinMgr, err = s.managerPIN(ctx, a, cfg, pin, uncovered); err != nil {
+				return nil, nil, err
+			}
+		}
+		for i, id := range ids {
+			if id == "" {
+				by[i] = pinMgr
+				s.overrideUsed(ctx, a, live[i], pinMgr, "manager_pin")
+				continue
+			}
+			mgr, ok := s.approvals.use(id)
+			if !ok { // used by a parallel request meanwhile
+				return nil, nil, live[i]
+			}
+			cur, _ := cfg.Find(mgr.ID)
+			by[i] = &cur
+			s.overrideUsed(ctx, a, live[i], &cur, "approval")
+		}
+	}
+	rows := make([]terminal.Entry, 0, len(live))
+	for i, n := range live {
+		rows = append(rows, overrideEntry(a, st, by[i], n, orderID))
+	}
+	return by[0], rows, nil
+}
+
+// overrideUsed counts and logs one manager override.
+func (s *Service) overrideUsed(ctx context.Context, a Actor, need *terminal.ManagerRequired, mgr *terminal.Staff, how string) {
+	var cents int64
+	if how == "manager_pin" {
+		switch need.Action {
+		case terminal.ActionRefund, terminal.ActionVoid, terminal.NeedCardRefund, terminal.NeedCashForCard, terminal.MovePayOut, terminal.ActionComp:
+			cents = need.Requested
+		}
+	}
+	s.cm.Override(ctx, need.Action, how, cents)
+	s.logger.Info().Ctx(ctx).Str("action", need.Action).Str("approver_id", mgr.ID).Str("device_id", a.DeviceID).
+		Int64("limit", need.Limit).Int64("requested", need.Requested).Str("with", how).Msg("Manager override")
 }
 
 // --- orders ------------------------------------------------------------------------------

@@ -120,6 +120,11 @@ type Server struct {
 	// (contract 2.10y, SetSetup); adminCodes throttles admin-code guesses.
 	setups     device.SetupStore
 	adminCodes adminCodeThrottle
+	// The security round (server_security.go): the environment (a prod Pi
+	// refuses the default admin code outside a manager's window) and the
+	// admin code's pairing window.
+	appEnv  string
+	pairWin pairWindow
 }
 
 // SetAppUpdater wires the tablet-app release cache (/api/app/*).

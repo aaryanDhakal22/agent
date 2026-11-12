@@ -59,6 +59,7 @@ const PROBLEM_TEXT = {
   z_unbalanced: "A Z report doesn't balance — tell the owner (money identity off).",
   main_auth_failing: "main keeps refusing this Pi's key (not a revoke) — the Pi keeps its link and retries.",
   pin_lockout: 'Many wrong PINs at a terminal — the PIN pad is paused.',
+  pin_locked: 'Too many wrong PINs today — the terminals\' PIN pads are locked. Unlock them in Settings › Tablets.',
   db_quick_check: "The Pi's database failed its integrity check at start — restore it after close (RECOVERY.md).",
 };
 const PI_DOWN = "Can't reach the Pi — this screen is out of date.";
@@ -312,7 +313,7 @@ function agentApp() {
     autoAccept: false, autoAcceptLoaded: false, autoUpdate: true, autoUpdateLoaded: false, floorForm: { green: '', tiptax: '' }, deliveryForm: { soon: '', target: '' }, timesForm: { pickup: '', delivery: '' },
     route: null, routeForm: null, routeErr: '', routeBusy: false, routeModes: ROUTE_MODES,
     rcpt: null, rcptForm: null, footMode: 'default', customFooter: '', rcptPreview: 'r', rcptErr: '', rcptBusy: '',
-    pair: null, adminCode: null, storeCfg: null, storeCfgErr: '', storeCfgErrRaw: '',
+    pair: null, adminCode: null, pinGuard: null, storeCfg: null, storeCfgErr: '', storeCfgErrRaw: '',
     cp: { current: '', next: '', confirm: '', hint: '', err: '', busy: false },
 
     // ======================================================================
@@ -628,6 +629,7 @@ function agentApp() {
       ['order.arrived', 'order.escalated'].forEach(t => es.addEventListener(t, () => { beep(); reload(); }));
       ['order.updated', 'drivers.updated', 'batch.closed', 'floor.updated', 'settings.updated', 'integration.status'].forEach(t => es.addEventListener(t, reload));
       es.addEventListener('sync.parked', () => this.loadParked());
+      es.addEventListener('terminal.pins', () => this.loadPinGuard());
       es.addEventListener('routing.updated', () => { if (this.page === 'settings' && this.settingsTab === 'routing') this.loadRouting(true); });
       es.addEventListener('drivers.dispatched', e => {
         try {
@@ -1371,7 +1373,7 @@ function agentApp() {
         case 'receipts': this.loadReceipt(); this.loadStoreCfg(); this.loadPrinters(); break;
         case 'routing': this.loadRouting(); break;
         case 'clockout': this.loadReset(); break;
-        case 'tablets': this.loadDevices(); this.loadAppLatest(); this.loadAdminCode(); break;
+        case 'tablets': this.loadDevices(); this.loadAppLatest(); this.loadAdminCode(); this.loadPinGuard(); break;
         case 'store': this.loadStoreCfg(); break;
         case 'account': this.cp.err = ''; this.loadUpdate(); break;
       }
@@ -1629,6 +1631,60 @@ function agentApp() {
       const c = String(code).trim();
       if (!/^[0-9]{4,8}$/.test(c)) { this.toast('The code is 4 to 8 digits', true); return; }
       this.saveAdminCode({ code: c, enabled: true });
+    },
+    // The pairing window (2.10y): the admin code pairs a terminal only while it is open.
+    get pairWindowLine() {
+      const a = this.adminCode, w = a && a.window;
+      if (!w) return '';
+      if (w.open && w.reason === 'manager' && ts(w.until) > this.now) return 'Pairing is OPEN until ' + clock(w.until) + ', or until one terminal pairs.';
+      if (w.open && w.reason === 'first_setup') {
+        return w.default_code_ok ? 'First setup: pairing is open until the first terminal pairs.'
+          : 'First setup: open pairing below to use the standard code 1024, or set the store\'s own code.';
+      }
+      return 'Pairing is closed. The code works only after Open pairing, for ' + a.window_minutes + ' minutes or one terminal.';
+    },
+    get pairWindowOpen() {
+      const w = this.adminCode && this.adminCode.window;
+      return !!(w && w.open && w.reason === 'manager' && ts(w.until) > this.now);
+    },
+    async openPairing() {
+      try { await this.call('/api/pairing/window', { method: 'POST' }); await this.loadAdminCode(); this.toast('Pairing is open'); }
+      catch (e) { this.toast(e.message, true); }
+    },
+    async closePairing() {
+      try { await this.call('/api/pairing/window', { method: 'DELETE' }); await this.loadAdminCode(); this.toast('Pairing is closed'); }
+      catch (e) { this.toast(e.message, true); }
+    },
+    async changePairMinutes() {
+      const v = await this.ask({ title: 'How long pairing stays open', body: '1 to 120 minutes after Open pairing (it also closes once a terminal has paired).', confirmLabel: 'Save', input: { label: 'Minutes', maxlength: 3 } });
+      if (v == null) return;
+      const m = Number(String(v).trim());
+      if (!Number.isInteger(m) || m < 1 || m > 120) { this.toast('1 to 120 minutes', true); return; }
+      this.saveAdminCode({ window_minutes: m });
+    },
+    // The PIN guard (2.10s): too many wrong PINs in a day lock the terminals' PIN pads until a manager unlocks them.
+    async loadPinGuard() {
+      try { this.pinGuard = await this.call('/api/pin-guard'); } catch { /* older agent / no terminals */ }
+    },
+    get pinGuardLine() {
+      const g = this.pinGuard;
+      if (!g) return '';
+      return (g.locked ? 'LOCKED since ' + dateTime(g.locked_at) + ': nobody can log in on a terminal with a PIN until you unlock. ' : 'OK. ')
+        + g.misses_24h + ' wrong PIN' + (g.misses_24h === 1 ? '' : 's') + ' in the last 24 hours; the PIN pads lock at ' + g.daily_ceiling + '.';
+    },
+    async unlockPins() {
+      const ok = await this.ask({ title: 'Unlock the PIN pads?', body: 'Do this once you know who typed the wrong PINs. The count starts over.', confirmLabel: 'Unlock', focusCancel: true });
+      if (!ok) return;
+      try { this.pinGuard = await this.call('/api/pin-guard/unlock', { method: 'POST' }); this.toast('PIN pads unlocked'); }
+      catch (e) { this.toast(e.message, true); }
+    },
+    async changePinCeiling() {
+      const v = await this.ask({ title: 'Wrong PINs before the PIN pads lock', body: '10 to 1000 wrong PINs in 24 hours, all terminals together.', confirmLabel: 'Save', input: { label: 'Wrong PINs', maxlength: 4 } });
+      if (v == null) return;
+      const n = Number(String(v).trim());
+      if (!Number.isInteger(n) || n < 10 || n > 1000) { this.toast('10 to 1000', true); return; }
+      try { this.pinGuard = await this.call('/api/settings/pin-guard', { method: 'PUT', body: { daily_ceiling: n } }); this.toast('Saved'); }
+      catch (e) { this.toast(e.message, true); }
     },
     async revokeDevice(d) {
       const ok = await this.ask({ title: 'Revoke ' + d.name + '?', body: 'The tablet is signed out at once and has to be paired again.', confirmLabel: 'Revoke tablet', danger: true });

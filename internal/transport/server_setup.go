@@ -159,6 +159,14 @@ func (s *Server) handlePairAdmin(w http.ResponseWriter, r *http.Request) {
 		s.writeJSON(w, http.StatusForbidden, errCodeMap("The admin code is turned off on this Pi — use the manager login or a pairing code.", "admin_code_off"))
 		return
 	}
+	// The pairing window (the security round, C1a): the code is looked at
+	// only while a manager's window is open (or during the Pi's first
+	// setup). Closed = 403 before the code and the throttle, so the code
+	// can't be guessed at and pairing can't be paused from the LAN.
+	win, open := s.pairWindowGate(w, r, ap)
+	if !open {
+		return
+	}
 	ip := clientIP(r)
 	now := time.Now()
 	if wait := s.adminCodes.wait(ip, now); wait > 0 {
@@ -173,7 +181,18 @@ func (s *Server) handlePairAdmin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.adminCodes.ok(ip)
-	s.pairDevice(w, r, name, device.KindTerminal, "admin_code")
+	// One pairing per window: taken before the device is made, so two
+	// terminals racing for one window can't both pair.
+	if win.Reason == pairWindowManager && !s.pairWin.close(now) {
+		s.writeJSON(w, http.StatusForbidden, errCodeMap("Pairing is closed: another terminal just paired. A manager opens it again.", "pairing_closed"))
+		return
+	}
+	if s.pairDevice(w, r, name, device.KindTerminal, "admin_code") && win.Reason == pairWindowManager {
+		s.logger.Info().Ctx(ctx).Msg("Pairing window closed: a terminal paired")
+		if s.terminalSvc != nil {
+			s.terminalSvc.RecordPi(ctx, "", terminal.ActionPairingWindow, map[string]any{"event": "used"})
+		}
+	}
 }
 
 // journalPaired notes how a device was paired (pairDevice calls it).
@@ -190,10 +209,22 @@ type adminCodeView struct {
 	Enabled   bool `json:"enabled"`
 	IsDefault bool `json:"is_default"`
 	Length    int  `json:"length"`
+	// WindowMinutes: how long a manager's pairing window stays open;
+	// Window: the window now (GET / PUT answers only).
+	WindowMinutes int             `json:"window_minutes"`
+	Window        *pairWindowView `json:"window,omitempty"`
 }
 
 func viewAdminPair(a device.AdminPair) adminCodeView {
-	return adminCodeView{Enabled: !a.Off, IsDefault: a.Code == "", Length: len(a.Effective())}
+	return adminCodeView{Enabled: !a.Off, IsDefault: a.Code == "", Length: len(a.Effective()), WindowMinutes: int(a.Window() / time.Minute)}
+}
+
+// adminCodeAnswer is the setting + the pairing window as it stands.
+func (s *Server) adminCodeAnswer(r *http.Request, a device.AdminPair) adminCodeView {
+	v := viewAdminPair(a)
+	w := s.pairWindowNow(r.Context(), a, time.Now())
+	v.Window = &w
+	return v
 }
 
 // readAdminCode is what the settings history compares: never the code, only
@@ -207,7 +238,8 @@ func (s *Server) readAdminCode(r *http.Request) any {
 		return nil
 	}
 	v := viewAdminPair(a)
-	return map[string]any{"enabled": v.Enabled, "is_default": v.IsDefault, "code_changed_marker": s.codeMarker(r.Context(), a.Code)}
+	return map[string]any{"enabled": v.Enabled, "is_default": v.IsDefault, "code_changed_marker": s.codeMarker(r.Context(), a.Code),
+		"window_minutes": v.WindowMinutes}
 }
 
 // codeMarker is an opaque marker that changes when the code changes: the
@@ -230,21 +262,27 @@ func (s *Server) handleGetAdminCode(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, r, http.StatusInternalServerError, err)
 		return
 	}
-	s.writeJSON(w, http.StatusOK, viewAdminPair(a))
+	s.writeJSON(w, http.StatusOK, s.adminCodeAnswer(r, a))
 }
 
-// PUT /api/settings/admin-code {code?: 4-8 digits | "" (back to 1024), enabled?}.
+// PUT /api/settings/admin-code {code?: 4-8 digits | "" (back to 1024),
+// enabled?, window_minutes?: 1-120}.
 func (s *Server) handleSetAdminCode(w http.ResponseWriter, r *http.Request) {
 	if s.setups == nil {
 		s.writeJSON(w, http.StatusServiceUnavailable, errCodeMap("not available", "not_available"))
 		return
 	}
 	var body struct {
-		Code    *string `json:"code"`
-		Enabled *bool   `json:"enabled"`
+		Code          *string `json:"code"`
+		Enabled       *bool   `json:"enabled"`
+		WindowMinutes *int    `json:"window_minutes"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || (body.Code == nil && body.Enabled == nil) {
-		s.writeJSON(w, http.StatusBadRequest, errCodeMap("send code and/or enabled", "bad_request"))
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || (body.Code == nil && body.Enabled == nil && body.WindowMinutes == nil) {
+		s.writeJSON(w, http.StatusBadRequest, errCodeMap("send code, enabled and/or window_minutes", "bad_request"))
+		return
+	}
+	if m := body.WindowMinutes; m != nil && (*m < device.MinPairWindowMinutes || *m > device.MaxPairWindowMinutes) {
+		s.writeJSON(w, http.StatusBadRequest, errCodeMap("window_minutes is 1 to 120.", "bad_window"))
 		return
 	}
 	a, err := s.setups.AdminPair(r.Context())
@@ -266,11 +304,14 @@ func (s *Server) handleSetAdminCode(w http.ResponseWriter, r *http.Request) {
 	if body.Enabled != nil {
 		a.Off = !*body.Enabled
 	}
+	if body.WindowMinutes != nil {
+		a.WindowMinutes = *body.WindowMinutes
+	}
 	if err := s.setups.SetAdminPair(r.Context(), a); err != nil {
 		s.writeError(w, r, http.StatusInternalServerError, err)
 		return
 	}
-	s.writeJSON(w, http.StatusOK, viewAdminPair(a))
+	s.writeJSON(w, http.StatusOK, s.adminCodeAnswer(r, a))
 }
 
 // --- setup results ------------------------------------------------------------
@@ -433,10 +474,19 @@ func (s *Server) handleTerminalSetup(w http.ResponseWriter, r *http.Request) {
 // maxTerminalPrint caps one raw job (after base64).
 const maxTerminalPrint = 256 << 10
 
-// POST /api/terminal/print {printer?: name, printer_id?, bytes_b64, kind:
-// receipt|reprint|test, order_id?} — raw ESC/POS from a terminal to one of
-// the Pi's printers (its reroute / backup receipt printer, the setup test).
-// No failover: a job for X never comes out of Y.
+// maxTestLabel caps the test slip's label (characters).
+const maxTestLabel = 60
+
+// POST /api/terminal/print {printer?: name, printer_id?, kind: receipt |
+// reprint | report | test, bytes_b64?, label?, order_id?} — a terminal's
+// print on one of the Pi's printers (its reroute / backup receipt printer,
+// the setup test). No failover: a job for X never comes out of Y.
+//
+// The security round (C1b): a terminal key alone gets the Pi's own test
+// slip only (kind test: the Pi builds it from the label; bytes ignored). A
+// receipt / reprint / report needs a staff member logged in on the
+// terminal, and its bytes must be the terminal renderer's command set
+// (checkTerminalJob): no drawer kick, no printer set-up or memory commands.
 func (s *Server) handleTerminalPrint(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Printer   string `json:"printer"`
@@ -444,6 +494,7 @@ func (s *Server) handleTerminalPrint(w http.ResponseWriter, r *http.Request) {
 		BytesB64  string `json:"bytes_b64"`
 		Kind      string `json:"kind"`
 		OrderID   string `json:"order_id"`
+		Label     string `json:"label"`
 	}
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxTerminalPrint*4/3+4096)).Decode(&body); err != nil {
 		var tooBig *http.MaxBytesError
@@ -454,19 +505,32 @@ func (s *Server) handleTerminalPrint(w http.ResponseWriter, r *http.Request) {
 		s.writeJSON(w, http.StatusBadRequest, errCodeMap("invalid body", "bad_request"))
 		return
 	}
+	var data []byte
 	switch body.Kind {
-	case "receipt", "reprint", "test":
+	case "test":
+	case "receipt", "reprint", "report":
+		if !s.loggedIn(r) {
+			s.terminalError(w, r, terminal.ErrLoginRequired)
+			return
+		}
+		var err error
+		data, err = base64.StdEncoding.DecodeString(body.BytesB64)
+		if err != nil || len(data) == 0 {
+			s.writeJSON(w, http.StatusBadRequest, errCodeMap("bytes_b64 must be the job's bytes in base64", "bad_request"))
+			return
+		}
+		if len(data) > maxTerminalPrint {
+			s.writeJSON(w, http.StatusRequestEntityTooLarge, errCodeMap("The print job is too large.", "too_large"))
+			return
+		}
+		if why := checkTerminalJob(data); why != "" {
+			s.logger.Warn().Ctx(r.Context()).Str("device_id", actor(r).DeviceID).Str("kind", body.Kind).Str("why", why).
+				Msg("Terminal print refused: not a receipt's bytes")
+			s.writeJSON(w, http.StatusBadRequest, map[string]any{"error": "That isn't a receipt: " + why + ".", "code": "bad_bytes", "reason": why})
+			return
+		}
 	default:
-		s.writeJSON(w, http.StatusBadRequest, errCodeMap("kind must be receipt, reprint or test", "bad_request"))
-		return
-	}
-	data, err := base64.StdEncoding.DecodeString(body.BytesB64)
-	if err != nil || len(data) == 0 {
-		s.writeJSON(w, http.StatusBadRequest, errCodeMap("bytes_b64 must be the job's bytes in base64", "bad_request"))
-		return
-	}
-	if len(data) > maxTerminalPrint {
-		s.writeJSON(w, http.StatusRequestEntityTooLarge, errCodeMap("The print job is too large.", "too_large"))
+		s.writeJSON(w, http.StatusBadRequest, errCodeMap("kind must be receipt, reprint, report or test", "bad_request"))
 		return
 	}
 	if s.diag.Dispatcher == nil {
@@ -485,6 +549,9 @@ func (s *Server) handleTerminalPrint(w http.ResponseWriter, r *http.Request) {
 	if target == nil {
 		s.writeJSON(w, http.StatusNotFound, errCodeMap("This Pi has no such printer.", "unknown_printer"))
 		return
+	}
+	if body.Kind == "test" {
+		data = terminalTestSlip(cleanLabel(body.Label), target.Name, actor(r).DeviceName, time.Now())
 	}
 	res := s.diag.Dispatcher.PrintTest(r.Context(), target.ID, func(printerApp.RosterEntry) []byte { return data })
 	ok := len(res) == 1 && res[0].OK

@@ -118,6 +118,14 @@ func TestDriverLinkAtLogin(t *testing.T) {
 // later moves the service's clock (the claim rule's clock is injectable).
 func (r *driverRig) later(d time.Duration) {
 	r.svc.now = func() time.Time { return time.Now().Add(d) }
+	// The terminals kept talking to the Pi meanwhile: their sessions live
+	// (a silent one ends after the auto-lock time, security_test.go).
+	r.svc.staff.mu.Lock()
+	for dev, s := range r.svc.staff.sessions {
+		s.seen = r.svc.now()
+		r.svc.staff.sessions[dev] = s
+	}
+	r.svc.staff.mu.Unlock()
 }
 
 func TestDriverClaimMineTipCloseReport(t *testing.T) {

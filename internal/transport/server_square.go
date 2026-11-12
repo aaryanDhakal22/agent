@@ -62,8 +62,10 @@ func (s *Server) squareError(w http.ResponseWriter, err error, unknownMsg string
 // GET /api/terminal/square/session → {app_id, location_id, environment,
 // access_token_enc, nonce, expires_at, in_person?}: the store's Square
 // sign-in for the reader, sealed for this terminal (AES-256-GCM under
-// HKDF-SHA256(its device key, "quicc square session")). No staff login: the
-// setup wizard signs the reader in before any PIN.
+// HKDF-SHA256(its device key, "quicc square session")). A staff member
+// must be logged in on the terminal (the security round, C1b: a key alone
+// used to get the store's token; staffRoutes gates it, and the setup wizard
+// asks for a manager's PIN before its card-reader step).
 func (s *Server) handleTerminalSquareSession(w http.ResponseWriter, r *http.Request) {
 	key, ok := squareTerminalKey(r)
 	if !ok {

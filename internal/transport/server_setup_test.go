@@ -56,6 +56,14 @@ func TestPairAdmin(t *testing.T) {
 	if rec := call(h, "POST", "/api/pair/admin", "", `{"code":"1024"}`); rec.Code != http.StatusBadRequest || code(rec) != "name_required" {
 		t.Fatalf("no name: %d %s", rec.Code, rec.Body)
 	}
+	// The security round (C1a): the code works only while a manager's
+	// pairing window is open (this Pi has a terminal: no first-setup window).
+	for _, c := range []string{"1024", "9999"} {
+		if rec := call(h, "POST", "/api/pair/admin", "", `{"code":"`+c+`","name":"Counter 2"}`); rec.Code != http.StatusForbidden || code(rec) != "pairing_closed" {
+			t.Fatalf("closed window, code %s: %d %s", c, rec.Code, rec.Body)
+		}
+	}
+	openWindow(s)
 	if rec := call(h, "POST", "/api/pair/admin", "", `{"code":"9999","name":"Counter 2"}`); rec.Code != http.StatusUnauthorized || code(rec) != "wrong_admin_code" {
 		t.Fatalf("wrong code: %d %s", rec.Code, rec.Body)
 	}
@@ -75,10 +83,16 @@ func TestPairAdmin(t *testing.T) {
 		t.Fatalf("the new key is a terminal key: %d %s", rec.Code, rec.Body)
 	}
 
+	// One pairing per window.
+	if rec := call(h, "POST", "/api/pair/admin", "", `{"code":"1024","name":"Counter 2b"}`); rec.Code != http.StatusForbidden || code(rec) != "pairing_closed" {
+		t.Fatalf("a second pairing in one window: %d %s", rec.Code, rec.Body)
+	}
+
 	// A store code replaces 1024; off refuses.
 	if err := s.setups.SetAdminPair(ctx, device.AdminPair{Code: "55667788"}); err != nil {
 		t.Fatal(err)
 	}
+	openWindow(s)
 	if rec := call(h, "POST", "/api/pair/admin", "", `{"code":"1024","name":"Counter 3"}`); rec.Code != http.StatusUnauthorized {
 		t.Fatalf("1024 after a change: %d", rec.Code)
 	}
@@ -106,8 +120,19 @@ func TestPairAdmin(t *testing.T) {
 	}
 }
 
+// openWindow opens a manager's pairing window (what POST /api/pairing/window does).
+func openWindow(s *Server) { s.pairWin.open(time.Now().Add(15*time.Minute), "test") }
+
 func TestPairAdminThrottle(t *testing.T) {
-	_, h, _, _, _ := setupServer(t)
+	s, h, _, _, _ := setupServer(t)
+	// Outside the window nothing is counted: the code can't be guessed at,
+	// and pairing can't be paused from the LAN.
+	for i := 0; i < adminCodeStore*3; i++ {
+		if c := callFrom(h, "10.1.1.1", "/api/pair/admin", `{"code":"0000","name":"T"}`); c != http.StatusForbidden {
+			t.Fatalf("closed window, try %d: %d", i, c)
+		}
+	}
+	openWindow(s)
 	for i := 0; i < adminCodePerIP; i++ {
 		if c := callFrom(h, "10.1.1.1", "/api/pair/admin", `{"code":"0000","name":"T"}`); c != http.StatusUnauthorized {
 			t.Fatalf("miss %d: %d", i, c)
@@ -280,9 +305,12 @@ func TestTerminalPrintValidation(t *testing.T) {
 		want int
 	}{
 		{`{"printer":"Front","bytes_b64":"G0A=","kind":"other"}`, http.StatusBadRequest},
-		{`{"printer":"Front","bytes_b64":"not base64!","kind":"test"}`, http.StatusBadRequest},
-		{`{"printer":"Front","bytes_b64":"","kind":"test"}`, http.StatusBadRequest},
-		{`{"printer":"Front","bytes_b64":"G0A=","kind":"test"}`, http.StatusServiceUnavailable}, // no dispatcher here
+		// A test slip is the Pi's own: the terminal's bytes are not looked at.
+		{`{"printer":"Front","bytes_b64":"not base64!","kind":"test"}`, http.StatusServiceUnavailable}, // no dispatcher here
+		{`{"printer":"Front","kind":"test","label":"Backup for Counter 1"}`, http.StatusServiceUnavailable},
+		// A receipt's bytes need a staff member logged in on the terminal.
+		{`{"printer":"Front","bytes_b64":"G0A=","kind":"receipt"}`, http.StatusUnauthorized},
+		{`{"printer":"Front","bytes_b64":"G0A=","kind":"report"}`, http.StatusUnauthorized},
 	} {
 		if rec := call(h, "POST", "/api/terminal/print", termKey, c.body); rec.Code != c.want {
 			t.Errorf("%s: %d %s", c.body, rec.Code, rec.Body)

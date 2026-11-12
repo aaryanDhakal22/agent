@@ -150,6 +150,23 @@ func (u *Updater) Run(ctx context.Context, every time.Duration) {
 	}
 }
 
+// MaxAPKBytes caps a cached app release (a release build with Square's SDK
+// is 100-170 MB).
+const MaxAPKBytes = 512 << 20
+
+// validSHA256: 64 hex characters.
+func validSHA256(s string) bool {
+	if len(s) != 64 {
+		return false
+	}
+	for _, c := range s {
+		if !(c >= '0' && c <= '9' || c >= 'a' && c <= 'f' || c >= 'A' && c <= 'F') {
+			return false
+		}
+	}
+	return true
+}
+
 // Check fetches main's newest release and caches it if it is newer.
 func (u *Updater) Check(ctx context.Context) error {
 	key := u.key()
@@ -171,6 +188,15 @@ func (u *Updater) Check(ctx context.Context) error {
 	var rel Release
 	if err := json.Unmarshal(body, &rel); err != nil || rel.VersionCode <= 0 {
 		return fmt.Errorf("latest: bad body")
+	}
+	// The security round (M9): a release is taken only with its sha256 (64
+	// hex: an empty one used to compare equal to nothing checked on the
+	// tablets) and a sane size; the download below stops at that size.
+	if !validSHA256(rel.SHA256) {
+		return fmt.Errorf("latest: release %d has no sha256", rel.VersionCode)
+	}
+	if rel.Size <= 0 || rel.Size > MaxAPKBytes {
+		return fmt.Errorf("latest: release %d has size %d (limit %d)", rel.VersionCode, rel.Size, int64(MaxAPKBytes))
 	}
 	if cur := u.Current(); cur != nil && rel.VersionCode <= cur.VersionCode {
 		return nil

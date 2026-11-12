@@ -111,7 +111,9 @@ def test_customers_sync_lookup_add_and_orders(rig, admin, main_store):  # noqa: 
     # Address suggestions: a later piece.
     r = term.get(f"{base}/api/terminal/addresses", params={"q": "4 Test"}, timeout=5)
     assert r.status_code == 501 and r.json()["code"] == "not_implemented"
-    # A logged-out terminal can look up but not write.
+    # A logged-out terminal neither writes nor looks up (the security round: its key alone doesn't read the customer book).
     term.post(f"{base}/api/terminal/logout", timeout=5)
     assert term.post(f"{base}/api/terminal/customers", json={"phone": _phone(), "first_name": "Eve"}, timeout=5).status_code == 401
-    assert _lookup(rig, p1)["customers"]
+    for path in (f"/api/terminal/customers?phone={p1}", f"/api/terminal/customers/{dee['id']}/orders"):
+        r = term.get(base + path, timeout=5)
+        assert r.status_code == 401 and r.json()["code"] == "login_required", (path, r.text)
