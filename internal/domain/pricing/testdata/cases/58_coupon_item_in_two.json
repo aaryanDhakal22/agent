@@ -1,0 +1,708 @@
+{
+ "at": "2026-11-11T18:00:00-05:00",
+ "cart": {
+  "code": "",
+  "coupons": [
+   {
+    "id": "00000000-0000-0000-0000-000000000ee1",
+    "lines": [
+     0,
+     1,
+     2
+    ]
+   },
+   {
+    "id": "00000000-0000-0000-0000-000000000ee1",
+    "lines": [
+     0,
+     1,
+     2
+    ]
+   }
+  ],
+  "first_order": null,
+  "lines": [
+   {
+    "item_id": "00000000-0000-0000-0000-0000000000a1",
+    "qty": 1,
+    "size_id": "00000000-0000-0000-0000-0000000000b1"
+   },
+   {
+    "item_id": "00000000-0000-0000-0000-0000000000a2",
+    "qty": 1
+   },
+   {
+    "item_id": "00000000-0000-0000-0000-0000000000a3",
+    "qty": 1
+   }
+  ],
+  "payment": "cash",
+  "tip_cents": null,
+  "tip_pct": null,
+  "type": "pickup"
+ },
+ "context": {
+  "deals": [
+   {
+    "active": true,
+    "card": [
+     "8\" hot sub",
+     "French fries",
+     "Can or bottle soda"
+    ],
+    "description": "",
+    "fulfil": "",
+    "id": "00000000-0000-0000-0000-000000000ee1",
+    "kind": "coupon",
+    "name": "8\" Sub Combo",
+    "parts": [
+     {
+      "families": [
+       "00000000-0000-0000-0000-0000000000f1"
+      ],
+      "label": "8\" hot sub",
+      "qty": 1,
+      "regular_mods_included": 0,
+      "sizes": [
+       "00000000-0000-0000-0000-0000000000b1"
+      ]
+     },
+     {
+      "families": [
+       "00000000-0000-0000-0000-0000000000f2"
+      ],
+      "label": "Fries",
+      "qty": 1,
+      "regular_mods_included": 0
+     },
+     {
+      "families": [
+       "00000000-0000-0000-0000-0000000000f3",
+       "00000000-0000-0000-0000-0000000000f6"
+      ],
+      "label": "Soda",
+      "qty": 1,
+      "regular_mods_included": 0
+     }
+    ],
+    "price_cents": 1099,
+    "schedule": null
+   },
+   {
+    "active": true,
+    "card": [
+     "14\" pizza, 2 toppings",
+     "2 can sodas"
+    ],
+    "description": "",
+    "fulfil": "",
+    "id": "00000000-0000-0000-0000-000000000ee2",
+    "kind": "coupon",
+    "name": "14\" Pizza Deal",
+    "parts": [
+     {
+      "families": [
+       "00000000-0000-0000-0000-0000000000f4"
+      ],
+      "label": "14\" pizza",
+      "qty": 1,
+      "regular_mods_included": 2,
+      "sizes": [
+       "00000000-0000-0000-0000-0000000000b3"
+      ]
+     },
+     {
+      "families": [
+       "00000000-0000-0000-0000-0000000000f3"
+      ],
+      "label": "Can sodas",
+      "qty": 2,
+      "regular_mods_included": 0
+     }
+    ],
+    "price_cents": 1499,
+    "schedule": null
+   },
+   {
+    "active": true,
+    "card": [
+     "10 wings",
+     "French fries"
+    ],
+    "description": "",
+    "fulfil": "",
+    "id": "00000000-0000-0000-0000-000000000ee3",
+    "kind": "coupon",
+    "name": "Wings + Fries",
+    "parts": [
+     {
+      "families": [
+       "00000000-0000-0000-0000-0000000000f5"
+      ],
+      "label": "Wings",
+      "qty": 1,
+      "regular_mods_included": 0
+     },
+     {
+      "families": [
+       "00000000-0000-0000-0000-0000000000f2"
+      ],
+      "label": "Fries",
+      "qty": 1,
+      "regular_mods_included": 0
+     }
+    ],
+    "price_cents": 1399,
+    "schedule": null
+   },
+   {
+    "active": false,
+    "card": [
+     "Fries"
+    ],
+    "description": "",
+    "fulfil": "",
+    "id": "00000000-0000-0000-0000-000000000ee4",
+    "kind": "coupon",
+    "name": "Old coupon",
+    "parts": [
+     {
+      "families": [
+       "00000000-0000-0000-0000-0000000000f2"
+      ],
+      "label": "Fries",
+      "qty": 1,
+      "regular_mods_included": 0
+     }
+    ],
+    "price_cents": 300,
+    "schedule": null
+   },
+   {
+    "active": true,
+    "card": [
+     "Any pizza, 1 topping"
+    ],
+    "description": "",
+    "fulfil": "",
+    "id": "00000000-0000-0000-0000-000000000ee5",
+    "kind": "coupon",
+    "name": "Friday Pizza",
+    "parts": [
+     {
+      "families": [
+       "00000000-0000-0000-0000-0000000000f4"
+      ],
+      "label": "Pizza",
+      "qty": 1,
+      "regular_mods_included": 1
+     }
+    ],
+    "price_cents": 999,
+    "schedule": {
+     "days": [
+      "fri"
+     ],
+     "end": "",
+     "start": ""
+    }
+   },
+   {
+    "active": true,
+    "card": [
+     "2 can sodas"
+    ],
+    "description": "",
+    "fulfil": "",
+    "id": "00000000-0000-0000-0000-000000000ee6",
+    "kind": "coupon",
+    "name": "Two sodas",
+    "parts": [
+     {
+      "families": [
+       "00000000-0000-0000-0000-0000000000f3"
+      ],
+      "label": "Can sodas",
+      "qty": 2,
+      "regular_mods_included": 0
+     }
+    ],
+    "price_cents": 400,
+    "schedule": null
+   }
+  ],
+  "items": {
+   "00000000-0000-0000-0000-0000000000a1": {
+    "category_id": "00000000-0000-0000-0000-0000000000e1",
+    "family": "00000000-0000-0000-0000-0000000000f1",
+    "tax_bps": 0
+   },
+   "00000000-0000-0000-0000-0000000000a2": {
+    "category_id": "00000000-0000-0000-0000-0000000000e1",
+    "family": "00000000-0000-0000-0000-0000000000f2",
+    "tax_bps": 0
+   },
+   "00000000-0000-0000-0000-0000000000a3": {
+    "category_id": "00000000-0000-0000-0000-0000000000e1",
+    "family": "00000000-0000-0000-0000-0000000000f3",
+    "tax_bps": 0
+   },
+   "00000000-0000-0000-0000-0000000000a4": {
+    "category_id": "00000000-0000-0000-0000-0000000000e1",
+    "family": "00000000-0000-0000-0000-0000000000f3",
+    "tax_bps": 0
+   },
+   "00000000-0000-0000-0000-0000000000a5": {
+    "category_id": "00000000-0000-0000-0000-0000000000e1",
+    "family": "00000000-0000-0000-0000-0000000000f4",
+    "tax_bps": 0
+   },
+   "00000000-0000-0000-0000-0000000000a6": {
+    "category_id": "00000000-0000-0000-0000-0000000000e1",
+    "family": "00000000-0000-0000-0000-0000000000f5",
+    "tax_bps": 900
+   },
+   "00000000-0000-0000-0000-0000000000a7": {
+    "category_id": "00000000-0000-0000-0000-0000000000e1",
+    "family": "00000000-0000-0000-0000-0000000000f6",
+    "tax_bps": 0
+   },
+   "00000000-0000-0000-0000-0000000000a8": {
+    "category_id": "00000000-0000-0000-0000-0000000000e1",
+    "tax_bps": 0
+   }
+  },
+  "menu": {
+   "categories": [
+    {
+     "items": [
+      {
+       "anchor": {
+        "item_ids": [
+         "00000000-0000-0000-0000-0000000000a1"
+        ]
+       },
+       "description": "",
+       "id": "00000000-0000-0000-0000-0000000000a1",
+       "modifier_group_ids": [
+        "00000000-0000-0000-0000-0000000000c1"
+       ],
+       "name": "Cheesesteak",
+       "photo": "",
+       "price_cents": 0,
+       "sizes": [
+        {
+         "name": "8\"",
+         "price_cents": 899,
+         "size_id": "00000000-0000-0000-0000-0000000000b1"
+        },
+        {
+         "name": "12\"",
+         "price_cents": 1299,
+         "size_id": "00000000-0000-0000-0000-0000000000b2"
+        }
+       ],
+       "sold_out": false
+      },
+      {
+       "anchor": {
+        "item_ids": [
+         "00000000-0000-0000-0000-0000000000a2"
+        ]
+       },
+       "description": "",
+       "id": "00000000-0000-0000-0000-0000000000a2",
+       "modifier_group_ids": [],
+       "name": "French Fries",
+       "photo": "",
+       "price_cents": 399,
+       "sizes": [],
+       "sold_out": false
+      },
+      {
+       "anchor": {
+        "item_ids": [
+         "00000000-0000-0000-0000-0000000000a3"
+        ]
+       },
+       "description": "",
+       "id": "00000000-0000-0000-0000-0000000000a3",
+       "modifier_group_ids": [],
+       "name": "Coke Can",
+       "photo": "",
+       "price_cents": 150,
+       "sizes": [],
+       "sold_out": false
+      },
+      {
+       "anchor": {
+        "item_ids": [
+         "00000000-0000-0000-0000-0000000000a4"
+        ]
+       },
+       "description": "",
+       "id": "00000000-0000-0000-0000-0000000000a4",
+       "modifier_group_ids": [],
+       "name": "Sprite Can",
+       "photo": "",
+       "price_cents": 150,
+       "sizes": [],
+       "sold_out": false
+      },
+      {
+       "anchor": {
+        "item_ids": [
+         "00000000-0000-0000-0000-0000000000a5"
+        ]
+       },
+       "description": "",
+       "id": "00000000-0000-0000-0000-0000000000a5",
+       "modifier_group_ids": [
+        "00000000-0000-0000-0000-0000000000c2"
+       ],
+       "name": "Cheese Pizza",
+       "photo": "",
+       "price_cents": 0,
+       "sizes": [
+        {
+         "name": "14\" Large",
+         "price_cents": 1299,
+         "size_id": "00000000-0000-0000-0000-0000000000b3"
+        },
+        {
+         "name": "18\" X-Large",
+         "price_cents": 1599,
+         "size_id": "00000000-0000-0000-0000-0000000000b4"
+        }
+       ],
+       "sold_out": false
+      },
+      {
+       "anchor": {
+        "item_ids": [
+         "00000000-0000-0000-0000-0000000000a6"
+        ]
+       },
+       "description": "",
+       "id": "00000000-0000-0000-0000-0000000000a6",
+       "modifier_group_ids": [],
+       "name": "Wings 10pc",
+       "photo": "",
+       "price_cents": 1199,
+       "sizes": [],
+       "sold_out": false
+      },
+      {
+       "anchor": {
+        "item_ids": [
+         "00000000-0000-0000-0000-0000000000a7"
+        ]
+       },
+       "description": "",
+       "id": "00000000-0000-0000-0000-0000000000a7",
+       "modifier_group_ids": [],
+       "name": "Coke Bottle",
+       "photo": "",
+       "price_cents": 250,
+       "sizes": [],
+       "sold_out": false
+      },
+      {
+       "anchor": {
+        "item_ids": [
+         "00000000-0000-0000-0000-0000000000a8"
+        ]
+       },
+       "description": "",
+       "id": "00000000-0000-0000-0000-0000000000a8",
+       "modifier_group_ids": [],
+       "name": "Garden Salad",
+       "photo": "",
+       "price_cents": 699,
+       "sizes": [],
+       "sold_out": false
+      }
+     ],
+     "key": "00000000-0000-0000-0000-0000000000e1",
+     "name": "Food",
+     "position": 1
+    }
+   ],
+   "modifier_groups": [
+    {
+     "allow_multiple": false,
+     "id": "00000000-0000-0000-0000-0000000000c1",
+     "max_select": 0,
+     "min_select": 0,
+     "name": "Sub extras",
+     "options": [
+      {
+       "id": "00000000-0000-0000-0000-0000000000d1",
+       "is_default": false,
+       "name": "Fried Onions",
+       "price_cents": 75,
+       "prices": [],
+       "sold_out": false
+      },
+      {
+       "id": "00000000-0000-0000-0000-0000000000d2",
+       "is_default": false,
+       "name": "Extra Cheese",
+       "price_cents": 100,
+       "prices": [],
+       "sold_out": false
+      }
+     ],
+     "portions": false,
+     "required": false
+    },
+    {
+     "allow_multiple": true,
+     "id": "00000000-0000-0000-0000-0000000000c2",
+     "max_select": 0,
+     "min_select": 0,
+     "name": "Toppings",
+     "options": [
+      {
+       "id": "00000000-0000-0000-0000-0000000000d3",
+       "is_default": false,
+       "name": "Pepperoni",
+       "price_cents": 200,
+       "prices": [
+        {
+         "price_cents": 250,
+         "size_id": "00000000-0000-0000-0000-0000000000b4"
+        }
+       ],
+       "sold_out": false
+      },
+      {
+       "id": "00000000-0000-0000-0000-0000000000d4",
+       "is_default": false,
+       "name": "Mushrooms",
+       "price_cents": 150,
+       "prices": [],
+       "sold_out": false
+      },
+      {
+       "id": "00000000-0000-0000-0000-0000000000d5",
+       "is_default": false,
+       "name": "Olives",
+       "price_cents": 175,
+       "prices": [],
+       "sold_out": false
+      },
+      {
+       "id": "00000000-0000-0000-0000-0000000000d6",
+       "is_default": false,
+       "name": "Steak",
+       "price_cents": 350,
+       "prices": [],
+       "sold_out": false
+      },
+      {
+       "id": "00000000-0000-0000-0000-0000000000d7",
+       "is_default": false,
+       "name": "Well Done",
+       "price_cents": 0,
+       "prices": [],
+       "sold_out": false
+      }
+     ],
+     "portions": true,
+     "required": false
+    }
+   ]
+  },
+  "options": {
+   "00000000-0000-0000-0000-0000000000d1": {
+    "class": "premium",
+    "family": "00000000-0000-0000-0000-0000000000f7"
+   },
+   "00000000-0000-0000-0000-0000000000d2": {
+    "class": "premium",
+    "family": "00000000-0000-0000-0000-0000000000f7"
+   },
+   "00000000-0000-0000-0000-0000000000d3": {
+    "class": "regular",
+    "family": "00000000-0000-0000-0000-0000000000f8"
+   },
+   "00000000-0000-0000-0000-0000000000d4": {
+    "class": "regular",
+    "family": "00000000-0000-0000-0000-0000000000f8"
+   },
+   "00000000-0000-0000-0000-0000000000d5": {
+    "class": "regular",
+    "family": "00000000-0000-0000-0000-0000000000f8"
+   },
+   "00000000-0000-0000-0000-0000000000d6": {
+    "class": "premium",
+    "family": "00000000-0000-0000-0000-0000000000f9"
+   },
+   "00000000-0000-0000-0000-0000000000d7": {
+    "class": "unpriced",
+    "family": "00000000-0000-0000-0000-000000000f10"
+   }
+  },
+  "settings": {
+   "card_fee": {
+    "bps": 0,
+    "mode": "none"
+   },
+   "delivery_fee_cents": 0,
+   "delivery_min_cents": 0,
+   "free_delivery_over_cents": null,
+   "half_specialty_off_pct": 0,
+   "half_topping_price": "full",
+   "service_fee_bps": 0,
+   "service_fee_cents": 0,
+   "stacking": "best",
+   "tax_bps": 600,
+   "tips": {
+    "default_pct": 0,
+    "enabled": false,
+    "presets": []
+   }
+  },
+  "timezone": "America/New_York",
+  "types": {
+   "delivery": true,
+   "pickup": true
+  }
+ },
+ "expect": {
+  "discounts": [
+   {
+    "amount_cents": 349,
+    "type": "coupon"
+   }
+  ],
+  "error_codes": [
+   "coupon_fit"
+  ],
+  "error_messages": [
+   "8\" Sub Combo: a line in it is already in another coupon."
+  ],
+  "subtotal_cents": 1448,
+  "tax_cents": 66,
+  "total_cents": 1165
+ },
+ "name": "Coupons: a unit can't be in two coupons: the second is an error on the web and not applied",
+ "quote": {
+  "card_fee_cents": 0,
+  "coupons": [
+   {
+    "card": [
+     "8\" hot sub",
+     "French fries",
+     "Can or bottle soda"
+    ],
+    "id": "00000000-0000-0000-0000-000000000ee1",
+    "index": 0,
+    "lines": [
+     0,
+     1,
+     2
+    ],
+    "name": "8\" Sub Combo",
+    "price_cents": 1099,
+    "regular_cents": 1448,
+    "saved_cents": 349,
+    "total_cents": 1099,
+    "units": [
+     {
+      "carrier": true,
+      "free_mods": [],
+      "item_cents": 1099,
+      "line": 0,
+      "mods_cents": 0,
+      "part": 0,
+      "regular_cents": 899,
+      "unit_cents": 1099
+     },
+     {
+      "carrier": false,
+      "free_mods": [],
+      "item_cents": 0,
+      "line": 1,
+      "mods_cents": 0,
+      "part": 1,
+      "regular_cents": 399,
+      "unit_cents": 0
+     },
+     {
+      "carrier": false,
+      "free_mods": [],
+      "item_cents": 0,
+      "line": 2,
+      "mods_cents": 0,
+      "part": 2,
+      "regular_cents": 150,
+      "unit_cents": 0
+     }
+    ]
+   }
+  ],
+  "delivery_fee_cents": 0,
+  "discounts": [
+   {
+    "amount_cents": 349,
+    "deal_id": "00000000-0000-0000-0000-000000000ee1",
+    "label": "8\" Sub Combo",
+    "type": "coupon"
+   }
+  ],
+  "errors": [
+   {
+    "code": "coupon_fit",
+    "line": null,
+    "message": "8\" Sub Combo: a line in it is already in another coupon."
+   }
+  ],
+  "lines": [
+   {
+    "coupon_cents": 1099,
+    "deal_id": "",
+    "index": 0,
+    "mods": [
+     "8\""
+    ],
+    "name": "Cheesesteak",
+    "qty": 1,
+    "regular_cents": null,
+    "total_cents": 899,
+    "unit_cents": 899
+   },
+   {
+    "coupon_cents": 0,
+    "deal_id": "",
+    "index": 1,
+    "mods": [],
+    "name": "French Fries",
+    "qty": 1,
+    "regular_cents": null,
+    "total_cents": 399,
+    "unit_cents": 399
+   },
+   {
+    "coupon_cents": 0,
+    "deal_id": "",
+    "index": 2,
+    "mods": [],
+    "name": "Coke Can",
+    "qty": 1,
+    "regular_cents": null,
+    "total_cents": 150,
+    "unit_cents": 150
+   }
+  ],
+  "nudges": [],
+  "saved_cents": 349,
+  "service_fee_cents": 0,
+  "subtotal_cents": 1448,
+  "tax_cents": 66,
+  "tip_cents": 0,
+  "total_cents": 1165,
+  "warnings": []
+ }
+}

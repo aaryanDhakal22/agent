@@ -39,7 +39,23 @@ type Context struct {
 	// same portion + mode. 0 = no cap besides the group's max_select. The
 	// Pi sets it from main's terminal setting topping_max_count.
 	MaxRepeat int `json:"max_repeat,omitempty"`
+	// Options are the modifier options' facts coupons read (option id →
+	// family + class); an option missing here is in no family (never free).
+	Options map[string]OptionFacts `json:"options,omitempty"`
 }
+
+// OptionFacts are a modifier option's family and that family's class.
+type OptionFacts struct {
+	Family string `json:"family,omitempty"`
+	Class  string `json:"class,omitempty"` // regular | premium | unpriced
+}
+
+// Mod family classes: a coupon may make a regular mod free, never the others.
+const (
+	ClassRegular  = "regular"
+	ClassPremium  = "premium"
+	ClassUnpriced = "unpriced"
+)
 
 // Menu is the part of a channel's menu a quote reads.
 type Menu struct {
@@ -61,6 +77,8 @@ type ItemFacts struct {
 	// OpenPrice: the item's price is the cashier's, per line (item attribute
 	// open_price; the counter only).
 	OpenPrice bool `json:"open_price,omitempty"`
+	// Family: the item's family (an item family id; "" = none: never in a coupon).
+	Family string `json:"family,omitempty"`
 }
 
 // HalfBaseAttr is the menu item attribute naming a specialty pizza's plain
@@ -163,6 +181,7 @@ const (
 	DealNth      = "nth"       // every nth eligible unit (priciest first) pct off
 	DealCode     = "code"      // a promo code: pct or amount off the food
 	DealFreeItem = "free_item" // one eligible unit free once the food reaches min_subtotal_cents
+	DealCoupon   = "coupon"    // the cashier applies it to cart lines that fill its parts (by family)
 )
 
 // Deal is one of the store's deals.
@@ -190,6 +209,21 @@ type Deal struct {
 	FirstOrderOnly bool   `json:"first_order_only,omitempty"`
 	// code, free_item
 	MinSubtotalCents int64 `json:"min_subtotal_cents,omitempty"`
+	// coupon (+ PriceCents): the card's lines and the parts it takes.
+	Card  []string `json:"card,omitempty"`
+	Parts []Part   `json:"parts,omitempty"`
+}
+
+// Part is one part of a coupon: Qty items whose family is one of Families
+// (item family ids) and, when Sizes names any, at one of those sizes (size
+// ids), each with up to RegularModsIncluded regular mods free (the cheapest
+// ones).
+type Part struct {
+	Label               string   `json:"label"`
+	Families            []string `json:"families"`
+	Sizes               []string `json:"sizes,omitempty"`
+	Qty                 int      `json:"qty"`
+	RegularModsIncluded int      `json:"regular_mods_included"`
 }
 
 // Schedule limits a deal to days ("mon".."sun") and a time of day (HH:MM, store time).
@@ -223,6 +257,16 @@ type Cart struct {
 	TipCents   *int64 `json:"tip_cents"`
 	TipPct     *int   `json:"tip_pct"`
 	FirstOrder *bool  `json:"first_order"`
+	// Coupons the cashier applied: each a coupon deal and the cart line
+	// units it takes (one index per unit; repeat an index for more units
+	// of that line).
+	Coupons []CartCoupon `json:"coupons,omitempty"`
+}
+
+// CartCoupon is one applied coupon in a cart.
+type CartCoupon struct {
+	ID    string `json:"id"`
+	Lines []int  `json:"lines"`
 }
 
 // Selection is one configured menu item.
@@ -316,6 +360,53 @@ type Quote struct {
 	// (the counter's missed required group: code option_rules). Each one's
 	// message is in Warnings too. Absent when there are none.
 	LineWarnings []Issue `json:"line_warnings,omitempty"`
+	// Coupons are the cart's coupons that apply (absent when none);
+	// CouponOffers the live coupons the units not in a coupon fully fit,
+	// best savings first (absent when none).
+	Coupons      []AppliedCoupon `json:"coupons,omitempty"`
+	CouponOffers []CouponOffer   `json:"coupon_offers,omitempty"`
+}
+
+// AppliedCoupon is a cart coupon as priced. Index is its place in
+// cart.coupons; Lines the units' line indexes, ascending.
+type AppliedCoupon struct {
+	Index        int          `json:"index"`
+	ID           string       `json:"id"`
+	Name         string       `json:"name"`
+	Card         []string     `json:"card"`
+	PriceCents   int64        `json:"price_cents"`
+	Lines        []int        `json:"lines"`
+	RegularCents int64        `json:"regular_cents"` // the units at their own prices
+	TotalCents   int64        `json:"total_cents"`   // the units in the coupon
+	SavedCents   int64        `json:"saved_cents"`
+	Units        []CouponUnit `json:"units"`
+}
+
+// CouponUnit is one unit in a coupon, in part order: the carrier's ItemCents
+// is the coupon price (the others' 0); ModsCents its charged mods (+ a half
+// and half upcharge); FreeMods the free regular mods' labels.
+type CouponUnit struct {
+	Line         int      `json:"line"`
+	Part         int      `json:"part"`
+	Carrier      bool     `json:"carrier"`
+	ItemCents    int64    `json:"item_cents"`
+	ModsCents    int64    `json:"mods_cents"`
+	FreeMods     []string `json:"free_mods"`
+	UnitCents    int64    `json:"unit_cents"`
+	RegularCents int64    `json:"regular_cents"`
+}
+
+// CouponOffer is a coupon the cart fully fits: Lines are the units it would
+// take (send them back as a cart coupon).
+type CouponOffer struct {
+	ID           string   `json:"id"`
+	Name         string   `json:"name"`
+	Card         []string `json:"card"`
+	PriceCents   int64    `json:"price_cents"`
+	Lines        []int    `json:"lines"`
+	RegularCents int64    `json:"regular_cents"`
+	TotalCents   int64    `json:"total_cents"`
+	SavedCents   int64    `json:"saved_cents"`
 }
 
 type QuoteLine struct {
@@ -333,10 +424,13 @@ type QuoteLine struct {
 	ListCents *int64 `json:"list_cents,omitempty"`
 	// Custom: a custom line (Line.Custom). Absent otherwise.
 	Custom bool `json:"custom,omitempty"`
+	// CouponCents: the line's total once its units in coupons are priced in
+	// them. Absent when no unit of the line is in a coupon.
+	CouponCents *int64 `json:"coupon_cents,omitempty"`
 }
 
 type Discount struct {
-	Type        string `json:"type"` // deal | code | cash
+	Type        string `json:"type"` // deal | code | cash | coupon
 	DealID      string `json:"deal_id"`
 	Label       string `json:"label"`
 	AmountCents int64  `json:"amount_cents"`
@@ -351,22 +445,25 @@ type Issue struct {
 
 // Issue codes.
 const (
-	IssueEmpty       = "empty"
-	IssueUnknownItem = "unknown_item"
-	IssueUnknownSize = "unknown_size"
-	IssueUnknownOpt  = "unknown_option"
-	IssueOptionRules = "option_rules"
-	IssueSoldOut     = "sold_out"
-	IssueDealEnded   = "deal_ended"
-	IssueDealNotNow  = "deal_unavailable"
-	IssueDealSlot    = "deal_slot"
-	IssueCodeInvalid = "code_invalid"
-	IssueCodeMinimum = "code_minimum"
-	IssueCodeFirst   = "code_first_order"
-	IssueCodeAlone   = "code_not_combinable"
-	IssueTypeOff     = "type_off"
-	IssueBadType     = "bad_type"
-	IssueDeliveryMin = "delivery_minimum"
-	IssueOpenPrice   = "open_price"
-	IssueCustomLine  = "custom_line"
+	IssueEmpty        = "empty"
+	IssueUnknownItem  = "unknown_item"
+	IssueUnknownSize  = "unknown_size"
+	IssueUnknownOpt   = "unknown_option"
+	IssueOptionRules  = "option_rules"
+	IssueSoldOut      = "sold_out"
+	IssueDealEnded    = "deal_ended"
+	IssueDealNotNow   = "deal_unavailable"
+	IssueDealSlot     = "deal_slot"
+	IssueCodeInvalid  = "code_invalid"
+	IssueCodeMinimum  = "code_minimum"
+	IssueCodeFirst    = "code_first_order"
+	IssueCodeAlone    = "code_not_combinable"
+	IssueTypeOff      = "type_off"
+	IssueBadType      = "bad_type"
+	IssueDeliveryMin  = "delivery_minimum"
+	IssueOpenPrice    = "open_price"
+	IssueCustomLine   = "custom_line"
+	IssueCouponEnded  = "coupon_ended"
+	IssueCouponNotNow = "coupon_unavailable"
+	IssueCouponFit    = "coupon_fit"
 )

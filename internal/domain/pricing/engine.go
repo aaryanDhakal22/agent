@@ -129,6 +129,7 @@ type priced struct {
 	choice   string // a combined item: the choice's name
 	list     *int64 // a price change: the price the line's own replaced
 	opts     []ResolvedOption
+	optIDs   []string // each opt's option id ("" = a half-specialty or a default left off)
 	issues   []Issue
 	soft     []Issue // the counter's warnings (a missed required group)
 }
@@ -468,6 +469,7 @@ func (e *engine) price(sel Selection, free int) priced {
 				label := OptionLabel(s.name, por, ModeAdd)
 				p.mods = append(p.mods, label)
 				p.opts = append(p.opts, ResolvedOption{Name: s.name, Label: label, Portion: por, Mode: ModeSpecialty})
+				p.optIDs = append(p.optIDs, "")
 			}
 		}
 	}
@@ -555,6 +557,7 @@ func (e *engine) price(sel Selection, free int) priced {
 				}
 			}
 			p.opts = append(p.opts, ResolvedOption{Name: o.Name, Label: label, Portion: por, Mode: mode, PriceCents: price, RemovedDefault: mode == ModeNo})
+			p.optIDs = append(p.optIDs, pk.OptionID)
 		}
 		// "NO onions": a default left off in a pick-many group (in a pick-one
 		// group the choice replaces it).
@@ -563,6 +566,7 @@ func (e *engine) price(sel Selection, free int) priced {
 				if o.IsDefault && !seen[o.ID.String()] {
 					p.mods = append(p.mods, "NO "+o.Name)
 					p.opts = append(p.opts, ResolvedOption{Name: o.Name, Label: "NO " + o.Name, Mode: ModeNo, RemovedDefault: true})
+					p.optIDs = append(p.optIDs, "")
 				}
 			}
 		}
@@ -674,9 +678,15 @@ func Price(ctx Context, cart Cart, at time.Time) Quote {
 		total int64
 		rate  int
 	}
-	var units []unit
 	var lineTax []taxed
 	hasBundle := false
+	// Item lines a coupon may take (by cart line index) and where each
+	// line's entry in lineTax is.
+	clines := make([]cline, len(cart.Lines))
+	taxAt := make([]int, len(cart.Lines))
+	for k := range taxAt {
+		taxAt[k] = -1
+	}
 
 	for i, line := range cart.Lines {
 		idx := i
@@ -726,13 +736,12 @@ func Price(ctx Context, cart Cart, at time.Time) Quote {
 				mods = append(mods, "“"+n+"”")
 			}
 			q.Lines = append(q.Lines, QuoteLine{Index: i, Name: p.name, Mods: mods, Qty: qty, UnitCents: p.unit, TotalCents: p.unit * int64(qty), ListCents: p.list})
+			taxAt[i] = len(lineTax)
 			lineTax = append(lineTax, taxed{p.unit * int64(qty), e.rate(p.rateItem)})
-			// A price-changed line is left out of the automatic deals: the
-			// cashier's price is the line's price.
+			// A price-changed line is left out of the automatic deals and
+			// coupons: the cashier's price is the line's price.
 			if p.bankItem != "" && len(p.issues) == 0 && p.list == nil {
-				for k := 0; k < qty; k++ {
-					units = append(units, unit{price: p.unit, item: p.bankItem, category: e.category(p.bankItem), size: p.size})
-				}
+				clines[i] = e.couponLine(p, qty)
 			}
 			continue
 		}
@@ -797,6 +806,22 @@ func Price(ctx Context, cart Cart, at time.Time) Quote {
 	}
 	sub := q.SubtotalCents
 
+	// Coupons: the cashier's, then the offers on the units left.
+	couponOff := e.coupons(&q, cart, clines, at, issue)
+	for i, c := range clines {
+		if c.taxCut != 0 && taxAt[i] >= 0 {
+			lineTax[taxAt[i]].total -= c.taxCut
+		}
+	}
+	food := sub - couponOff
+	// The units left for the automatic deals (a coupon's units take none).
+	var units []unit
+	for _, c := range clines {
+		for k := c.used; c.ok && k < c.qty; k++ {
+			units = append(units, unit{price: c.unit, item: c.item, category: c.category, size: c.size})
+		}
+	}
+
 	// Automatic deals.
 	var autos []Discount
 	for _, d := range ctx.Deals {
@@ -836,7 +861,7 @@ func Price(ctx Context, cart Cart, at time.Time) Quote {
 			if len(el) == 0 {
 				continue
 			}
-			if sub >= d.MinSubtotalCents {
+			if food >= d.MinSubtotalCents {
 				amount = el[0].price
 				for _, u := range el {
 					if u.price < amount {
@@ -844,7 +869,7 @@ func Price(ctx Context, cart Cart, at time.Time) Quote {
 					}
 				}
 			} else {
-				nudge(fmt.Sprintf("Add %s more for %s.", Money(d.MinSubtotalCents-sub), d.Name))
+				nudge(fmt.Sprintf("Add %s more for %s.", Money(d.MinSubtotalCents-food), d.Name))
 			}
 		}
 		if amount > 0 {
@@ -864,17 +889,17 @@ func Price(ctx Context, cart Cart, at time.Time) Quote {
 		switch {
 		case d == nil || !Live(*d, ctx.Timezone, at, cart.Type):
 			issue(IssueCodeInvalid, "Code "+c+" isn't valid right now.", nil)
-		case sub < d.MinSubtotalCents:
+		case food < d.MinSubtotalCents:
 			issue(IssueCodeMinimum, fmt.Sprintf("%s needs %s or more.", c, Money(d.MinSubtotalCents)), nil)
 		case d.FirstOrderOnly && cart.FirstOrder != nil && !*cart.FirstOrder:
 			issue(IssueCodeFirst, c+" is for a first order only.", nil)
 		default:
 			amt := d.AmountCents
 			if d.Pct > 0 {
-				amt = Pct(sub, d.Pct*100)
+				amt = Pct(food, d.Pct*100)
 			}
-			if amt > sub {
-				amt = sub
+			if amt > food {
+				amt = food
 			}
 			code = &Discount{Type: "code", DealID: d.ID, Label: "Code " + c, AmountCents: amt}
 		}
@@ -911,7 +936,7 @@ func Price(ctx Context, cart Cart, at time.Time) Quote {
 			q.Discounts = append(q.Discounts, *code)
 		}
 	case StackSingle:
-		if hasBundle {
+		if hasBundle || len(q.Coupons) > 0 {
 			if code != nil {
 				issue(IssueCodeAlone, "Codes don't combine with deals.", nil)
 			}
@@ -966,9 +991,10 @@ func Price(ctx Context, cart Cart, at time.Time) Quote {
 		q.ServiceFeeCents = st.ServiceFeeCents + Pct(after, st.ServiceFeeBps)
 	}
 
-	// Tax: each rate's share of the food after discounts (the discounts
-	// spread over the rates by their share of the subtotal), plus the
-	// service fee at the store rate. Delivery is untaxed.
+	// Tax: each rate's share of the food after discounts (a coupon's units
+	// at their coupon prices; the other discounts spread over the rates by
+	// their share of the rest), plus the service fee at the store rate.
+	// Delivery is untaxed.
 	byRate := map[int]int64{}
 	var rates []int
 	for _, lt := range lineTax {
@@ -978,16 +1004,16 @@ func Price(ctx Context, cart Cart, at time.Time) Quote {
 		byRate[lt.rate] += lt.total
 	}
 	sort.Ints(rates)
-	off := sub - after
+	off := sub - after - couponOff
 	var spread int64
 	for k, r := range rates {
 		gross := byRate[r]
 		share := int64(0)
-		if sub > 0 {
+		if food > 0 {
 			if k == len(rates)-1 {
 				share = off - spread
 			} else {
-				share = off * gross / sub
+				share = off * gross / food
 			}
 		}
 		spread += share
