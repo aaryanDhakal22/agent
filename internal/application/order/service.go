@@ -205,18 +205,6 @@ func (s *Service) OnArrival(ctx context.Context, snap order.Snapshot) error {
 	return nil
 }
 
-// autoAcceptOrRing auto-accepts a stored order; when that fails the order
-// rings like any other (announced as arrived). Reports whether it accepted.
-func (s *Service) autoAcceptOrRing(ctx context.Context, id uuid.UUID, snap order.Snapshot) bool {
-	if _, err := s.AutoAccept(ctx, id); err != nil {
-		s.logger.Error().Ctx(ctx).Err(err).Str("order_id", id.String()).Msg("Auto-accept failed — order remains arrived")
-		trace.SpanFromContext(ctx).RecordError(err)
-		s.announceStored(ctx, id, snap) // mobile sees the pending order
-		return false
-	}
-	return true
-}
-
 // announceStored tells the tablets about a stored order: arrived (it rings),
 // or, if auto-accept raced with a manual accept, whatever state it's in now.
 func (s *Service) announceStored(ctx context.Context, id uuid.UUID, snap order.Snapshot) {
