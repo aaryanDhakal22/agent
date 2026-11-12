@@ -91,7 +91,7 @@ def test_doubles_custom_line_and_required_warning(rig):
     wait_until(lambda: "2x Pepperoni" in fakes["Pizza"].text(), what="the double on the Pizza station")
     journal = term.get(f"{base}/api/terminal/journal", timeout=5).json()
     rows = [e for e in journal if e["action"] == "custom_line"]
-    assert len(rows) == 1 and rows[0]["staff_id"] == "s-cashier" and rows[0]["detail"]["name"] == "Extra dough ball"
+    assert len(rows) == 1 and rows[0]["staff_id"] == "00000000-0000-4000-8000-0000000000c1" and rows[0]["detail"]["name"] == "Extra dough ball"
     assert rows[0]["detail"]["price_cents"] == 250 and rows[0]["detail"]["qty"] == 2
 
     def synced():

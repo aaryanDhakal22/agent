@@ -77,7 +77,11 @@ func TerminalType(so StoredOrder) string {
 
 // IsUnsettled: not cancelled, money due, and not a delivered delivery.
 func IsUnsettled(so StoredOrder) bool {
-	if so.Status.State == StateCancelled || so.Status.CashDueCents <= 0 {
+	switch so.Status.State {
+	case StateCancelled, StateArrived, StateScheduled:
+		return false // not a check yet (never accepted / a future order)
+	}
+	if so.Status.CashDueCents <= 0 {
 		return false
 	}
 	if so.Order.Source != SourceCounter && so.Status.Paid {

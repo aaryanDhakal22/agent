@@ -206,7 +206,7 @@ def test_comp_by_a_cashier_needs_no_manager(rig):  # noqa: F811
     r = term.post(f"{base}/api/terminal/orders", json={"client_key": f"k-{uuid.uuid4()}", "type": "counter", "cart": cart}, timeout=10)
     assert r.status_code == 201, r.text
     entries = term.get(f"{base}/api/terminal/journal", timeout=5).json()
-    assert any(e["action"] == "comp" and e["staff_id"] == "s-cashier" for e in entries)
+    assert any(e["action"] == "comp" and e["staff_id"] == "00000000-0000-4000-8000-0000000000c1" for e in entries)
     assert not any(e["action"] == "override" for e in entries)
 
 

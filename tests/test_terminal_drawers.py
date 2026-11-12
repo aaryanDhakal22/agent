@@ -38,7 +38,7 @@ def test_drawers_and_z_report_reach_main(rig):  # noqa: F811
                                                                               {"value_cents": 100, "count": 20}]}, timeout=5)
     assert r.status_code == 201, r.text
     d1 = r.json()["drawer"]
-    assert d1["start_cents"] == 12000 and d1["state"] == "open" and d1["staff_id"] == "s-cashier"
+    assert d1["start_cents"] == 12000 and d1["state"] == "open" and d1["staff_id"] == "00000000-0000-4000-8000-0000000000c1"
     r = term.post(f"{base}/api/terminal/drawer/open", json={"start_cents": 1}, timeout=5)
     assert r.status_code == 409 and r.json()["code"] == "drawer_open"
     # A cash sale with a tip and change goes in the drawer; a card sale doesn't.
@@ -57,7 +57,7 @@ def test_drawers_and_z_report_reach_main(rig):  # noqa: F811
     r = term.post(f"{base}/api/terminal/drawer/pay-out", json={"amount_cents": 2500, "reason": "ice"}, timeout=5)
     assert r.status_code == 403 and r.json()["code"] == "manager_required" and r.json()["limit"] == 2000
     r = term.post(f"{base}/api/terminal/drawer/pay-out", json={"amount_cents": 2500, "reason": "ice", "manager_pin": "9876"}, timeout=5)
-    assert r.status_code == 200 and r.json()["movement"]["approved_by"] == "s-manager", r.text
+    assert r.status_code == 200 and r.json()["movement"]["approved_by"] == "00000000-0000-4000-8000-0000000000e1", r.text
     r = term.post(f"{base}/api/terminal/journal", json={"action": "no_sale"}, timeout=5)
     assert r.status_code == 201 and r.json()["detail"]["drawer_id"] == d1["id"], r.text
     expected = 12000 + total + 100 + 500 - 2500

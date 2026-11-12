@@ -31,8 +31,8 @@ DRIVER_HASHES = {"5511": "$2a$04$YucRH1Wg.1UMR/8ccruyweBklSB5AW6T5DkOe9pnGX6aAN5
 
 def driver_config(version: int = 1) -> dict:
     cfg = staff_config(version=version)
-    cfg["staff"] += [{"id": "s-driver-1", "first_name": "Ali", "last_name": "Khan", "role": "driver", "pin_hash": DRIVER_HASHES["5511"]},
-                     {"id": "s-driver-2", "first_name": "Sam", "last_name": "", "role": "driver", "pin_hash": DRIVER_HASHES["6622"]}]
+    cfg["staff"] += [{"id": "00000000-0000-4000-8000-0000000000d1", "first_name": "Ali", "last_name": "Khan", "role": "driver", "pin_hash": DRIVER_HASHES["5511"]},
+                     {"id": "00000000-0000-4000-8000-0000000000d2", "first_name": "Sam", "last_name": "", "role": "driver", "pin_hash": DRIVER_HASHES["6622"]}]
     return cfg
 
 

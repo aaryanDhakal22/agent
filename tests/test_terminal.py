@@ -188,8 +188,8 @@ class FakeMain:
 
 def staff_config(version: int = 1, counter_start: int = 500) -> dict:
     return {"version": version,
-            "staff": [{"id": "s-cashier", "first_name": "Cara", "last_name": "Smith", "role": "cashier", "pin_hash": _bcrypt("1234")},
-                      {"id": "s-manager", "first_name": "Khawar", "last_name": "Ali", "role": "manager", "pin_hash": _bcrypt("9876")}],
+            "staff": [{"id": "00000000-0000-4000-8000-0000000000c1", "first_name": "Cara", "last_name": "Smith", "role": "cashier", "pin_hash": _bcrypt("1234")},
+                      {"id": "00000000-0000-4000-8000-0000000000e1", "first_name": "Khawar", "last_name": "Ali", "role": "manager", "pin_hash": _bcrypt("9876")}],
             # main's terminal settings (contract/main.md §2.5zb)
             "settings": {"counter_start": counter_start, "auto_lock_minutes": 3, "cashier_refund_cents": 1000,
                          "cashier_discount_pct": 10, "receipt_auto_done_seconds": 15}}
@@ -270,7 +270,7 @@ def test_login_menu_quote(rig):
     assert r.status_code == 401 and r.json()["code"] == "wrong_pin"
     assert term.post(f"{base}/api/terminal/login", json={"pin": "12x"}, timeout=5).json()["code"] == "bad_pin"
     r = term.post(f"{base}/api/terminal/login", json={"pin": "1234"}, timeout=5).json()
-    assert r["staff"]["id"] == "s-cashier" and r["limits"] == {"refund_cents": 1000, "discount_pct": 10}
+    assert r["staff"]["id"] == "00000000-0000-4000-8000-0000000000c1" and r["limits"] == {"refund_cents": 1000, "discount_pct": 10}
     assert r["settings"]["auto_lock_minutes"] == 3
     m = term.get(f"{base}/api/terminal/menu", timeout=5)
     assert m.json()["menu_version"] == 7 and m.json()["counter_menu"]["build"]["view"]["kind"] == "counter"
@@ -533,14 +533,14 @@ def test_price_change_and_manager_check(rig):
         r = term.post(f"{base}/api/terminal/manager-check", json={"pin": pin, "action": "price_change"}, timeout=5)
         assert r.status_code == 401 and r.json()["code"] == "wrong_pin", r.text
     r = term.post(f"{base}/api/terminal/manager-check", json={"pin": "9876"}, timeout=5)
-    assert r.status_code == 200 and r.json()["ok"] and r.json()["staff"]["id"] == "s-manager" and r.json()["staff"]["role"] == "manager"
+    assert r.status_code == 200 and r.json()["ok"] and r.json()["staff"]["id"] == "00000000-0000-4000-8000-0000000000e1" and r.json()["staff"]["role"] == "manager"
     r = place(rig, cart=cart, manager_pin="9876")
     assert r.status_code == 201, r.text
     lines = r.json()["order"]["order"]["items"]
     assert lines[0]["unit_price_cents"] == 1500 and lines[1]["unit_price_cents"] == 300
     journal = term.get(f"{base}/api/terminal/journal", timeout=5).json()
     changes = [e["detail"] for e in journal if e["action"] == "price_change"]
-    assert sorted((c["from_cents"], c["to_cents"], c.get("approved_by")) for c in changes) == [(199, 300, None), (1999, 1500, "s-manager")]
+    assert sorted((c["from_cents"], c["to_cents"], c.get("approved_by")) for c in changes) == [(199, 300, None), (1999, 1500, "00000000-0000-4000-8000-0000000000e1")]
     assert sum(1 for e in journal if e["action"] == "manager_check") == 3
     wait_until(lambda: any(e["action"] == "price_change" for ev in fm.of_type("journal.entries") for e in ev["entries"]),
                what="price_change journaled to main")

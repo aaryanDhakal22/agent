@@ -51,7 +51,7 @@ def test_refund_rules(rig):  # noqa: F811
     r = refund(term, "cash", 1)
     assert r.status_code == 403 and r.json()["code"] == "manager_required" and r.json()["action"] == "refund", r.text
     assert r.json()["limit"] == 1000 and r.json()["requested"] == 1001
-    assert refund(term, "cash", 1, manager_pin="9876").json()["payment"]["approved_by"] == "s-manager"
+    assert refund(term, "cash", 1, manager_pin="9876").json()["payment"]["approved_by"] == "00000000-0000-4000-8000-0000000000e1"
     # A manager logged in acts without a PIN.
     mgr = _manager_terminal(rig)
     assert refund(mgr, "cash", 100).status_code == 200
@@ -126,7 +126,7 @@ def test_driver_reports_and_the_close_from_a_terminal(rig):  # noqa: F811
     assert r.status_code == 200 and r.json()["closed"]["closed_at"] and r.json()["opened"]["id"] != r.json()["closed"]["id"], r.text
     entries = term.get(f"{base}/api/terminal/journal", timeout=5).json()
     close = [e for e in entries if e["action"] == "batch.close"]
-    assert close and close[0]["detail"]["approved_by"] == "s-manager"
+    assert close and close[0]["detail"]["approved_by"] == "00000000-0000-4000-8000-0000000000e1"
     # The closed batch's reports are still there.
     closed_id = r.json()["closed"]["id"]
     assert term.get(f"{base}/api/terminal/reports/drivers?batch={closed_id}", timeout=5).json()["batch_id"] == closed_id
