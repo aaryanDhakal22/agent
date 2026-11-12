@@ -505,13 +505,18 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Connection", "keep-alive")
 	w.Header().Set("X-Accel-Buffering", "no") // disable nginx proxy buffering
 
+	// Subscribe BEFORE the headers go out: a client treats the stream as
+	// connected on the headers and refetches the floor then, so an event
+	// published between its refetch and a later Subscribe would be lost to it
+	// (§2.10aa: a placed online order reaches Quibase only as order.updated,
+	// no ring and no re-announce). Subscribed first, it waits in the channel.
+	ch, unsubscribe := s.broker.Subscribe()
+	defer unsubscribe()
+
 	// Write the SSE headers immediately — some clients wait for them before
 	// treating the stream as connected.
 	w.WriteHeader(http.StatusOK)
 	flusher.Flush()
-
-	ch, unsubscribe := s.broker.Subscribe()
-	defer unsubscribe()
 	if d, ok := ctx.Value(deviceCtxKey{}).(*device.Device); ok {
 		switch d.Kind {
 		case device.KindTablet:
