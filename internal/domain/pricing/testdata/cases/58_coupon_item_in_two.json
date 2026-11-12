@@ -571,19 +571,14 @@
   }
  },
  "expect": {
-  "discounts": [
-   {
-    "amount_cents": 349,
-    "type": "coupon"
-   }
-  ],
+  "discounts": [],
   "error_codes": [
    "coupon_fit"
   ],
   "error_messages": [
    "8\" Sub Combo: a line in it is already in another coupon."
   ],
-  "subtotal_cents": 1448,
+  "subtotal_cents": 1099,
   "tax_cents": 66,
   "total_cents": 1165
  },
@@ -607,7 +602,6 @@
     "name": "8\" Sub Combo",
     "price_cents": 1099,
     "regular_cents": 1448,
-    "saved_cents": 349,
     "total_cents": 1099,
     "units": [
      {
@@ -644,14 +638,7 @@
    }
   ],
   "delivery_fee_cents": 0,
-  "discounts": [
-   {
-    "amount_cents": 349,
-    "deal_id": "00000000-0000-0000-0000-000000000ee1",
-    "label": "8\" Sub Combo",
-    "type": "coupon"
-   }
-  ],
+  "discounts": [],
   "errors": [
    {
     "code": "coupon_fit",
@@ -661,7 +648,6 @@
   ],
   "lines": [
    {
-    "coupon_cents": 1099,
     "deal_id": "",
     "index": 0,
     "mods": [
@@ -670,36 +656,34 @@
     "name": "Cheesesteak",
     "qty": 1,
     "regular_cents": null,
-    "total_cents": 899,
+    "total_cents": 1099,
     "unit_cents": 899
    },
    {
-    "coupon_cents": 0,
     "deal_id": "",
     "index": 1,
     "mods": [],
     "name": "French Fries",
     "qty": 1,
     "regular_cents": null,
-    "total_cents": 399,
+    "total_cents": 0,
     "unit_cents": 399
    },
    {
-    "coupon_cents": 0,
     "deal_id": "",
     "index": 2,
     "mods": [],
     "name": "Coke Can",
     "qty": 1,
     "regular_cents": null,
-    "total_cents": 150,
+    "total_cents": 0,
     "unit_cents": 150
    }
   ],
   "nudges": [],
-  "saved_cents": 349,
+  "saved_cents": 0,
   "service_fee_cents": 0,
-  "subtotal_cents": 1448,
+  "subtotal_cents": 1099,
   "tax_cents": 66,
   "tip_cents": 0,
   "total_cents": 1165,

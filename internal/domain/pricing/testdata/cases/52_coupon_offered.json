@@ -571,7 +571,6 @@
     "name": "8\" Sub Combo",
     "price_cents": 1099,
     "regular_cents": 1448,
-    "saved_cents": 349,
     "total_cents": 1099
    }
   ],
@@ -582,7 +581,7 @@
   "tax_cents": 87,
   "total_cents": 1535
  },
- "name": "Coupons: an order that fully fits a coupon gets it offered (lines it would take, savings)",
+ "name": "Coupons: an order that fully fits a coupon gets it offered (the lines it would take, its price)",
  "quote": {
   "card_fee_cents": 0,
   "coupon_offers": [
@@ -601,7 +600,6 @@
     "name": "8\" Sub Combo",
     "price_cents": 1099,
     "regular_cents": 1448,
-    "saved_cents": 349,
     "total_cents": 1099
    }
   ],

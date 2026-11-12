@@ -152,6 +152,16 @@ type LineItem struct {
 	MenuItemID string `json:"menu_item_id,omitempty"`
 	PrinterID  string `json:"printer_id,omitempty"`
 	Routing    string `json:"routing,omitempty"` // matched | unmatched | unassigned | none | "" (pre-routing)
+
+	// Coupons (terminal orders, the owner 2026-11-12: a coupon is not a
+	// discount, it re-prices its lines): Coupon is the coupon's name on a
+	// line sold in one, CouponNo which coupon of the order it is (1 = the
+	// first applied; two of the same coupon are told apart), RungCents the
+	// cart line's own unit price (its unit_price is the coupon's), which an
+	// edit keeps. Top-level lines only; "" / 0 otherwise.
+	Coupon    string `json:"coupon,omitempty"`
+	CouponNo  int    `json:"coupon_no,omitempty"`
+	RungCents int64  `json:"rung_cents,omitempty"`
 }
 
 // Portions and modes (LineItem.Portion / Mode).

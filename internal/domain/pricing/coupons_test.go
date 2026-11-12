@@ -31,7 +31,7 @@ func TestCouponPartsOverlap(t *testing.T) {
 		Parts: []Part{{Families: []string{sub, fries}, Qty: 1}, {Families: []string{sub}, Qty: 1}}}}
 	cart.Lines = cart.Lines[:2] // the sub ($8.99) and fries ($3.99)
 	q := Price(ctx, cart, at)
-	if len(q.CouponOffers) != 1 || q.CouponOffers[0].SavedCents != 298 {
+	if len(q.CouponOffers) != 1 || q.CouponOffers[0].RegularCents-q.CouponOffers[0].TotalCents != 298 {
 		t.Fatalf("offers %+v", q.CouponOffers)
 	}
 	cart.Coupons = []CartCoupon{{ID: "x", Lines: []int{1, 0}}}
@@ -59,6 +59,22 @@ func TestCouponBadLines(t *testing.T) {
 		if len(q.Coupons) != 0 || len(q.Warnings) != 1 || len(q.Errors) != 0 {
 			t.Fatalf("%v: coupons %d, warnings %v, errors %v", lines, len(q.Coupons), q.Warnings, q.Errors)
 		}
+	}
+}
+
+// upcharge_over: only some of the part's own families; all of them = none.
+func TestCouponUpchargeOverValid(t *testing.T) {
+	d := Deal{Kind: DealCoupon, Name: "C", PriceCents: 100, Parts: []Part{{Families: []string{"a", "b"}, Qty: 1, UpchargeOver: []string{"c"}}}}
+	if err := d.Validate(); err == nil {
+		t.Fatal("a base family outside the part was taken")
+	}
+	d.Parts[0].UpchargeOver = []string{"a", "b", "a"}
+	if err := d.Validate(); err != nil || d.Parts[0].UpchargeOver != nil {
+		t.Fatalf("every family as the base: %v %v", err, d.Parts[0].UpchargeOver)
+	}
+	d.Parts[0].UpchargeOver = []string{"a", "a"}
+	if err := d.Validate(); err != nil || len(d.Parts[0].UpchargeOver) != 1 {
+		t.Fatalf("one base: %v %v", err, d.Parts[0].UpchargeOver)
 	}
 }
 

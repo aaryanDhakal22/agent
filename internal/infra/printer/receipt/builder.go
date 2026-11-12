@@ -252,6 +252,7 @@ func buildFull(snap order.Snapshot, sc storeconfig.StoreContext, reroutedFrom st
 	if delivery { // the driver's copy: $0 choices main keeps off it
 		snap.Items = driverItems(snap.Items)
 	}
+	snap.Items = couponOrder(snap.Items)
 	if prefs.Format == order.FormatCondensed {
 		writeCondensedItems(w, nl, snap.Items, sp, delivery)
 	}
@@ -264,6 +265,9 @@ func buildFull(snap order.Snapshot, sc storeconfig.StoreContext, reroutedFrom st
 		}
 		w(separator())
 		nl()
+		if couponStarts(snap.Items, i) {
+			writeCouponHeader(w, nl, item.Coupon)
+		}
 		itemSum := int64(item.Quantity) * item.UnitPrice
 		size := strings.TrimSpace(item.Size)
 		w(cmdBoldOn)
@@ -663,6 +667,9 @@ func writeCondensedItems(w func(string), nl func(), items []order.LineItem, sp o
 		if i > 0 {
 			w(feedDots(sp.ItemItem))
 		}
+		if couponStarts(items, i) {
+			writeCouponHeader(w, nl, item.Coupon)
+		}
 		sum := int64(item.Quantity) * item.UnitPrice
 		for _, mod := range item.Children {
 			sum += mod.UnitPrice * int64(max(mod.Quantity, 1))
@@ -761,4 +768,56 @@ func driverItems(items []order.LineItem) []order.LineItem {
 		out[i] = it
 	}
 	return out
+}
+
+// Coupons (the owner, 2026-11-12): a coupon re-prices its lines (never a
+// discount line); the receipt prints the coupon's name over its lines, which
+// sit together.
+
+// couponOrder moves each coupon's lines up next to its first one (the rest
+// keep their order).
+func couponOrder(items []order.LineItem) []order.LineItem {
+	has := false
+	for _, it := range items {
+		has = has || it.Coupon != ""
+	}
+	if !has {
+		return items
+	}
+	out := make([]order.LineItem, 0, len(items))
+	done := map[int]bool{}
+	for i, it := range items {
+		if it.Coupon == "" {
+			out = append(out, it)
+			continue
+		}
+		if done[i] {
+			continue
+		}
+		for j := i; j < len(items); j++ {
+			if !done[j] && items[j].Coupon != "" && items[j].CouponNo == it.CouponNo && items[j].Coupon == it.Coupon {
+				out = append(out, items[j])
+				done[j] = true
+			}
+		}
+	}
+	return out
+}
+
+// couponStarts: line i is the first of its coupon's lines.
+func couponStarts(items []order.LineItem, i int) bool {
+	it := items[i]
+	if it.Coupon == "" {
+		return false
+	}
+	return i == 0 || items[i-1].Coupon != it.Coupon || items[i-1].CouponNo != it.CouponNo
+}
+
+// writeCouponHeader is the band over a coupon's lines: "** 8" Sub Combo **".
+func writeCouponHeader(w func(string), nl func(), name string) {
+	w(cmdBoldOn)
+	w(cmdLeft)
+	w(printable(truncRunes("** "+strings.TrimSpace(name)+" **", lineWidth)))
+	w(cmdBoldOff)
+	nl()
 }

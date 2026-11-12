@@ -572,22 +572,17 @@
   }
  },
  "expect": {
-  "discounts": [
-   {
-    "amount_cents": 100,
-    "type": "coupon"
-   }
-  ],
+  "discounts": [],
   "errors": [],
   "lines": [
    {
-    "coupon_cents": 1849
+    "total_cents": 1849
    },
    {
-    "coupon_cents": 0
+    "total_cents": 0
    }
   ],
-  "subtotal_cents": 1949,
+  "subtotal_cents": 1849,
   "tax_cents": 111,
   "total_cents": 1960
  },
@@ -610,7 +605,6 @@
     "name": "14\" Pizza Deal",
     "price_cents": 1499,
     "regular_cents": 1949,
-    "saved_cents": 100,
     "total_cents": 1849,
     "units": [
      {
@@ -647,18 +641,10 @@
    }
   ],
   "delivery_fee_cents": 0,
-  "discounts": [
-   {
-    "amount_cents": 100,
-    "deal_id": "00000000-0000-0000-0000-000000000ee2",
-    "label": "14\" Pizza Deal",
-    "type": "coupon"
-   }
-  ],
+  "discounts": [],
   "errors": [],
   "lines": [
    {
-    "coupon_cents": 1849,
     "deal_id": "",
     "index": 0,
     "mods": [
@@ -670,25 +656,24 @@
     "name": "Cheese Pizza",
     "qty": 1,
     "regular_cents": null,
-    "total_cents": 1649,
+    "total_cents": 1849,
     "unit_cents": 1649
    },
    {
-    "coupon_cents": 0,
     "deal_id": "",
     "index": 1,
     "mods": [],
     "name": "Coke Can",
     "qty": 2,
     "regular_cents": null,
-    "total_cents": 300,
+    "total_cents": 0,
     "unit_cents": 150
    }
   ],
   "nudges": [],
-  "saved_cents": 100,
+  "saved_cents": 0,
   "service_fee_cents": 0,
-  "subtotal_cents": 1949,
+  "subtotal_cents": 1849,
   "tax_cents": 111,
   "tip_cents": 0,
   "total_cents": 1960,

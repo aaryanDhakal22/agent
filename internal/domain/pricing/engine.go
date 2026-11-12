@@ -221,10 +221,16 @@ type engine struct {
 	ctx    Context
 	items  map[string]menuview.BuildItem
 	groups map[string]menuview.BuildGroup
+	cheap  map[string]cheap // coupons' base prices (family set + size)
+}
+
+type cheap struct {
+	price int64
+	ok    bool
 }
 
 func newEngine(ctx Context) *engine {
-	e := &engine{ctx: ctx, items: map[string]menuview.BuildItem{}, groups: map[string]menuview.BuildGroup{}}
+	e := &engine{ctx: ctx, items: map[string]menuview.BuildItem{}, groups: map[string]menuview.BuildGroup{}, cheap: map[string]cheap{}}
 	for _, c := range ctx.Menu.Categories {
 		for _, it := range c.Items {
 			if _, dup := e.items[it.ID]; !dup {
@@ -739,8 +745,9 @@ func Price(ctx Context, cart Cart, at time.Time) Quote {
 			taxAt[i] = len(lineTax)
 			lineTax = append(lineTax, taxed{p.unit * int64(qty), e.rate(p.rateItem)})
 			// A price-changed line is left out of the automatic deals and
-			// coupons: the cashier's price is the line's price.
-			if p.bankItem != "" && len(p.issues) == 0 && p.list == nil {
+			// coupons: the cashier's price is the line's price. A kept price
+			// (the Pi's, KeepPrice) stays in them.
+			if p.bankItem != "" && len(p.issues) == 0 && (p.list == nil || (line.KeepPrice && ctx.PriceOverrides)) {
 				clines[i] = e.couponLine(p, qty)
 			}
 			continue
@@ -801,19 +808,20 @@ func Price(ctx Context, cart Cart, at time.Time) Quote {
 	if len(q.Lines) == 0 {
 		issue(IssueEmpty, "Your order is empty.", nil)
 	}
-	for _, l := range q.Lines {
-		q.SubtotalCents += l.TotalCents
-	}
-	sub := q.SubtotalCents
 
-	// Coupons: the cashier's, then the offers on the units left.
-	couponOff := e.coupons(&q, cart, clines, at, issue)
+	// Coupons: the cashier's (they re-price their lines: not a discount),
+	// then the offers on the units left.
+	e.coupons(&q, cart, clines, at, issue)
 	for i, c := range clines {
 		if c.taxCut != 0 && taxAt[i] >= 0 {
 			lineTax[taxAt[i]].total -= c.taxCut
 		}
 	}
-	food := sub - couponOff
+	for _, l := range q.Lines {
+		q.SubtotalCents += l.TotalCents
+	}
+	sub := q.SubtotalCents
+	food := sub
 	// The units left for the automatic deals (a coupon's units take none).
 	var units []unit
 	for _, c := range clines {
@@ -991,9 +999,9 @@ func Price(ctx Context, cart Cart, at time.Time) Quote {
 		q.ServiceFeeCents = st.ServiceFeeCents + Pct(after, st.ServiceFeeBps)
 	}
 
-	// Tax: each rate's share of the food after discounts (a coupon's units
-	// at their coupon prices; the other discounts spread over the rates by
-	// their share of the rest), plus the service fee at the store rate.
+	// Tax: each rate's share of the food after discounts (the lines as sold,
+	// a coupon's units at their coupon prices; the discounts spread over the
+	// rates by their share), plus the service fee at the store rate.
 	// Delivery is untaxed.
 	byRate := map[int]int64{}
 	var rates []int
@@ -1004,7 +1012,7 @@ func Price(ctx Context, cart Cart, at time.Time) Quote {
 		byRate[lt.rate] += lt.total
 	}
 	sort.Ints(rates)
-	off := sub - after - couponOff
+	off := sub - after
 	var spread int64
 	for k, r := range rates {
 		gross := byRate[r]

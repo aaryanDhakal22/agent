@@ -581,36 +581,25 @@
  },
  "expect": {
   "coupon_offers": null,
-  "discounts": [
-   {
-    "amount_cents": 449,
-    "deal_id": "00000000-0000-0000-0000-000000000ee1",
-    "type": "coupon"
-   },
-   {
-    "amount_cents": 199,
-    "deal_id": "00000000-0000-0000-0000-000000000ee3",
-    "type": "coupon"
-   }
-  ],
+  "discounts": [],
   "errors": [],
   "lines": [
    {
-    "coupon_cents": 1998
+    "total_cents": 1998
    },
    {
-    "coupon_cents": 0
+    "total_cents": 0
    },
    {},
    {
-    "coupon_cents": 0
+    "total_cents": 0
    },
    {
-    "coupon_cents": 1399
+    "total_cents": 1399
    }
   ],
-  "saved_cents": 648,
-  "subtotal_cents": 4195,
+  "saved_cents": 0,
+  "subtotal_cents": 3547,
   "tax_cents": 255,
   "total_cents": 3802
  },
@@ -634,7 +623,6 @@
     "name": "8\" Sub Combo",
     "price_cents": 1099,
     "regular_cents": 1548,
-    "saved_cents": 449,
     "total_cents": 1099,
     "units": [
      {
@@ -683,7 +671,6 @@
     "name": "Wings + Fries",
     "price_cents": 1399,
     "regular_cents": 1598,
-    "saved_cents": 199,
     "total_cents": 1399,
     "units": [
      {
@@ -710,24 +697,10 @@
    }
   ],
   "delivery_fee_cents": 0,
-  "discounts": [
-   {
-    "amount_cents": 449,
-    "deal_id": "00000000-0000-0000-0000-000000000ee1",
-    "label": "8\" Sub Combo",
-    "type": "coupon"
-   },
-   {
-    "amount_cents": 199,
-    "deal_id": "00000000-0000-0000-0000-000000000ee3",
-    "label": "Wings + Fries",
-    "type": "coupon"
-   }
-  ],
+  "discounts": [],
   "errors": [],
   "lines": [
    {
-    "coupon_cents": 1998,
     "deal_id": "",
     "index": 0,
     "mods": [
@@ -736,18 +709,17 @@
     "name": "Cheesesteak",
     "qty": 2,
     "regular_cents": null,
-    "total_cents": 1798,
+    "total_cents": 1998,
     "unit_cents": 899
    },
    {
-    "coupon_cents": 0,
     "deal_id": "",
     "index": 1,
     "mods": [],
     "name": "French Fries",
     "qty": 2,
     "regular_cents": null,
-    "total_cents": 798,
+    "total_cents": 0,
     "unit_cents": 399
    },
    {
@@ -761,32 +733,30 @@
     "unit_cents": 150
    },
    {
-    "coupon_cents": 0,
     "deal_id": "",
     "index": 3,
     "mods": [],
     "name": "Coke Bottle",
     "qty": 1,
     "regular_cents": null,
-    "total_cents": 250,
+    "total_cents": 0,
     "unit_cents": 250
    },
    {
-    "coupon_cents": 1399,
     "deal_id": "",
     "index": 4,
     "mods": [],
     "name": "Wings 10pc",
     "qty": 1,
     "regular_cents": null,
-    "total_cents": 1199,
+    "total_cents": 1399,
     "unit_cents": 1199
    }
   ],
   "nudges": [],
-  "saved_cents": 648,
+  "saved_cents": 0,
   "service_fee_cents": 0,
-  "subtotal_cents": 4195,
+  "subtotal_cents": 3547,
   "tax_cents": 255,
   "tip_cents": 0,
   "total_cents": 3802,

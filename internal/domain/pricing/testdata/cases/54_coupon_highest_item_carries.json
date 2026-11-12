@@ -589,7 +589,6 @@
     "name": "8\" Sub Combo",
     "price_cents": 1099,
     "regular_cents": 1523,
-    "saved_cents": 349,
     "total_cents": 1174,
     "units": [
      {
@@ -625,28 +624,21 @@
     ]
    }
   ],
-  "discounts": [
-   {
-    "amount_cents": 349,
-    "deal_id": "00000000-0000-0000-0000-000000000ee1",
-    "label": "8\" Sub Combo",
-    "type": "coupon"
-   }
-  ],
+  "discounts": [],
   "errors": [],
   "lines": [
    {
-    "coupon_cents": 1174
+    "total_cents": 1174
    },
    {
-    "coupon_cents": 0
+    "total_cents": 0
    },
    {
-    "coupon_cents": 150
+    "total_cents": 150
    }
   ],
-  "saved_cents": 349,
-  "subtotal_cents": 1673,
+  "saved_cents": 0,
+  "subtotal_cents": 1324,
   "tax_cents": 79,
   "total_cents": 1403
  },
@@ -670,7 +662,6 @@
     "name": "8\" Sub Combo",
     "price_cents": 1099,
     "regular_cents": 1523,
-    "saved_cents": 349,
     "total_cents": 1174,
     "units": [
      {
@@ -707,18 +698,10 @@
    }
   ],
   "delivery_fee_cents": 0,
-  "discounts": [
-   {
-    "amount_cents": 349,
-    "deal_id": "00000000-0000-0000-0000-000000000ee1",
-    "label": "8\" Sub Combo",
-    "type": "coupon"
-   }
-  ],
+  "discounts": [],
   "errors": [],
   "lines": [
    {
-    "coupon_cents": 1174,
     "deal_id": "",
     "index": 0,
     "mods": [
@@ -728,36 +711,34 @@
     "name": "Cheesesteak",
     "qty": 1,
     "regular_cents": null,
-    "total_cents": 974,
+    "total_cents": 1174,
     "unit_cents": 974
    },
    {
-    "coupon_cents": 0,
     "deal_id": "",
     "index": 1,
     "mods": [],
     "name": "French Fries",
     "qty": 1,
     "regular_cents": null,
-    "total_cents": 399,
+    "total_cents": 0,
     "unit_cents": 399
    },
    {
-    "coupon_cents": 150,
     "deal_id": "",
     "index": 2,
     "mods": [],
     "name": "Coke Can",
     "qty": 2,
     "regular_cents": null,
-    "total_cents": 300,
+    "total_cents": 150,
     "unit_cents": 150
    }
   ],
   "nudges": [],
-  "saved_cents": 349,
+  "saved_cents": 0,
   "service_fee_cents": 0,
-  "subtotal_cents": 1673,
+  "subtotal_cents": 1324,
   "tax_cents": 79,
   "tip_cents": 0,
   "total_cents": 1403,

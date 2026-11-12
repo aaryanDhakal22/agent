@@ -1025,6 +1025,7 @@ func (s *Service) placeOrder(ctx context.Context, a Actor, in OrderIn) (*PlaceRe
 	journal = append(journal, priceEntries(a, st, p.changes, approver, id)...)
 	journal = append(journal, customEntries(a, st, p, id, nil)...)
 	journal = append(journal, rungEntries(a, st, p, id, nil)...)
+	journal = append(journal, couponEntries(a, st, p, id, nil)...)
 	if p.manualCents > 0 {
 		journal = append(journal, discountEntry(a, st, in.Cart.Discount, p, dNeed, approver, id))
 	}

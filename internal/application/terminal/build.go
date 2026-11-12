@@ -209,7 +209,8 @@ func priceChanges(c pricing.Cart, q pricing.Quote) []terminal.PriceChange {
 
 // buildItems turns the priced cart into order lines, as main builds a
 // channel order's (orderport build): one line per item with its options as
-// children (portion / mode kept), a bundle deal's picks as lines of their own
+// children (portion / mode kept; a cart line with units in coupons: one line
+// per price it sold at, pricing.SoldGroups), a bundle deal's picks as lines of their own
 // ("Combo: <deal>") with the difference to the deal price as a discount (or
 // fee), and each line's kitchen printer from the counter menu's routes
 // (the line keeps the menu's item name: a route's name is its printer's).
@@ -260,7 +261,30 @@ func buildItems(menu *terminal.CounterMenu, p priced) (items []order.LineItem, o
 			continue
 		}
 		if l.DealID == "" {
-			lines = append(lines, lineOf(pricing.Resolve(p.ctx, l.Selection, 0), qty, strings.TrimSpace(l.Note), len(lines)))
+			// A coupon re-prices its units (never a discount): one order
+			// line per price the cart line sold at, the coupon's lines
+			// carrying its name (receipts print it over them).
+			r := pricing.Resolve(p.ctx, l.Selection, 0)
+			for _, g := range pricing.SoldGroups(p.quote, i, qty) {
+				if g.Coupon < 0 {
+					lines = append(lines, lineOf(r, g.Qty, strings.TrimSpace(l.Note), len(lines)))
+					continue
+				}
+				rc := r
+				rc.Options = pricing.FreeOptions(r.Options, g.FreeMods)
+				b := lineOf(rc, g.Qty, strings.TrimSpace(l.Note), len(lines))
+				var mods int64
+				for _, c := range b.item.Children {
+					mods += c.UnitPrice
+				}
+				b.item.UnitPrice = g.UnitCents - mods
+				b.item.LineTotal = g.UnitCents * int64(g.Qty)
+				b.item.Coupon, b.item.CouponNo = g.Name, g.Coupon+1
+				if i < len(p.quote.Lines) {
+					b.item.RungCents = p.quote.Lines[i].UnitCents
+				}
+				lines = append(lines, b)
+			}
 			continue
 		}
 		var deal *pricing.Deal

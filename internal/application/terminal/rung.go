@@ -29,6 +29,10 @@ import (
 //     halves included) and become a custom line the same way when gone.
 //   - A cart that no longer prices now (a deal window ended) is priced at
 //     the order's placed time instead, when that works (sent orders only).
+//   - A kept price is the engine's keep_price: the line stays in its coupon
+//     (a coupon re-prices it again) and in the automatic deals. A line sold
+//     in a coupon keeps its own price (the order line's rung_cents), never
+//     the coupon's.
 
 // Rung is what a terminal got for a cart line from its first quote.
 type Rung struct {
@@ -198,7 +202,12 @@ func storedRungs(snap order.Snapshot, c Cart, ctx pricing.Context) map[string][]
 		case l.DealID != "":
 			idx += len(l.Picks)
 		default:
+			// One order line per price the cart line sold at (its units in
+			// coupons apart, build.go): they add up to its quantity.
 			idx++
+			for n, want := max(it.Quantity, 1), min(max(l.Qty, 1), 50); n < want && idx < len(snap.Items) && snap.Items[idx].Coupon != ""; idx++ {
+				n += max(snap.Items[idx].Quantity, 1)
+			}
 			r := pricing.Resolve(ctx, l.Selection, 0)
 			if goneReason(ctx, l) == "" && (r.Name != it.Name || r.SizeName != it.Size) {
 				return nil // the lines don't match: keep today's prices
@@ -212,9 +221,14 @@ func storedRungs(snap order.Snapshot, c Cart, ctx pricing.Context) map[string][]
 					mods = append(mods, ch.Name)
 				}
 			}
+			// A line sold in a coupon keeps its own price (rung_cents), not
+			// the coupon's: the coupon re-prices it again.
+			unit := it.LineTotal / int64(max(it.Quantity, 1))
+			if it.Coupon != "" && it.RungCents > 0 {
+				unit = it.RungCents
+			}
 			k := lineKey(l)
-			out[k] = append(out[k], rungAt{unit: it.LineTotal / int64(max(it.Quantity, 1)), name: it.Name, mods: mods,
-				from: terminal.RungFromOrder})
+			out[k] = append(out[k], rungAt{unit: unit, name: it.Name, mods: mods, from: terminal.RungFromOrder})
 		}
 	}
 	return out
@@ -355,6 +369,7 @@ func priceRung(menu *terminal.CounterMenu, tz *time.Location, typ string, cur *o
 		}
 		base := min(max(r.unit-(res.UnitCents-res.BaseCents), 0), pricing.MaxOpenPriceCents)
 		cart.Lines[i].PriceCents = &base
+		cart.Lines[i].KeepPrice = true // a kept price stays in its coupon (and the automatic deals)
 		implicit[i] = true
 		kept = append(kept, terminal.KeptPrice{Line: i, ItemID: l.ItemID, Name: ql.Name, MenuCents: ql.UnitCents, RungCents: r.unit, From: r.from})
 	}
@@ -421,6 +436,53 @@ func rungEntries(a Actor, st terminal.Staff, p priced, orderID string, keptCusto
 		out = append(out, terminal.Entry{StaffID: st.ID, DeviceID: a.DeviceID, Action: terminal.ActionPriceKept, OrderID: orderID,
 			Detail: detail(map[string]any{"line": k.Line, "item_id": k.ItemID, "name": k.Name, "menu_cents": k.MenuCents,
 				"rung_cents": k.RungCents, "qty": qty})})
+	}
+	return out
+}
+
+// couponEntries journals the order's coupons: each applied one the order
+// didn't have (before = the coupon ids of the order's earlier cart, nil for
+// a new order) and each earlier one an edit took off.
+func couponEntries(a Actor, st terminal.Staff, p priced, orderID string, before []string) []terminal.Entry {
+	left := map[string]int{}
+	for _, id := range before {
+		left[id]++
+	}
+	var out []terminal.Entry
+	for _, c := range p.quote.Coupons {
+		if left[c.ID] > 0 {
+			left[c.ID]--
+			continue
+		}
+		out = append(out, terminal.Entry{StaffID: st.ID, DeviceID: a.DeviceID, Action: terminal.ActionCouponApplied, OrderID: orderID,
+			Detail: detail(map[string]any{"deal_id": c.ID, "name": c.Name, "lines": c.Lines, "total_cents": c.TotalCents})})
+	}
+	for _, id := range before {
+		if left[id] == 0 {
+			continue
+		}
+		left[id]--
+		name := ""
+		for _, d := range p.ctx.Deals {
+			if d.ID == id {
+				name = d.Name
+			}
+		}
+		out = append(out, terminal.Entry{StaffID: st.ID, DeviceID: a.DeviceID, Action: terminal.ActionCouponRemoved, OrderID: orderID,
+			Detail: detail(map[string]any{"deal_id": id, "name": name})})
+	}
+	return out
+}
+
+// cartCoupons are a stored cart's coupon ids (an edit's "before").
+func cartCoupons(snap order.Snapshot) []string {
+	c, ok := storedCart(snap)
+	if !ok {
+		return nil
+	}
+	out := []string{}
+	for _, cc := range c.Coupons {
+		out = append(out, cc.ID)
 	}
 	return out
 }

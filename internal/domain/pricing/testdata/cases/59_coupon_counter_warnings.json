@@ -591,7 +591,6 @@
     "name": "14\" Pizza Deal",
     "price_cents": 1499,
     "regular_cents": 1599,
-    "saved_cents": 100,
     "total_cents": 1499
    }
   ],
@@ -604,7 +603,7 @@
   "warnings": [
    "A coupon in the order has ended.",
    "Friday Pizza isn't available right now.",
-   "Two sodas doesn't save anything on this order."
+   "Two sodas costs more than its items on this order."
   ]
  },
  "name": "Coupons on the counter: ended, not on now and no saving are warnings, not applied; the order's fit is offered",
@@ -625,7 +624,6 @@
     "name": "14\" Pizza Deal",
     "price_cents": 1499,
     "regular_cents": 1599,
-    "saved_cents": 100,
     "total_cents": 1499
    }
   ],
@@ -676,7 +674,7 @@
   "warnings": [
    "A coupon in the order has ended.",
    "Friday Pizza isn't available right now.",
-   "Two sodas doesn't save anything on this order."
+   "Two sodas costs more than its items on this order."
   ]
  }
 }

@@ -217,13 +217,18 @@ type Deal struct {
 // Part is one part of a coupon: Qty items whose family is one of Families
 // (item family ids) and, when Sizes names any, at one of those sizes (size
 // ids), each with up to RegularModsIncluded regular mods free (the cheapest
-// ones).
+// ones). UpchargeOver (some of Families; none = no upcharge) are the part's
+// base families: a unit of another of its families pays its own price over
+// the cheapest base item at its size on top of the coupon (an 8" Sub Combo
+// at $13.99 takes an 8" specialty sub at $13.99 + its price − the cheapest
+// regular 8" sub's); a unit whose size no base item has doesn't fit.
 type Part struct {
 	Label               string   `json:"label"`
 	Families            []string `json:"families"`
 	Sizes               []string `json:"sizes,omitempty"`
 	Qty                 int      `json:"qty"`
 	RegularModsIncluded int      `json:"regular_mods_included"`
+	UpchargeOver        []string `json:"upcharge_over,omitempty"`
 }
 
 // Schedule limits a deal to days ("mon".."sun") and a time of day (HH:MM, store time).
@@ -332,6 +337,12 @@ type Line struct {
 	// rate, never in a deal. Its other fields are ignored.
 	Custom bool   `json:"custom,omitempty"`
 	Name   string `json:"name,omitempty"`
+	// KeepPrice: with PriceCents on a set-price item (Context.PriceOverrides
+	// only), the price is the Pi's kept price (the line keeps the price it
+	// was rung at, agent §2.10u), not a cashier's price change: the line
+	// stays in coupons and the automatic deals. Its quote line still has
+	// list_cents.
+	KeepPrice bool `json:"keep_price,omitempty"`
 }
 
 // Custom lines (Line.Custom).
@@ -360,9 +371,10 @@ type Quote struct {
 	// (the counter's missed required group: code option_rules). Each one's
 	// message is in Warnings too. Absent when there are none.
 	LineWarnings []Issue `json:"line_warnings,omitempty"`
-	// Coupons are the cart's coupons that apply (absent when none);
+	// Coupons are the cart's coupons that apply (absent when none): they
+	// re-price their lines (each line's total_cents), never a discount;
 	// CouponOffers the live coupons the units not in a coupon fully fit,
-	// best savings first (absent when none).
+	// the most off the units' own prices first (absent when none).
 	Coupons      []AppliedCoupon `json:"coupons,omitempty"`
 	CouponOffers []CouponOffer   `json:"coupon_offers,omitempty"`
 }
@@ -376,21 +388,22 @@ type AppliedCoupon struct {
 	Card         []string     `json:"card"`
 	PriceCents   int64        `json:"price_cents"`
 	Lines        []int        `json:"lines"`
-	RegularCents int64        `json:"regular_cents"` // the units at their own prices
+	RegularCents int64        `json:"regular_cents"` // the units at their own prices (never shown as a saving)
 	TotalCents   int64        `json:"total_cents"`   // the units in the coupon
-	SavedCents   int64        `json:"saved_cents"`
 	Units        []CouponUnit `json:"units"`
 }
 
 // CouponUnit is one unit in a coupon, in part order: the carrier's ItemCents
-// is the coupon price (the others' 0); ModsCents its charged mods (+ a half
-// and half upcharge); FreeMods the free regular mods' labels.
+// is the coupon price (the others' 0), plus the unit's UpchargeCents (its
+// part's upcharge_over); ModsCents its charged mods (+ a half and half
+// upcharge); FreeMods the free regular mods' labels.
 type CouponUnit struct {
-	Line         int      `json:"line"`
-	Part         int      `json:"part"`
-	Carrier      bool     `json:"carrier"`
-	ItemCents    int64    `json:"item_cents"`
-	ModsCents    int64    `json:"mods_cents"`
+	Line          int      `json:"line"`
+	Part          int      `json:"part"`
+	Carrier       bool     `json:"carrier"`
+	ItemCents     int64    `json:"item_cents"`
+	UpchargeCents int64    `json:"upcharge_cents,omitempty"`
+	ModsCents     int64    `json:"mods_cents"`
 	FreeMods     []string `json:"free_mods"`
 	UnitCents    int64    `json:"unit_cents"`
 	RegularCents int64    `json:"regular_cents"`
@@ -406,7 +419,6 @@ type CouponOffer struct {
 	Lines        []int    `json:"lines"`
 	RegularCents int64    `json:"regular_cents"`
 	TotalCents   int64    `json:"total_cents"`
-	SavedCents   int64    `json:"saved_cents"`
 }
 
 type QuoteLine struct {
@@ -414,8 +426,8 @@ type QuoteLine struct {
 	Name         string   `json:"name"`
 	Mods         []string `json:"mods"`
 	Qty          int      `json:"qty"`
-	UnitCents    int64    `json:"unit_cents"`
-	TotalCents   int64    `json:"total_cents"`
+	UnitCents    int64    `json:"unit_cents"`  // the item's own price (with its options)
+	TotalCents   int64    `json:"total_cents"` // the line as sold: a coupon's units at their coupon prices (Quote.Coupons)
 	RegularCents *int64   `json:"regular_cents"` // a bundle: what its picks cost on their own
 	DealID       string   `json:"deal_id"`
 	// ListCents: a price change (Selection.PriceCents on a set-price item):
@@ -424,13 +436,10 @@ type QuoteLine struct {
 	ListCents *int64 `json:"list_cents,omitempty"`
 	// Custom: a custom line (Line.Custom). Absent otherwise.
 	Custom bool `json:"custom,omitempty"`
-	// CouponCents: the line's total once its units in coupons are priced in
-	// them. Absent when no unit of the line is in a coupon.
-	CouponCents *int64 `json:"coupon_cents,omitempty"`
 }
 
 type Discount struct {
-	Type        string `json:"type"` // deal | code | cash | coupon
+	Type        string `json:"type"` // deal | code | cash (a coupon is never a discount)
 	DealID      string `json:"deal_id"`
 	Label       string `json:"label"`
 	AmountCents int64  `json:"amount_cents"`

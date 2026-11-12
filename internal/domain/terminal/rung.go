@@ -21,6 +21,11 @@ const (
 	// terminal config took the person off, switched them off or changed
 	// their PIN {reason, device_name?}.
 	ActionSessionEnded = "session.ended"
+	// ActionCouponApplied / ActionCouponRemoved: a coupon on a placed order,
+	// or taken off it by an edit (the owner, 2026-11-12: a coupon re-prices
+	// its lines, it is not a discount) {deal_id, name, lines?, total_cents?}.
+	ActionCouponApplied = "coupon.applied"
+	ActionCouponRemoved = "coupon.removed"
 )
 
 // Where a kept price came from.

@@ -315,6 +315,7 @@ func (s *Service) changeCart(ctx context.Context, a Actor, id string, in ChangeI
 		entries = append(entries, priceEntries(a, st, p.changes, approver, id)...)
 		entries = append(entries, customEntries(a, st, p, id, keptCustom(cur.Order))...)
 		entries = append(entries, rungEntries(a, st, p, id, keptCustom(cur.Order))...)
+		entries = append(entries, couponEntries(a, st, p, id, cartCoupons(cur.Order))...)
 		entries[0].Detail = detail(d)
 		return &snap, entries, nil
 	})

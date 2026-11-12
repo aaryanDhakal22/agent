@@ -588,30 +588,23 @@
     "name": "8\" Sub Combo",
     "price_cents": 1099,
     "regular_cents": 1548,
-    "saved_cents": 449,
     "total_cents": 1099
    }
   ],
-  "discounts": [
-   {
-    "amount_cents": 199,
-    "deal_id": "00000000-0000-0000-0000-000000000ee3",
-    "type": "coupon"
-   }
-  ],
+  "discounts": [],
   "errors": [],
   "lines": [
    {},
    {
-    "coupon_cents": 399
+    "total_cents": 399
    },
    {},
    {},
    {
-    "coupon_cents": 1399
+    "total_cents": 1399
    }
   ],
-  "subtotal_cents": 4195,
+  "subtotal_cents": 3996,
   "tax_cents": 282,
   "total_cents": 4278
  },
@@ -634,7 +627,6 @@
     "name": "8\" Sub Combo",
     "price_cents": 1099,
     "regular_cents": 1548,
-    "saved_cents": 449,
     "total_cents": 1099
    }
   ],
@@ -653,7 +645,6 @@
     "name": "Wings + Fries",
     "price_cents": 1399,
     "regular_cents": 1598,
-    "saved_cents": 199,
     "total_cents": 1399,
     "units": [
      {
@@ -680,14 +671,7 @@
    }
   ],
   "delivery_fee_cents": 0,
-  "discounts": [
-   {
-    "amount_cents": 199,
-    "deal_id": "00000000-0000-0000-0000-000000000ee3",
-    "label": "Wings + Fries",
-    "type": "coupon"
-   }
-  ],
+  "discounts": [],
   "errors": [],
   "lines": [
    {
@@ -703,14 +687,13 @@
     "unit_cents": 899
    },
    {
-    "coupon_cents": 399,
     "deal_id": "",
     "index": 1,
     "mods": [],
     "name": "French Fries",
     "qty": 2,
     "regular_cents": null,
-    "total_cents": 798,
+    "total_cents": 399,
     "unit_cents": 399
    },
    {
@@ -734,21 +717,20 @@
     "unit_cents": 250
    },
    {
-    "coupon_cents": 1399,
     "deal_id": "",
     "index": 4,
     "mods": [],
     "name": "Wings 10pc",
     "qty": 1,
     "regular_cents": null,
-    "total_cents": 1199,
+    "total_cents": 1399,
     "unit_cents": 1199
    }
   ],
   "nudges": [],
-  "saved_cents": 199,
+  "saved_cents": 0,
   "service_fee_cents": 0,
-  "subtotal_cents": 4195,
+  "subtotal_cents": 3996,
   "tax_cents": 282,
   "tip_cents": 0,
   "total_cents": 4278,

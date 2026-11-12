@@ -301,6 +301,23 @@ func (d *Deal) validCoupon() error {
 		if len(p.Families) == 0 || p.Qty < 1 || p.Qty > MaxCouponPartQty || p.RegularModsIncluded < 0 || p.RegularModsIncluded > MaxCouponFreeMods {
 			return badDeal("every coupon part needs families, 1–10 items and 0–20 free regular mods")
 		}
+		base := []string{}
+		for _, f := range p.UpchargeOver {
+			if !contains(p.Families, f) {
+				return badDeal("a part's upcharge_over families are some of its own families")
+			}
+			if !contains(base, f) {
+				base = append(base, f)
+			}
+		}
+		p.UpchargeOver = base
+		all := true
+		for _, f := range p.Families {
+			all = all && contains(base, f)
+		}
+		if len(base) == 0 || all {
+			p.UpchargeOver = nil // every unit is in the base: no upcharge
+		}
 	}
 	// A coupon's own fields only (none of the other kinds').
 	d.Slots, d.Eligible, d.Qty, d.EachCents, d.N, d.Pct, d.Code, d.AmountCents, d.FirstOrderOnly, d.MinSubtotalCents = nil, nil, 0, 0, 0, 0, "", 0, false, 0
