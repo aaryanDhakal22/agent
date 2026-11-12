@@ -56,6 +56,9 @@ class FakeMain:
         # "invalid" here, never forwarded): the sync-stall rule's tests.
         self.refuse: set[str] = set()
         self.refused: list[dict] = []  # every event answered "invalid" here
+        # Floor event types answered "applied" here without asking main (an
+        # event about an order only the Pi has, e.g. a resent online order).
+        self.accept: set[str] = set()
         self._streams: list = []
         self._lock = threading.Lock()
         outer = self
@@ -88,7 +91,7 @@ class FakeMain:
                 body = self.rfile.read(n) if n else None
                 if method == "POST" and self.path == "/store/v1/agent/rpc" and body:
                     env = json.loads(body)
-                    if env.get("type") == "floor.events" and outer.refuse:
+                    if env.get("type") == "floor.events" and (outer.refuse or outer.accept):
                         return self._floor_refusing(env, dict(self.headers))
                     if env.get("type") == "floor.events":
                         with outer._lock:
@@ -125,8 +128,11 @@ class FakeMain:
 
             def _floor_refusing(self, env: dict, headers: dict) -> None:
                 events = env["payload"]["events"]
-                keep = [e for e in events if e.get("type") not in outer.refuse]
+                keep = [e for e in events if e.get("type") not in outer.refuse and e.get("type") not in outer.accept]
                 results = [{"event_id": e["event_id"], "result": "invalid"} for e in events if e.get("type") in outer.refuse]
+                results += [{"event_id": e["event_id"], "result": "applied"} for e in events if e.get("type") in outer.accept]
+                with outer._lock:
+                    outer.events.extend(e for e in events if e.get("type") in outer.accept)
                 with outer._lock:
                     outer.events.extend(keep)
                     outer.refused.extend(e for e in events if e.get("type") in outer.refuse)

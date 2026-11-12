@@ -81,6 +81,10 @@ def test_online_cash_pickup_paid_at_the_terminal(rig):  # noqa: F811
     agent, term, fm = rig["agent"], rig["term"], rig["fm"]
     base = agent.base
     ev = Events(base, term)
+    # The online order exists only on this Pi (resent through the web UI):
+    # dev main would answer its payment not_found, which the Pi now keeps and
+    # holds the order's later events behind (contract 2.10s §3).
+    fm.accept = {"order.payment"}
     try:
         oid = arrive_online(rig)
         delivery = arrive_online(rig, "delivery")
