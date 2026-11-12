@@ -57,6 +57,9 @@ func TestStoredOrder_TippableAndSource(t *testing.T) {
 		}
 	}
 	so.Order.Source = "online"
+	if c := (StoredOrder{Order: Snapshot{Source: SourceCounter}}); c.SourceLabel() != "counter" {
+		t.Errorf("counter label %s", c.SourceLabel())
+	}
 	if so.SourceLabel() != "online" {
 		t.Errorf("online label %s", so.SourceLabel())
 	}

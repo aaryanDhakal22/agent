@@ -53,8 +53,11 @@ func TestRegisterLiveAndAcceptHistogram(t *testing.T) {
 			return []FloorCount{{State: "new", Source: "online", N: 2}, {State: "cooking", Source: "web", N: 3}}, nil
 		},
 		TabletsConnected: func() int { return 1 },
-		Hub:              func() (HubLink, bool) { return hub() },
-		Version:          "2.1.1",
+		TerminalsConnected: func(context.Context) map[string]int {
+			return map[string]int{"Counter A": 1, "Counter B": 0}
+		},
+		Hub:     func() (HubLink, bool) { return hub() },
+		Version: "2.1.1",
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -65,6 +68,15 @@ func TestRegisterLiveAndAcceptHistogram(t *testing.T) {
 	ms.FloorAcceptSeconds.Record(context.Background(), 42, metricWithSource("online"))
 
 	got := collect(t, reader)
+
+	// terminal.connected (CM-2): each paired terminal, 1/0.
+	tc := map[string]int64{}
+	for _, p := range intGauge(t, got["terminal.connected"]) {
+		tc[attr(p.Attributes, "device")] = p.Value
+	}
+	if len(tc) != 2 || tc["Counter A"] != 1 || tc["Counter B"] != 0 {
+		t.Fatalf("terminal.connected = %v", tc)
+	}
 
 	// floor.orders.open: every state x source, zero-filled.
 	pts := intGauge(t, got["floor.orders.open"])

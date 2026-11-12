@@ -17,8 +17,10 @@ import (
 )
 
 const (
-	printerPort   = "9100"
-	detectTimeout = 3 * time.Second
+	printerPort = "9100"
+	// detectTimeout: a busy printer (one connection at a time) can be slow
+	// to accept the probe's (L-5: was 3 s).
+	detectTimeout = 5 * time.Second
 	printTimeout  = 10 * time.Second
 
 	tracerName = "quiccpos/agent/escpos"
@@ -28,12 +30,18 @@ const (
 // mutable at runtime — mobile flips it via the update endpoint — so every
 // read goes through the mutex. Reads happen on the hot paths (Detect, Print),
 // writes are rare (manual IP updates), so an RWMutex is the right shape.
+//
+// line (R-7) lets one connection at a time reach the printer: concurrent
+// accepts, terminal prints and the health probe used to open parallel TCP
+// connections to one raw-print port, which many ESC/POS printers drop or
+// interleave.
 type ESCPOSPrinter struct {
 	mu     sync.RWMutex
 	ip     string
 	name   string
 	logger zerolog.Logger
 	tracer trace.Tracer
+	line   chan struct{}
 }
 
 func New(ip string, name string, logger zerolog.Logger) *ESCPOSPrinter {
@@ -42,6 +50,17 @@ func New(ip string, name string, logger zerolog.Logger) *ESCPOSPrinter {
 		name:   name,
 		logger: logger.With().Str("module", "escpos-printer").Str("printer_name", name).Logger(),
 		tracer: otel.Tracer(tracerName),
+		line:   make(chan struct{}, 1),
+	}
+}
+
+// take waits for the printer's line (or ctx); release with the returned func.
+func (p *ESCPOSPrinter) take(ctx context.Context) (func(), error) {
+	select {
+	case p.line <- struct{}{}:
+		return func() { <-p.line }, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
 	}
 }
 
@@ -75,23 +94,34 @@ func (p *ESCPOSPrinter) Detect(ctx context.Context) error {
 	}
 	addr := dialAddr(ip)
 
-	ctx, span := p.tracer.Start(ctx, "escpos.detect",
-		trace.WithAttributes(
-			attribute.String("printer.name", p.name),
-			attribute.String("printer.ip", ip),
-			attribute.String("net.peer.addr", addr),
-		),
-	)
-	defer span.End()
+	// The 25 s health probe is no trace of its own (L-5: one root trace per
+	// printer per probe); a detect inside a print job is a child span.
+	if trace.SpanFromContext(ctx).SpanContext().IsValid() {
+		var span trace.Span
+		ctx, span = p.tracer.Start(ctx, "escpos.detect",
+			trace.WithAttributes(
+				attribute.String("printer.name", p.name),
+				attribute.String("printer.ip", ip),
+				attribute.String("net.peer.addr", addr),
+			),
+		)
+		defer span.End()
+	}
+	span := trace.SpanFromContext(ctx)
 
-	p.logger.Debug().Ctx(ctx).Str("addr", addr).Msg("Dialing printer for detection")
+	release, err := p.take(ctx)
+	if err != nil {
+		return fmt.Errorf("%w: %s: %v", printer.ErrPrinterUnreachable, addr, err)
+	}
+	defer release()
 
-	dialer := net.Dialer{Timeout: detectTimeout}
-	conn, err := dialer.DialContext(ctx, "tcp", addr)
+	conn, err := dial(ctx, detectTimeout, addr)
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "dial failed")
-		p.logger.Error().Ctx(ctx).Err(err).Str("addr", addr).Msg("Printer unreachable")
+		// Debug: a printer that is off logs every probe otherwise (L-5);
+		// the health check warns once when it goes down.
+		p.logger.Debug().Ctx(ctx).Err(err).Str("addr", addr).Msg("Printer unreachable")
 		return fmt.Errorf("%w: %s: %v", printer.ErrPrinterUnreachable, addr, err)
 	}
 	conn.Close()
@@ -118,8 +148,14 @@ func (p *ESCPOSPrinter) Print(ctx context.Context, job printer.PrintJob) error {
 
 	p.logger.Debug().Ctx(ctx).Str("addr", addr).Msg("Connecting for print job")
 
-	dialer := net.Dialer{Timeout: printTimeout}
-	conn, err := dialer.DialContext(ctx, "tcp", addr)
+	release, err := p.take(ctx)
+	if err != nil {
+		span.RecordError(err)
+		return fmt.Errorf("%w: waiting for the printer: %v", printer.ErrPrintFailed, err)
+	}
+	defer release()
+
+	conn, err := dial(ctx, printTimeout, addr)
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "dial failed")
@@ -144,6 +180,13 @@ func (p *ESCPOSPrinter) Print(ctx context.Context, job printer.PrintJob) error {
 
 	p.logger.Info().Ctx(ctx).Str("addr", addr).Int("bytes", n).Msg("Receipt sent to printer")
 	return nil
+}
+
+// dial opens the TCP connection to a printer (a var: tests count the
+// connections open at once).
+var dial = func(ctx context.Context, timeout time.Duration, addr string) (net.Conn, error) {
+	d := net.Dialer{Timeout: timeout}
+	return d.DialContext(ctx, "tcp", addr)
 }
 
 // dialAddr turns a configured printer address into host:port: a bare IP/host

@@ -6,6 +6,8 @@ import (
 	"errors"
 	"io"
 	"net"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -94,4 +96,47 @@ func TestSetIPTakesEffect(t *testing.T) {
 	case <-time.After(3 * time.Second):
 		t.Fatal("no job")
 	}
+}
+
+// R-7: one connection at a time per printer — concurrent jobs and probes
+// queue instead of opening parallel connections to the raw-print port.
+func TestOneConnectionAtATime(t *testing.T) {
+	addr, _, stop := fakePrinter(t)
+	defer stop()
+	var open, peak atomic.Int32
+	orig := dial
+	dial = func(ctx context.Context, timeout time.Duration, a string) (net.Conn, error) {
+		c, err := orig(ctx, timeout, a)
+		if err != nil {
+			return nil, err
+		}
+		n := open.Add(1)
+		for p := peak.Load(); n > p && !peak.CompareAndSwap(p, n); p = peak.Load() {
+		}
+		time.Sleep(10 * time.Millisecond) // widen the window
+		return &countedConn{Conn: c, open: &open}, nil
+	}
+	t.Cleanup(func() { dial = orig })
+	p := New(addr, "Kitchen", zerolog.Nop())
+	var wg sync.WaitGroup
+	for i := 0; i < 6; i++ {
+		wg.Add(2)
+		go func() { defer wg.Done(); _ = p.Print(context.Background(), printer.PrintJob{Commands: []byte("x")}) }()
+		go func() { defer wg.Done(); _ = p.Detect(context.Background()) }()
+	}
+	wg.Wait()
+	if peak.Load() != 1 {
+		t.Fatalf("peak parallel connections %d, want 1", peak.Load())
+	}
+}
+
+type countedConn struct {
+	net.Conn
+	open *atomic.Int32
+	once sync.Once
+}
+
+func (c *countedConn) Close() error {
+	c.once.Do(func() { c.open.Add(-1) })
+	return c.Conn.Close()
 }

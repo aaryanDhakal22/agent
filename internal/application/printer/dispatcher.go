@@ -58,6 +58,16 @@ type Dispatcher struct {
 	statusHook func(up bool, msg string)
 	// rules (SetRules) are the store's print switches, read per job.
 	rules func() Rules
+	// downAfter (SetDownAfter): printer_down_after_seconds, read per probe.
+	downAfter func() time.Duration
+}
+
+// SetDownAfter wires how long a printer must fail without a break before it
+// counts as down (printer_down_after_seconds; call before the first Apply).
+func (d *Dispatcher) SetDownAfter(f func() time.Duration) {
+	d.mu.Lock()
+	d.downAfter = f
+	d.mu.Unlock()
 }
 
 // SetRules wires the store's print switches (kitchen-ticket toggles + the
@@ -166,6 +176,7 @@ func (d *Dispatcher) Apply(ctx context.Context, printers []storeconfig.PrinterCo
 		dev := d.factory(p.Name, p.IP)
 		svc := NewService(dev, d.registry, d.logger, d.meters)
 		svc.onStatus = d.statusHook
+		svc.downAfter = d.downAfter
 		if hook := d.probeHook; hook != nil {
 			id := p.ID
 			svc.onProbe = func(ctx context.Context, ip string, up bool) { hook(ctx, id, ip, up) }
@@ -211,7 +222,7 @@ func (d *Dispatcher) ExecuteMode(ctx context.Context, snap order.Snapshot, mode 
 	}
 
 	if len(roster) == 0 {
-		d.meters.OrdersPrintFailed.Add(ctx, 1, metric.WithAttributes(attribute.String("reason", "no_printer")))
+		d.meters.OrdersPrintFailed.Add(ctx, 1, metric.WithAttributes(attribute.String("reason", "no_printer"), attribute.String("source", sourceLabel(snap))))
 		return printer.Outcome{}, ErrNoPrintersAvailable
 	}
 	entries := make([]RosterEntry, len(roster))
@@ -249,7 +260,7 @@ func (d *Dispatcher) ExecuteMode(ctx context.Context, snap order.Snapshot, mode 
 				reason = "no_printer"
 			}
 		}
-		d.meters.OrdersPrintFailed.Add(ctx, 1, metric.WithAttributes(attribute.String("reason", reason)))
+		d.meters.OrdersPrintFailed.Add(ctx, 1, metric.WithAttributes(attribute.String("reason", reason), attribute.String("source", sourceLabel(snap))))
 	}
 	if len(out.Printed) == 0 {
 		if lastErr == nil {
@@ -286,6 +297,10 @@ func (d *Dispatcher) printTicket(ctx context.Context, snap order.Snapshot, t pri
 			res.PrintedOn = sl.entry.Name
 			res.ReroutedFrom = tk.ReroutedFrom
 			if i > 0 {
+				if d.meters.TicketsRerouted != nil {
+					d.meters.TicketsRerouted.Add(ctx, 1, metric.WithAttributes(
+						attribute.String("source", sourceLabel(snap)), attribute.String("kind", ticketKindLabel(t))))
+				}
 				d.logger.Warn().Ctx(ctx).Str("order_id", snap.ID).Str("intended", target.entry.Name).
 					Str("printed_on", sl.entry.Name).Str("kind", string(t.Kind)).Msg("ticket rerouted — intended printer failed")
 			}
@@ -297,6 +312,26 @@ func (d *Dispatcher) printTicket(ctx context.Context, snap order.Snapshot, t pri
 	}
 	res.Err = lastErr.Error()
 	return res, lastErr
+}
+
+// sourceLabel is an order's metrics source (CM-12): counter | web | online.
+func sourceLabel(snap order.Snapshot) string {
+	return order.StoredOrder{Order: snap}.SourceLabel()
+}
+
+// ticketKindLabel is orders.tickets.rerouted's kind (CM-7): change (a change
+// or type-change ticket), void, receipt (the customer receipt or a full
+// legacy ticket) or station.
+func ticketKindLabel(t printer.Ticket) string {
+	switch {
+	case t.Void:
+		return "void"
+	case t.Change:
+		return "change"
+	case t.Kind == printer.TicketStation:
+		return "station"
+	}
+	return "receipt"
 }
 
 // candidates orders the printers to try for a job aimed at target: the
