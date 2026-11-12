@@ -137,14 +137,18 @@ func DueOf(so order.StoredOrder) int64 {
 	return max(so.Status.CashDueCents, 0)
 }
 
-// OnPickupList: a pickup of the open batch that isn't done with - not
-// voided / cancelled, accepted, ready or scheduled (an online order still
-// ringing isn't on it), and still owing money or not picked up yet.
+// OnPickupList: a pickup that still owes money - not voided / cancelled,
+// accepted, ready or scheduled (an online order still ringing isn't on it),
+// with something left to collect (the owner, 2026-11-12: a pickup leaves the
+// list as soon as it is fully paid, so the terminal needs no Picked Up key;
+// unpaid ones stay until paid, carried over a close). A pickup paid in full
+// before it reaches the counter (a card online) is never on it. Picked up
+// (POST .../picked-up) still finishes an order for older callers.
 func OnPickupList(so order.StoredOrder) bool {
 	if !IsPickup(so) || !OnPickupStates(so) {
 		return false
 	}
-	return DueOf(so) > 0 || so.Status.FinishedAt == nil
+	return DueOf(so) > 0
 }
 
 // OnPickupStates: accepted, ready or scheduled (the states a pickup is on

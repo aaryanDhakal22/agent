@@ -66,15 +66,20 @@ func TestOnlineCashPickupPaidAtTheTerminalThenPickedUp(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// Every source that still owes money; no delivery, and the card pickup (paid online) isn't on it (the
+	// owner, 2026-11-12: fully paid = off the list).
 	list := pickupIDs(t, r)
-	if _, ok := list[deliv.Order.ID]; ok || len(list) != 3 {
-		t.Fatalf("every pickup source, no delivery: %d", len(list))
+	if _, ok := list[deliv.Order.ID]; ok || len(list) != 2 {
+		t.Fatalf("every pickup source that owes, no delivery: %d", len(list))
+	}
+	if _, ok := list[counter.Order.Order.ID]; !ok {
+		t.Fatal("the unpaid counter pickup is on it")
 	}
 	if so := list[cash.Order.ID]; so.Status.CashDueCents != 2000 || so.Status.Paid {
 		t.Fatalf("cash pickup due: %+v", so.Status)
 	}
-	if so := list[card.Order.ID]; so.Status.CashDueCents != 0 || !so.Status.Paid {
-		t.Fatalf("card pickup paid: %+v", so.Status)
+	if _, ok := list[card.Order.ID]; ok {
+		t.Fatal("a paid card pickup is not on the list")
 	}
 	// Not handed over while money is due.
 	var due *terminal.CashDue
@@ -103,6 +108,10 @@ func TestOnlineCashPickupPaidAtTheTerminalThenPickedUp(t *testing.T) {
 	}
 	if r.pub.count(EventOrderPaid) != 1 {
 		t.Fatal("terminal.order.paid")
+	}
+	// Fully paid: off the Pickup list at once (no Picked Up needed).
+	if _, ok := pickupIDs(t, r)[cash.Order.ID]; ok {
+		t.Fatal("paid = off the list")
 	}
 	if len(journalOf(t, r, terminal.ActionPayment)) != 1 {
 		t.Fatal("payment journaled")
