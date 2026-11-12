@@ -13,4 +13,12 @@ const (
 	// the Pi {square_payment_id, amount_cents, refund_id?, status?, ok, code?}.
 	// (The terminal journals its own setup.card_test.)
 	ActionSetupCardRefund = "setup.card_refund"
+	// ActionSquareKeyed: a typed card's payment created through main
+	// (contract 2.10r §2) {amount_cents, tip_cents, reference_id,
+	// idempotency_key, staff_id, ok, square_payment_id?, code?, square_code?}.
+	// Never the card or the nonce.
+	ActionSquareKeyed = "square.keyed_payment"
+	// ActionSquareSession: a terminal asked for the reader's Square sign-in
+	// (§2.10r §1) {ok, code?} (never the token).
+	ActionSquareSession = "square.session"
 )

@@ -571,6 +571,23 @@ func (s *Server) handleTerminalTestRefund(w http.ResponseWriter, r *http.Request
 		if res == nil {
 			res = map[string]any{}
 		}
+		if ok, has := res["ok"].(bool); has && !ok {
+			// main's refusal is an answer {ok: false, code} (main §2.5e).
+			code, _ := res["code"].(string)
+			record(false, map[string]any{"code": code})
+			status := http.StatusPaymentRequired // square_refused
+			switch code {
+			case "square_not_linked":
+				status = http.StatusConflict
+			case "not_a_test_charge":
+				status = http.StatusBadRequest
+			}
+			if _, has := res["error"]; !has {
+				res["error"] = "Square refused the refund."
+			}
+			s.writeJSON(w, status, res)
+			return
+		}
 		res["ok"] = true
 		record(true, map[string]any{"refund_id": res["refund_id"], "status": res["status"]})
 		s.writeJSON(w, http.StatusOK, res)

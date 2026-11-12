@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"quiccpos/agent/internal/application/squareterm"
 	"strconv"
 	"strings"
 
@@ -17,7 +18,10 @@ import (
 // /api/terminal/*, a paired terminal's key or the web-UI session ("web").
 
 // SetTerminal wires the terminal service (/api/terminal/*).
-func (s *Server) SetTerminal(t *terminalApp.Service) { s.terminalSvc = t }
+func (s *Server) SetTerminal(t *terminalApp.Service) {
+	s.terminalSvc = t
+	s.wireSquare()
+}
 
 // actor is the terminal a request came from (the web session is "web").
 func actor(r *http.Request) terminalApp.Actor {
@@ -52,6 +56,7 @@ func (s *Server) terminalError(w http.ResponseWriter, r *http.Request, err error
 	var due *terminal.CashDue
 	var kr *terminal.KeyReused
 	var pf *terminal.PaidFirst
+	var sqRef *squareterm.Refused
 	switch {
 	case errors.As(err, &kr):
 		s.writeJSON(w, http.StatusConflict, map[string]any{"error": err.Error(), "code": "key_reused", "client_key": kr.ClientKey, "order_id": kr.OrderID})
@@ -112,6 +117,26 @@ func (s *Server) terminalError(w http.ResponseWriter, r *http.Request, err error
 		s.writeJSON(w, http.StatusConflict, errCodeMap(err.Error(), "too_many_addresses"))
 	case errors.Is(err, terminalApp.ErrCustomersOff):
 		s.writeJSON(w, http.StatusServiceUnavailable, errCodeMap(err.Error(), "customers_unavailable"))
+	case errors.As(err, &sqRef):
+		// A refund through Square refused (contract 2.10r §4): 402
+		// refund_failed {message, square_code}; nothing recorded.
+		body := map[string]any{"error": sqRef.Message, "message": sqRef.Message, "code": sqRef.Code}
+		if sqRef.Code == "card_declined" || sqRef.Code == "square_refused" {
+			body["code"] = "refund_failed"
+		}
+		if sqRef.SquareCode != "" {
+			body["square_code"] = sqRef.SquareCode
+		}
+		status := sqRef.HTTPStatus()
+		if status == http.StatusBadGateway {
+			status = http.StatusPaymentRequired
+		}
+		s.writeJSON(w, status, body)
+	case errors.Is(err, squareterm.ErrUnreachable), errors.Is(err, squareterm.ErrNotLinked), errors.Is(err, squareterm.ErrUnsupported),
+		errors.Is(err, terminalApp.ErrSquareUnavailable):
+		// No answer from Square / main: not recorded; the manager tries
+		// again (the same client_key = the same Square refund).
+		s.writeJSON(w, http.StatusServiceUnavailable, errCodeMap("No answer from Square: the refund is not recorded. Try again.", "square_unavailable"))
 	case errors.Is(err, terminal.ErrNotCounterOrder), errors.Is(err, order.ErrNotFound):
 		s.writeJSON(w, http.StatusNotFound, errCodeMap("no such counter order", "not_found"))
 	default:

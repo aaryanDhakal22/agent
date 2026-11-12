@@ -1,0 +1,9 @@
+{
+  "about": "The shared test vector of the terminal's Square session (contract/agent.md 2.10r): the Pi seals, the terminal (SquareChannel.kt openSession) opens. The same file is in agent internal/application/squareterm/testdata and terminal android/app/src/test/resources; keep them byte-identical.",
+  "device_key": "qagt_TestVector_SquareSession_0001",
+  "info": "quicc square session",
+  "hkdf_key_hex": "0dfe6eced059e3cd30243ec58901eb12fbb4989a1f2b09f0c20fe89244a7a00e",
+  "access_token": "EAAAl-quicc-shared-test-vector-token",
+  "nonce": "obLD1OX2BxgpOktc",
+  "access_token_enc": "8rOUYy7zUEiyweLz/lWSK7iIFGL5OnTLx0Up+GG9rJxR1rFaUpxGNfB8mWXKP8QNU3V8Jg=="
+}

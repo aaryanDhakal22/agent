@@ -508,7 +508,38 @@ type Payment struct {
 	// BatchID (00033): the batch the payment was taken in (a carried check's
 	// later payment counts on that batch's Z).
 	BatchID int64 `json:"batch_id,omitempty"`
+	// Square's answer for an in-app card payment (contract 2.10r, table
+	// payment_cards): kept, returned and printed; never a card number.
+	CardInfo
 }
+
+// CardInfo is what Square answered for a card the terminal's reader or
+// manual entry took (contract 2.10r §3), or for a refund given through
+// Square (§4).
+type CardInfo struct {
+	AuthCode            string            `json:"auth_code,omitempty"`
+	Entry               string            `json:"entry,omitempty"` // contactless | chip | swiped | keyed
+	EMV                 map[string]string `json:"emv,omitempty"`   // application_label, aid, cvm
+	SquarePaymentID     string            `json:"square_payment_id,omitempty"`
+	SquareReceiptNumber string            `json:"square_receipt_number,omitempty"`
+	// A refund through Square: Square's refund id + the Pi payment it gave
+	// money back on.
+	SquareRefundID string `json:"square_refund_id,omitempty"`
+	RefundOf       string `json:"refund_of,omitempty"`
+}
+
+// Empty reports whether nothing about the card is known.
+func (c CardInfo) Empty() bool {
+	return c.AuthCode == "" && c.Entry == "" && len(c.EMV) == 0 && c.SquarePaymentID == "" && c.SquareReceiptNumber == "" &&
+		c.SquareRefundID == "" && c.RefundOf == ""
+}
+
+// Card entries (CardInfo.Entry).
+var CardEntries = map[string]bool{"contactless": true, "chip": true, "swiped": true, "keyed": true}
+
+// EMVKeys are the EMV labels a payment may carry (Square's SDK gives no
+// TVR / IAD / ARC).
+var EMVKeys = map[string]bool{"application_label": true, "aid": true, "cvm": true}
 
 // Refund kinds (Payment.RefundKind).
 const (
@@ -577,8 +608,12 @@ func (p Payment) Wire() map[string]any {
 	if p.StaffID != "" {
 		staff = p.StaffID
 	}
+	ref := p.Ref
+	if p.SquareRefundID != "" { // a refund through Square: its refund id
+		ref = p.SquareRefundID
+	}
 	m := map[string]any{"id": p.ID, "method": p.Tender, "amount_cents": amount, "tip_cents": tip, "last4": p.Last4,
-		"auth_code": "", "ref": p.Ref, "at": p.At.UTC().Truncate(time.Millisecond), "staff_id": staff}
+		"auth_code": p.AuthCode, "ref": ref, "at": p.At.UTC().Truncate(time.Millisecond), "staff_id": staff}
 	// Hardening (main §2.5zd): the batch it was taken in (a carried check's
 	// later payment), the tap's key, the approving manager, the payment a
 	// tip / refund is about.
@@ -593,6 +628,9 @@ func (p Payment) Wire() map[string]any {
 	}
 	if p.Ref != "" && p.AmountCents == 0 { // a tip added afterwards points at its card payment
 		m["refund_of"] = p.Ref
+	}
+	if p.RefundOf != "" { // a refund through Square: the payment it gave money back on
+		m["refund_of"] = p.RefundOf
 	}
 	return m
 }
@@ -672,7 +710,8 @@ var reserved = map[string]bool{ActionLogin: true, ActionLoginFailed: true, Actio
 	ActionVoidWaste: true, ActionUnsettled: true, ActionPairingCode: true, ActionPinLockout: true,
 	ActionMenuGoneLine: true, ActionPriceKept: true, ActionSessionEnded: true, ActionCouponApplied: true, ActionCouponRemoved: true,
 	ActionSendOut: true, ActionDriverBack: true, ActionOrderTime: true,
-	ActionPairingAdminCode: true, ActionTerminalPrint: true, ActionSetupCardRefund: true}
+	ActionPairingAdminCode: true, ActionTerminalPrint: true, ActionSetupCardRefund: true, ActionSquareKeyed: true,
+	ActionSquareSession: true}
 
 var actionRe = regexp.MustCompile(`^[a-z][a-z0-9_.]{1,39}$`)
 

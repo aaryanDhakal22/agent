@@ -86,6 +86,8 @@ type Service struct {
 	approvals approvalBook
 	// dispatch: the Dispatch / Pickup bars' floor (dispatch.go).
 	dispatch Dispatch
+	// square: refunds of in-app card payments through main (square_refund.go).
+	square SquareRefunder
 }
 
 // NewService wires the terminal flow; the store's config changes reach the
@@ -776,6 +778,42 @@ type PaymentIn struct {
 	Outside  bool `json:"outside"`
 	// Approvals (X-5): single-use manager approvals instead of manager_pin.
 	Approvals []string `json:"approvals,omitempty"`
+	// Square's answer for a card the terminal's reader or manual entry took
+	// (contract 2.10r §3; card / manual_card, ignored on other tenders). On a
+	// refund, square_payment_id picks which Square payment gives the money
+	// back (else the order's newest one of that tender that can).
+	AuthCode            string            `json:"auth_code,omitempty"`
+	Entry               string            `json:"entry,omitempty"`
+	EMV                 map[string]string `json:"emv,omitempty"`
+	SquarePaymentID     string            `json:"square_payment_id,omitempty"`
+	SquareReceiptNumber string            `json:"square_receipt_number,omitempty"`
+}
+
+// cardInfo checks the Square fields of a card payment.
+func (p PaymentIn) cardInfo() (terminal.CardInfo, error) {
+	c := terminal.CardInfo{AuthCode: strings.TrimSpace(p.AuthCode), Entry: strings.TrimSpace(p.Entry),
+		SquarePaymentID: strings.TrimSpace(p.SquarePaymentID), SquareReceiptNumber: strings.TrimSpace(p.SquareReceiptNumber)}
+	if len(c.AuthCode) > 32 || len(c.SquarePaymentID) > 192 || len(c.SquareReceiptNumber) > 32 {
+		return c, badRequest("auth_code is at most 32 characters, square_payment_id 192, square_receipt_number 32")
+	}
+	if c.Entry != "" && !terminal.CardEntries[c.Entry] {
+		return c, badRequest("entry is contactless, chip, swiped or keyed")
+	}
+	if len(p.EMV) > 0 {
+		c.EMV = map[string]string{}
+		for k, v := range p.EMV {
+			if !terminal.EMVKeys[k] || len(v) > 64 {
+				return c, badRequest("emv takes application_label, aid and cvm (at most 64 characters each)")
+			}
+			if v = strings.TrimSpace(v); v != "" {
+				c.EMV[k] = v
+			}
+		}
+		if len(c.EMV) == 0 {
+			c.EMV = nil
+		}
+	}
+	return c, nil
 }
 
 // payment checks a payment in and makes the stored one.
@@ -819,6 +857,13 @@ func (p PaymentIn) payment(a Actor, st terminal.Staff, orderID string, at time.T
 		Reason: reason, StaffID: st.ID, DeviceID: a.DeviceID, RefundKind: kind}
 	if terminal.IsCard(p.Tender) {
 		out.Brand = terminal.NormBrand(p.Brand)
+		card, err := p.cardInfo()
+		if err != nil {
+			return terminal.Payment{}, err
+		}
+		if !p.Refund { // a refund's square_payment_id names its source (squareRefund)
+			out.CardInfo = card
+		}
 	}
 	if p.Tender == terminal.TenderCash && !p.Refund {
 		out.TenderedCents = max(p.TenderedCents, p.AmountCents+p.TipCents)
@@ -1273,12 +1318,12 @@ func (s *Service) addPayment(ctx context.Context, a Actor, orderID string, in Pa
 	pay.RequestHash = hash
 	var approver *terminal.Staff
 	var need *terminal.ManagerRequired
+	var before []terminal.Payment
 	switch {
 	case pay.Refund:
 		// Decided before the transaction (a manager's PIN is a bcrypt
 		// check); the transaction checks it again.
-		before, err := s.repo.OrderPayments(ctx, orderID)
-		if err != nil {
+		if before, err = s.repo.OrderPayments(ctx, orderID); err != nil {
 			return nil, err
 		}
 		need = terminal.RefundNeed(cfg, st, before, []terminal.Payment{pay}, terminal.ActionRefund)
@@ -1294,6 +1339,13 @@ func (s *Service) addPayment(ctx context.Context, a Actor, orderID string, in Pa
 			return nil, err
 		}
 		pay.ApprovedBy = approver.ID
+	}
+	// A refund of an in-app card payment goes back through Square first
+	// (contract 2.10r §4): recorded only once Square took it.
+	if pay.Refund && pay.RefundKind == "" {
+		if err := s.squareRefund(ctx, orderID, in, &pay, before); err != nil {
+			return nil, err
+		}
 	}
 	so, got, dup, err := s.repo.AddCounterPayment(ctx, orderID, in.ClientKey, hash, func(cur order.StoredOrder, paid []terminal.Payment) ([]terminal.Payment, []terminal.Entry, error) {
 		if pay.Refund {
@@ -1321,6 +1373,9 @@ func (s *Service) addPayment(ctx context.Context, a Actor, orderID string, in Pa
 				d["goodwill"] = true
 			case terminal.RefundOutside:
 				d["outside"] = true
+			}
+			if pay.SquareRefundID != "" {
+				d["square_refund_id"], d["square_payment_id"] = pay.SquareRefundID, pay.SquarePaymentID
 			}
 		}
 		if approver != nil {

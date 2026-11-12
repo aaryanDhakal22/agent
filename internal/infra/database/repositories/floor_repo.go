@@ -1083,6 +1083,9 @@ func (r *OrderRepository) TrimBatches(ctx context.Context, keepClosed int, synce
 		if err := q.DeleteOrphanOrderPayments(ctx); err != nil {
 			return err
 		}
+		if err := deleteOrphanCards(ctx, q); err != nil { // 00040, after the payments
+			return err
+		}
 		if _, err := q.PruneJournal(ctx, fmtTS(time.Now().Add(-order.JournalRetention))); err != nil {
 			return err
 		}

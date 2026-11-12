@@ -175,6 +175,9 @@ func insertPayment(ctx context.Context, q *models.Queries, p *terminal.Payment) 
 	if err != nil {
 		return fmt.Errorf("insert payment: %w", err)
 	}
+	if err := saveCard(ctx, q, p); err != nil {
+		return err
+	}
 	if b, err := q.GetOpenBatch(ctx); err == nil {
 		p.BatchID = b.ID
 	}
@@ -206,7 +209,7 @@ func listPayments(ctx context.Context, q *models.Queries, orderID string) ([]ter
 		}
 		out = append(out, p)
 	}
-	return out, nil
+	return out, cardsOfOrder(ctx, q, orderID, out)
 }
 
 // OrderPayments are a counter order's payments and refunds, oldest first.
@@ -257,7 +260,8 @@ func applyPayments(ctx context.Context, q *models.Queries, so order.StoredOrder,
 			return snap, err
 		}
 		amt, _ := p.Signed() // a tip taken with it stays on the payment (main's rule)
-		snap.Payments = append(snap.Payments, order.PaymentSummary{Method: terminal.MethodOf(p.Tender), AmountCents: amt, Last4: p.Last4})
+		snap.Payments = append(snap.Payments, order.PaymentSummary{Method: terminal.MethodOf(p.Tender), AmountCents: amt, Last4: p.Last4,
+			AuthCode: p.AuthCode})
 	}
 	raw, err := json.Marshal(snap)
 	if err != nil {
@@ -344,8 +348,10 @@ func (r *OrderRepository) AddCounterPayment(ctx context.Context, orderID, client
 					return &terminal.KeyReused{ClientKey: clientKey, OrderID: orderID}
 				}
 				duplicate, so = true, cur
-				pay, err = paymentFromRow(row)
-				return err
+				if pay, err = paymentFromRow(row); err != nil {
+					return err
+				}
+				return cardOf(ctx, q, &pay)
 			case !errors.Is(err, sql.ErrNoRows):
 				return err
 			}
@@ -660,6 +666,9 @@ func (r *OrderRepository) PaymentByKey(ctx context.Context, orderID, key string)
 	}
 	pay, err := paymentFromRow(row)
 	if err != nil {
+		return nil, err
+	}
+	if err := cardOf(ctx, models.New(r.db), &pay); err != nil {
 		return nil, err
 	}
 	return &pay, nil

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"quiccpos/agent/internal/application/squareterm"
 	"strconv"
 	"strings"
 	"sync"
@@ -75,7 +76,8 @@ type Server struct {
 	onLinked      func(*recovery.Outcome)
 	linkMu        sync.Mutex
 	diag          DiagDeps
-	testMu        sync.Mutex // one printer test (or sample) at a time
+	square        *squareterm.Service // Square on the terminal (2.10r, server_square.go)
+	testMu        sync.Mutex          // one printer test (or sample) at a time
 	receiptSample func(prefs order.ReceiptPrefs, kind string) []byte
 	mainReach     mainProbe
 	started       time.Time

@@ -39,7 +39,7 @@ func (s *Server) handleTerminalStatus(w http.ResponseWriter, r *http.Request) {
 			db = map[string]any{"ok": false, "trouble": st.Trouble, "since": st.Since}
 		}
 	}
-	s.writeJSON(w, http.StatusOK, map[string]any{
+	out := map[string]any{
 		"db":              db,
 		"printers":        printers,
 		"printers_down":   down,
@@ -48,5 +48,10 @@ func (s *Server) handleTerminalStatus(w http.ResponseWriter, r *http.Request) {
 		"menu_fetched_at": sess.MenuFetchedAt,
 		"config_version":  sess.ConfigVersion,
 		"at":              time.Now().UTC(),
-	})
+	}
+	// Square (contract 2.10r §5): what the Pi last heard from main, never the token.
+	if sq := s.squareStatus(); sq != nil {
+		out["square"] = sq
+	}
+	s.writeJSON(w, http.StatusOK, out)
 }

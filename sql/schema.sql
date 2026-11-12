@@ -373,6 +373,13 @@ CREATE TABLE order_payments (
 CREATE INDEX idx_order_payments_order ON order_payments (order_id, at);
 CREATE INDEX idx_order_payments_batch ON order_payments (batch_id);
 CREATE INDEX idx_order_payments_drawer ON order_payments (drawer_id) WHERE drawer_id <> '';
+
+-- 00040_payment_cards: Square's answer for an in-app card payment / a refund
+-- through Square, as JSON (contract 2.10r).
+CREATE TABLE payment_cards (
+    payment_id text PRIMARY KEY,
+    card       text NOT NULL
+);
 CREATE UNIQUE INDEX idx_order_payments_key ON order_payments (order_id, client_key) WHERE client_key <> '';
 
 -- Every terminal action (login, lock, order, payment, void, no sale, ...):

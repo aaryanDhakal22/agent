@@ -53,7 +53,10 @@ type DiagDeps struct {
 }
 
 // SetDiag wires the diagnostics routes.
-func (s *Server) SetDiag(d DiagDeps) { s.diag = d }
+func (s *Server) SetDiag(d DiagDeps) {
+	s.diag = d
+	s.wireSquare()
+}
 
 func (s *Server) storeContext() storeconfig.StoreContext {
 	if s.diag.StoreCtx == nil {
