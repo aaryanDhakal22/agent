@@ -43,8 +43,8 @@ type fakeOrders struct {
 	voidLns [][]order.LineItem
 	// typeFrom: each change ticket's TypeChangedFrom ("" = the type stayed).
 	typeFrom []string
-	changed int
-	journal int
+	changed  int
+	journal  int
 }
 
 func (f *fakeOrders) PrintCounterTickets(_ context.Context, so order.StoredOrder) {
