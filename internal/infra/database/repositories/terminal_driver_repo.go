@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/google/uuid"
+
 	"quiccpos/agent/internal/domain/order"
 	"quiccpos/agent/internal/infra/database/models"
 )
@@ -195,7 +197,9 @@ func (r *OrderRepository) ClaimDelivered(ctx context.Context, driverID string, i
 
 // SetDoorTip records a tip the driver got at the door (absolute cents) on a
 // delivery of the open batch that is out or delivered (not a POS check:
-// ErrNotTippable). Nothing reaches main: no card is charged.
+// ErrNotTippable). No card is charged. A counter order's door tip goes to
+// main as order.tip {kind: door} (main keeps the tips of our own orders, the
+// owner 2026-11-12); an online / website order's stays on the Pi.
 func (r *OrderRepository) SetDoorTip(ctx context.Context, id string, cents int64) (result *order.StoredOrder, err error) {
 	ctx, _, end := dbSpan(ctx, "floor.set_door_tip")
 	defer end(&err)
@@ -215,8 +219,17 @@ func (r *OrderRepository) SetDoorTip(ctx context.Context, id string, cents int64
 			}
 			return order.ErrNotTippable
 		}
-		fresh, err = loadOrder(ctx, q, id)
-		return err
+		if fresh, err = loadOrder(ctx, q, id); err != nil {
+			return err
+		}
+		if fresh.Order.Source != order.SourceCounter {
+			return nil
+		}
+		now := time.Now()
+		ev := order.OrderTipEvent{EventID: uuid.NewString(), Type: order.FloorEventOrderTip, OrderID: id, TipCents: cents,
+			At: now.UTC().Truncate(time.Millisecond), Kind: order.TipKindDoor, DriverID: fresh.Status.DriverID,
+			DriverName: fresh.Status.DriverName}
+		return insertEvent(ctx, q, ev.EventID, id, ev.Type, now, ev)
 	})
 	if err != nil {
 		return nil, err

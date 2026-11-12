@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"quiccpos/agent/internal/domain/order"
@@ -69,6 +70,14 @@ func (r *OrderRepository) ChangeCounterOrder(ctx context.Context, id, staffID, d
 			PaidAt: paidAt, ID: id}); err != nil {
 			return fmt.Errorf("change order: %w", err)
 		}
+		// A delivery to another place (CHG-14) or a takeout moved to one: main's
+		// location of the old address is stale. Drop it here; main locates the
+		// new one and pushes order.geo again (main contract §2.5zb order.changed).
+		if deliveryMoved(cur.Order, *snap) {
+			if err := q.DeleteOrderGeo(ctx, id); err != nil {
+				return fmt.Errorf("drop old geo: %w", err)
+			}
+		}
 		if so, err = loadOrder(ctx, q, id); err != nil {
 			return err
 		}
@@ -89,6 +98,21 @@ func (r *OrderRepository) ChangeCounterOrder(ctx context.Context, id, staffID, d
 		return insertJournal(ctx, q, now, entries)
 	})
 	return so, prev, changed, err
+}
+
+// deliveryMoved: does after deliver somewhere before didn't (another street,
+// town, state or zip; a line2 or a note alone is the same place)?
+func deliveryMoved(before, after order.Snapshot) bool {
+	if after.Fulfillment.Type != "delivery" || after.Fulfillment.Address == nil {
+		return false
+	}
+	if before.Fulfillment.Type != "delivery" || before.Fulfillment.Address == nil {
+		return true
+	}
+	key := func(a *order.Address) string {
+		return strings.ToLower(strings.Join(strings.Fields(a.Line1+"|"+a.City+"|"+a.State+"|"+a.PostalCode), " "))
+	}
+	return key(before.Fulfillment.Address) != key(after.Fulfillment.Address)
 }
 
 // changedSnapshot is the changed order as main's order.changed takes it: the

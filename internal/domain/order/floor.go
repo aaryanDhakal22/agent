@@ -202,7 +202,16 @@ type OrderTipEvent struct {
 	OrderID  string    `json:"order_id"`
 	TipCents int64     `json:"tip_cents"`
 	At       time.Time `json:"at"`
+	// Kind "door" (2026-11-12): a driver's cash tip at the door on a counter
+	// order (the whole door tip, absolute); main keeps it on the order's
+	// `door_tip` payment, never charged, never in its Z check. Absent = ADD TIP.
+	Kind       string `json:"kind,omitempty"`
+	DriverID   string `json:"driver_id,omitempty"`
+	DriverName string `json:"driver_name,omitempty"`
 }
+
+// TipKindDoor is OrderTipEvent.Kind for a door tip.
+const TipKindDoor = "door"
 
 // BatchClosedEvent is the payload of a batch.closed floor event (2.5.0),
 // written by Close batch after the batch's own order events.

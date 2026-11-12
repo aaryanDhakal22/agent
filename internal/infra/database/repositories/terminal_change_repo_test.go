@@ -66,3 +66,46 @@ func TestChangeCounterOrder(t *testing.T) {
 		t.Fatalf("missing: %v", err)
 	}
 }
+
+// A sent delivery whose address changed (TERMINAL-FLOWS CHG-14) drops main's location of the old address; main
+// locates the new one and pushes order.geo again. Only line2 / notes moving keeps it (the same place).
+func TestChangedAddressDropsTheOldGeo(t *testing.T) {
+	r := newFloorRepo(t)
+	ctx := context.Background()
+	so, _ := counterOrder(t, r, "key-geo-0001", 1, 2000)
+	geoRows := func() int {
+		var n int
+		if err := r.db.QueryRowContext(ctx, `SELECT count(*) FROM order_geo WHERE order_id = ?`, so.Order.ID).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	located := func() {
+		if _, err := r.UpsertGeo(ctx, order.GeoUpdate{OrderID: so.Order.ID, State: order.GeoLocated, Lat: f64(39.40), Lng: f64(-76.60)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	to := func(a order.Address) terminal.ChangeCheck {
+		return func(cur order.StoredOrder, _ []terminal.Payment) (*order.Snapshot, []terminal.Entry, error) {
+			snap := cur.Order
+			snap.Fulfillment = order.Fulfillment{Type: "delivery", Address: &a}
+			return &snap, nil, nil
+		}
+	}
+	a := order.Address{Line1: "12 Sample Road", City: "Towson", State: "MD", PostalCode: "21204"}
+	located() // (a counter order has none; set one to see the move to a delivery drop it)
+	if _, _, _, err := r.ChangeCounterOrder(ctx, so.Order.ID, "s1", "d1", to(a)); err != nil || geoRows() != 0 {
+		t.Fatalf("moved to a delivery: %v, geo rows %d", err, geoRows())
+	}
+	located()
+	b := a
+	b.Line2, b.Notes, b.Line1 = "Apt 2", "side door", "12 sample  road"
+	if _, _, _, err := r.ChangeCounterOrder(ctx, so.Order.ID, "s1", "d1", to(b)); err != nil || geoRows() != 1 {
+		t.Fatalf("same place: %v, geo rows %d", err, geoRows())
+	}
+	c := a
+	c.Line1 = "500 York Road"
+	if _, _, _, err := r.ChangeCounterOrder(ctx, so.Order.ID, "s1", "d1", to(c)); err != nil || geoRows() != 0 {
+		t.Fatalf("another street: %v, geo rows %d", err, geoRows())
+	}
+}
