@@ -288,9 +288,9 @@ func applyPayments(ctx context.Context, q *models.Queries, so order.StoredOrder,
 		if err := insertPayment(ctx, q, p); err != nil {
 			return snap, err
 		}
-		amt, _ := p.Signed() // a tip taken with it stays on the payment (main's rule)
-		snap.Payments = append(snap.Payments, order.PaymentSummary{Method: terminal.MethodOf(p.Tender), AmountCents: amt, Last4: p.Last4,
-			AuthCode: p.AuthCode})
+		// a tip taken with it stays on the payment (main's rule), listed on the
+		// summary for the printed copies only
+		snap.Payments = append(snap.Payments, p.Summary())
 	}
 	raw, err := json.Marshal(snap)
 	if err != nil {

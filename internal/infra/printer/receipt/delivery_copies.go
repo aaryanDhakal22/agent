@@ -330,7 +330,7 @@ func deliveryTicket(p *escw, snap order.Snapshot, st deliveryStore, at time.Time
 	if last != nil {
 		p.wrapped("Payment Date Time: "+shortDate(at)+" "+shortTime(at), "  ")
 	}
-	if ref := strings.TrimSpace(snap.SourceEventID); ref != "" {
+	if ref := snap.TransactionRef(); ref != "" { // the card's processor id (Square's), else the order's key
 		p.wrapped("Transaction ID: "+ref, strings.Repeat(" ", 16))
 	}
 	p.line(strings.Repeat("-", w))
@@ -373,11 +373,19 @@ func deliveryTicket(p *escw, snap order.Snapshot, st deliveryStore, at time.Time
 	} else {
 		for _, x := range pays {
 			name := tenderName(x)
-			if x.AmountCents < 0 {
-				p.wrapped("Refund "+name+" -"+moneyC(-x.AmountCents), "  ")
+			amt := snap.TenderCents(x) // a card charge of the store's own order prints with its tip
+			switch {
+			case x.AmountCents < 0:
+				p.wrapped("Refund "+name+" -"+moneyC(-amt), "  ")
+				continue
+			case x.AmountCents == 0 && x.TipCents != 0: // a tip added to a card afterwards
+				p.wrapped(name+" tip "+moneyC(x.TipCents), "  ")
 				continue
 			}
-			p.wrapped(name+" "+moneyC(x.AmountCents), "  ")
+			p.wrapped(name+" "+moneyC(amt), "  ")
+			if e := x.EntryLabel(); e != "" && strings.ToLower(x.Method) == "card" {
+				p.wrapped(e, "  ") // MANUALLY ENTERED, SQUARE APP, CONTACTLESS …
+			}
 		}
 	}
 	p.feed(1)
@@ -605,10 +613,13 @@ func deliveryTotals(p *escw, snap order.Snapshot) {
 	if deliveryFee > 0 {
 		pair("Delivery:", moneyC(deliveryFee))
 	}
-	if m.Tip > 0 {
-		pair("Tip:", moneyC(m.Tip))
+	// The store's own orders keep their tips on the payments (main's rule):
+	// the copy shows them as the Tip and inside the Total that was charged.
+	tips := snap.PaymentTips()
+	if tip := m.Tip + tips; tip > 0 {
+		pair("Tip:", moneyC(tip))
 	}
-	total := dclean(moneyC(m.Total))
+	total := dclean(moneyC(m.Total + tips))
 	p.bold(true)
 	if len("Total:")+1+len(total) <= w/2 {
 		p.raw(gsBig)

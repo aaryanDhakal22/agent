@@ -261,6 +261,10 @@ func buildFull(snap order.Snapshot, sc storeconfig.StoreContext, reroutedFrom st
 			w("Card: ****" + card.Last4)
 			nl()
 		}
+		if e := card.EntryLabel(); e != "" { // MANUALLY ENTERED for a typed card (the terminal's words)
+			w(e)
+			nl()
+		}
 		if card.AuthCode != "" {
 			w("AuthCode: " + card.AuthCode)
 			nl()
@@ -408,8 +412,9 @@ func buildFull(snap order.Snapshot, sc storeconfig.StoreContext, reroutedFrom st
 		w(l.rightPair("Tax:", dollars(snap.Money.Tax)))
 		nl()
 	}
-	if snap.Money.Tip > 0 {
-		w(l.rightPair("Tips :", dollars(snap.Money.Tip)))
+	payTips := snap.PaymentTips() // the store's own orders: tips stay on the payments
+	if tip := snap.Money.Tip + payTips; tip > 0 {
+		w(l.rightPair("Tips :", dollars(tip)))
 		nl()
 	}
 	for _, d := range snap.Money.Discounts {
@@ -422,7 +427,7 @@ func buildFull(snap order.Snapshot, sc storeconfig.StoreContext, reroutedFrom st
 			nl()
 		}
 	}
-	w(l.rightPair("Total:", dollars(snap.Money.Total)))
+	w(l.rightPair("Total:", dollars(snap.Money.Total+payTips)))
 
 	nl()
 	w(l.rule("-"))

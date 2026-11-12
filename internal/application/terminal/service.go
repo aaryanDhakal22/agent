@@ -1290,7 +1290,7 @@ func (s *Service) placeOrder(ctx context.Context, a Actor, in OrderIn) (*PlaceRe
 	}
 	takenBy(a, st, &snap) // a call-center order: "Call center - Name" (§2.10ab)
 	for _, pay := range pays {
-		snap.Payments = append(snap.Payments, order.PaymentSummary{Method: terminal.MethodOf(pay.Tender), AmountCents: pay.AmountCents, Last4: pay.Last4})
+		snap.Payments = append(snap.Payments, pay.Summary())
 	}
 	journal = append(journal, terminal.Entry{StaffID: st.ID, DeviceID: a.DeviceID, Action: terminal.ActionOrderPlaced, OrderID: id,
 		Detail: detail(map[string]any{"type": typ, "total_cents": money.Total, "paid_cents": paidCents, "lines": len(items), "client_key": in.ClientKey})})
