@@ -49,6 +49,10 @@ const PROBLEM_TEXT = {
   under_voltage: "The Pi's power supply is too weak (under-voltage).",
   ntp: "The Pi's clock isn't synced.",
   health_stale: "The Pi's health report is out of date.",
+  z_unbalanced: "A Z report doesn't balance — tell the owner (money identity off).",
+  main_auth_failing: "main keeps refusing this Pi's key (not a revoke) — the Pi keeps its link and retries.",
+  pin_lockout: 'Many wrong PINs at a terminal — the PIN pad is paused.',
+  db_quick_check: "The Pi's database failed its integrity check at start — restore it after close (RECOVERY.md).",
 };
 const PI_DOWN = "Can't reach the Pi — this screen is out of date.";
 const STILL_WAITING_MS = 2 * 60000; // the full card turns amber ("STILL WAITING")

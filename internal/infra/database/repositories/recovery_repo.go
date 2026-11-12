@@ -8,7 +8,10 @@ import (
 	"time"
 
 	"quiccpos/agent/internal/domain/order"
+	"quiccpos/agent/internal/domain/terminal"
 	"quiccpos/agent/internal/infra/database/models"
+
+	"github.com/google/uuid"
 )
 
 var _ order.RecoveryRepository = (*OrderRepository)(nil)
@@ -136,6 +139,9 @@ func (r *OrderRepository) Restore(ctx context.Context, data order.RestoreData) (
 			batchID = b.ID
 		}
 		res.BatchID = batchID
+		if err := restoreDrawers(ctx, q, data.Drawers, batchID, &res); err != nil {
+			return err
+		}
 
 		// Orders.
 		maxKitchen, maxCounter := int64(0), int64(0)
@@ -195,6 +201,9 @@ func (r *OrderRepository) Restore(ctx context.Context, data order.RestoreData) (
 			}
 			if err := q.RestoreOrder(ctx, p); err != nil {
 				return fmt.Errorf("restore order %s: %w", snap.ID, err)
+			}
+			if err := restorePayments(ctx, q, ro, batchID, &res); err != nil {
+				return err
 			}
 			res.Orders++
 			if st.State == order.StateArrived {
@@ -304,4 +313,91 @@ func driverStatus(s string) string {
 		return s
 	}
 	return order.DriverOff
+}
+
+// restorePayments brings a restored order's payments back (HARDENING F-9):
+// the refund / void / change checks and the Z read order_payments, so a Pi
+// swapped mid-batch must have them. main's payments when it sends them; else
+// rebuilt from the snapshot's payments (amounts only: no tips, no drawer).
+// Counter orders, and online orders a terminal took money on.
+func restorePayments(ctx context.Context, q *models.Queries, ro order.RestoreOrder, batchID int64, res *order.RestoreResult) error {
+	snap := ro.Order
+	insert := func(p terminal.Payment) error {
+		if p.AmountCents == 0 && p.TipCents == 0 {
+			return nil
+		}
+		if err := q.InsertOrderPayment(ctx, models.InsertOrderPaymentParams{ID: p.ID, OrderID: snap.ID, At: fmtTS(p.At), Tender: p.Tender,
+			AmountCents: p.AmountCents, TipCents: p.TipCents, Refund: p.Refund, Reason: p.Reason, Ref: p.Ref, Last4: p.Last4,
+			StaffID: p.StaffID, DeviceID: p.DeviceID, ApprovedBy: p.ApprovedBy, DrawerID: p.DrawerID, Brand: p.Brand,
+			RefundKind: p.RefundKind}); err != nil {
+			return fmt.Errorf("restore payment of %s: %w", snap.ID, err)
+		}
+		return nil
+	}
+	tenderOf := func(method string) string {
+		if terminal.ValidTender(method) {
+			return method
+		}
+		return terminal.TenderCard
+	}
+	if len(ro.Payments) > 0 {
+		for _, mp := range ro.Payments {
+			p := terminal.Payment{ID: mp.ID, At: mp.At, Tender: tenderOf(mp.Method), AmountCents: mp.AmountCents, TipCents: mp.TipCents,
+				Last4: mp.Last4, Ref: mp.Ref, StaffID: mp.StaffID, DeviceID: mp.DeviceID, DrawerID: mp.DrawerID, Brand: mp.Brand,
+				RefundKind: mp.RefundKind, Reason: mp.Reason, ApprovedBy: mp.ApprovedBy}
+			if p.ID == "" {
+				p.ID = uuid.NewString()
+			}
+			if p.AmountCents < 0 {
+				p.Refund, p.AmountCents = true, -p.AmountCents
+			}
+			if p.At.IsZero() {
+				p.At = time.Now()
+			}
+			if err := insert(p); err != nil {
+				return err
+			}
+			res.Payments++
+		}
+		return nil
+	}
+	if snap.Source != order.SourceCounter {
+		return nil // an online order's payments are main's (the cash rule)
+	}
+	for i, ps := range snap.Payments {
+		p := terminal.Payment{ID: uuid.NewSHA1(uuid.NameSpaceOID, []byte(fmt.Sprintf("%s/%d", snap.ID, i))).String(),
+			At: snap.PlacedAt, Tender: terminal.TenderOf(ps.Method), AmountCents: ps.AmountCents, Last4: ps.Last4,
+			Reason: "restored"}
+		if p.AmountCents < 0 {
+			p.Refund, p.AmountCents = true, -p.AmountCents
+		}
+		if p.At.IsZero() {
+			p.At = time.Now()
+		}
+		if err := insert(p); err != nil {
+			return err
+		}
+		res.RebuiltPayments++
+	}
+	return nil
+}
+
+// restoreDrawers brings the open batch's open drawer sessions back (F-9).
+func restoreDrawers(ctx context.Context, q *models.Queries, drawers []order.RestoreDrawer, batchID int64, res *order.RestoreResult) error {
+	for _, d := range drawers {
+		if d.Closed || d.ID == "" || d.DeviceID == "" {
+			continue
+		}
+		at := d.OpenedAt
+		if at.IsZero() {
+			at = time.Now()
+		}
+		if err := q.InsertDrawerSession(ctx, models.InsertDrawerSessionParams{ID: d.ID, DeviceID: d.DeviceID, DeviceName: d.DeviceName,
+			StaffID: d.StaffID, StaffName: d.StaffName, BatchID: batchID, OpenedAt: fmtTS(at), StartCents: max(d.StartCents, 0),
+			HandoverFrom: d.HandoverFrom, Auto: d.Auto}); err != nil {
+			return fmt.Errorf("restore drawer %s: %w", d.ID, err)
+		}
+		res.Drawers++
+	}
+	return nil
 }

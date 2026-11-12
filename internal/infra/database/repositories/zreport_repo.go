@@ -123,6 +123,11 @@ func (r *OrderRepository) SaveZReport(ctx context.Context, z terminal.Z, at time
 		if err := q.SaveZReport(ctx, models.SaveZReportParams{Report: string(raw), BuiltAt: nullTS(at), BatchID: z.BatchID}); err != nil {
 			return err
 		}
+		if z.Flagged {
+			if err := q.SetZReportFlagged(ctx, z.BatchID); err != nil {
+				return err
+			}
+		}
 		saved = true
 		evID := uuid.NewString()
 		ev := map[string]any{"event_id": evID, "type": terminal.EventZReport, "at": at.UTC().Truncate(time.Millisecond), "report": json.RawMessage(raw)}
@@ -174,4 +179,12 @@ func (r *OrderRepository) ZReports(ctx context.Context, limit int) (out []termin
 		out = append(out, z)
 	}
 	return out, nil
+}
+
+// FlaggedZReports counts the kept Z reports that don't balance (M-9).
+func (r *OrderRepository) FlaggedZReports(ctx context.Context) (n int, err error) {
+	ctx, _, end := dbSpan(ctx, "z.flagged")
+	defer end(&err)
+	rows, err := models.New(r.db).ListFlaggedZReports(ctx, 10)
+	return len(rows), err
 }

@@ -60,6 +60,7 @@ func (s *Service) BuildPendingZ(ctx context.Context) {
 	}
 	for _, p := range pend {
 		if _, err := s.buildZ(ctx, repo, p); err != nil {
+			s.cm.Z(ctx, "build_failed")
 			s.logger.Error().Ctx(ctx).Err(err).Int64("batch", p.BatchID).Msg("z report: build failed (kept pending)")
 		}
 	}
@@ -82,13 +83,23 @@ func (s *Service) buildZ(ctx context.Context, repo ZRepo, p terminal.ZPending) (
 	}
 	z := terminal.BuildZ(in)
 	if z.Reconcile.DifferenceCents != 0 || z.Reconcile.DrawersDifferences != 0 {
-		// Never expected: the money identity is checked by the property test.
+		// Never expected: the money identity is checked by the property
+		// test. M-9: flagged, stored as it is, the owner paged once.
+		z.Flagged = true
 		s.logger.Error().Ctx(ctx).Int64("batch", z.BatchID).Int64("difference_cents", z.Reconcile.DifferenceCents).
 			Int64("drawers_difference_cents", z.Reconcile.DrawersDifferences).Msg("z report doesn't balance")
 	}
 	saved, err := repo.SaveZReport(ctx, z, in.Now)
 	if err != nil {
 		return nil, err
+	}
+	switch {
+	case saved && z.Flagged:
+		s.cm.Z(ctx, "unbalanced")
+		s.page(ctx, fmt.Sprintf("Z report for batch %d doesn't balance (off by %s; drawers off by %s). It is kept as it is - check the day's payments.",
+			z.BatchID, centsText(z.Reconcile.DifferenceCents), centsText(z.Reconcile.DrawersDifferences)))
+	case saved:
+		s.cm.Z(ctx, "built")
 	}
 	if saved {
 		s.orders.JournalWritten() // wakes the floor sync (z.report)

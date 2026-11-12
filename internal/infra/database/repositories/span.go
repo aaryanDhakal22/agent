@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"time"
 
+	"quiccpos/agent/internal/application/dbhealth"
+
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
@@ -26,6 +28,9 @@ func dbSpan(ctx context.Context, op string) (context.Context, trace.Span, func(e
 	)
 	return ctx, span, func(errp *error) {
 		if errp != nil && *errp != nil {
+			// F-15: a read-only / full / I/O-error SD card raises the sticky
+			// problem (no-op for any other error).
+			dbhealth.Note(ctx, *errp)
 			span.RecordError(*errp)
 			span.SetStatus(codes.Error, (*errp).Error())
 		}

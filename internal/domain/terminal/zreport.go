@@ -58,6 +58,9 @@ type Z struct {
 	Sales        ZSales     `json:"sales"`
 	Tenders      []ZTender  `json:"tenders"`
 	Unpaid       ZAmount    `json:"unpaid"`
+	// Flagged (M-9): the money identity doesn't balance - stored as it is,
+	// the owner paged, "Needs attention" on the Pi page.
+	Flagged bool `json:"flagged"`
 	// EarlierChecks: money (amounts, net) taken in this batch on checks an
 	// earlier close carried (contract 2.10s §4).
 	EarlierChecks ZAmount `json:"earlier_checks"`

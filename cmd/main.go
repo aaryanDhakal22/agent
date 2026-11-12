@@ -101,6 +101,15 @@ func main() {
 		bootstrap.Fatal().Err(err).Msg("Failed to open SQLite database")
 	}
 	defer db.Close()
+	// S-7: an integrity check at start (a few ms on the Pi's DB). A problem
+	// is logged now, paged and kept on the Pi page once the notifier exists.
+	quickCheck, qcErr := database.QuickCheck(ctx, db)
+	if qcErr != nil {
+		quickCheck = qcErr.Error()
+	}
+	if quickCheck != "" {
+		bootstrap.Error().Str("quick_check", quickCheck).Msg("SQLite quick_check failed: the database file is damaged")
+	}
 	// Secrets main handed over at link time fill whatever the environment
 	// leaves empty (env always wins: dev/staging Doppler keep working).
 	if li, err := repositories.NewSettingsRepository(db, bootstrap).GetLinkInfo(ctx); err == nil {
@@ -210,6 +219,15 @@ func main() {
 	notifier.SetStrictScope(cfg.AppEnv != "prod")
 	if err := notifier.Send(ctx, "Agent started", "classical"); err != nil {
 		logger.Warn().Err(err).Msg("Startup notification failed — continuing")
+	}
+	if quickCheck != "" {
+		qc := quickCheck
+		safego.Go("notify.quick_check", func() {
+			if err := notifier.Send(context.WithoutCancel(ctx), "The Pi's database failed its integrity check at start: "+qc+
+				". Keep taking orders; restore from the nightly backup after close (RECOVERY.md).", "siren"); err != nil {
+				logger.Warn().Err(err).Msg("quick_check notification failed")
+			}
+		})
 	}
 	if crashLoop || len(crashes) > 0 {
 		msg := "The Pi's agent crashed and restarted"
@@ -400,6 +418,8 @@ func main() {
 	}, broker, logger)
 	termSvc := terminalApp.NewService(termStore, orderRepo, orderService, broker, logger)
 	termSvc.SetFloor(orderService, orderRepo) // the driver view (§2.10b)
+	termSvc.SetPager(notifier)                // an unbalanced Z, PIN lockouts (hardening M-9 / X-2)
+	termSvc.SetPinRepo(ctx, orderRepo)        // the PIN throttle survives a restart (X-2)
 	// Close batch closes the drawers and queues the Z report (§2.10k-l):
 	// built right after, and at start for one a crash left pending.
 	termSvc.SetZDrivers(orderService.DriverReports)
@@ -411,6 +431,8 @@ func main() {
 	})
 	orderService.OnClosed(termSvc.AfterBatchClose)
 	safego.Go("terminal.pending_z", func() { termSvc.BuildPendingZ(ctx) })
+	// M-11: counter orders a restart cut off between commit and print.
+	safego.Go("terminal.kitchen_pending", func() { termSvc.ResumeKitchenPrints(ctx) })
 	termStore.Load(ctx)
 	registry.Register(terminalApp.MsgMenuChanged, termStore.HandleMenuChanged)
 	registry.Register(terminalApp.MsgTerminalChanged, termStore.HandleTerminalChanged)
@@ -726,6 +748,10 @@ func main() {
 		return settingsRepo.SetSessionSecret(context.Background(), hexSecret)
 	})
 	httpServer := transport.NewServer(orderService, broker, printerRegistry, settingsRepo, sseCtrl, mainClient, session, deviceRepo, cfg.HTTPPort, version, commit, logger)
+	httpServer.AddProblems(termSvc.Problems) // z_unbalanced, pin_lockout on the Pi page
+	if quickCheck != "" {
+		httpServer.AddProblems(func(context.Context) []string { return []string{"db_quick_check"} })
+	}
 	httpServer.SetAltPort(cfg.HTTPAltPort)
 	httpServer.SetTerminal(termSvc)
 	httpServer.SetDevLog(devRing)

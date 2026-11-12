@@ -19,7 +19,16 @@ import (
 // background (the Resend-to-kitchen plan: stations only, never the receipt,
 // which prints on the terminal's own printer). Nothing printed only alerts.
 func (s *Service) PrintCounterTickets(ctx context.Context, so order.StoredOrder) {
+	s.PrintCounterTicketsThen(ctx, so, nil)
+}
+
+// PrintCounterTicketsThen is PrintCounterTickets with done run after the
+// print was tried (M-11: the order's kitchen_pending is cleared then).
+func (s *Service) PrintCounterTicketsThen(ctx context.Context, so order.StoredOrder, done func(ctx context.Context)) {
 	s.background(ctx, func(ctx context.Context) {
+		if done != nil {
+			defer done(ctx)
+		}
 		start := time.Now()
 		out, err := s.print(ctx, printable(so), printer.ModeKitchen)
 		s.recordPrintTime(ctx, so, start, out, err)

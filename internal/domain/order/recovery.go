@@ -55,6 +55,9 @@ type RestoreData struct {
 	State   *AgentState    `json:"state"`
 	Orders  []RestoreOrder `json:"orders"`
 	Drivers []MirrorDriver `json:"drivers"`
+	// Drawers (HARDENING F-9, contract 2.10s): the open batch's drawer
+	// sessions main stored from drawer.* events (an older main sends none).
+	Drawers []RestoreDrawer `json:"drawers,omitempty"`
 }
 
 // RestoreOrder is one order of the open batch: main's snapshot plus the old
@@ -63,6 +66,43 @@ type RestoreOrder struct {
 	Order        Snapshot `json:"order"`
 	AgentStatus  *Status  `json:"agent_status"`
 	AgentBatchID *int64   `json:"agent_batch_id,omitempty"`
+	// Payments (F-9): a counter / terminal-paid order's payments as main
+	// stored them from order.payment (a refund negative). Without them the
+	// Pi rebuilds them from the snapshot's payments (no tips, no drawer).
+	Payments []RestorePayment `json:"payments,omitempty"`
+}
+
+// RestorePayment is main's Payment of an order.payment, back to a new Pi.
+type RestorePayment struct {
+	ID          string    `json:"id"`
+	Method      string    `json:"method"`
+	AmountCents int64     `json:"amount_cents"` // negative = a refund
+	TipCents    int64     `json:"tip_cents"`
+	Last4       string    `json:"last4"`
+	Ref         string    `json:"ref"`
+	At          time.Time `json:"at"`
+	StaffID     string    `json:"staff_id"`
+	DeviceID    string    `json:"device_id"`
+	DrawerID    string    `json:"drawer_id"`
+	Brand       string    `json:"brand"`
+	RefundKind  string    `json:"refund_kind"`
+	Reason      string    `json:"reason"`
+	ApprovedBy  string    `json:"approved_by"`
+}
+
+// RestoreDrawer is an open drawer session back to a new Pi (F-9).
+type RestoreDrawer struct {
+	ID           string    `json:"id"`
+	DeviceID     string    `json:"device_id"`
+	DeviceName   string    `json:"device_name"`
+	StaffID      string    `json:"staff_id"`
+	StaffName    string    `json:"staff_name"`
+	BatchID      int64     `json:"batch_id"`
+	OpenedAt     time.Time `json:"opened_at"`
+	StartCents   int64     `json:"start_cents"`
+	HandoverFrom string    `json:"handover_from"`
+	Auto         bool      `json:"auto"`
+	Closed       bool      `json:"closed"` // a closed one isn't restored
 }
 
 // MirrorDriver is main's mirrored roster entry (fallback when there's no state).
@@ -82,6 +122,11 @@ type RestoreResult struct {
 	Shifts      int   `json:"shifts"`
 	KitchenNext int64 `json:"kitchen_next"`
 	CounterNext int64 `json:"counter_next"`
+	// Payments / Drawers restored (F-9); RebuiltPayments: payments rebuilt
+	// from a snapshot because main sent none for the order.
+	Payments        int `json:"payments"`
+	RebuiltPayments int `json:"rebuilt_payments"`
+	Drawers         int `json:"drawers"`
 }
 
 // ErrNotEmpty: restore only runs on a blank agent.

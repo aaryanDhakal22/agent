@@ -252,6 +252,9 @@ func (s *Server) handleDiag(w http.ResponseWriter, r *http.Request) {
 		out.DBTrouble = s.dbHealth().Trouble
 	}
 	out.Problems = diagProblems(out)
+	for _, fn := range s.problemHooks { // hardening: z_unbalanced, main_auth_failing, ...
+		out.Problems = append(out.Problems, fn(r.Context())...)
+	}
 	s.writeJSON(w, http.StatusOK, out)
 }
 

@@ -337,7 +337,7 @@ func (s *Service) CloseBatch(ctx context.Context, a Actor, force bool, pin strin
 	var approver *terminal.Staff
 	if !cfg.LimitsOf(st).Unlimited {
 		need := &terminal.ManagerRequired{Action: terminal.NeedCloseBatch}
-		if approver, err = s.manager(a, cfg, pin, need); err != nil {
+		if approver, err = s.manager(ctx, a, cfg, pin, need); err != nil {
 			return nil, err
 		}
 		s.journal(ctx, overrideEntry(a, st, approver, need, ""))

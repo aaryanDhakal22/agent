@@ -2,6 +2,7 @@ package terminal
 
 import (
 	"crypto/sha256"
+	"encoding/json"
 	"regexp"
 	"sync"
 	"time"
@@ -18,72 +19,163 @@ import (
 
 var pinRe = regexp.MustCompile(`^[0-9]{2,4}$`)
 
-// Wrong PINs on one terminal: after pinFreeMisses misses in a row it waits
-// pinFirstLock, doubling on each further miss up to pinMaxLock.
+// Wrong PINs (HARDENING-PLAN X-2): counted per terminal AND for the whole
+// store in a window that a right PIN never resets (so a cashier can't test
+// manager PINs, log in with their own to clear the count, and go again).
+// A terminal with pinFreeMisses misses in the window waits pinFirstLock after
+// its latest miss, doubling with each further miss up to pinMaxLock; the
+// store with pinStoreMisses misses in the window locks every terminal the
+// same way. Misses older than pinWindow drop out. Kept in settings
+// (pin_throttle) so a restart doesn't clear them; pinPageMisses in
+// pinPageWindow page the owner (at most once an hour).
 const (
-	pinFreeMisses = 5
-	pinFirstLock  = 30 * time.Second
-	pinMaxLock    = 5 * time.Minute
+	pinFreeMisses  = 5
+	pinStoreMisses = 10
+	pinFirstLock   = 30 * time.Second
+	pinMaxLock     = 5 * time.Minute
+	pinWindow      = 15 * time.Minute
+	pinPageMisses  = 10
+	pinPageWindow  = 10 * time.Minute
+	pinPageEvery   = time.Hour
 )
-
-type misses struct {
-	n     int
-	until time.Time
-	lock  time.Duration
-}
 
 type cached struct {
 	staffID string
 	hash    string
 }
 
+// pinState is the persisted throttle (JSON in settings.pin_throttle).
+type pinState struct {
+	Devices  map[string][]time.Time `json:"devices"`
+	Store    []time.Time            `json:"store"`
+	PagedAt  *time.Time             `json:"paged_at,omitempty"`
+	LockedAt *time.Time             `json:"locked_at,omitempty"` // the last lockout (the Pi page's pin_lockout)
+}
+
 type staffBook struct {
 	mu       sync.Mutex
 	sessions map[string]string // device id -> staff id
-	misses   map[string]*misses
+	pins     pinState
 	// cache: sha256(PIN) -> the staff member it matched (cleared with every
 	// new config), so a login doesn't bcrypt every staff member each time.
 	cache map[[32]byte]cached
 }
 
 func newStaffBook() *staffBook {
-	return &staffBook{sessions: map[string]string{}, misses: map[string]*misses{}, cache: map[[32]byte]cached{}}
+	return &staffBook{sessions: map[string]string{}, pins: pinState{Devices: map[string][]time.Time{}}, cache: map[[32]byte]cached{}}
+}
+
+func recent(ts []time.Time, now time.Time, window time.Duration) []time.Time {
+	out := ts[:0:0]
+	for _, t := range ts {
+		if now.Sub(t) < window {
+			out = append(out, t)
+		}
+	}
+	return out
+}
+
+// lockFor: how long after its latest miss a list of n misses (free first)
+// waits.
+func lockFor(n, free int) time.Duration {
+	if n < free {
+		return 0
+	}
+	d := pinFirstLock
+	for i := free; i < n && d < pinMaxLock; i++ {
+		d *= 2
+	}
+	return min(d, pinMaxLock)
 }
 
 // throttled is how long the device must wait before its next PIN (0 = none).
 func (b *staffBook) throttled(device string, now time.Time) time.Duration {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	if m := b.misses[device]; m != nil && now.Before(m.until) {
-		return m.until.Sub(now)
-	}
-	return 0
+	return b.waitLocked(device, now)
 }
 
-func (b *staffBook) miss(device string, now time.Time) {
+func (b *staffBook) waitLocked(device string, now time.Time) time.Duration {
+	var wait time.Duration
+	for _, l := range []struct {
+		ts   []time.Time
+		free int
+	}{{recent(b.pins.Devices[device], now, pinWindow), pinFreeMisses}, {recent(b.pins.Store, now, pinWindow), pinStoreMisses}} {
+		if len(l.ts) == 0 {
+			continue
+		}
+		until := l.ts[len(l.ts)-1].Add(lockFor(len(l.ts), l.free))
+		if w := until.Sub(now); w > wait {
+			wait = w
+		}
+	}
+	return wait
+}
+
+// missResult is what one wrong PIN did.
+type missResult struct {
+	DeviceMisses int  // in the window
+	StoreMisses  int  // in the window
+	Lockout      bool // the PIN pad is paused now
+	Page         bool // page the owner (pinPageMisses in pinPageWindow, once an hour)
+}
+
+func (b *staffBook) miss(device string, now time.Time) missResult {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	m := b.misses[device]
-	if m == nil {
-		m = &misses{}
-		b.misses[device] = m
+	if b.pins.Devices == nil {
+		b.pins.Devices = map[string][]time.Time{}
 	}
-	m.n++
-	if m.n < pinFreeMisses {
-		return
+	b.pins.Devices[device] = append(recent(b.pins.Devices[device], now, pinWindow), now)
+	b.pins.Store = append(recent(b.pins.Store, now, pinWindow), now)
+	for d, ts := range b.pins.Devices {
+		if ts = recent(ts, now, pinWindow); len(ts) == 0 {
+			delete(b.pins.Devices, d)
+		}
 	}
-	switch {
-	case m.lock == 0:
-		m.lock = pinFirstLock
-	case m.lock < pinMaxLock:
-		m.lock = min(m.lock*2, pinMaxLock)
+	r := missResult{DeviceMisses: len(b.pins.Devices[device]), StoreMisses: len(b.pins.Store)}
+	if b.waitLocked(device, now) > 0 {
+		r.Lockout = true
+		t := now
+		b.pins.LockedAt = &t
 	}
-	m.until = now.Add(m.lock)
+	if len(recent(b.pins.Store, now, pinPageWindow)) >= pinPageMisses && (b.pins.PagedAt == nil || now.Sub(*b.pins.PagedAt) >= pinPageEvery) {
+		r.Page = true
+		t := now
+		b.pins.PagedAt = &t
+	}
+	return r
 }
 
-func (b *staffBook) hit(device string) {
+// hit: a right PIN. It never clears the misses (X-2): they age out.
+func (b *staffBook) hit(string) {}
+
+// lockedRecently: a PIN pad was paused in the last hour.
+func (b *staffBook) lockedRecently(now time.Time) bool {
 	b.mu.Lock()
-	delete(b.misses, device)
+	defer b.mu.Unlock()
+	return b.pins.LockedAt != nil && now.Sub(*b.pins.LockedAt) < time.Hour
+}
+
+// pinSnapshot is the throttle to persist.
+func (b *staffBook) pinSnapshot() []byte {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	raw, _ := json.Marshal(b.pins)
+	return raw
+}
+
+// restorePins loads a persisted throttle (bad JSON = start empty).
+func (b *staffBook) restorePins(raw []byte) {
+	var st pinState
+	if len(raw) == 0 || json.Unmarshal(raw, &st) != nil {
+		return
+	}
+	if st.Devices == nil {
+		st.Devices = map[string][]time.Time{}
+	}
+	b.mu.Lock()
+	b.pins = st
 	b.mu.Unlock()
 }
 

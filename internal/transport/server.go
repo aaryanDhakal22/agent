@@ -48,6 +48,8 @@ const (
 var eventsWriteTimeout = 10 * time.Second
 
 type Server struct {
+	// problemHooks add GET /api/diag problem codes (AddProblems).
+	problemHooks  []func(ctx context.Context) []string
 	service       *orderApp.Service
 	broker        *ssebroker.Broker
 	printers      *printerApp.Registry

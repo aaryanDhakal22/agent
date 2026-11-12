@@ -36,11 +36,13 @@ const (
 )
 
 type fakeOrders struct {
-	mu      sync.Mutex
-	printed []order.StoredOrder
-	voids   []order.StoredOrder
-	addOns  [][]order.LineItem
-	voidLns [][]order.LineItem
+	mu sync.Mutex
+	// crashBeforePrint: the Pi "restarts" before the print finishes (M-11).
+	crashBeforePrint bool
+	printed          []order.StoredOrder
+	voids            []order.StoredOrder
+	addOns           [][]order.LineItem
+	voidLns          [][]order.LineItem
 	// typeFrom: each change ticket's TypeChangedFrom ("" = the type stayed).
 	typeFrom []string
 	changed  int
@@ -51,6 +53,12 @@ func (f *fakeOrders) PrintCounterTickets(_ context.Context, so order.StoredOrder
 	f.mu.Lock()
 	f.printed = append(f.printed, so)
 	f.mu.Unlock()
+}
+func (f *fakeOrders) PrintCounterTicketsThen(ctx context.Context, so order.StoredOrder, done func(context.Context)) {
+	f.PrintCounterTickets(ctx, so)
+	if done != nil && !f.crashBeforePrint {
+		done(ctx)
+	}
 }
 func (f *fakeOrders) PrintVoidSlip(_ context.Context, so order.StoredOrder) {
 	f.mu.Lock()

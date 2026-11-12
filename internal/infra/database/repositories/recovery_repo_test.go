@@ -187,3 +187,47 @@ func TestRestoreWithoutState(t *testing.T) {
 		t.Fatalf("drivers %+v %v", ds, err)
 	}
 }
+
+// F-9: a Pi swapped mid-batch gets its counter payments and open drawers
+// back (main's when it sends them, else rebuilt from the snapshot), so a
+// paid order is never voided "for free" and the refund checks see the money.
+func TestRestoreBringsPaymentsAndDrawersBack(t *testing.T) {
+	ctx := context.Background()
+	b := newFloorRepo(t)
+	n1, n2 := int64(12), int64(13)
+	now := time.Now().UTC()
+	paid := order.Snapshot{ID: "0190f0e8-0000-7000-8000-0000000000a1", TenantID: "t", LocationID: "l", Source: order.SourceCounter,
+		SourceEventID: "key-rest-a1", Status: "accepted", KitchenNumber: &n1, ReceivedAt: now, PlacedAt: now,
+		Fulfillment: order.Fulfillment{Type: "counter"}, Money: order.Money{Subtotal: 2000, Total: 2000},
+		Payments: []order.PaymentSummary{{Method: "cash", AmountCents: 2000}}}
+	rebuilt := paid
+	rebuilt.ID, rebuilt.SourceEventID, rebuilt.KitchenNumber = "0190f0e8-0000-7000-8000-0000000000a2", "key-rest-a2", &n2
+	rebuilt.Payments = []order.PaymentSummary{{Method: "card", AmountCents: 2000}, {Method: "card", AmountCents: -500}}
+	data := order.RestoreData{
+		Orders: []order.RestoreOrder{
+			{Order: paid, Payments: []order.RestorePayment{{ID: "0190f0e8-0000-7000-8000-0000000000b1", Method: "cash", AmountCents: 2000,
+				TipCents: 300, At: now, StaffID: "s1", DeviceID: "dev-1", DrawerID: "0190f0e8-0000-7000-8000-0000000000c1"}}},
+			{Order: rebuilt},
+		},
+		Drawers: []order.RestoreDrawer{{ID: "0190f0e8-0000-7000-8000-0000000000c1", DeviceID: "dev-1", DeviceName: "Till 1", StaffID: "s1",
+			OpenedAt: now, StartCents: 10000, Auto: true}, {ID: "closed-one", DeviceID: "dev-2", Closed: true}},
+	}
+	res, err := b.Restore(ctx, data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Payments != 1 || res.RebuiltPayments != 2 || res.Drawers != 1 {
+		t.Fatalf("restore result %+v", res)
+	}
+	p1, _ := b.OrderPayments(ctx, paid.ID)
+	if len(p1) != 1 || p1[0].TipCents != 300 || p1[0].DrawerID == "" || p1[0].Tender != "cash" {
+		t.Fatalf("main's payment back: %+v", p1)
+	}
+	p2, _ := b.OrderPayments(ctx, rebuilt.ID)
+	if len(p2) != 2 || p2[0].Tender != "card" || p2[1].Refund != true || p2[1].AmountCents != 500 {
+		t.Fatalf("rebuilt payments: %+v", p2)
+	}
+	if d, err := b.DrawerByDevice(ctx, "dev-1"); err != nil || d == nil || d.StartCents != 10000 {
+		t.Fatalf("drawer back: %+v %v", d, err)
+	}
+}

@@ -661,3 +661,38 @@ func (r *OrderRepository) PaymentByKey(ctx context.Context, orderID, key string)
 	}
 	return &pay, nil
 }
+
+// KitchenPending are the counter orders whose station tickets never printed
+// (M-11: a restart between the commit and the print).
+func (r *OrderRepository) KitchenPending(ctx context.Context) (out []order.StoredOrder, err error) {
+	ctx, _, end := dbSpan(ctx, "terminal.kitchen_pending")
+	defer end(&err)
+	q := models.New(r.db)
+	rows, err := q.ListKitchenPending(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return mapRowsGeo(ctx, q, rows)
+}
+
+// ClearKitchenPending marks a counter order's kitchen tickets as tried.
+func (r *OrderRepository) ClearKitchenPending(ctx context.Context, id string) (err error) {
+	ctx, _, end := dbSpan(ctx, "terminal.kitchen_pending_clear")
+	defer end(&err)
+	return models.New(r.db).SetKitchenPending(ctx, models.SetKitchenPendingParams{Pending: false, ID: id})
+}
+
+// GetPinThrottle is the persisted PIN throttle (X-2; "" = none).
+func (r *OrderRepository) GetPinThrottle(ctx context.Context) (raw []byte, err error) {
+	ctx, _, end := dbSpan(ctx, "terminal.pin_throttle")
+	defer end(&err)
+	s, err := models.New(r.db).GetPinThrottle(ctx)
+	return []byte(s), err
+}
+
+// SetPinThrottle stores the PIN throttle.
+func (r *OrderRepository) SetPinThrottle(ctx context.Context, raw []byte) (err error) {
+	ctx, _, end := dbSpan(ctx, "terminal.pin_throttle_set")
+	defer end(&err)
+	return models.New(r.db).SetPinThrottle(ctx, string(raw))
+}

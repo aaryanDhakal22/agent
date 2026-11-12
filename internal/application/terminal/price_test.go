@@ -151,8 +151,10 @@ func TestManagerCheck(t *testing.T) {
 	if len(j) != 2 || j[0]["ok"] != true || j[0]["manager_id"] != "mgr-1" || j[1]["ok"] != false || j[0]["_staff"] != "cash-1" {
 		t.Fatalf("journal: %+v", j)
 	}
-	// Throttled with the logins: five misses, then a wait (also for the right PIN).
-	for i := 0; i < pinFreeMisses; i++ {
+	// Throttled with the logins: five misses (the cashier's PIN above was the
+	// first; a right PIN doesn't reset them, X-2), then a wait (also for the
+	// right PIN).
+	for i := 0; i < pinFreeMisses-1; i++ {
 		if _, err := r.svc.ManagerCheck(r.ctx, till, ManagerCheckIn{PIN: "0000"}); !errors.Is(err, terminal.ErrWrongPIN) {
 			t.Fatalf("miss %d: %v", i, err)
 		}

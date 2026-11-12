@@ -208,7 +208,8 @@ func (s *Service) ChangeCart(ctx context.Context, a Actor, id string, in ChangeI
 		typ = to
 	}
 	now := s.now()
-	p, err := priceCart(m, s.orders.StoreLocation(), typ, in.Cart, now, s.toppingMax())
+	// M-15: kept lines keep their rung prices (kept_prices.go).
+	p, _, err := keepRungPrices(m, s.orders.StoreLocation(), typ, cur.Order.Order, in.Cart, now, s.toppingMax())
 	if err != nil {
 		return nil, badRequest(err.Error())
 	}
@@ -222,7 +223,7 @@ func (s *Service) ChangeCart(ctx context.Context, a Actor, id string, in ChangeI
 	// A price change (or comp line) the order had already (same item, size
 	// and price) was approved then: only new ones are checked and journaled.
 	priceNeed, compNeed := checkPrices(cfg, st, p.changes, keptPrices(cur.Order.Order))
-	approver, overrides, err := s.approve(a, st, cfg, in.ManagerPIN, id, need, priceNeed, compNeed)
+	approver, overrides, err := s.approve(ctx, a, st, cfg, in.ManagerPIN, id, need, priceNeed, compNeed)
 	if err != nil {
 		return nil, err
 	}

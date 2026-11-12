@@ -439,6 +439,18 @@ func MethodOf(tender string) string {
 	return "card"
 }
 
+// TenderOf is the tender a snapshot payment's method stands for (MethodOf
+// back: cash, other = comp, anything else a card; F-9 restore).
+func TenderOf(method string) string {
+	switch method {
+	case "cash":
+		return TenderCash
+	case "other":
+		return TenderComp
+	}
+	return TenderCard
+}
+
 // Payment is money taken on a counter order (or given back: Refund, the
 // amounts stay positive here and count negative in the order's balance).
 type Payment struct {

@@ -143,6 +143,8 @@ func (s *Service) OpenDrawer(ctx context.Context, a Actor, in DrawerOpenIn) (*te
 	}
 	s.orders.JournalWritten()
 	s.publish(EventDrawerChanged, map[string]any{"drawer": out, "device_id": a.DeviceID})
+	s.logger.Info().Ctx(ctx).Str("drawer_id", out.ID).Str("staff_id", st.ID).Str("staff_name", st.Name()).Str("device_id", a.DeviceID).
+		Int64("amount_cents", out.StartCents).Msg("Drawer opened")
 	return &out, nil
 }
 
@@ -184,7 +186,7 @@ func (s *Service) MoveDrawer(ctx context.Context, a Actor, kind string, in Drawe
 	if kind == terminal.MovePayOut {
 		if lim, unlimited := cfg.PayoutLimit(st); !unlimited && in.AmountCents > lim {
 			need = &terminal.ManagerRequired{Action: "pay_out", Limit: lim, Requested: in.AmountCents}
-			if approver, err = s.manager(a, cfg, in.ManagerPIN, need); err != nil {
+			if approver, err = s.manager(ctx, a, cfg, in.ManagerPIN, need); err != nil {
 				return nil, err
 			}
 		}
@@ -220,6 +222,8 @@ func (s *Service) MoveDrawer(ctx context.Context, a Actor, kind string, in Drawe
 	if !dup {
 		s.orders.JournalWritten()
 		s.publish(EventDrawerChanged, map[string]any{"drawer": d, "device_id": a.DeviceID})
+		s.logger.Info().Ctx(ctx).Str("drawer_id", d.ID).Str("staff_id", st.ID).Str("staff_name", st.Name()).Str("device_id", a.DeviceID).
+			Str("kind", kind).Int64("amount_cents", in.AmountCents).Str("approver_id", got.ApprovedBy).Str("reason", in.Reason).Msg("Drawer cash moved")
 	}
 	return &DrawerMoveResult{Drawer: d, Movement: got, Duplicate: dup}, nil
 }
@@ -274,7 +278,7 @@ func (s *Service) CloseDrawer(ctx context.Context, a Actor, in DrawerCloseIn) (*
 	var need *terminal.ManagerRequired
 	if cur.StaffID != st.ID && st.Role != terminal.RoleManager && !cfg.LimitsOf(st).Unlimited {
 		need = &terminal.ManagerRequired{Action: "drawer_close", Requested: 0}
-		if approver, err = s.manager(a, cfg, in.ManagerPIN, need); err != nil {
+		if approver, err = s.manager(ctx, a, cfg, in.ManagerPIN, need); err != nil {
 			return nil, err
 		}
 	}
@@ -294,6 +298,15 @@ func (s *Service) CloseDrawer(ctx context.Context, a Actor, in DrawerCloseIn) (*
 	}
 	s.orders.JournalWritten()
 	s.publish(EventDrawerChanged, map[string]any{"drawer": out, "device_id": out.DeviceID})
+	l := s.logger.Info().Ctx(ctx).Str("drawer_id", out.ID).Str("staff_id", st.ID).Str("staff_name", st.Name()).Str("device_id", out.DeviceID).
+		Int64("expected_cents", out.ExpectedCents)
+	if out.CountedCents != nil {
+		l = l.Int64("amount_cents", *out.CountedCents)
+	}
+	if out.OverShortCents != nil {
+		l = l.Int64("over_short_cents", *out.OverShortCents)
+	}
+	l.Msg("Drawer closed")
 	return &out, nil
 }
 

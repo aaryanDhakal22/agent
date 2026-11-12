@@ -7,6 +7,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 
 	_ "modernc.org/sqlite"
 )
@@ -17,7 +18,10 @@ import (
 // a single writer sidesteps SQLite's "database is locked" corner cases entirely.
 func Open(ctx context.Context, path string) (*sql.DB, error) {
 	dsn := fmt.Sprintf(
-		"file:%s?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=foreign_keys(on)",
+		// synchronous(FULL) on purpose (S-7): it is SQLite's default, set
+		// here so nobody "optimises" it to NORMAL - a power cut on the SD
+		// card must not lose a committed payment.
+		"file:%s?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=foreign_keys(on)&_pragma=synchronous(FULL)",
 		path,
 	)
 	db, err := sql.Open("sqlite", dsn)
@@ -31,4 +35,35 @@ func Open(ctx context.Context, path string) (*sql.DB, error) {
 		return nil, fmt.Errorf("ping sqlite: %w", err)
 	}
 	return db, nil
+}
+
+// QuickCheck runs PRAGMA quick_check (S-7, at start): "" = ok, else what
+// SQLite reported (the first lines).
+func QuickCheck(ctx context.Context, db *sql.DB) (string, error) {
+	rows, err := db.QueryContext(ctx, "PRAGMA quick_check")
+	if err != nil {
+		return "", err
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() && len(out) < 5 {
+		var line string
+		if err := rows.Scan(&line); err != nil {
+			return "", err
+		}
+		if line != "ok" {
+			out = append(out, line)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return "", err
+	}
+	return strings.Join(out, "; "), nil
+}
+
+// Synchronous is the connection's PRAGMA synchronous (2 = FULL).
+func Synchronous(ctx context.Context, db *sql.DB) (int, error) {
+	var n int
+	err := db.QueryRowContext(ctx, "PRAGMA synchronous").Scan(&n)
+	return n, err
 }

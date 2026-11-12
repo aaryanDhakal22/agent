@@ -40,6 +40,7 @@ type Repo interface {
 // Orders is what the terminal flow needs from the floor (orderApp.Service).
 type Orders interface {
 	PrintCounterTickets(ctx context.Context, so order.StoredOrder)
+	PrintCounterTicketsThen(ctx context.Context, so order.StoredOrder, done func(ctx context.Context))
 	PrintVoidSlip(ctx context.Context, so order.StoredOrder)
 	PrintChange(ctx context.Context, so order.StoredOrder, added, removed []order.LineItem)
 	CounterOrderChanged(ctx context.Context, so order.StoredOrder, prev *order.StoredOrder, driverReturned bool)
@@ -77,6 +78,10 @@ type Service struct {
 	storeInfo func() map[string]any
 	// cm: the counter instruments (HARDENING-PLAN R-1a CM-3..CM-10).
 	cm *observability.CounterMeters
+	// pager: the owner's Pushover (unbalanced Z, PIN lockouts).
+	pager Pager
+	// pinRepo keeps the PIN throttle across restarts (X-2).
+	pinRepo PinRepo
 }
 
 // NewService wires the terminal flow; the store's config changes reach the
@@ -170,7 +175,7 @@ func (s *Service) Login(ctx context.Context, a Actor, pin string) (*LoginResult,
 	}
 	st, ok := s.staff.match(cfg, pin)
 	if !ok {
-		s.staff.miss(a.DeviceID, now)
+		s.pinMiss(ctx, a, "login", "")
 		s.journal(ctx, terminal.Entry{DeviceID: a.DeviceID, Action: terminal.ActionLoginFailed, Detail: detail(map[string]any{"device_name": a.DeviceName})})
 		return nil, terminal.ErrWrongPIN
 	}
@@ -215,7 +220,7 @@ func (s *Service) staffOf(a Actor) (terminal.Staff, *terminal.Config, error) {
 
 // manager checks a manager's PIN given to go over a limit (a wrong one
 // counts as a wrong PIN on the terminal).
-func (s *Service) manager(a Actor, cfg *terminal.Config, pin string, need *terminal.ManagerRequired) (*terminal.Staff, error) {
+func (s *Service) manager(ctx context.Context, a Actor, cfg *terminal.Config, pin string, need *terminal.ManagerRequired) (*terminal.Staff, error) {
 	if strings.TrimSpace(pin) == "" {
 		return nil, need
 	}
@@ -228,11 +233,67 @@ func (s *Service) manager(a Actor, cfg *terminal.Config, pin string, need *termi
 	}
 	st, ok := s.staff.match(cfg, pin)
 	if !ok || st.Role != terminal.RoleManager {
-		s.staff.miss(a.DeviceID, now)
+		// L-1 / X-2: an inline manager miss is journaled and counted too.
+		who, _ := s.staff.current(a.DeviceID)
+		s.pinMiss(ctx, a, "inline_manager", who)
+		s.journal(ctx, terminal.Entry{StaffID: who, DeviceID: a.DeviceID, Action: terminal.ActionManagerCheck,
+			Detail: detail(map[string]any{"for": need.Action, "ok": false, "inline": true})})
 		return nil, terminal.ErrManagerPINWrong
 	}
 	s.staff.hit(a.DeviceID)
+	var cents int64
+	switch need.Action {
+	case terminal.ActionRefund, terminal.ActionVoid, terminal.NeedCardRefund, terminal.NeedCashForCard, terminal.MovePayOut, terminal.ActionComp:
+		cents = need.Requested
+	}
+	s.cm.Override(ctx, need.Action, "manager_pin", cents)
+	s.logger.Info().Ctx(ctx).Str("action", need.Action).Str("approver_id", st.ID).Str("device_id", a.DeviceID).
+		Int64("limit", need.Limit).Int64("requested", need.Requested).Msg("Manager override")
 	return &st, nil
+}
+
+// pinMiss counts a wrong PIN (X-2): the throttle (kept in settings), the
+// CM-8 counters, a Warn line (never the PIN), a lockout journaled and the
+// owner paged after pinPageMisses in pinPageWindow (once an hour).
+func (s *Service) pinMiss(ctx context.Context, a Actor, kind, staffID string) {
+	r := s.staff.miss(a.DeviceID, s.now())
+	s.savePins(ctx)
+	s.cm.PinFailure(ctx, kind, r.Lockout)
+	s.logger.Warn().Ctx(ctx).Str("device_id", a.DeviceID).Str("device_name", a.DeviceName).Str("kind", kind).Str("staff_id", staffID).
+		Int("device_misses", r.DeviceMisses).Int("store_misses", r.StoreMisses).Msg("PIN failed")
+	if r.Lockout {
+		s.logger.Warn().Ctx(ctx).Str("device_id", a.DeviceID).Str("kind", kind).Int("device_misses", r.DeviceMisses).
+			Int("store_misses", r.StoreMisses).Msg("PIN lockout")
+		s.journal(ctx, terminal.Entry{StaffID: staffID, DeviceID: a.DeviceID, Action: terminal.ActionPinLockout,
+			Detail: detail(map[string]any{"kind": kind, "device_misses": r.DeviceMisses, "store_misses": r.StoreMisses})})
+	}
+	if r.Page {
+		s.page(ctx, fmt.Sprintf("%d wrong PINs at the store's terminals in 10 minutes (latest on %s). The PIN pads pause; check who is trying.",
+			r.StoreMisses, a.DeviceName))
+	}
+}
+
+// PinRepo keeps the PIN throttle (repositories.SettingsRepository).
+type PinRepo interface {
+	GetPinThrottle(ctx context.Context) ([]byte, error)
+	SetPinThrottle(ctx context.Context, raw []byte) error
+}
+
+// SetPinRepo wires the throttle's storage and loads it (cmd/main.go).
+func (s *Service) SetPinRepo(ctx context.Context, r PinRepo) {
+	s.pinRepo = r
+	if raw, err := r.GetPinThrottle(ctx); err == nil {
+		s.staff.restorePins(raw)
+	}
+}
+
+func (s *Service) savePins(ctx context.Context) {
+	if s.pinRepo == nil {
+		return
+	}
+	if err := s.pinRepo.SetPinThrottle(ctx, s.staff.pinSnapshot()); err != nil {
+		s.logger.Warn().Ctx(ctx).Err(err).Msg("pin throttle: save failed")
+	}
 }
 
 // ManagerCheckIn is POST /api/terminal/manager-check: a manager's PIN for a
@@ -277,7 +338,7 @@ func (s *Service) ManagerCheck(ctx context.Context, a Actor, in ManagerCheckIn) 
 	}
 	mgr, ok := s.staff.match(cfg, pin)
 	if !ok || mgr.Role != terminal.RoleManager {
-		s.staff.miss(a.DeviceID, now)
+		s.pinMiss(ctx, a, "manager_check", st.ID)
 		s.journal(ctx, terminal.Entry{StaffID: st.ID, DeviceID: a.DeviceID, Action: terminal.ActionManagerCheck,
 			Detail: detail(map[string]any{"for": what, "ok": false})})
 		return nil, terminal.ErrWrongPIN
@@ -344,6 +405,10 @@ func (s *Service) PostJournal(ctx context.Context, a Actor, in JournalIn) (*term
 		Action: in.Action, OrderID: in.OrderID, Detail: d}
 	if err := s.repo.AddJournal(ctx, []terminal.Entry{e}); err != nil {
 		return nil, err
+	}
+	if in.Action == terminal.ActionNoSale {
+		s.logger.Info().Ctx(ctx).Str("staff_id", st.ID).Str("staff_name", st.Name()).Str("device_id", a.DeviceID).
+			Str("reason", "no_sale").Msg("Drawer kicked")
 	}
 	s.orders.JournalWritten()
 	return &e, nil
@@ -542,7 +607,7 @@ func priceEntries(a Actor, st terminal.Staff, changes []terminal.PriceChange, ap
 // approve checks one manager's PIN for everything in this request that is
 // over the staff member's limits (nil needs are skipped) and returns the
 // manager (nil when nothing needed one) with an override row per need.
-func (s *Service) approve(a Actor, st terminal.Staff, cfg *terminal.Config, pin, orderID string, needs ...*terminal.ManagerRequired) (*terminal.Staff, []terminal.Entry, error) {
+func (s *Service) approve(ctx context.Context, a Actor, st terminal.Staff, cfg *terminal.Config, pin, orderID string, needs ...*terminal.ManagerRequired) (*terminal.Staff, []terminal.Entry, error) {
 	var first *terminal.ManagerRequired
 	for _, n := range needs {
 		if n != nil && first == nil {
@@ -552,7 +617,7 @@ func (s *Service) approve(a Actor, st terminal.Staff, cfg *terminal.Config, pin,
 	if first == nil {
 		return nil, nil, nil
 	}
-	mgr, err := s.manager(a, cfg, pin, first)
+	mgr, err := s.manager(ctx, a, cfg, pin, first)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -712,6 +777,20 @@ func numberOf(so order.StoredOrder) int64 {
 // counter number, prints its station tickets and syncs it to main
 // (order.placed). Idempotent by client_key.
 func (s *Service) PlaceOrder(ctx context.Context, a Actor, in OrderIn) (*PlaceResult, error) {
+	res, err := s.placeOrder(ctx, a, in)
+	typ := in.Type
+	if typ == "" {
+		typ = terminal.TypeCounter
+	}
+	result := resultOf(err)
+	if err == nil && res.Duplicate {
+		result = "duplicate"
+	}
+	s.cm.Placed(ctx, typ, result)
+	return res, err
+}
+
+func (s *Service) placeOrder(ctx context.Context, a Actor, in OrderIn) (*PlaceResult, error) {
 	st, cfg, err := s.staffOf(a)
 	if err != nil {
 		return nil, err
@@ -778,7 +857,7 @@ func (s *Service) PlaceOrder(ctx context.Context, a Actor, in OrderIn) (*PlaceRe
 			compNeed.Requested += pi.AmountCents
 		}
 	}
-	approver, journal, err := s.approve(a, st, cfg, in.ManagerPIN, "", dNeed, priceNeed, compNeed)
+	approver, journal, err := s.approve(ctx, a, st, cfg, in.ManagerPIN, "", dNeed, priceNeed, compNeed)
 	if err != nil {
 		return nil, err
 	}
@@ -859,7 +938,7 @@ func (s *Service) PlaceOrder(ctx context.Context, a Actor, in OrderIn) (*PlaceRe
 	if !created {
 		return s.duplicateOrder(ctx, in.ClientKey, hash)
 	}
-	s.orders.PrintCounterTickets(ctx, so)
+	s.printKitchen(ctx, so)
 	s.orders.CounterOrderChanged(ctx, so, nil, false)
 	if s.cust != nil {
 		s.cust.NoteOrder(ctx, cust.ID, cust.Phone, now)
@@ -983,6 +1062,71 @@ func netPaid(pays []terminal.Payment) (amount, tip int64) {
 // past the cashier limit need manager_pin). Idempotent by the payment's
 // client_key.
 func (s *Service) AddPayment(ctx context.Context, a Actor, orderID string, in PaymentIn) (*PaymentResult, error) {
+	res, err := s.addPayment(ctx, a, orderID, in)
+	kind := "sale"
+	if in.Refund {
+		kind = "refund"
+	}
+	result := resultOf(err)
+	if err == nil && res.Duplicate {
+		result = "duplicate"
+	}
+	tender := in.Tender
+	if !terminal.ValidTender(tender) {
+		tender = "other"
+	}
+	s.cm.Payment(ctx, tender, kind, result)
+	if err == nil && res.KickDrawer {
+		s.logger.Info().Ctx(ctx).Str("order_id", orderID).Str("device_id", a.DeviceID).Str("reason", "refund").
+			Int64("amount_cents", res.Payment.AmountCents+res.Payment.TipCents).Msg("Drawer kicked")
+	}
+	if err == nil && !res.Duplicate {
+		// L-1: one line per money action (stable messages, Grafana's Counter
+		// dashboard matches them).
+		st, _, _ := s.staffOf(a)
+		msg := "Counter payment taken"
+		if in.Refund {
+			msg = "Counter refund given"
+		}
+		ev := s.logger.Info()
+		if in.Refund {
+			ev = s.logger.Warn()
+		}
+		ev.Ctx(ctx).Str("order_id", orderID).Int64("number", numberOf(res.Order)).Str("staff_id", st.ID).Str("staff_name", st.Name()).
+			Str("role", st.Role).Str("device_id", a.DeviceID).Str("tender", res.Payment.Tender).Int64("amount_cents", res.Payment.AmountCents).
+			Int64("tip_cents", res.Payment.TipCents).Str("drawer_id", res.Payment.DrawerID).Str("approver_id", res.Payment.ApprovedBy).
+			Str("reason", res.Payment.Reason).Int64("balance_cents", res.BalanceCents).Msg(msg)
+	}
+	return res, err
+}
+
+// resultOf is a terminal error's bounded metric label.
+func resultOf(err error) string {
+	var mr *terminal.ManagerRequired
+	var ci *terminal.CartInvalid
+	var kr *terminal.KeyReused
+	switch {
+	case err == nil:
+		return "ok"
+	case errors.As(err, &kr):
+		return "key_reused"
+	case errors.As(err, &mr), errors.Is(err, terminal.ErrManagerPINWrong):
+		return "manager_required"
+	case errors.As(err, &ci):
+		return "cart_invalid"
+	case errors.Is(err, terminal.ErrOverBalance):
+		return "over_balance"
+	case errors.Is(err, terminal.ErrRefundTooBig):
+		return "refund_too_big"
+	case errors.Is(err, terminal.ErrNotPayable):
+		return "not_payable"
+	case errors.Is(err, terminal.ErrNoMenu):
+		return "menu_unavailable"
+	}
+	return "error"
+}
+
+func (s *Service) addPayment(ctx context.Context, a Actor, orderID string, in PaymentIn) (*PaymentResult, error) {
 	st, cfg, err := s.staffOf(a)
 	if err != nil {
 		return nil, err
@@ -1025,7 +1169,7 @@ func (s *Service) AddPayment(ctx context.Context, a Actor, orderID string, in Pa
 		need = &terminal.ManagerRequired{Action: terminal.ActionComp, Requested: pay.AmountCents}
 	}
 	if need != nil {
-		if approver, err = s.manager(a, cfg, in.ManagerPIN, need); err != nil {
+		if approver, err = s.manager(ctx, a, cfg, in.ManagerPIN, need); err != nil {
 			return nil, err
 		}
 		pay.ApprovedBy = approver.ID
