@@ -56,6 +56,11 @@ type Orders interface {
 type Actor struct {
 	DeviceID   string
 	DeviceName string
+	// Callcenter: a call-center seat (the relay, contract §2.10ab):
+	// DeviceID is callcenter:<main's device id>, StaffID the agent main
+	// signed in (its session for this one call; callcenter.go).
+	Callcenter bool
+	StaffID    string
 }
 
 // Service is the terminal API's logic.
@@ -88,6 +93,8 @@ type Service struct {
 	dispatch Dispatch
 	// square: refunds of in-app card payments through main (square_refund.go).
 	square SquareRefunder
+	// cc: the call center (callcenter.go).
+	cc callcenterState
 }
 
 // NewService wires the terminal flow; the store's config changes reach the
@@ -259,6 +266,9 @@ func (s *Service) Logout(ctx context.Context, a Actor) {
 
 // staffOf is the staff member logged in on the terminal.
 func (s *Service) staffOf(a Actor) (terminal.Staff, *terminal.Config, error) {
+	if a.Callcenter {
+		return s.callcenterStaff(a)
+	}
 	cfg, _ := s.store.Config()
 	cur, ok := s.staff.current(a.DeviceID)
 	if !ok || cfg == nil {
@@ -602,6 +612,9 @@ func checkType(t string) (string, error) {
 func (s *Service) Quote(ctx context.Context, a Actor, in QuoteIn) (*QuoteView, error) {
 	typ, err := checkType(in.Type)
 	if err != nil {
+		return nil, err
+	}
+	if err := callcenterQuoteGuard(a, in.Cart); err != nil {
 		return nil, err
 	}
 	m, ms := s.store.Menu()
@@ -1001,6 +1014,9 @@ func (s *Service) placeOrder(ctx context.Context, a Actor, in OrderIn) (*PlaceRe
 	if err != nil {
 		return nil, err
 	}
+	if err := callcenterPlaceGuard(a, in); err != nil { // §2.10ab: before any money or print
+		return nil, err
+	}
 	note := strings.TrimSpace(in.Note)
 	if utf8.RuneCountInString(note) > 500 {
 		return nil, badRequest("note is at most 500 characters")
@@ -1034,6 +1050,9 @@ func (s *Service) placeOrder(ctx context.Context, a Actor, in OrderIn) (*PlaceRe
 		return nil, terminal.ErrNoMenu
 	}
 	now := s.now()
+	if err := callcenterCartGuard(a, counterCtx(m, s.orders.StoreLocation(), s.toppingMax()), in.Cart, nil); err != nil {
+		return nil, err
+	}
 	p, _, err := priceRung(m, s.orders.StoreLocation(), typ, nil, in.Cart, now, s.toppingMax())
 	if err != nil {
 		return nil, asBadRequest(err)
@@ -1108,6 +1127,7 @@ func (s *Service) placeOrder(ctx context.Context, a Actor, in OrderIn) (*PlaceRe
 	if cust.ID != "" {
 		snap.SourceMeta["terminal"].(map[string]any)["customer_id"] = cust.ID
 	}
+	takenBy(a, st, &snap) // a call-center order: "Call center - Name" (§2.10ab)
 	for _, pay := range pays {
 		snap.Payments = append(snap.Payments, order.PaymentSummary{Method: terminal.MethodOf(pay.Tender), AmountCents: pay.AmountCents, Last4: pay.Last4})
 	}
@@ -1139,6 +1159,11 @@ func (s *Service) placeOrder(ctx context.Context, a Actor, in OrderIn) (*PlaceRe
 		return s.duplicateOrder(ctx, in.ClientKey, hash)
 	}
 	s.printKitchen(ctx, so)
+	if a.Callcenter {
+		// No terminal printer for it: the Pi prints the customer receipt /
+		// delivery ticket on the store's receipt printer (§2.10ab).
+		s.printCallcenterReceipt(ctx, so)
+	}
 	s.orders.CounterOrderChanged(ctx, so, nil, false)
 	if s.cust != nil {
 		s.cust.NoteOrder(ctx, cust.ID, cust.Phone, now)
@@ -1344,6 +1369,14 @@ func (s *Service) addPayment(ctx context.Context, a Actor, orderID string, in Pa
 	st, cfg, err := s.staffFor(ctx, a) // staffOf, or the phone charge's sender (phonepay_hooks.go)
 	if err != nil {
 		return nil, err
+	}
+	if a.Callcenter { // §2.10ab: a typed card only; no manager, no refund
+		if strings.TrimSpace(in.ManagerPIN) != "" || len(in.Approvals) > 0 {
+			return nil, notAllowed(terminal.NotAllowedManager)
+		}
+		if err := callcenterPaymentsGuard(a, in); err != nil {
+			return nil, err
+		}
 	}
 	if _, err := uuid.Parse(orderID); err != nil {
 		return nil, order.ErrNotFound
@@ -1600,6 +1633,9 @@ func (s *Service) void(ctx context.Context, a Actor, id string, in VoidIn, waste
 	reason := strings.TrimSpace(in.Reason)
 	if reason == "" || utf8.RuneCountInString(reason) > 140 {
 		return nil, badRequest("a void needs a reason (1-140 characters)")
+	}
+	if err := s.storeHolds(ctx, a, id); err != nil { // the store wins (§2.10ab)
+		return nil, err
 	}
 	paid, err := s.repo.OrderPayments(ctx, id)
 	if err != nil {

@@ -60,6 +60,10 @@ type Server struct {
 	mainClient    *mainclient.Client
 	session       *sessionManager
 	devices       device.Repository
+	// The call center's relay (server_callcenter.go).
+	relayOnce     sync.Once
+	relayMux      *http.ServeMux
+	ccDevice      callcenterDevice
 	pairing       *pairingCodes
 	touchMu       sync.Mutex
 	touched       map[string]time.Time

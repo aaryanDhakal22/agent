@@ -304,6 +304,9 @@ func (c *Config) LimitsOf(s Staff) Limits {
 	if s.Role == RoleManager {
 		return Limits{Unlimited: true}
 	}
+	if s.Role == RoleCallcenter { // refund 0, discount 0, never unlimited (§2.10ab)
+		return Limits{}
+	}
 	if e := s.EffectiveLimits; len(e) > 0 {
 		if string(e) == "null" {
 			return Limits{Unlimited: true}

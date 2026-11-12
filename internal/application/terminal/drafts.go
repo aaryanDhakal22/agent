@@ -3,6 +3,7 @@ package terminal
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -99,11 +100,19 @@ func (s *Service) PutDraft(ctx context.Context, a Actor, id string, in DraftIn) 
 	now := s.now().UTC().Truncate(time.Millisecond)
 	got, taken, err := s.repo.PutTerminalDraft(ctx, terminal.Draft{ID: id, LocationID: s.location(), Type: in.Type, Name: name,
 		Held: in.Held, OrderID: in.OrderID, Draft: d}, terminal.DraftPut{By: by, Held: in.Held, TakeOver: in.TakeOver}, now)
+	var oe *terminal.OpenElsewhere
+	if errors.As(err, &oe) && oe.TakeOverRefused { // the store wins (§2.10ab)
+		s.journal(ctx, terminal.Entry{StaffID: st.ID, DeviceID: a.DeviceID, Action: terminal.ActionDraftTakeOverRefused,
+			Detail: detail(map[string]any{"draft_id": id, "holder_device_id": oe.Holder.DeviceID, "holder_staff_id": oe.Holder.StaffID})})
+		s.logger.Info().Ctx(ctx).Str("draft_id", id).Str("device_id", a.DeviceID).Str("holder_device_id", oe.Holder.DeviceID).
+			Msg("Draft take-over refused: a store terminal holds it")
+	}
 	if err != nil {
 		return nil, err
 	}
 	if taken != nil {
-		s.publish(terminal.EventDraftTaken, map[string]any{"id": id, "by": got.Holder, "from": taken})
+		// device_id: the terminal (or call-center seat) it was taken from.
+		s.publish(terminal.EventDraftTaken, map[string]any{"id": id, "by": got.Holder, "from": taken, "device_id": taken.DeviceID})
 		s.journal(ctx, terminal.Entry{StaffID: st.ID, DeviceID: a.DeviceID, Action: terminal.ActionDraftTakeOver,
 			Detail: detail(map[string]any{"draft_id": id, "from_device_id": taken.DeviceID, "from_staff_id": taken.StaffID})})
 		s.logger.Info().Ctx(ctx).Str("draft_id", id).Str("device_id", a.DeviceID).Str("from_device_id", taken.DeviceID).Msg("Draft taken over")

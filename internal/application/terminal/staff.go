@@ -180,7 +180,8 @@ func (b *staffBook) restorePins(raw []byte) {
 	b.mu.Unlock()
 }
 
-// match finds the active staff member whose PIN this is.
+// match finds the active staff member whose PIN this is (never a
+// call-center agent: their PINs don't work on a store terminal).
 func (b *staffBook) match(cfg *terminal.Config, pin string) (terminal.Staff, bool) {
 	if cfg == nil {
 		return terminal.Staff{}, false
@@ -190,12 +191,15 @@ func (b *staffBook) match(cfg *terminal.Config, pin string) (terminal.Staff, boo
 	c, ok := b.cache[key]
 	b.mu.Unlock()
 	if ok {
-		if s, found := cfg.Find(c.staffID); found && s.PinHash == c.hash {
+		if s, found := cfg.Find(c.staffID); found && s.PinHash == c.hash && s.Role != terminal.RoleCallcenter {
 			return s, true
 		}
 	}
 	for _, s := range cfg.Staff {
-		if !s.IsActive() || s.PinHash == "" {
+		// A call-center agent's PIN works only in the call-center app (main
+		// checks it): on a store terminal it is a wrong PIN, and never a
+		// manager's (contract §2.10ab).
+		if !s.IsActive() || s.PinHash == "" || s.Role == terminal.RoleCallcenter {
 			continue
 		}
 		if bcrypt.CompareHashAndPassword([]byte(s.PinHash), []byte(pin)) == nil {

@@ -25,6 +25,9 @@ func (s *Server) SetTerminal(t *terminalApp.Service) {
 
 // actor is the terminal a request came from (the web session is "web").
 func actor(r *http.Request) terminalApp.Actor {
+	if a, ok := callcenterActor(r); ok { // a relayed call-center call (§2.10ab)
+		return a
+	}
 	if d, ok := r.Context().Value(deviceCtxKey{}).(*device.Device); ok {
 		return terminalApp.Actor{DeviceID: d.ID, DeviceName: d.Name}
 	}
@@ -57,7 +60,17 @@ func (s *Server) terminalError(w http.ResponseWriter, r *http.Request, err error
 	var kr *terminal.KeyReused
 	var pf *terminal.PaidFirst
 	var sqRef *squareterm.Refused
+	var ccNo *terminal.NotAllowedForCallcenter
+	var ccPaid *terminal.PaidLocked
 	switch {
+	case errors.As(err, &ccNo): // the call center (contract 2.10ab)
+		s.writeJSON(w, http.StatusForbidden, map[string]any{"error": err.Error(), "code": "not_allowed_for_callcenter", "what": ccNo.What})
+	case errors.As(err, &ccPaid):
+		lines := ccPaid.Lines
+		if lines == nil {
+			lines = []string{}
+		}
+		s.writeJSON(w, http.StatusConflict, map[string]any{"error": err.Error(), "code": "paid_locked", "lines": lines})
 	case errors.As(err, &kr):
 		s.writeJSON(w, http.StatusConflict, map[string]any{"error": err.Error(), "code": "key_reused", "client_key": kr.ClientKey, "order_id": kr.OrderID})
 	case errors.Is(err, terminal.ErrClientKeyRequired):

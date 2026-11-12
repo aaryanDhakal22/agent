@@ -186,6 +186,13 @@ func buildFull(snap order.Snapshot, sc storeconfig.StoreContext, reroutedFrom st
 	w(dateLine(snap.PlacedAt, l.cols, false))
 	w(cmdBoldOff)
 	nl()
+	// Who took it (a call-center order, contract §2.10ab): "Call center - Name".
+	if by := strings.TrimSpace(snap.TakenBy); by != "" {
+		for _, line := range wrapped(by, l.cols, "") {
+			w(line)
+			nl()
+		}
+	}
 
 	// --- Delivery address ----------------------------------------------
 	if addr := snap.Fulfillment.Address; addr != nil && strings.ToLower(snap.Fulfillment.Type) == "delivery" {

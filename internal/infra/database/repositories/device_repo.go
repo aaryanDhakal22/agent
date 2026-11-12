@@ -104,6 +104,18 @@ func (r *DeviceRepository) SetAppVersion(ctx context.Context, id, version string
 		AppVersion: version, AppVersionSeenAt: nullTS(at), ID: id})
 }
 
+// EnsureCallcenter makes the store's call-center device (contract §2.10ab)
+// or brings a revoked one back (an unlink revokes every device). It has no
+// key: key_hash holds its id, which no sha256 of a key ever equals.
+func (r *DeviceRepository) EnsureCallcenter(ctx context.Context) (err error) {
+	ctx, _, end := dbSpan(ctx, "devices.ensure_callcenter")
+	defer end(&err)
+	_, err = r.db.ExecContext(ctx, `INSERT INTO paired_devices (id, name, key_hash, key_prefix, kind) VALUES (?, ?, ?, '', ?)
+		ON CONFLICT(id) DO UPDATE SET name = excluded.name, kind = excluded.kind, revoked_at = NULL`,
+		device.CallcenterID, device.CallcenterName, device.CallcenterID, device.KindCallcenter)
+	return err
+}
+
 func toDevice(row models.PairedDevice) (device.Device, error) {
 	created, err := parseTS(row.CreatedAt)
 	if err != nil {

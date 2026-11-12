@@ -194,6 +194,7 @@ func (s *Server) handleSetupToken(w http.ResponseWriter, r *http.Request) {
 	if s.sseController != nil {
 		s.sseController.SetKey(token)
 	}
+	s.ensureCallcenterDevice(ctx) // the store's call-center device (contract 2.10ab)
 	s.writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
@@ -572,6 +573,8 @@ func (s *Server) ResetAccess(ctx context.Context) {
 		if err := s.devices.RevokeAll(ctx, time.Now()); err != nil {
 			s.logger.Warn().Ctx(ctx).Err(err).Msg("revoking paired tablets failed")
 		}
+		s.forgetCallcenterDevice() // made again at the next link
+
 	}
 }
 

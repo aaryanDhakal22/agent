@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	"quiccpos/agent/internal/domain/device"
 	"quiccpos/agent/internal/domain/order"
 )
 
@@ -58,7 +59,12 @@ type Draft struct {
 
 // OpenElsewhere: another terminal has the draft open (409 open_elsewhere
 // {holder}); TAKE OVER sends take_over: true.
-type OpenElsewhere struct{ Holder Holder }
+type OpenElsewhere struct {
+	Holder Holder
+	// TakeOverRefused: a call-center seat asked to take it over from a
+	// store terminal - refused, the store wins (contract §2.10ab).
+	TakeOverRefused bool
+}
 
 func (e *OpenElsewhere) Error() string {
 	name := e.Holder.DeviceName
@@ -80,12 +86,19 @@ type DraftPut struct {
 
 // Decide applies a PUT to the stored draft (nil = new) under the soft lock:
 // a draft nobody has open (held, or new) or open on the same terminal is
-// free; one open on another terminal needs TakeOver. It answers the new
+// free; one open on another terminal needs TakeOver (never granted to a
+// call-center seat over a store terminal). It answers the new
 // holder (nil = held) and the holder it was taken from (nil = none).
 func (p DraftPut) Decide(cur *Draft) (holder *Holder, taken *Holder, err error) {
 	if cur != nil && cur.Holder != nil && cur.Holder.DeviceID != p.By.DeviceID {
 		if !p.TakeOver {
 			return nil, nil, &OpenElsewhere{Holder: *cur.Holder}
+		}
+		// The store wins (contract §2.10ab): a call-center seat never takes
+		// over what a store terminal holds. A store terminal takes over a
+		// seat's, and a seat another seat's, as between terminals.
+		if device.IsCallcenterSeat(p.By.DeviceID) && !device.IsCallcenterSeat(cur.Holder.DeviceID) {
+			return nil, nil, &OpenElsewhere{Holder: *cur.Holder, TakeOverRefused: true}
 		}
 		h := *cur.Holder
 		taken = &h

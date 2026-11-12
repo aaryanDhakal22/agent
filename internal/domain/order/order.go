@@ -45,6 +45,12 @@ type Snapshot struct {
 	EstimatedReadyAt *time.Time `json:"estimated_ready_at,omitempty"`
 	DriverName       string     `json:"driver_name,omitempty"`
 
+	// TakenBy / DeviceKind (contract §2.10ab): an order the call center
+	// placed - "Call center - <Name>" (lists, kitchen tickets, the receipt)
+	// and "callcenter" (main's per-agent report). Empty on every other order.
+	TakenBy    string `json:"taken_by,omitempty"`
+	DeviceKind string `json:"device_kind,omitempty"`
+
 	// RemovedItems (terminal orders): lines removed at a terminal after SEND
 	// (§2.10d) - struck through, red, REMOVED on Kitchen and in History.
 	// Never printed or counted (Items is what the order is now).

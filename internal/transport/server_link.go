@@ -123,6 +123,7 @@ func (s *Server) handleSetupLink(w http.ResponseWriter, r *http.Request) {
 	} else {
 		s.session.issue(w) // linked from the web UI: that browser is signed in
 	}
+	s.ensureCallcenterDevice(ctx) // the store's call-center device (contract 2.10ab)
 	if s.onLinked != nil {
 		go s.onLinked(out)
 	}

@@ -21,7 +21,25 @@ const (
 	// KindPhone is a cashier phone for "Send to phone" (contract §2.10z):
 	// its key (the page's cookie) opens /api/phone/* only.
 	KindPhone = "phone"
+	// KindCallcenter is the store's one virtual call-center device
+	// (contract §2.10ab): no key, never paired, renamed or removed; main
+	// relays the call-center app's calls to it (RPC terminal.relay).
+	KindCallcenter = "callcenter"
 )
+
+// The call-center device (one per store).
+const (
+	CallcenterID   = "callcenter"
+	CallcenterName = "Call center"
+	// CallcenterSeatPrefix + main's callcenter device id = a seat: one
+	// call-center browser (draft holder, journal device_id, idempotency).
+	CallcenterSeatPrefix = "callcenter:"
+)
+
+// IsCallcenterSeat: id is the call-center device or one of its seats.
+func IsCallcenterSeat(id string) bool {
+	return id == CallcenterID || (len(id) > len(CallcenterSeatPrefix) && id[:len(CallcenterSeatPrefix)] == CallcenterSeatPrefix)
+}
 
 // Device is one paired tablet (the key itself is never stored or returned).
 type Device struct {
@@ -52,4 +70,7 @@ type Repository interface {
 	RevokeAll(ctx context.Context, at time.Time) error
 	// SetAppVersion records the Quibase version a device reported.
 	SetAppVersion(ctx context.Context, id, version string, at time.Time) error
+	// EnsureCallcenter makes (or brings back) the store's call-center
+	// device: id CallcenterID, kind KindCallcenter, no key.
+	EnsureCallcenter(ctx context.Context) error
 }

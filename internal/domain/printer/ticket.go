@@ -73,6 +73,11 @@ const (
 	// switches) and, for a delivery, the Merchant + Customer Copy on the
 	// receipt printer. A pickup prints no customer receipt then.
 	ModePlaced Mode = "placed"
+	// ModeOrderReceipt (agent §2.10ab): the customer's paper of an order
+	// with no terminal printer (a call-center order) - a delivery's
+	// Merchant + Customer Copy, anything else's customer receipt, on the
+	// receipt printer. No station tickets (they print as a terminal SEND's).
+	ModeOrderReceipt Mode = "order_receipt"
 )
 
 // Ticket is one thing to print for an order. A planned order is a set of

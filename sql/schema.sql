@@ -161,8 +161,9 @@ CREATE TABLE paired_devices (
     created_at   text NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     last_seen_at text,
     revoked_at   text,
-    -- 00014_integration: tablet | integration (the store hub); 00025_terminal: | terminal; 00039_phone_pay: | phone.
-    kind         text NOT NULL DEFAULT 'tablet' CHECK (kind IN ('tablet', 'integration', 'terminal', 'phone')),
+    -- 00014_integration: tablet | integration (the store hub); 00025_terminal: | terminal; 00039_phone_pay: | phone;
+    -- 00042_callcenter: | callcenter (the one virtual call-center device, id 'callcenter', no key).
+    kind         text NOT NULL DEFAULT 'tablet' CHECK (kind IN ('tablet', 'integration', 'terminal', 'phone', 'callcenter')),
     -- 00016_v220: the Quibase version the tablet last sent (X-Quibase-Version).
     app_version         text NOT NULL DEFAULT '',
     app_version_seen_at text

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"time"
 
+	"quiccpos/agent/internal/domain/device"
 	"quiccpos/agent/internal/domain/order"
 	"quiccpos/agent/internal/domain/terminal"
 	"quiccpos/agent/internal/infra/database/models"
@@ -148,6 +149,12 @@ func placedSnapshot(so order.StoredOrder, in terminal.NewCounterOrder) (map[stri
 		pays = append(pays, p.Wire())
 	}
 	m["payments"], m["source_event_id"], m["staff_id"], m["device_id"] = pays, in.ClientKey, in.StaffID, in.DeviceID
+	if so.Order.DeviceKind == terminal.DeviceKindCallcenter {
+		// A call-center order (contract 2.10ab): main reads device_kind +
+		// staff_id for its per-agent report; device_id is the store's one
+		// call-center device, the browser (seat) rides beside it.
+		m["device_id"], m["seat_id"] = device.CallcenterID, in.DeviceID
+	}
 	// The store customer it is for (terminal 1d): main keeps it in source_metadata.customer_id.
 	if t, ok := so.Order.SourceMeta["terminal"].(map[string]any); ok {
 		if id, ok := t["customer_id"].(string); ok && id != "" {

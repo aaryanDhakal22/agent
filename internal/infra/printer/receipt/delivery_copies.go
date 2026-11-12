@@ -294,6 +294,9 @@ func deliveryTicket(p *escw, snap order.Snapshot, st deliveryStore, at time.Time
 	p.raw(gsNormal)
 	p.bold(false)
 	p.line("DELIVERY")
+	if by := strings.TrimSpace(snap.TakenBy); by != "" { // a call-center order (contract §2.10ab)
+		p.wrapped(by, "")
+	}
 	if due := snap.Fulfillment.PromisedAt; due != nil && !due.IsZero() {
 		p.bold(true)
 		p.wrapped("FUTURE: for "+shortDate(*due)+" "+shortTime(*due), "")

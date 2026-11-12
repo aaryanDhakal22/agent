@@ -564,6 +564,10 @@ func (s *Server) handleListDevices(w http.ResponseWriter, r *http.Request) {
 // POST /api/devices/{id}/revoke (session).
 func (s *Server) handleRevokeDevice(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
+	if isCallcenterDevice(id) { // the store's call-center device stays (contract 2.10ab)
+		s.writeJSON(w, http.StatusConflict, errCodeMap("The call-center device can't be removed: revoke a call-center computer in the store's Staff page.", "callcenter_device"))
+		return
+	}
 	err := s.devices.Revoke(r.Context(), id, time.Now())
 	if errors.Is(err, device.ErrNotFound) {
 		s.writeJSON(w, http.StatusNotFound, errCodeMap("no such active device", "not_found"))

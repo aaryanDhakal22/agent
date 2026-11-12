@@ -173,6 +173,15 @@ func (s *Service) changeOnline(ctx context.Context, a Actor, st terminal.Staff, 
 		return nil, terminal.ErrNoMenu
 	}
 	now := s.now()
+	if a.Callcenter { // §2.10ab: the order's own lines (custom lines on the terminal) ride along
+		var held *Cart
+		if c, ok := storedCart(cur.Order); ok {
+			held = &c
+		}
+		if err := callcenterCartGuard(a, counterCtx(menu, s.orders.StoreLocation(), s.toppingMax()), in.Cart, held); err != nil {
+			return nil, err
+		}
+	}
 	// The manager's PIN is a bcrypt check: decided before the transaction on
 	// the order as read now, priced again inside it.
 	pre, err := s.priceOnline(menu, cur.Order, in.Cart, now)
@@ -212,12 +221,15 @@ func (s *Service) changeOnline(ctx context.Context, a Actor, st terminal.Staff, 
 			return nil, nil, badRequest("an order keeps at least one line (cancel it instead)")
 		}
 		net, _ := netPaid(paid)
-		if op.money.Total < net {
-			return nil, nil, fmt.Errorf("%w (%d taken at a terminal, the new total is %d)", terminal.ErrRefundFirst, net, op.money.Total)
-		}
 		lines := op.items
 		terminal.KeepLineIDs(cur.Order.Items, lines)
 		added, removed = terminal.DiffLines(cur.Order.Items, lines)
+		if err := paidLocked(a, cur, paid, removed); err != nil { // §2.10ab: before refund_first
+			return nil, nil, err
+		}
+		if op.money.Total < net {
+			return nil, nil, fmt.Errorf("%w (%d taken at a terminal, the new total is %d)", terminal.ErrRefundFirst, net, op.money.Total)
+		}
 		snap := cur.Order
 		recust := recustomer(&snap, typ, in.Customer)
 		if !recust && len(added) == 0 && len(removed) == 0 && sameMoney(cur.Order.Money, op.money) {

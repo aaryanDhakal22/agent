@@ -816,6 +816,13 @@ func main() {
 	}
 	httpServer.SetAltPort(cfg.HTTPAltPort)
 	httpServer.SetTerminal(termSvc)
+	// The call center's remote terminal (contract 2.10ab): main relays the
+	// web app's calls as terminal.relay (run off the SSE reader: a relayed
+	// card payment takes seconds), and asks for the terminals' events.
+	registry.RegisterAsync(agentrpc.MsgTerminalRelay, httpServer.HandleTerminalRelay, transport.RelayMaxInFlight, transport.RelayBusy())
+	ccEvents := terminalApp.NewEventForwarder(func() (<-chan terminalApp.RelayEvent, func()) { return tapEvents(broker) }, registry.Report, logger)
+	registry.Register(agentrpc.MsgTerminalEventsWant, ccEvents.HandleWant)
+	httpServer.EnsureCallcenterDevice(ctx) // the store's call-center device, on a linked Pi
 	httpServer.SetDevLog(devRing)
 	httpServer.SetSettingsLog(repositories.NewSettingsLogRepository(db))
 	httpServer.SetSetup(repositories.NewSetupRepository(db)) // admin pairing code + setup results (2.10y)
@@ -1348,4 +1355,28 @@ func resolveSessionSecret(ctx context.Context, settings order.SettingsRepository
 		logger.Warn().Ctx(ctx).Err(err).Msg("Failed to persist session secret; sessions won't survive restart")
 	}
 	return b, nil
+}
+
+// tapEvents subscribes to the /api/events broker for the call center's
+// event forwarding (terminal.events): each event stamped as it is read. The
+// channel closes when the broker dropped the tap (too slow) or on cancel.
+func tapEvents(b *ssebroker.Broker) (<-chan terminalApp.RelayEvent, func()) {
+	in, cancel := b.Subscribe()
+	out := make(chan terminalApp.RelayEvent, 128)
+	done := make(chan struct{})
+	var once sync.Once
+	safego.Go("callcenter.events_tap", func() {
+		defer close(out)
+		for ev := range in {
+			select {
+			case out <- terminalApp.RelayEvent{Event: ev.Type, Data: ev.Data, At: time.Now().UTC()}:
+			case <-done:
+				return
+			}
+		}
+	})
+	return out, func() {
+		once.Do(func() { close(done) })
+		cancel()
+	}
 }

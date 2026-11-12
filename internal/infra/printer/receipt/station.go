@@ -107,6 +107,13 @@ func buildStation(snap order.Snapshot, t printer.Ticket, prefs order.ReceiptPref
 		}
 	}
 	w(cmdBoldOff)
+	// Who took it (a call-center order, contract §2.10ab): "Call center - Name".
+	if by := strings.TrimSpace(snap.TakenBy); by != "" {
+		for _, line := range wrapped(by, l.cols, "") {
+			w(line)
+			nl()
+		}
+	}
 	if t.ReroutedFrom != "" {
 		// Printed on a stand-in printer: the reroute bands, right under the
 		// number + name (writeRerouted).

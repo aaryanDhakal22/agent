@@ -3,11 +3,16 @@ package order
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
 
 	"quiccpos/agent/internal/application/devlog"
 	"quiccpos/agent/internal/domain/order"
 	"quiccpos/agent/internal/domain/printer"
+
+	"github.com/google/uuid"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/metric"
 )
 
 // Terminal stage 0d: what the terminal service (application/terminal) needs
@@ -42,6 +47,57 @@ func (s *Service) PrintCounterTicketsThen(ctx context.Context, so order.StoredOr
 		}
 		s.printEvents(label(so)+" (counter)", out)
 	})
+}
+
+// PrintOrderReceipt prints an order's customer paper on the store's receipt
+// printer in the background (a call-center order has no terminal printer,
+// contract §2.10ab): a delivery's Merchant + Customer Copy, a pickup's
+// customer receipt. Nothing printed only alerts.
+func (s *Service) PrintOrderReceipt(ctx context.Context, so order.StoredOrder) {
+	s.background(ctx, func(ctx context.Context) {
+		out, err := s.print(ctx, printable(so), printer.ModeOrderReceipt)
+		if errors.Is(err, printer.ErrNoTickets) {
+			return
+		}
+		s.alertPrintIssues(ctx, so, out, false)
+		if err != nil {
+			s.logger.Warn().Ctx(ctx).Err(err).Str("order_id", so.Order.ID).Msg("Call-center order: no receipt printed")
+			return
+		}
+		s.printEvents(label(so)+" receipt (call center)", out)
+	})
+}
+
+// ReprintOn is Reprint that also says where the receipt printed (the
+// terminals' Reprint, contract §2.10ab): the actual printer's name.
+// ErrPrintingUnavailable when there is no printer at all.
+func (s *Service) ReprintOn(ctx context.Context, id string) (*order.StoredOrder, string, error) {
+	uid, err := uuid.Parse(id)
+	if err != nil {
+		return nil, "", order.ErrNotFound
+	}
+	so, err := s.repo.GetByID(ctx, uid)
+	if err != nil {
+		return nil, "", err
+	}
+	if s.print == nil {
+		return nil, "", ErrPrintingUnavailable
+	}
+	out, err := s.print(ctx, printable(*so), printer.ModeReceipt)
+	if errors.Is(err, printer.ErrNoTickets) || (err != nil && len(out.Printed) == 0 && len(out.Failed) == 0) {
+		return nil, "", ErrPrintingUnavailable // no roster: nothing was even tried
+	}
+	s.alertPrintIssues(ctx, *so, out, false)
+	if err != nil {
+		return nil, "", fmt.Errorf("%w: %w", ErrKitchenNotPrinted, err)
+	}
+	on := ""
+	if len(out.Printed) > 0 {
+		on = out.Printed[0].PrintedOn
+	}
+	s.meters.OrdersReprinted.Add(ctx, 1, metric.WithAttributes(attribute.String("source", "terminal")))
+	s.logger.Info().Ctx(ctx).Str("order_id", id).Str("printed_on", on).Msg("Order receipt reprinted (terminal)")
+	return so, on, nil
 }
 
 // PrintVoidSlip prints the VOID slip of a voided order on the stations its

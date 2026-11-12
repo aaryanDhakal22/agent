@@ -45,6 +45,7 @@ type Registry struct {
 	tracer   trace.Tracer
 	mu       sync.RWMutex
 	handlers map[string]CommandHandler
+	async    map[string]*asyncHandler // the types that run off the SSE reader
 }
 
 func NewRegistry(poster ReplyPoster, logger zerolog.Logger, meters observability.Meters) *Registry {
@@ -63,6 +64,72 @@ func (r *Registry) Register(msgType string, h CommandHandler) {
 	r.mu.Unlock()
 }
 
+// asyncHandler is a command type that runs off the SSE reader (RegisterAsync).
+type asyncHandler struct {
+	sem  chan struct{} // in-flight bound
+	busy any           // the reply when sem is full
+	mu   sync.Mutex
+	seen map[string]time.Time // envelope ids already taken (dedupe)
+}
+
+// Async command dedupe: an envelope id is remembered this long, at most
+// this many (a command fanned out twice never runs twice).
+const (
+	asyncSeenTTL = 2 * time.Minute
+	asyncSeenMax = 500
+)
+
+// RegisterAsync registers a command type whose handler may take seconds
+// (terminal.relay: a relayed card payment): it runs in its own goroutine
+// and posts its reply from there, so the SSE reader goes on with the next
+// frame (orders, store_config, other commands) and the idle watchdog never
+// trips. At most max run at once; a command over that is answered busy at
+// once (never queued on the reader). An envelope id seen in the last 2 min
+// is dropped. The handler's context is not the frame's: it outlives a
+// dropped stream (the handler sets its own deadline).
+func (r *Registry) RegisterAsync(msgType string, h CommandHandler, max int, busy any) {
+	if max < 1 {
+		max = 1
+	}
+	r.mu.Lock()
+	r.handlers[msgType] = h
+	if r.async == nil {
+		r.async = map[string]*asyncHandler{}
+	}
+	r.async[msgType] = &asyncHandler{sem: make(chan struct{}, max), busy: busy, seen: map[string]time.Time{}}
+	r.mu.Unlock()
+}
+
+// first reports whether id is new (and remembers it).
+func (a *asyncHandler) first(id string, now time.Time) bool {
+	if id == "" {
+		return true
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if t, ok := a.seen[id]; ok && now.Sub(t) < asyncSeenTTL {
+		return false
+	}
+	if len(a.seen) >= asyncSeenMax {
+		var oldest string
+		var at time.Time
+		for k, t := range a.seen {
+			if now.Sub(t) >= asyncSeenTTL {
+				delete(a.seen, k)
+				continue
+			}
+			if oldest == "" || t.Before(at) {
+				oldest, at = k, t
+			}
+		}
+		if len(a.seen) >= asyncSeenMax {
+			delete(a.seen, oldest)
+		}
+	}
+	a.seen[id] = now
+	return true
+}
+
 // Handle processes one `command` SSE frame: decode, run the handler, POST the reply.
 func (r *Registry) Handle(ctx context.Context, raw []byte) {
 	var env Envelope
@@ -71,7 +138,43 @@ func (r *Registry) Handle(ctx context.Context, raw []byte) {
 		r.logger.Error().Ctx(ctx).Err(err).Msg("bad command envelope")
 		return
 	}
+	typeAttr := attribute.String("type", env.Type)
+	r.mu.RLock()
+	h, ok := r.handlers[env.Type]
+	async := r.async[env.Type]
+	r.mu.RUnlock()
+	if !ok {
+		r.meters.RPCCommandsReceived.Add(ctx, 1, metric.WithAttributes(typeAttr, attribute.String("result", "unknown")))
+		r.logger.Debug().Ctx(ctx).Str("type", env.Type).Msg("no handler for command type")
+		return
+	}
+	if async == nil {
+		r.run(ctx, env, h)
+		return
+	}
+	if !async.first(env.ID, time.Now()) {
+		r.meters.RPCCommandsReceived.Add(ctx, 1, metric.WithAttributes(typeAttr, attribute.String("result", "duplicate")))
+		r.logger.Warn().Ctx(ctx).Str("type", env.Type).Str("id", env.ID).Msg("command id seen already: dropped")
+		return
+	}
+	actx := context.WithoutCancel(ctx) // keeps the trace, not the frame's life
+	select {
+	case async.sem <- struct{}{}:
+		safego.Go("rpc."+env.Type, func() {
+			defer func() { <-async.sem }()
+			r.run(actx, env, h)
+		})
+	default:
+		r.meters.RPCCommandsReceived.Add(ctx, 1, metric.WithAttributes(typeAttr, attribute.String("result", "busy")))
+		r.logger.Warn().Ctx(ctx).Str("type", env.Type).Int("in_flight", cap(async.sem)).Msg("too many commands in flight: answered busy")
+		safego.Go("rpc."+env.Type+".busy", func() {
+			r.run(actx, env, func(context.Context, json.RawMessage) (any, error) { return async.busy, nil })
+		})
+	}
+}
 
+// run runs one command's handler and POSTs its reply.
+func (r *Registry) run(ctx context.Context, env Envelope, h CommandHandler) {
 	typeAttr := attribute.String("type", env.Type)
 	ctx, span := r.tracer.Start(ctx, "rpc.command.handle",
 		trace.WithAttributes(attribute.String("rpc.type", env.Type)),
@@ -83,14 +186,6 @@ func (r *Registry) Handle(ctx context.Context, raw []byte) {
 		r.meters.RPCHandleMs.Record(ctx, ms, metric.WithAttributes(typeAttr))
 	}()
 
-	r.mu.RLock()
-	h, ok := r.handlers[env.Type]
-	r.mu.RUnlock()
-	if !ok {
-		r.meters.RPCCommandsReceived.Add(ctx, 1, metric.WithAttributes(typeAttr, attribute.String("result", "unknown")))
-		r.logger.Debug().Ctx(ctx).Str("type", env.Type).Msg("no handler for command type")
-		return
-	}
 	// One handler's panic is recovered (logged with its stack, counted on
 	// agent.panics) and answered like an error: the SSE reader goes on.
 	var reply any

@@ -109,7 +109,8 @@ func (s *Server) handleTerminalSquareKeyed(w http.ResponseWriter, r *http.Reques
 	if !s.terminalReady(w) {
 		return
 	}
-	if _, ok := squareTerminalKey(r); !ok {
+	_, seat := callcenterActor(r) // a relayed call-center call charges a typed card too (2.10ab)
+	if _, ok := squareTerminalKey(r); !ok && !seat {
 		s.writeJSON(w, http.StatusForbidden, errCodeMap("only a paired POS terminal can charge a card", "terminal_required"))
 		return
 	}

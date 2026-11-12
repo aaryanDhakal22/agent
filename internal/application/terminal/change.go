@@ -246,12 +246,29 @@ func (s *Service) changeCart(ctx context.Context, a Actor, id string, in ChangeI
 		return &ChangeResult{Order: cur.Order, Added: nonNil(e.Added), Removed: nonNil(e.Removed), Changed: true, Duplicate: true,
 			BalanceCents: cur.Order.Status.CashDueCents}, nil
 	}
+	if a.Callcenter { // §2.10ab: no manager; the store wins an order it has open
+		if strings.TrimSpace(in.ManagerPIN) != "" || len(in.Approvals) > 0 {
+			return nil, notAllowed(terminal.NotAllowedManager)
+		}
+		if err := s.storeHolds(ctx, a, id); err != nil {
+			return nil, err
+		}
+	}
 	if cur.Order.Order.Source != order.SourceCounter {
 		return s.changeOnline(ctx, a, st, cfg, cur.Order, in, hash) // §2.10aa
 	}
 	m, ms := s.store.Menu()
 	if m == nil {
 		return nil, terminal.ErrNoMenu
+	}
+	if a.Callcenter {
+		var held *Cart
+		if c, ok := storedCart(cur.Order.Order); ok {
+			held = &c
+		}
+		if err := callcenterCartGuard(a, counterCtx(m, s.orders.StoreLocation(), s.toppingMax()), in.Cart, held); err != nil {
+			return nil, err
+		}
 	}
 	was := orderType(cur.Order.Order)
 	to, err := typeChange(was, in)
@@ -303,12 +320,15 @@ func (s *Service) changeCart(ctx context.Context, a Actor, id string, in ChangeI
 			return nil, nil, nil
 		}
 		amount, _ := netPaid(paid)
-		if money.Total < amount {
-			return nil, nil, fmt.Errorf("%w (%d paid, the new total is %d)", terminal.ErrRefundFirst, amount, money.Total)
-		}
 		lines := append([]order.LineItem(nil), items...)
 		terminal.KeepLineIDs(cur.Order.Items, lines)
 		added, removed = terminal.DiffLines(cur.Order.Items, lines)
+		if err := paidLocked(a, cur, paid, removed); err != nil { // §2.10ab: before refund_first
+			return nil, nil, err
+		}
+		if money.Total < amount {
+			return nil, nil, fmt.Errorf("%w (%d paid, the new total is %d)", terminal.ErrRefundFirst, amount, money.Total)
+		}
 		if to != "" && (cur.Status.DriverID != "" || cur.Status.PoolDriverID != "") {
 			return nil, nil, terminal.ErrTypeLocked
 		}

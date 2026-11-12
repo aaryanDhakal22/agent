@@ -102,6 +102,14 @@ func PlanWith(snap order.Snapshot, roster []RosterEntry, mode printer.Mode, rule
 			tickets = append(tickets, printer.Ticket{Kind: printer.TicketDeliveryCopies, TargetID: receipt.ID, Station: receipt.Name})
 		}
 		return tickets, unrouted
+	case printer.ModeOrderReceipt:
+		if strings.EqualFold(snap.Fulfillment.Type, "delivery") {
+			return []printer.Ticket{{Kind: printer.TicketDeliveryCopies, TargetID: receipt.ID, Station: receipt.Name}}, nil
+		}
+		if !isRouted(snap) {
+			return []printer.Ticket{fullTicket}, nil
+		}
+		return []printer.Ticket{receiptTicket}, nil
 	case printer.ModeFutureEarly, printer.ModeFutureKitchen, printer.ModeFutureReceipt, printer.ModeFutureBoth:
 		kitchen := mode == printer.ModeFutureKitchen || mode == printer.ModeFutureBoth ||
 			(mode == printer.ModeFutureEarly && rules.Tickets.FutureKitchen)
