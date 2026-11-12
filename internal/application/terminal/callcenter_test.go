@@ -394,7 +394,6 @@ func TestCallcenterPaidLinesLocked(t *testing.T) {
 	if _, err := r.svc.AddPayment(r.ctx, seat, id, PaymentIn{ClientKey: tk(), Tender: terminal.TenderManualCard, AmountCents: 500, Last4: "1881"}); err != nil {
 		t.Fatal(err)
 	}
-	prints, changes := len(r.orders.addOns)+len(r.orders.voidLns), r.pub.count(EventOrderChanged)
 	more, err := r.svc.ChangeCart(r.ctx, seat, id, ChangeIn{ClientKey: tk(), Cart: cartOf(pizzaLine(), sodaLine(3))})
 	if err != nil || !more.Changed || len(more.Added) != 1 || more.Added[0] != "2× Soda" || len(more.Removed) != 0 {
 		t.Fatalf("raising a quantity on a paid order: %+v %v", more, err)
@@ -403,7 +402,7 @@ func TestCallcenterPaidLinesLocked(t *testing.T) {
 	if err != nil || len(withWings.Added) != 1 {
 		t.Fatalf("a new line on a paid order: %+v %v", withWings, err)
 	}
-	prints, changes = len(r.orders.addOns)+len(r.orders.voidLns), r.pub.count(EventOrderChanged)
+	prints, changes := len(r.orders.addOns)+len(r.orders.voidLns), r.pub.count(EventOrderChanged)
 	before, _ := r.svc.Order(r.ctx, id)
 	// ... removing, lowering or changing what was there is not.
 	noted := pizzaLine()

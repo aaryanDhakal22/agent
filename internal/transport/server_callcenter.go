@@ -328,13 +328,13 @@ func relayBody(body []byte) (manager, bad bool) {
 					if !is(o, "price_cents", &cents) {
 						return false, true
 					}
-					if opts, ok := objects(o, "options"); !ok {
+					opts, ok := objects(o, "options")
+					if !ok {
 						return false, true
-					} else {
-						for _, oo := range opts {
-							if !is(oo, "price_cents", &cents) {
-								return false, true
-							}
+					}
+					for _, oo := range opts {
+						if !is(oo, "price_cents", &cents) {
+							return false, true
 						}
 					}
 				}

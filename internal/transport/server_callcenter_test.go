@@ -524,7 +524,6 @@ func TestRelayKeyedPayment(t *testing.T) {
 	if got := r.relay(t, ccCashier, "POST", "square/keyed-payments", body); got.Status != http.StatusUnauthorized {
 		t.Fatalf("a cashier's id on the relay: %d %s", got.Status, got.Body)
 	}
-	var journal []terminal.Entry
 	journal, err := r.s.terminalSvc.Journal(context.Background(), 20)
 	if err != nil {
 		t.Fatal(err)
