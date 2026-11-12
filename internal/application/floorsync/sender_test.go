@@ -211,3 +211,102 @@ func TestPoisonEventIsIsolated(t *testing.T) {
 		t.Fatalf("good events sent one by one: %d posts", len(posts))
 	}
 }
+
+// memFloor is an in-memory outbox (only what the sender uses).
+type memFloor struct {
+	order.FloorRepository
+	events []order.FloorEvent
+	synced map[string]bool
+	failed map[string]int
+}
+
+func (m *memFloor) ListUnsyncedEvents(_ context.Context, limit int) ([]order.FloorEvent, error) {
+	var out []order.FloorEvent
+	for _, e := range m.events {
+		if !m.synced[e.ID] && len(out) < limit {
+			out = append(out, e)
+		}
+	}
+	return out, nil
+}
+func (m *memFloor) MarkEventSynced(_ context.Context, id string, _ time.Time) error {
+	m.synced[id] = true
+	return nil
+}
+func (m *memFloor) MarkEventFailed(_ context.Context, id, _ string) error { m.failed[id]++; return nil }
+func (m *memFloor) CountUnsyncedEvents(_ context.Context) (int64, error) {
+	n := int64(0)
+	for _, e := range m.events {
+		if !m.synced[e.ID] {
+			n++
+		}
+	}
+	return n, nil
+}
+
+// TestRefusedMoneyAndCustomersStayQueued: a payment or a counter customer
+// main refuses is kept (retried), like a counter order; other refusals are
+// final.
+func TestRefusedMoneyAndCustomersStayQueued(t *testing.T) {
+	_, m := setup(t)
+	answer := map[string]string{}
+	mem := &memFloor{synced: map[string]bool{}, failed: map[string]int{}}
+	add := func(typ, result string) string {
+		id := uuid.NewString()
+		raw, _ := json.Marshal(map[string]any{"event_id": id, "type": typ})
+		mem.events = append(mem.events, order.FloorEvent{ID: id, Type: typ, Payload: raw})
+		answer[id] = result
+		return id
+	}
+	payInvalid := add("order.payment", "invalid")
+	payNotFound := add("order.payment", "not_found")
+	custInvalid := add("customer.upsert", "invalid")
+	placedInvalid := add("order.placed", "invalid")
+	statusNotFound := add("order.status", "not_found")
+	tipInvalid := add("order.tip", "invalid")
+	payApplied := add("order.payment", "applied")
+	post := func(_ context.Context, body []byte) (int, []byte, error) {
+		var env envelope
+		var p struct {
+			Events []struct {
+				EventID string `json:"event_id"`
+			} `json:"events"`
+		}
+		json.Unmarshal(body, &env)
+		json.Unmarshal(env.Payload, &p)
+		var res []Result
+		for _, e := range p.Events {
+			res = append(res, Result{EventID: e.EventID, Result: answer[e.EventID]})
+		}
+		inner, _ := json.Marshal(map[string]any{"results": res})
+		out, _ := json.Marshal(envelope{Payload: inner})
+		return http.StatusOK, out, nil
+	}
+	s := New(mem, post, zerolog.Nop(), m)
+	if err := s.Flush(context.Background()); err == nil {
+		t.Fatal("kept events must report an error (the backoff)")
+	}
+	for _, id := range []string{payInvalid, payNotFound, custInvalid, placedInvalid} {
+		if mem.synced[id] || mem.failed[id] != 1 {
+			t.Errorf("%s: synced %v failed %d, want kept", id, mem.synced[id], mem.failed[id])
+		}
+	}
+	for _, id := range []string{statusNotFound, tipInvalid, payApplied} {
+		if !mem.synced[id] {
+			t.Errorf("%s: want synced", id)
+		}
+	}
+	// Main takes them later (a newer main looks at a refused event again).
+	for _, id := range []string{payInvalid, payNotFound, custInvalid, placedInvalid} {
+		answer[id] = "applied"
+	}
+	if err := s.Flush(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if n, _ := mem.CountUnsyncedEvents(context.Background()); n != 0 {
+		t.Fatalf("unsynced = %d", n)
+	}
+	if KeepRefused("order.payment", "stale") || KeepRefused("order.status", "invalid") || !KeepRefused("customer.upsert", "invalid") {
+		t.Fatal("KeepRefused")
+	}
+}

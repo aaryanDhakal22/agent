@@ -297,6 +297,17 @@ func (q *Queries) CountAllOrders(ctx context.Context) (int64, error) {
 	return count, err
 }
 
+const countCustomers = `-- name: CountCustomers :one
+SELECT count(*) FROM customers
+`
+
+func (q *Queries) CountCustomers(ctx context.Context) (int64, error) {
+	row := q.db.QueryRowContext(ctx, countCustomers)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const countDeliveriesInBatch = `-- name: CountDeliveriesInBatch :many
 SELECT driver_id, count(*) AS deliveries FROM orders
 WHERE batch_id = ? AND driver_id IS NOT NULL
@@ -503,6 +514,42 @@ func (q *Queries) DeleteAllBatches(ctx context.Context) error {
 	return err
 }
 
+const deleteAllCustomerAddresses = `-- name: DeleteAllCustomerAddresses :exec
+DELETE FROM customer_addresses
+`
+
+func (q *Queries) DeleteAllCustomerAddresses(ctx context.Context) error {
+	_, err := q.db.ExecContext(ctx, deleteAllCustomerAddresses)
+	return err
+}
+
+const deleteAllCustomers = `-- name: DeleteAllCustomers :exec
+DELETE FROM customers
+`
+
+func (q *Queries) DeleteAllCustomers(ctx context.Context) error {
+	_, err := q.db.ExecContext(ctx, deleteAllCustomers)
+	return err
+}
+
+const deleteCustomer = `-- name: DeleteCustomer :exec
+DELETE FROM customers WHERE id = ?
+`
+
+func (q *Queries) DeleteCustomer(ctx context.Context, id string) error {
+	_, err := q.db.ExecContext(ctx, deleteCustomer, id)
+	return err
+}
+
+const deleteCustomerAddresses = `-- name: DeleteCustomerAddresses :exec
+DELETE FROM customer_addresses WHERE customer_id = ?
+`
+
+func (q *Queries) DeleteCustomerAddresses(ctx context.Context, customerID string) error {
+	_, err := q.db.ExecContext(ctx, deleteCustomerAddresses, customerID)
+	return err
+}
+
 const deleteOldAutoPlans = `-- name: DeleteOldAutoPlans :exec
 DELETE FROM auto_plans WHERE created_at < ?
 `
@@ -572,6 +619,15 @@ func (q *Queries) DeleteOrdersOutsideKeptBatches(ctx context.Context, limit int6
 	return result.RowsAffected()
 }
 
+const deleteOrphanCustomerAddresses = `-- name: DeleteOrphanCustomerAddresses :exec
+DELETE FROM customer_addresses WHERE customer_id NOT IN (SELECT id FROM customers)
+`
+
+func (q *Queries) DeleteOrphanCustomerAddresses(ctx context.Context) error {
+	_, err := q.db.ExecContext(ctx, deleteOrphanCustomerAddresses)
+	return err
+}
+
 const deleteOrphanOrderGeo = `-- name: DeleteOrphanOrderGeo :exec
 DELETE FROM order_geo WHERE order_id NOT IN (SELECT id FROM orders)
 `
@@ -601,6 +657,16 @@ func (q *Queries) DeleteOrphanOrderTimes(ctx context.Context) error {
 	return err
 }
 
+const deleteSyncedCustomers = `-- name: DeleteSyncedCustomers :exec
+DELETE FROM customers WHERE local_at = ''
+`
+
+// A feed reset: drop main's copy, keep what a terminal changed (on its way to main).
+func (q *Queries) DeleteSyncedCustomers(ctx context.Context) error {
+	_, err := q.db.ExecContext(ctx, deleteSyncedCustomers)
+	return err
+}
+
 const deleteTerminalDraft = `-- name: DeleteTerminalDraft :execrows
 DELETE FROM terminal_drafts WHERE id = ?
 `
@@ -626,6 +692,100 @@ type DeleteTerminalDriverLinkOfDriverParams struct {
 func (q *Queries) DeleteTerminalDriverLinkOfDriver(ctx context.Context, arg DeleteTerminalDriverLinkOfDriverParams) error {
 	_, err := q.db.ExecContext(ctx, deleteTerminalDriverLinkOfDriver, arg.DriverID, arg.StaffID)
 	return err
+}
+
+const findCustomersByPhonePrefix = `-- name: FindCustomersByPhonePrefix :many
+SELECT id, phone, phone_rev, first_name, last_name, name, notes, source, updated_at, local_at, last_order_at FROM customers WHERE phone >= ?1 AND phone < ?2
+ORDER BY last_order_at DESC, updated_at DESC, id LIMIT ?3
+`
+
+type FindCustomersByPhonePrefixParams struct {
+	Lo      string `json:"lo"`
+	Hi      string `json:"hi"`
+	MaxRows int64  `json:"max_rows"`
+}
+
+// phone in [lo, hi): the typed digits as a prefix (index idx_customers_phone).
+func (q *Queries) FindCustomersByPhonePrefix(ctx context.Context, arg FindCustomersByPhonePrefixParams) ([]Customer, error) {
+	rows, err := q.db.QueryContext(ctx, findCustomersByPhonePrefix, arg.Lo, arg.Hi, arg.MaxRows)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Customer
+	for rows.Next() {
+		var i Customer
+		if err := rows.Scan(
+			&i.ID,
+			&i.Phone,
+			&i.PhoneRev,
+			&i.FirstName,
+			&i.LastName,
+			&i.Name,
+			&i.Notes,
+			&i.Source,
+			&i.UpdatedAt,
+			&i.LocalAt,
+			&i.LastOrderAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const findCustomersByPhoneSuffix = `-- name: FindCustomersByPhoneSuffix :many
+SELECT id, phone, phone_rev, first_name, last_name, name, notes, source, updated_at, local_at, last_order_at FROM customers WHERE phone_rev >= ?1 AND phone_rev < ?2
+ORDER BY last_order_at DESC, updated_at DESC, id LIMIT ?3
+`
+
+type FindCustomersByPhoneSuffixParams struct {
+	Lo      string `json:"lo"`
+	Hi      string `json:"hi"`
+	MaxRows int64  `json:"max_rows"`
+}
+
+// phone_rev in [lo, hi): the typed digits as the number's end ("the last 4").
+func (q *Queries) FindCustomersByPhoneSuffix(ctx context.Context, arg FindCustomersByPhoneSuffixParams) ([]Customer, error) {
+	rows, err := q.db.QueryContext(ctx, findCustomersByPhoneSuffix, arg.Lo, arg.Hi, arg.MaxRows)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Customer
+	for rows.Next() {
+		var i Customer
+		if err := rows.Scan(
+			&i.ID,
+			&i.Phone,
+			&i.PhoneRev,
+			&i.FirstName,
+			&i.LastName,
+			&i.Name,
+			&i.Notes,
+			&i.Source,
+			&i.UpdatedAt,
+			&i.LocalAt,
+			&i.LastOrderAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const finishHiddenClosed = `-- name: FinishHiddenClosed :execrows
@@ -790,6 +950,71 @@ func (q *Queries) GetCounterNext(ctx context.Context) (int64, error) {
 	var counter_next int64
 	err := row.Scan(&counter_next)
 	return counter_next, err
+}
+
+const getCustomer = `-- name: GetCustomer :one
+SELECT id, phone, phone_rev, first_name, last_name, name, notes, source, updated_at, local_at, last_order_at FROM customers WHERE id = ?
+`
+
+func (q *Queries) GetCustomer(ctx context.Context, id string) (Customer, error) {
+	row := q.db.QueryRowContext(ctx, getCustomer, id)
+	var i Customer
+	err := row.Scan(
+		&i.ID,
+		&i.Phone,
+		&i.PhoneRev,
+		&i.FirstName,
+		&i.LastName,
+		&i.Name,
+		&i.Notes,
+		&i.Source,
+		&i.UpdatedAt,
+		&i.LocalAt,
+		&i.LastOrderAt,
+	)
+	return i, err
+}
+
+const getCustomerByPhone = `-- name: GetCustomerByPhone :one
+SELECT id, phone, phone_rev, first_name, last_name, name, notes, source, updated_at, local_at, last_order_at FROM customers WHERE phone = ?
+`
+
+func (q *Queries) GetCustomerByPhone(ctx context.Context, phone string) (Customer, error) {
+	row := q.db.QueryRowContext(ctx, getCustomerByPhone, phone)
+	var i Customer
+	err := row.Scan(
+		&i.ID,
+		&i.Phone,
+		&i.PhoneRev,
+		&i.FirstName,
+		&i.LastName,
+		&i.Name,
+		&i.Notes,
+		&i.Source,
+		&i.UpdatedAt,
+		&i.LocalAt,
+		&i.LastOrderAt,
+	)
+	return i, err
+}
+
+const getCustomerSync = `-- name: GetCustomerSync :one
+
+SELECT location_id, cursor, synced_at FROM customer_sync WHERE id = 1
+`
+
+type GetCustomerSyncRow struct {
+	LocationID string `json:"location_id"`
+	Cursor     string `json:"cursor"`
+	SyncedAt   string `json:"synced_at"`
+}
+
+// 00028_customers: the store's customers (main's feed + the terminals).
+func (q *Queries) GetCustomerSync(ctx context.Context) (GetCustomerSyncRow, error) {
+	row := q.db.QueryRowContext(ctx, getCustomerSync)
+	var i GetCustomerSyncRow
+	err := row.Scan(&i.LocationID, &i.Cursor, &i.SyncedAt)
+	return i, err
 }
 
 const getDeliveryPrefs = `-- name: GetDeliveryPrefs :one
@@ -1617,6 +1842,49 @@ func (q *Queries) InsertCounterOrder(ctx context.Context, arg InsertCounterOrder
 	return err
 }
 
+const insertCustomerAddress = `-- name: InsertCustomerAddress :exec
+INSERT INTO customer_addresses (id, customer_id, position, label, line1, line2, city, state, zip, notes, is_default, created_at, lat, lng)
+VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7,
+        ?8, ?9, ?10, ?11, ?12, ?13, ?14)
+`
+
+type InsertCustomerAddressParams struct {
+	ID         string          `json:"id"`
+	CustomerID string          `json:"customer_id"`
+	Position   int64           `json:"position"`
+	Label      string          `json:"label"`
+	Line1      string          `json:"line1"`
+	Line2      string          `json:"line2"`
+	City       string          `json:"city"`
+	State      string          `json:"state"`
+	Zip        string          `json:"zip"`
+	Notes      string          `json:"notes"`
+	IsDefault  bool            `json:"is_default"`
+	CreatedAt  string          `json:"created_at"`
+	Lat        sql.NullFloat64 `json:"lat"`
+	Lng        sql.NullFloat64 `json:"lng"`
+}
+
+func (q *Queries) InsertCustomerAddress(ctx context.Context, arg InsertCustomerAddressParams) error {
+	_, err := q.db.ExecContext(ctx, insertCustomerAddress,
+		arg.ID,
+		arg.CustomerID,
+		arg.Position,
+		arg.Label,
+		arg.Line1,
+		arg.Line2,
+		arg.City,
+		arg.State,
+		arg.Zip,
+		arg.Notes,
+		arg.IsDefault,
+		arg.CreatedAt,
+		arg.Lat,
+		arg.Lng,
+	)
+	return err
+}
+
 const insertExternalOrder = `-- name: InsertExternalOrder :exec
 
 INSERT INTO orders (id, tenant_id, location_id, source, source_event_id, snapshot, state, arrival_date,
@@ -2425,6 +2693,48 @@ func (q *Queries) ListCounterOrders(ctx context.Context, batchID int64) ([]Order
 	return items, nil
 }
 
+const listCustomerAddresses = `-- name: ListCustomerAddresses :many
+SELECT id, customer_id, position, label, line1, line2, city, state, zip, notes, is_default, created_at, lat, lng FROM customer_addresses WHERE customer_id = ? ORDER BY position, created_at, id
+`
+
+func (q *Queries) ListCustomerAddresses(ctx context.Context, customerID string) ([]CustomerAddress, error) {
+	rows, err := q.db.QueryContext(ctx, listCustomerAddresses, customerID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []CustomerAddress
+	for rows.Next() {
+		var i CustomerAddress
+		if err := rows.Scan(
+			&i.ID,
+			&i.CustomerID,
+			&i.Position,
+			&i.Label,
+			&i.Line1,
+			&i.Line2,
+			&i.City,
+			&i.State,
+			&i.Zip,
+			&i.Notes,
+			&i.IsDefault,
+			&i.CreatedAt,
+			&i.Lat,
+			&i.Lng,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listDueOnlinePickups = `-- name: ListDueOnlinePickups :many
 SELECT id FROM orders
 WHERE state = 'ready' AND finished_at IS NULL AND ext_source = '' AND ready_at IS NOT NULL AND ready_at <= ?1
@@ -2727,6 +3037,44 @@ func (q *Queries) ListLocalOnlyByBatch(ctx context.Context, batchID int64) ([]Or
 			&i.ClientKey,
 			&i.DoorTipCents,
 		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listLocatedDeliveries = `-- name: ListLocatedDeliveries :many
+SELECT o.snapshot, g.lat, g.lng FROM orders o JOIN order_geo g ON g.order_id = o.id
+WHERE g.state = 'located' AND g.lat IS NOT NULL AND g.lng IS NOT NULL
+  AND json_extract(o.snapshot, '$.fulfillment.type') = 'delivery'
+ORDER BY o.arrival_date DESC LIMIT 2000
+`
+
+type ListLocatedDeliveriesRow struct {
+	Snapshot string          `json:"snapshot"`
+	Lat      sql.NullFloat64 `json:"lat"`
+	Lng      sql.NullFloat64 `json:"lng"`
+}
+
+// Delivery orders main located (their address + point), for the customers'
+// in / out of area check.
+func (q *Queries) ListLocatedDeliveries(ctx context.Context) ([]ListLocatedDeliveriesRow, error) {
+	rows, err := q.db.QueryContext(ctx, listLocatedDeliveries)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListLocatedDeliveriesRow
+	for rows.Next() {
+		var i ListLocatedDeliveriesRow
+		if err := rows.Scan(&i.Snapshot, &i.Lat, &i.Lng); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
@@ -3131,6 +3479,106 @@ type ListOrdersByBatchParams struct {
 
 func (q *Queries) ListOrdersByBatch(ctx context.Context, arg ListOrdersByBatchParams) ([]Order, error) {
 	rows, err := q.db.QueryContext(ctx, listOrdersByBatch, arg.BatchID, arg.Limit, arg.Offset)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Order
+	for rows.Next() {
+		var i Order
+		if err := rows.Scan(
+			&i.ID,
+			&i.TenantID,
+			&i.LocationID,
+			&i.Source,
+			&i.SourceEventID,
+			&i.Snapshot,
+			&i.State,
+			&i.ArrivalDate,
+			&i.PrintedDate,
+			&i.BatchID,
+			&i.KitchenNumber,
+			&i.PrepMinutes,
+			&i.EstimatedReadyAt,
+			&i.AcceptedAt,
+			&i.ReadyAt,
+			&i.OutAt,
+			&i.DeliveredAt,
+			&i.DriverID,
+			&i.DriverName,
+			&i.LastAlertAt,
+			&i.CancelledAt,
+			&i.AcceptPending,
+			&i.PoolDriverID,
+			&i.PooledAt,
+			&i.PoolSeq,
+			&i.PoolPlanID,
+			&i.ExtSource,
+			&i.ExtRef,
+			&i.ExtHash,
+			&i.ExtDriverPos,
+			&i.DisplayNumber,
+			&i.Paid,
+			&i.CashDueCents,
+			&i.TipCents,
+			&i.BoardHidden,
+			&i.SentAt,
+			&i.LocalOnly,
+			&i.Flag,
+			&i.PosCheckNumber,
+			&i.PosDriverNote,
+			&i.ScheduledLeadMinutes,
+			&i.RingAt,
+			&i.Rerung,
+			&i.AutoAccepted,
+			&i.CameBack,
+			&i.NotDeliveredAction,
+			&i.NotDeliveredAt,
+			&i.NotDeliveredDriverID,
+			&i.RunSeq,
+			&i.FinishedAt,
+			&i.FinishedBy,
+			&i.PosClosed,
+			&i.PosChange,
+			&i.MarkedDelivered,
+			&i.PaidAt,
+			&i.EarlyKitchen,
+			&i.EarlyReceipt,
+			&i.DueOverride,
+			&i.MadeNow,
+			&i.AddedTipCents,
+			&i.TipLocked,
+			&i.CancelReason,
+			&i.ClientKey,
+			&i.DoorTipCents,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listOrdersMentioning = `-- name: ListOrdersMentioning :many
+SELECT id, tenant_id, location_id, source, source_event_id, snapshot, state, arrival_date, printed_date, batch_id, kitchen_number, prep_minutes, estimated_ready_at, accepted_at, ready_at, out_at, delivered_at, driver_id, driver_name, last_alert_at, cancelled_at, accept_pending, pool_driver_id, pooled_at, pool_seq, pool_plan_id, ext_source, ext_ref, ext_hash, ext_driver_pos, display_number, paid, cash_due_cents, tip_cents, board_hidden, sent_at, local_only, flag, pos_check_number, pos_driver_note, scheduled_lead_minutes, ring_at, rerung, auto_accepted, came_back, not_delivered_action, not_delivered_at, not_delivered_driver_id, run_seq, finished_at, finished_by, pos_closed, pos_change, marked_delivered, paid_at, early_kitchen, early_receipt, due_override, made_now, added_tip_cents, tip_locked, cancel_reason, client_key, door_tip_cents FROM orders WHERE local_only = 0 AND instr(snapshot, ?1) > 0
+ORDER BY arrival_date DESC LIMIT ?2
+`
+
+type ListOrdersMentioningParams struct {
+	Text    string `json:"text"`
+	MaxRows int64  `json:"max_rows"`
+}
+
+// Orders whose snapshot holds the text (a phone's last digits, a customer
+// id), newest first; the caller checks each one. POS checks are left out.
+func (q *Queries) ListOrdersMentioning(ctx context.Context, arg ListOrdersMentioningParams) ([]Order, error) {
+	rows, err := q.db.QueryContext(ctx, listOrdersMentioning, arg.Text, arg.MaxRows)
 	if err != nil {
 		return nil, err
 	}
@@ -4317,6 +4765,22 @@ func (q *Queries) PruneSettingsLog(ctx context.Context, before string) error {
 	return err
 }
 
+const putCustomerSync = `-- name: PutCustomerSync :exec
+INSERT INTO customer_sync (id, location_id, cursor, synced_at) VALUES (1, ?1, ?2, ?3)
+ON CONFLICT (id) DO UPDATE SET location_id = excluded.location_id, cursor = excluded.cursor, synced_at = excluded.synced_at
+`
+
+type PutCustomerSyncParams struct {
+	LocationID string `json:"location_id"`
+	Cursor     string `json:"cursor"`
+	SyncedAt   string `json:"synced_at"`
+}
+
+func (q *Queries) PutCustomerSync(ctx context.Context, arg PutCustomerSyncParams) error {
+	_, err := q.db.ExecContext(ctx, putCustomerSync, arg.LocationID, arg.Cursor, arg.SyncedAt)
+	return err
+}
+
 const putTerminalSnapshot = `-- name: PutTerminalSnapshot :exec
 INSERT INTO terminal_snapshots (kind, version, etag, body, fetched_at)
 VALUES (?1, ?2, ?3, ?4, ?5)
@@ -4804,6 +5268,21 @@ UPDATE settings SET counter_next = ? WHERE id = 1
 
 func (q *Queries) SetCounterNext(ctx context.Context, counterNext int64) error {
 	_, err := q.db.ExecContext(ctx, setCounterNext, counterNext)
+	return err
+}
+
+const setCustomerAddressPoint = `-- name: SetCustomerAddressPoint :exec
+UPDATE customer_addresses SET lat = ?1, lng = ?2 WHERE id = ?3
+`
+
+type SetCustomerAddressPointParams struct {
+	Lat sql.NullFloat64 `json:"lat"`
+	Lng sql.NullFloat64 `json:"lng"`
+	ID  string          `json:"id"`
+}
+
+func (q *Queries) SetCustomerAddressPoint(ctx context.Context, arg SetCustomerAddressPointParams) error {
+	_, err := q.db.ExecContext(ctx, setCustomerAddressPoint, arg.Lat, arg.Lng, arg.ID)
 	return err
 }
 
@@ -5591,6 +6070,22 @@ func (q *Queries) TakeCounterNumber(ctx context.Context, start int64) (int64, er
 	return counter_next, err
 }
 
+const touchCustomerOrder = `-- name: TouchCustomerOrder :exec
+UPDATE customers SET last_order_at = ?1
+WHERE (id = ?2 OR phone = ?3) AND last_order_at < ?1
+`
+
+type TouchCustomerOrderParams struct {
+	At    string `json:"at"`
+	ID    string `json:"id"`
+	Phone string `json:"phone"`
+}
+
+func (q *Queries) TouchCustomerOrder(ctx context.Context, arg TouchCustomerOrderParams) error {
+	_, err := q.db.ExecContext(ctx, touchCustomerOrder, arg.At, arg.ID, arg.Phone)
+	return err
+}
+
 const touchPairedDevice = `-- name: TouchPairedDevice :exec
 UPDATE paired_devices SET last_seen_at = ? WHERE id = ?
 `
@@ -5719,6 +6214,45 @@ func (q *Queries) UpsertArrivedOrder(ctx context.Context, arg UpsertArrivedOrder
 		return 0, err
 	}
 	return result.RowsAffected()
+}
+
+const upsertCustomer = `-- name: UpsertCustomer :exec
+INSERT INTO customers (id, phone, phone_rev, first_name, last_name, name, notes, source, updated_at, local_at)
+VALUES (?1, ?2, ?3, ?4, ?5, ?6,
+        ?7, ?8, ?9, ?10)
+ON CONFLICT (id) DO UPDATE SET phone = excluded.phone, phone_rev = excluded.phone_rev, first_name = excluded.first_name,
+    last_name = excluded.last_name, name = excluded.name, notes = excluded.notes, source = excluded.source,
+    updated_at = excluded.updated_at, local_at = excluded.local_at
+`
+
+type UpsertCustomerParams struct {
+	ID        string `json:"id"`
+	Phone     string `json:"phone"`
+	PhoneRev  string `json:"phone_rev"`
+	FirstName string `json:"first_name"`
+	LastName  string `json:"last_name"`
+	Name      string `json:"name"`
+	Notes     string `json:"notes"`
+	Source    string `json:"source"`
+	UpdatedAt string `json:"updated_at"`
+	LocalAt   string `json:"local_at"`
+}
+
+// last_order_at is the Pi's own: never written here.
+func (q *Queries) UpsertCustomer(ctx context.Context, arg UpsertCustomerParams) error {
+	_, err := q.db.ExecContext(ctx, upsertCustomer,
+		arg.ID,
+		arg.Phone,
+		arg.PhoneRev,
+		arg.FirstName,
+		arg.LastName,
+		arg.Name,
+		arg.Notes,
+		arg.Source,
+		arg.UpdatedAt,
+		arg.LocalAt,
+	)
+	return err
 }
 
 const upsertOrderGeo = `-- name: UpsertOrderGeo :exec

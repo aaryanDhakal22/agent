@@ -39,6 +39,7 @@ type Querier interface {
 	ConfirmAutoPlan(ctx context.Context, arg ConfirmAutoPlanParams) error
 	CountAllDrivers(ctx context.Context) (int64, error)
 	CountAllOrders(ctx context.Context) (int64, error)
+	CountCustomers(ctx context.Context) (int64, error)
 	CountDeliveriesInBatch(ctx context.Context, batchID int64) ([]CountDeliveriesInBatchRow, error)
 	CountOnDeliveryByDriver(ctx context.Context, driverID sql.NullString) (int64, error)
 	// Pi updates (2.0.6) ----------------------------------------------------------
@@ -53,6 +54,10 @@ type Querier interface {
 	CreatePairedDevice(ctx context.Context, arg CreatePairedDeviceParams) error
 	DeactivateDriver(ctx context.Context, id string) (int64, error)
 	DeleteAllBatches(ctx context.Context) error
+	DeleteAllCustomerAddresses(ctx context.Context) error
+	DeleteAllCustomers(ctx context.Context) error
+	DeleteCustomer(ctx context.Context, id string) error
+	DeleteCustomerAddresses(ctx context.Context, customerID string) error
 	DeleteOldAutoPlans(ctx context.Context, createdAt string) error
 	DeleteOldClosedBatches(ctx context.Context, limit int64) error
 	DeleteOldIntegrationEvents(ctx context.Context, createdAt string) error
@@ -60,13 +65,20 @@ type Querier interface {
 	DeleteOrderGeo(ctx context.Context, orderID string) error
 	// Batch retention: keep the open batch plus the newest N closed batches.
 	DeleteOrdersOutsideKeptBatches(ctx context.Context, limit int64) (int64, error)
+	DeleteOrphanCustomerAddresses(ctx context.Context) error
 	DeleteOrphanOrderGeo(ctx context.Context) error
 	// Retention: the payments of trimmed counter orders.
 	DeleteOrphanOrderPayments(ctx context.Context) error
 	DeleteOrphanOrderTimes(ctx context.Context) error
+	// A feed reset: drop main's copy, keep what a terminal changed (on its way to main).
+	DeleteSyncedCustomers(ctx context.Context) error
 	DeleteTerminalDraft(ctx context.Context, id string) (int64, error)
 	// A driver is linked to one staff member at a time.
 	DeleteTerminalDriverLinkOfDriver(ctx context.Context, arg DeleteTerminalDriverLinkOfDriverParams) error
+	// phone in [lo, hi): the typed digits as a prefix (index idx_customers_phone).
+	FindCustomersByPhonePrefix(ctx context.Context, arg FindCustomersByPhonePrefixParams) ([]Customer, error)
+	// phone_rev in [lo, hi): the typed digits as the number's end ("the last 4").
+	FindCustomersByPhoneSuffix(ctx context.Context, arg FindCustomersByPhoneSuffixParams) ([]Customer, error)
 	// A POS check that was never on Kitchen (board hidden) closed at the POS:
 	// ready and finished at once (no feed event: nothing is called out).
 	FinishHiddenClosed(ctx context.Context, arg FinishHiddenClosedParams) (int64, error)
@@ -83,6 +95,10 @@ type Querier interface {
 	GetAutoUpdate(ctx context.Context) (bool, error)
 	GetBatch(ctx context.Context, id int64) (Batch, error)
 	GetCounterNext(ctx context.Context) (int64, error)
+	GetCustomer(ctx context.Context, id string) (Customer, error)
+	GetCustomerByPhone(ctx context.Context, phone string) (Customer, error)
+	// 00028_customers: the store's customers (main's feed + the terminals).
+	GetCustomerSync(ctx context.Context) (GetCustomerSyncRow, error)
 	// Delivery settings + store map (2.0.9) -------------------------------------------
 	GetDeliveryPrefs(ctx context.Context) (GetDeliveryPrefsRow, error)
 	GetDriver(ctx context.Context, id string) (Driver, error)
@@ -128,6 +144,7 @@ type Querier interface {
 	// A counter order from a terminal: stored accepted at once (no ring) with its
 	// counter number, in the open batch.
 	InsertCounterOrder(ctx context.Context, arg InsertCounterOrderParams) error
+	InsertCustomerAddress(ctx context.Context, arg InsertCustomerAddressParams) error
 	// POS orders from the store hub (2.1.0) ------------------------------------------
 	// A POS check the hub pulled: stored accepted (no kitchen number), local only.
 	InsertExternalOrder(ctx context.Context, arg InsertExternalOrderParams) error
@@ -153,6 +170,7 @@ type Querier interface {
 	ListBatches(ctx context.Context, limit int64) ([]ListBatchesRow, error)
 	// Counter orders of a batch (the terminals' Pick Up list filters them).
 	ListCounterOrders(ctx context.Context, batchID int64) ([]Order, error)
+	ListCustomerAddresses(ctx context.Context, customerID string) ([]CustomerAddress, error)
 	// Online pickups / dine-in ready since before the cutoff and not finished yet.
 	ListDueOnlinePickups(ctx context.Context, cutoff sql.NullString) ([]string, error)
 	ListDueScheduled(ctx context.Context, ringAt sql.NullString) ([]Order, error)
@@ -162,6 +180,9 @@ type Querier interface {
 	// Newest first.
 	ListJournal(ctx context.Context, limit int64) ([]Journal, error)
 	ListLocalOnlyByBatch(ctx context.Context, batchID int64) ([]Order, error)
+	// Delivery orders main located (their address + point), for the customers'
+	// in / out of area check.
+	ListLocatedDeliveries(ctx context.Context) ([]ListLocatedDeliveriesRow, error)
 	ListOnDeliveryByDriver(ctx context.Context, driverID sql.NullString) ([]Order, error)
 	// The open batch's deliveries still on the floor (cooking, ready or out).
 	ListOpenDeliveries(ctx context.Context) ([]Order, error)
@@ -171,6 +192,9 @@ type Querier interface {
 	// Drive times between the given orders (both ends in the set).
 	ListOrderTimes(ctx context.Context, arg ListOrderTimesParams) ([]OrderTime, error)
 	ListOrdersByBatch(ctx context.Context, arg ListOrdersByBatchParams) ([]Order, error)
+	// Orders whose snapshot holds the text (a phone's last digits, a customer
+	// id), newest first; the caller checks each one. POS checks are left out.
+	ListOrdersMentioning(ctx context.Context, arg ListOrdersMentioningParams) ([]Order, error)
 	ListOrdersPage(ctx context.Context, arg ListOrdersPageParams) ([]Order, error)
 	// Arrived orders older than the cutoff that haven't been alerted since the cutoff.
 	ListOverdueArrived(ctx context.Context, cutoff string) ([]Order, error)
@@ -234,6 +258,7 @@ type Querier interface {
 	// The Pi keeps the journal 30 days (main keeps it all).
 	PruneJournal(ctx context.Context, at string) (int64, error)
 	PruneSettingsLog(ctx context.Context, before string) error
+	PutCustomerSync(ctx context.Context, arg PutCustomerSyncParams) error
 	// The last good counter menu / terminal config main sent (replaced whole).
 	PutTerminalSnapshot(ctx context.Context, arg PutTerminalSnapshotParams) error
 	// ring_at passed: it rings again like a new order. last_alert_at starts the
@@ -275,6 +300,7 @@ type Querier interface {
 	// and the money columns.
 	SetCounterMoney(ctx context.Context, arg SetCounterMoneyParams) error
 	SetCounterNext(ctx context.Context, counterNext int64) error
+	SetCustomerAddressPoint(ctx context.Context, arg SetCustomerAddressPointParams) error
 	SetDeliveryPrefs(ctx context.Context, arg SetDeliveryPrefsParams) error
 	// A tip the driver got at the door (absolute). Only a delivery of the given
 	// (open) batch that is out or delivered, not a POS check.
@@ -350,6 +376,7 @@ type Querier interface {
 	// The counter sequence: hands out counter_next (or start when it is 0, i.e.
 	// after Close batch) and moves it on. Returns the number AFTER the one taken.
 	TakeCounterNumber(ctx context.Context, start int64) (int64, error)
+	TouchCustomerOrder(ctx context.Context, arg TouchCustomerOrderParams) error
 	TouchPairedDevice(ctx context.Context, arg TouchPairedDeviceParams) error
 	// 2.4.0 Back to deliveries: an Unassigned delivery goes back to the state it
 	// was in (cooking or ready), no longer delivered.
@@ -366,6 +393,8 @@ type Querier interface {
 	// canonical id is a no-op so we don't reset state to 'arrived'. The order joins
 	// the currently open batch; arrival_date falls back to the column DEFAULT.
 	UpsertArrivedOrder(ctx context.Context, arg UpsertArrivedOrderParams) (int64, error)
+	// last_order_at is the Pi's own: never written here.
+	UpsertCustomer(ctx context.Context, arg UpsertCustomerParams) error
 	// Order geo (main's order.geo) ----------------------------------------------------
 	UpsertOrderGeo(ctx context.Context, arg UpsertOrderGeoParams) error
 	UpsertOrderTime(ctx context.Context, arg UpsertOrderTimeParams) error

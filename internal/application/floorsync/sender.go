@@ -230,12 +230,13 @@ func (s *Sender) send(ctx context.Context, events []order.FloorEvent) (err error
 		if !known[r.EventID] {
 			continue
 		}
-		// Terminal stage 0d: a counter order exists only on the Pi until main
-		// has it. A main older than 0d answers order.placed `invalid`: keep it
-		// queued (retried with the backoff) rather than lose the order.
-		if r.Result == "invalid" && typeOf[r.EventID] == "order.placed" {
-			_ = s.repo.MarkEventFailed(ctx, r.EventID, "main answered invalid (older than terminal 0d?)")
-			s.logger.Warn().Ctx(ctx).Str("event_id", r.EventID).Msg("main refused a counter order (kept, retried)")
+		// Money and records that exist only on the Pi until main takes them:
+		// a refusal keeps the event queued (retried with the backoff; main
+		// looks at a refused event again) rather than lose it.
+		if KeepRefused(typeOf[r.EventID], r.Result) {
+			_ = s.repo.MarkEventFailed(ctx, r.EventID, "main answered "+r.Result+" (kept, retried)")
+			s.logger.Warn().Ctx(ctx).Str("event_id", r.EventID).Str("type", typeOf[r.EventID]).Str("result", r.Result).
+				Msg("main refused a floor event the Pi must not lose (kept, retried)")
 			s.count(ctx, "rejected", 1)
 			kept++
 			continue
@@ -252,12 +253,28 @@ func (s *Sender) send(ctx context.Context, events []order.FloorEvent) (err error
 		s.count(ctx, res, 1)
 	}
 	if kept > 0 {
-		return fmt.Errorf("main refused %d counter order(s); kept for a retry", kept)
+		return fmt.Errorf("main refused %d event(s) the Pi keeps; retried later", kept)
 	}
 	if synced < len(events) {
 		return fmt.Errorf("main acknowledged %d of %d events", synced, len(events))
 	}
 	return nil
+}
+
+// KeepRefused reports whether an event main refused stays queued instead of
+// being marked synced: a counter order (order.placed, a main older than
+// terminal 0d answers invalid), a payment (order.payment: a main before
+// terminal 1d refuses one on an online order; not_found while its counter
+// order is still queued) and a counter customer (customer.upsert, a main
+// before 1d). Every other refusal is final (marked synced, logged).
+func KeepRefused(typ, result string) bool {
+	switch typ {
+	case "order.placed", "customer.upsert":
+		return result == "invalid"
+	case "order.payment":
+		return result == "invalid" || result == "not_found"
+	}
+	return false
 }
 
 func (s *Sender) count(ctx context.Context, result string, n int) {

@@ -94,6 +94,12 @@ func (s *Server) terminalError(w http.ResponseWriter, r *http.Request, err error
 		s.writeJSON(w, http.StatusConflict, errCodeMap(err.Error(), "not_editable"))
 	case errors.Is(err, terminal.ErrRefundFirst):
 		s.writeJSON(w, http.StatusConflict, errCodeMap(err.Error(), "refund_first"))
+	case errors.Is(err, terminal.ErrCustomerNotFound):
+		s.writeJSON(w, http.StatusNotFound, errCodeMap(err.Error(), "customer_not_found"))
+	case errors.Is(err, terminal.ErrTooManyAddresses):
+		s.writeJSON(w, http.StatusConflict, errCodeMap(err.Error(), "too_many_addresses"))
+	case errors.Is(err, terminalApp.ErrCustomersOff):
+		s.writeJSON(w, http.StatusServiceUnavailable, errCodeMap(err.Error(), "customers_unavailable"))
 	case errors.Is(err, terminal.ErrNotCounterOrder), errors.Is(err, order.ErrNotFound):
 		s.writeJSON(w, http.StatusNotFound, errCodeMap("no such counter order", "not_found"))
 	default:

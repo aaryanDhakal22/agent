@@ -21,6 +21,44 @@ type Batch struct {
 	ClosedAt sql.NullString `json:"closed_at"`
 }
 
+type Customer struct {
+	ID          string `json:"id"`
+	Phone       string `json:"phone"`
+	PhoneRev    string `json:"phone_rev"`
+	FirstName   string `json:"first_name"`
+	LastName    string `json:"last_name"`
+	Name        string `json:"name"`
+	Notes       string `json:"notes"`
+	Source      string `json:"source"`
+	UpdatedAt   string `json:"updated_at"`
+	LocalAt     string `json:"local_at"`
+	LastOrderAt string `json:"last_order_at"`
+}
+
+type CustomerAddress struct {
+	ID         string          `json:"id"`
+	CustomerID string          `json:"customer_id"`
+	Position   int64           `json:"position"`
+	Label      string          `json:"label"`
+	Line1      string          `json:"line1"`
+	Line2      string          `json:"line2"`
+	City       string          `json:"city"`
+	State      string          `json:"state"`
+	Zip        string          `json:"zip"`
+	Notes      string          `json:"notes"`
+	IsDefault  bool            `json:"is_default"`
+	CreatedAt  string          `json:"created_at"`
+	Lat        sql.NullFloat64 `json:"lat"`
+	Lng        sql.NullFloat64 `json:"lng"`
+}
+
+type CustomerSync struct {
+	ID         int64  `json:"id"`
+	LocationID string `json:"location_id"`
+	Cursor     string `json:"cursor"`
+	SyncedAt   string `json:"synced_at"`
+}
+
 type Driver struct {
 	ID             string         `json:"id"`
 	Name           string         `json:"name"`

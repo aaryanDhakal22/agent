@@ -1101,3 +1101,88 @@ ORDER BY arrival_date, id;
 UPDATE orders SET paid = sqlc.arg(paid), cash_due_cents = sqlc.arg(cash_due_cents), tip_cents = sqlc.arg(tip_cents),
     paid_at = sqlc.narg(paid_at)
 WHERE id = sqlc.arg(id);
+
+-- 00028_customers: the store's customers (main's feed + the terminals).
+
+-- name: GetCustomerSync :one
+SELECT location_id, cursor, synced_at FROM customer_sync WHERE id = 1;
+
+-- name: PutCustomerSync :exec
+INSERT INTO customer_sync (id, location_id, cursor, synced_at) VALUES (1, sqlc.arg(location_id), sqlc.arg(cursor), sqlc.arg(synced_at))
+ON CONFLICT (id) DO UPDATE SET location_id = excluded.location_id, cursor = excluded.cursor, synced_at = excluded.synced_at;
+
+-- name: GetCustomer :one
+SELECT * FROM customers WHERE id = ?;
+
+-- name: GetCustomerByPhone :one
+SELECT * FROM customers WHERE phone = ?;
+
+-- name: UpsertCustomer :exec
+-- last_order_at is the Pi's own: never written here.
+INSERT INTO customers (id, phone, phone_rev, first_name, last_name, name, notes, source, updated_at, local_at)
+VALUES (sqlc.arg(id), sqlc.arg(phone), sqlc.arg(phone_rev), sqlc.arg(first_name), sqlc.arg(last_name), sqlc.arg(name),
+        sqlc.arg(notes), sqlc.arg(source), sqlc.arg(updated_at), sqlc.arg(local_at))
+ON CONFLICT (id) DO UPDATE SET phone = excluded.phone, phone_rev = excluded.phone_rev, first_name = excluded.first_name,
+    last_name = excluded.last_name, name = excluded.name, notes = excluded.notes, source = excluded.source,
+    updated_at = excluded.updated_at, local_at = excluded.local_at;
+
+-- name: DeleteCustomer :exec
+DELETE FROM customers WHERE id = ?;
+
+-- name: DeleteCustomerAddresses :exec
+DELETE FROM customer_addresses WHERE customer_id = ?;
+
+-- name: DeleteAllCustomers :exec
+DELETE FROM customers;
+
+-- name: DeleteAllCustomerAddresses :exec
+DELETE FROM customer_addresses;
+
+-- name: DeleteSyncedCustomers :exec
+-- A feed reset: drop main's copy, keep what a terminal changed (on its way to main).
+DELETE FROM customers WHERE local_at = '';
+
+-- name: DeleteOrphanCustomerAddresses :exec
+DELETE FROM customer_addresses WHERE customer_id NOT IN (SELECT id FROM customers);
+
+-- name: ListCustomerAddresses :many
+SELECT * FROM customer_addresses WHERE customer_id = ? ORDER BY position, created_at, id;
+
+-- name: InsertCustomerAddress :exec
+INSERT INTO customer_addresses (id, customer_id, position, label, line1, line2, city, state, zip, notes, is_default, created_at, lat, lng)
+VALUES (sqlc.arg(id), sqlc.arg(customer_id), sqlc.arg(position), sqlc.arg(label), sqlc.arg(line1), sqlc.arg(line2), sqlc.arg(city),
+        sqlc.arg(state), sqlc.arg(zip), sqlc.arg(notes), sqlc.arg(is_default), sqlc.arg(created_at), sqlc.arg(lat), sqlc.arg(lng));
+
+-- name: SetCustomerAddressPoint :exec
+UPDATE customer_addresses SET lat = sqlc.arg(lat), lng = sqlc.arg(lng) WHERE id = sqlc.arg(id);
+
+-- name: FindCustomersByPhonePrefix :many
+-- phone in [lo, hi): the typed digits as a prefix (index idx_customers_phone).
+SELECT * FROM customers WHERE phone >= sqlc.arg(lo) AND phone < sqlc.arg(hi)
+ORDER BY last_order_at DESC, updated_at DESC, id LIMIT sqlc.arg(max_rows);
+
+-- name: FindCustomersByPhoneSuffix :many
+-- phone_rev in [lo, hi): the typed digits as the number's end ("the last 4").
+SELECT * FROM customers WHERE phone_rev >= sqlc.arg(lo) AND phone_rev < sqlc.arg(hi)
+ORDER BY last_order_at DESC, updated_at DESC, id LIMIT sqlc.arg(max_rows);
+
+-- name: TouchCustomerOrder :exec
+UPDATE customers SET last_order_at = sqlc.arg(at)
+WHERE (id = sqlc.arg(id) OR phone = sqlc.arg(phone)) AND last_order_at < sqlc.arg(at);
+
+-- name: CountCustomers :one
+SELECT count(*) FROM customers;
+
+-- name: ListOrdersMentioning :many
+-- Orders whose snapshot holds the text (a phone's last digits, a customer
+-- id), newest first; the caller checks each one. POS checks are left out.
+SELECT * FROM orders WHERE local_only = 0 AND instr(snapshot, sqlc.arg(text)) > 0
+ORDER BY arrival_date DESC LIMIT sqlc.arg(max_rows);
+
+-- name: ListLocatedDeliveries :many
+-- Delivery orders main located (their address + point), for the customers'
+-- in / out of area check.
+SELECT o.snapshot, g.lat, g.lng FROM orders o JOIN order_geo g ON g.order_id = o.id
+WHERE g.state = 'located' AND g.lat IS NOT NULL AND g.lng IS NOT NULL
+  AND json_extract(o.snapshot, '$.fulfillment.type') = 'delivery'
+ORDER BY o.arrival_date DESC LIMIT 2000;

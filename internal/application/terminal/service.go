@@ -64,6 +64,7 @@ type Service struct {
 	staff  *staffBook
 	now    func() time.Time
 	drv    driverView
+	cust   *CustomerBook
 }
 
 // NewService wires the terminal flow; the store's config changes reach the
@@ -517,6 +518,8 @@ var keyRe = regexp.MustCompile(`^[A-Za-z0-9_.:-]{8,64}$`)
 
 // Customer is an order's customer (optional; a delivery needs the address).
 type Customer struct {
+	// ID: the store customer the order is for (GET /api/terminal/customers; optional).
+	ID      string   `json:"id"`
 	Name    string   `json:"name"`
 	Phone   string   `json:"phone"`
 	Address *Address `json:"address"`
@@ -635,6 +638,17 @@ func (s *Service) PlaceOrder(ctx context.Context, a Actor, in OrderIn) (*PlaceRe
 	if typ == terminal.TypeDelivery && (cust.Address == nil || strings.TrimSpace(cust.Address.Line1) == "" || strings.TrimSpace(cust.Address.City) == "") {
 		return nil, badRequest("a delivery needs the customer's address (line1 and city)")
 	}
+	cust.ID = strings.TrimSpace(cust.ID)
+	if cust.ID != "" {
+		if s.cust == nil {
+			return nil, badRequest("no such customer")
+		}
+		if _, err := s.cust.repo.Customer(ctx, cust.ID); errors.Is(err, terminal.ErrCustomerNotFound) {
+			return nil, badRequest("no such customer")
+		} else if err != nil {
+			return nil, err
+		}
+	}
 	m, ms := s.store.Menu()
 	if m == nil {
 		return nil, terminal.ErrNoMenu
@@ -708,6 +722,9 @@ func (s *Service) PlaceOrder(ctx context.Context, a Actor, in OrderIn) (*PlaceRe
 		SourceMeta: map[string]any{"terminal": map[string]any{"type": typ, "device_id": a.DeviceID, "device_name": a.DeviceName,
 			"staff_id": st.ID, "staff_name": st.Name(), "client_key": in.ClientKey, "menu_version": ms.Version,
 			"cart": in.Cart}}}
+	if cust.ID != "" {
+		snap.SourceMeta["terminal"].(map[string]any)["customer_id"] = cust.ID
+	}
 	for _, pay := range pays {
 		snap.Payments = append(snap.Payments, order.PaymentSummary{Method: terminal.MethodOf(pay.Tender), AmountCents: pay.AmountCents, Last4: pay.Last4})
 	}
@@ -735,6 +752,9 @@ func (s *Service) PlaceOrder(ctx context.Context, a Actor, in OrderIn) (*PlaceRe
 	}
 	s.orders.PrintCounterTickets(ctx, so)
 	s.orders.CounterOrderChanged(ctx, so, nil, false)
+	if s.cust != nil {
+		s.cust.NoteOrder(ctx, cust.ID, cust.Phone, now)
+	}
 	s.publish(EventOrderPlaced, map[string]any{"order": so, "device_id": a.DeviceID})
 	s.orders.DevEvent(fmt.Sprintf("Counter order #%d placed (%s)", numberOf(so), typ))
 	s.logger.Info().Ctx(ctx).Str("order_id", so.Order.ID).Int64("number", numberOf(so)).Str("type", typ).

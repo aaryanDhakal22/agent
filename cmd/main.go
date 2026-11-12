@@ -341,6 +341,28 @@ func main() {
 	registry.Register(terminalApp.MsgMenuChanged, termStore.HandleMenuChanged)
 	registry.Register(terminalApp.MsgTerminalChanged, termStore.HandleTerminalChanged)
 	termStore.Run(ctx, 5*time.Minute, sseCtrl.Configured)
+	// The store's customers (terminal 1d): a copy of main's, pulled from its
+	// change feed at connect, on main's customers.changed and every 3 min.
+	custBook := terminalApp.NewCustomerBook(orderRepo, func(rc context.Context, path, rawQuery string) (int, []byte, error) {
+		k := sseCtrl.CurrentKey()
+		if k == "" {
+			return 0, nil, fmt.Errorf("not linked to a store")
+		}
+		return mainClient.Download(rc, k, path, rawQuery)
+	}, broker, func() string {
+		if !sseCtrl.Configured() {
+			return ""
+		}
+		_, loc := orderService.StoreIDs()
+		return loc
+	}, func() (*float64, *float64, int64) {
+		sc, _ := storeCtx.Load().(storeconfig.StoreContext)
+		return sc.Location.Lat, sc.Location.Lng, sc.Location.DeliveryRadiusM
+	}, logger)
+	termSvc.SetCustomers(custBook)
+	registry.Register(terminalApp.MsgCustomersChanged, custBook.HandleChanged)
+	orderService.OnCustomerOrder(func(rc context.Context, phone string, at time.Time) { custBook.NoteOrder(rc, "", phone, at) })
+	go custBook.Run(ctx, 3*time.Minute, sseCtrl.Configured)
 	// Delivery maps + AUTO: the store pin and map for /api/floor, and the
 	// agent->main geo RPCs (pin, trip).
 	orderService.SetGeo(orderApp.GeoDeps{
@@ -556,6 +578,7 @@ func main() {
 		catchupHook()
 		orderService.RelocatePOS(ctx) // POS deliveries pulled while main was away
 		termStore.Kick("")            // the terminals' menu + config, fresh at every connect
+		custBook.Kick()               // the store's customers too
 	})
 	// Reconciliation: a quiet catch-up pass every minute while connected.
 	go catchup.Reconcile(ctx, time.Minute, func(rc context.Context, path, rawQuery string) (int, []byte, error) {

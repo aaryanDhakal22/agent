@@ -63,6 +63,8 @@ type Service struct {
 	onFloorEvent atomic.Pointer[func()]
 	storeTZ      atomic.Pointer[func() *time.Location] // unset → time.Local
 	onStored     func(orderID string)
+	// onCustomerOrder: a new order's customer phone (terminal 1d).
+	onCustomerOrder func(ctx context.Context, phone string, at time.Time)
 	// Driver-report printing (SetDocumentPrinting).
 	printDoc    DocPrinter
 	buildReport ReportBuilder
@@ -620,7 +622,16 @@ func (s *Service) storeArrived(ctx context.Context, snap order.Snapshot) (bool, 
 	if s.onStored != nil {
 		s.onStored(snap.ID)
 	}
+	if inserted && s.onCustomerOrder != nil && snap.Customer.Phone != "" {
+		s.onCustomerOrder(ctx, snap.Customer.Phone, snap.PlacedAt)
+	}
 	return inserted, nil
+}
+
+// OnCustomerOrder registers the hook told about a new order's customer
+// phone (the store's customers on the Pi note their last order).
+func (s *Service) OnCustomerOrder(fn func(ctx context.Context, phone string, at time.Time)) {
+	s.onCustomerOrder = fn
 }
 
 // OnStored registers the hook run after an order is safely stored (new or
