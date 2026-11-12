@@ -105,23 +105,25 @@ func TestParkAfterRefusalsQueueMovesOn(t *testing.T) {
 	pg := &pages{}
 	s := New(r, ans.post, zerolog.Nop(), m)
 	s.SetPager(pg)
+	clock := time.Now()
+	s.now = func() time.Time { return clock }
 	parkedN := 0
 	s.OnParked(func(n int) { parkedN += n })
-	for i := 0; i < 2; i++ { // refusals 1 and 2: kept, nothing else gets through
-		if err := s.Flush(ctx); err == nil {
-			t.Fatalf("flush %d: kept events must report an error", i)
-		}
+	// Refusal 1: every refused event waits on its own retry time; the good
+	// events behind a full batch of them go at once (no queue-wide stall).
+	if err := s.Flush(ctx); err != nil {
+		t.Fatal(err)
 	}
-	if len(ans.order) != 0 {
-		t.Fatalf("nothing behind a full batch of refused events gets through yet: %d", len(ans.order))
+	if got := len(ans.order); got != 5 {
+		t.Fatalf("the good events go past the refused ones at once: %d applied", got)
 	}
-	// Third refusal: the first batch parks; the rest is refused once (kept).
-	s.Flush(ctx)
-	if parkedN != 50 {
-		t.Fatalf("parked %d, want the first 50", parkedN)
-	}
-	for i := 0; i < 3; i++ {
+	// Refusals 2 and 3 (each after its retry time): all 60 park.
+	for i := 0; i < 2; i++ {
+		clock = clock.Add(time.Hour)
 		s.Flush(ctx)
+	}
+	if parkedN != 60 {
+		t.Fatalf("parked %d, want 60", parkedN)
 	}
 	v, err := r.ParkedEvents(ctx, 500)
 	if err != nil {

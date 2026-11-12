@@ -13,11 +13,13 @@ Uses test_terminal.py's rig (a throwaway agent behind the fake main, fake printe
 
 from __future__ import annotations
 
+import time
 import uuid
 
 import requests
 
 from conftest import wait_until
+from gatemark import intentional
 from test_terminal import pizza_line, rig  # noqa: F401  (rig is a fixture)
 
 
@@ -92,7 +94,9 @@ def test_void_refund_first_and_waste(rig):  # noqa: F811
     r = term.post(f"{base}/api/terminal/orders/{paid_id}/void", json={"reason": "left"}, timeout=5)
     assert r.status_code == 409 and r.json()["code"] == "refund_first" and r.json()["paid_cents"] == 500
 
+    before = len(fakes["Pizza"].jobs)
     made_id, made_total = _place(rig, "pickup")
+    wait_until(lambda: len(fakes["Pizza"].jobs) > before, what="the pickup's station ticket")
     r = term.post(f"{base}/api/terminal/orders/{made_id}/waste", json={"reason": "nope"}, timeout=5)
     assert r.status_code == 400 and r.json()["code"] == "bad_reason" and "Never picked up" in r.json()["reasons"]
     jobs = len(fakes["Pizza"].jobs)
@@ -144,8 +148,8 @@ def test_tablet_codes_pair_tablets_only(rig):  # noqa: F811
     assert r.status_code == 403 and r.json()["code"] == "kind_not_allowed"
     r = requests.post(f"{base}/api/pair", json={"code": code, "name": "Tab B", "kind": "tablet"}, timeout=5)
     assert r.status_code == 401
-    # At most 5 codes per device per 15 min (it has minted 2).
-    for _ in range(3):
+    # At most 5 codes per device per 15 min (it has minted 1: the refused ask doesn't count).
+    for _ in range(4):
         assert tab.post(f"{base}/api/pairing/code", json={}, timeout=5).status_code == 200
     r = tab.post(f"{base}/api/pairing/code", json={}, timeout=5)
     assert r.status_code == 429 and r.json()["code"] == "too_many_codes" and r.headers.get("Retry-After")
@@ -158,9 +162,12 @@ def test_refused_money_events_stay_queued(rig):  # noqa: F811
     agent, term, fm = rig["agent"], rig["term"], rig["fm"]
     fm.refuse = {"order.placed"}
     oid, total = _place(rig)
+    wait_until(lambda: any(e["order_id"] == oid for e in fm.refused), what="main refused order.placed")
     r = term.post(f"{agent.base}/api/terminal/orders/{oid}/payments", json={"tender": "cash", "amount_cents": total}, timeout=5)
     assert r.status_code == 200
-    wait_until(lambda: any(e["order_id"] == oid for e in fm.refused), what="main refused order.placed")
+    # Through a few flushes the payment stays behind its refused order.
+    with intentional("the payment must not go out while its order is refused (absence check)"):
+        time.sleep(3)
     assert not [e for e in fm.of_type("order.payment") if e["order_id"] == oid], "the payment waits behind its refused order"
     fm.refuse = set()
     wait_until(lambda: [e for e in fm.of_type("order.payment") if e["order_id"] == oid], timeout=60, what="payment after the order")

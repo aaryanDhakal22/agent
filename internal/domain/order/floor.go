@@ -150,6 +150,8 @@ type FloorEvent struct {
 	Attempts int64           `json:"attempts"`
 	// Subject (contract 2.4e): what the event is about ("" = nothing held).
 	Subject string `json:"subject,omitempty"`
+	// Refusals: how often main refused it (a kept event).
+	Refusals int64 `json:"refusals,omitempty"`
 }
 
 // OrderStatusEvent is the payload of an order.status floor event.

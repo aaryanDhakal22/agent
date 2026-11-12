@@ -300,9 +300,13 @@ def test_order_number_tickets_sync_idempotent(rig):
     ticket = fakes["Pizza"].text()
     assert "500" in ticket and "1ST HALF" in ticket and "2ND HALF" in ticket
     assert not fakes["Front"].jobs
-    # Same key: the same order, no second ticket, no new number.
-    again = place(rig, key="k-first-order-1")
+    # Same key, same body: the same order (and its change), no second ticket, no new number.
+    again = place(rig, key="k-first-order-1", payments=[{"tender": "cash", "amount_cents": 2357, "tendered_cents": 3000}], note="napkins")
     assert again.status_code == 200 and again.json()["duplicate"] and again.json()["order"]["order"]["id"] == so["order"]["id"]
+    assert again.json()["change_cents"] == 3000 - 2357
+    # Same key, another body: 409 key_reused (contract 2.10s §1).
+    reused = place(rig, key="k-first-order-1")
+    assert reused.status_code == 409 and reused.json()["code"] == "key_reused"
     assert place(rig).json()["number"] == 501
     # Shows on the floor like any order (Quibase's Kitchen).
     floor = agent.http.get(f"{agent.base}/api/orders?batch=current", timeout=5).json()

@@ -326,9 +326,9 @@ func (r *OrderRepository) CloseBatch(ctx context.Context, force bool) (closed *o
 		var blocking []order.StoredOrder
 		var waiting []string
 		for _, so := range left {
+			// A carried check still blocks a plain close while it isn't
+			// finished (still cooking): only force moves past it.
 			switch {
-			case carry[so.Order.ID]:
-				// carried: stays as it is, on the Pickup list
 			case waitsForLater(so, now):
 				waiting = append(waiting, so.Order.ID)
 			default:
@@ -1000,7 +1000,7 @@ func (r *OrderRepository) ListUnsyncedEvents(ctx context.Context, limit int) (ou
 			return nil, err
 		}
 		out = append(out, order.FloorEvent{ID: row.ID, OrderID: row.OrderID.String, Type: row.Type,
-			Payload: json.RawMessage(row.Payload), At: at, Attempts: row.Attempts, Subject: row.Subject})
+			Payload: json.RawMessage(row.Payload), At: at, Attempts: row.Attempts, Subject: row.Subject, Refusals: row.Refusals})
 	}
 	return out, nil
 }

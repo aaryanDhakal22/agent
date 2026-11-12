@@ -43,7 +43,7 @@ func TestGoRecoversAndLogs(t *testing.T) {
 }
 
 func TestDoTurnsPanicIntoError(t *testing.T) {
-	err := Do(context.Background(), "frame", func() { var m map[string]int; m["x"] = 1 })
+	err := Do(context.Background(), "frame", func() { panic("boom in frame") })
 	if err == nil || !strings.Contains(err.Error(), "panic in frame") {
 		t.Fatalf("err = %v", err)
 	}

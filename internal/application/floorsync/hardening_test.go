@@ -23,7 +23,7 @@ import (
 func TestKeepRefusedCoversEveryMoneyEvent(t *testing.T) {
 	for _, typ := range []string{"order.placed", "order.payment", "order.changed", "order.void", "customer.upsert",
 		"drawer.opened", "drawer.closed", "drawer.movement", "z.report", "journal.entries"} {
-		for _, res := range []string{"invalid", "not_found"} {
+		for _, res := range []string{"invalid", "not_found", "conflict"} {
 			if !KeepRefused(typ, res) {
 				t.Errorf("%s %s must be kept", typ, res)
 			}
@@ -64,8 +64,10 @@ func TestBadRequestOnAMoneyEventKeepsAndParksIt(t *testing.T) {
 			return ans.post(ctx, body)
 		}
 		s := New(r, picky, zerolog.Nop(), m)
-		if err := s.Flush(ctx); err == nil {
-			t.Fatalf("%d: a kept money event reports an error", status)
+		clock := time.Now()
+		s.now = func() time.Time { return clock }
+		if err := s.Flush(ctx); err != nil {
+			t.Fatalf("%d: a kept money event waits on its own time: %v", status, err)
 		}
 		if n, _ := r.CountUnsyncedEvents(ctx); n != 1 {
 			t.Fatalf("%d: the customer stays queued, the journal syncs: unsynced %d", status, n)
@@ -73,6 +75,7 @@ func TestBadRequestOnAMoneyEventKeepsAndParksIt(t *testing.T) {
 		if n, _ := r.CountParkedEvents(ctx); n != 0 {
 			t.Fatalf("%d: parked after one refusal", status)
 		}
+		clock = clock.Add(time.Minute)
 		s.Flush(ctx) // second refusal: parked
 		if n, _ := r.CountParkedEvents(ctx); n != 1 {
 			t.Fatalf("%d: parked = %d", status, n)
@@ -106,11 +109,14 @@ func TestLaterEventsWaitBehindARefusedOne(t *testing.T) {
 	// applied: main dedupes by event id, so it can't be replayed.)
 	ans := &answers{by: map[string]string{first: "invalid", evs[1].ID: "stale"}}
 	s := New(r, ans.post, zerolog.Nop(), m)
+	clock := time.Now()
+	s.now = func() time.Time { return clock }
 	s.Flush(ctx)
 	if n, _ := r.CountUnsyncedEvents(ctx); n != 2 {
 		t.Fatalf("both stay queued: %d", n)
 	}
 	// The next flushes send only the refused one (the other is held).
+	clock = clock.Add(time.Minute)
 	s.Flush(ctx)
 	held, _ := r.ListUnsyncedEvents(ctx, 10)
 	if len(held) != 1 || held[0].ID != first {
@@ -122,9 +128,7 @@ func TestLaterEventsWaitBehindARefusedOne(t *testing.T) {
 	ans.order = nil
 	ans.names = nil
 	ans.mu.Unlock()
-	if err := s.Flush(ctx); err != nil {
-		t.Fatal(err)
-	}
+	clock = clock.Add(5 * time.Minute)
 	if err := s.Flush(ctx); err != nil {
 		t.Fatal(err)
 	}

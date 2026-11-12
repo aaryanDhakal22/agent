@@ -97,6 +97,19 @@ type Sender struct {
 	unalerted int
 	onParked  func(n int)
 	cm        *observability.CounterMeters
+	// retryAt: a kept (refused) event's next try (in memory, per event,
+	// exponential with its refusals). A refusal never backs off the whole
+	// queue: only that event waits, and its subject waits behind it.
+	retryAt map[string]time.Time
+}
+
+// refusedRetry is a kept event's wait before main sees it again.
+func refusedRetry(refusals int64) time.Duration {
+	d := minBackoff
+	for i := int64(1); i < refusals && d < maxBackoff; i++ {
+		d *= 2
+	}
+	return min(d, maxBackoff)
 }
 
 // SetCounterMeters swaps the CM-9 instruments (tests).
@@ -110,14 +123,15 @@ func (s *Sender) OnParked(fn func(n int)) { s.onParked = fn }
 
 func New(repo Repo, post Poster, logger zerolog.Logger, meters observability.Meters) *Sender {
 	return &Sender{
-		repo:   repo,
-		post:   post,
-		wake:   make(chan struct{}, 1),
-		logger: logger.With().Str("module", "floorsync").Logger(),
-		meters: meters,
-		tracer: otel.Tracer("quiccpos/agent/floorsync"),
-		now:    time.Now,
-		cm:     observability.Counter(),
+		repo:    repo,
+		post:    post,
+		wake:    make(chan struct{}, 1),
+		logger:  logger.With().Str("module", "floorsync").Logger(),
+		meters:  meters,
+		tracer:  otel.Tracer("quiccpos/agent/floorsync"),
+		now:     time.Now,
+		cm:      observability.Counter(),
+		retryAt: map[string]time.Time{},
 	}
 }
 
@@ -184,12 +198,27 @@ func (s *Sender) nextBackoff(err error) time.Duration {
 }
 
 // Flush sends every unsynced event (in batches) and returns the first error.
+// A kept (refused) event waits for its own retry time (refusedRetry) and is
+// skipped until then; everything else goes on (no queue-wide backoff).
 func (s *Sender) Flush(ctx context.Context) error {
 	defer s.recordBacklog(ctx)
-	for {
-		events, err := s.repo.ListUnsyncedEvents(ctx, batchSize)
+	for round := 0; round < 200; round++ {
+		listed, err := s.repo.ListUnsyncedEvents(ctx, listWindow)
 		if err != nil {
 			return fmt.Errorf("list unsynced: %w", err)
+		}
+		now := s.now()
+		var events []order.FloorEvent
+		for _, e := range listed {
+			// e.Refusals > 0: still refused in the DB (a Retry of a parked
+			// event resets it, so it goes at once).
+			if at, ok := s.retryAt[e.ID]; ok && e.Refusals > 0 && now.Before(at) {
+				continue
+			}
+			events = append(events, e)
+			if len(events) == batchSize {
+				break
+			}
 		}
 		if len(events) == 0 {
 			return nil
@@ -197,11 +226,13 @@ func (s *Sender) Flush(ctx context.Context) error {
 		if err := s.send(ctx, events); err != nil {
 			return err
 		}
-		if len(events) < batchSize {
-			return nil
-		}
 	}
+	return nil
 }
+
+// listWindow: how many unsynced events a flush looks at to find batchSize
+// it may send (kept ones waiting for their retry are skipped).
+const listWindow = 1000
 
 func (s *Sender) send(ctx context.Context, events []order.FloorEvent) (err error) {
 	ctx, span := s.tracer.Start(ctx, "floorsync.send", trace.WithAttributes(attribute.Int("events", len(events))))
@@ -257,9 +288,8 @@ func (s *Sender) send(ctx context.Context, events []order.FloorEvent) (err error
 			}
 			if parked {
 				s.noteParked(1)
-				return nil
 			}
-			return fmt.Errorf("main answered %d to a floor event the Pi keeps; retried later", status)
+			return nil // it retries on its own time (refusedRetry); the queue moves on
 		}
 		s.logger.Error().Ctx(ctx).Str("event_id", e.ID).Str("type", e.Type).
 			Int("status", status).Msg("main rejected a floor event outright — dropping it")
@@ -358,15 +388,14 @@ func (s *Sender) send(ctx context.Context, events []order.FloorEvent) (err error
 		if err := s.repo.MarkEventsSynced(ctx, done, now); err != nil {
 			return fmt.Errorf("mark synced: %w", err)
 		}
+		for _, id := range done {
+			delete(s.retryAt, id)
+		}
 	}
 	s.noteParked(parked)
-	if kept > 0 {
-		return fmt.Errorf("main refused %d event(s) the Pi keeps; retried later", kept)
-	}
-	if waiting > 0 {
-		return fmt.Errorf("%d event(s) wait behind a refused one of their subject; retried later", waiting)
-	}
-	if synced+parked < len(events) {
+	// Kept and waiting events retry on their own time (no queue-wide
+	// backoff): the rest of the queue keeps flowing.
+	if synced+parked+kept+waiting < len(events) {
 		return fmt.Errorf("main acknowledged %d of %d events", synced, len(events))
 	}
 	return nil
@@ -389,7 +418,9 @@ var MoneyTypes = map[string]bool{
 // older main may not know). A kept event is parked after too many refusals
 // (contract 2.4e).
 func KeepRefused(typ, result string) bool {
-	return MoneyTypes[typ] && (result == "invalid" || result == "not_found")
+	// conflict (main 2.5zd): the same payment id / client_key / Square ref
+	// with another body - kept and parked, never marked synced.
+	return MoneyTypes[typ] && (result == "invalid" || result == "not_found" || result == "conflict")
 }
 
 // ClassOf is an event type's class on the CM-9 metrics: money | floor.
@@ -407,6 +438,10 @@ func (s *Sender) refuse(ctx context.Context, id, result string) (bool, error) {
 	if err != nil {
 		return false, fmt.Errorf("count refusal: %w", err)
 	}
+	if s.retryAt == nil {
+		s.retryAt = map[string]time.Time{}
+	}
+	s.retryAt[id] = s.now().Add(refusedRetry(ref.Refusals))
 	s.count(ctx, ref.Type, "rejected", 1)
 	p, err := s.repo.SyncParkSettings(ctx)
 	if err != nil {

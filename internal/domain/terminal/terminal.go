@@ -558,8 +558,24 @@ func (p Payment) Wire() map[string]any {
 	if p.StaffID != "" {
 		staff = p.StaffID
 	}
-	return map[string]any{"id": p.ID, "method": p.Tender, "amount_cents": amount, "tip_cents": tip, "last4": p.Last4,
+	m := map[string]any{"id": p.ID, "method": p.Tender, "amount_cents": amount, "tip_cents": tip, "last4": p.Last4,
 		"auth_code": "", "ref": p.Ref, "at": p.At.UTC().Truncate(time.Millisecond), "staff_id": staff}
+	// Hardening (main §2.5zd): the batch it was taken in (a carried check's
+	// later payment), the tap's key, the approving manager, the payment a
+	// tip / refund is about.
+	if p.BatchID > 0 {
+		m["batch_id"] = p.BatchID
+	}
+	if p.ClientKey != "" {
+		m["client_key"] = p.ClientKey
+	}
+	if p.ApprovedBy != "" {
+		m["approved_by"] = p.ApprovedBy
+	}
+	if p.Ref != "" && p.AmountCents == 0 { // a tip added afterwards points at its card payment
+		m["refund_of"] = p.Ref
+	}
+	return m
 }
 
 // Signed is the payment's effect on the balance (a refund counts negative).

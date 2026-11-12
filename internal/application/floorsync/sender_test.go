@@ -242,6 +242,11 @@ func (m *memFloor) OldestUnsynced(context.Context) (map[string]time.Time, error)
 func (m *memFloor) MarkEventFailed(_ context.Context, id, _ string) error        { m.failed[id]++; return nil }
 func (m *memFloor) RefuseEvent(_ context.Context, id, _ string, at time.Time) (order.Refusal, error) {
 	m.failed[id]++
+	for i := range m.events {
+		if m.events[i].ID == id {
+			m.events[i].Refusals++
+		}
+	}
 	return order.Refusal{EventID: id, Refusals: int64(m.failed[id]), FirstAt: at}, nil
 }
 func (m *memFloor) ParkEvent(context.Context, order.Refusal, string, time.Time) (bool, error) {
@@ -301,8 +306,11 @@ func TestRefusedMoneyAndCustomersStayQueued(t *testing.T) {
 		return http.StatusOK, out, nil
 	}
 	s := New(mem, post, zerolog.Nop(), m)
-	if err := s.Flush(context.Background()); err == nil {
-		t.Fatal("kept events must report an error (the backoff)")
+	clock := time.Now()
+	s.now = func() time.Time { return clock }
+	// Kept events wait on their own retry time; the flush itself is fine.
+	if err := s.Flush(context.Background()); err != nil {
+		t.Fatal(err)
 	}
 	for _, id := range []string{payInvalid, payNotFound, custInvalid, placedInvalid} {
 		if mem.synced[id] || mem.failed[id] != 1 {
@@ -318,6 +326,7 @@ func TestRefusedMoneyAndCustomersStayQueued(t *testing.T) {
 	for _, id := range []string{payInvalid, payNotFound, custInvalid, placedInvalid} {
 		answer[id] = "applied"
 	}
+	clock = clock.Add(time.Minute) // past their retry time
 	if err := s.Flush(context.Background()); err != nil {
 		t.Fatal(err)
 	}
