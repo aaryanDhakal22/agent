@@ -16,7 +16,7 @@ func TestToPC437(t *testing.T) {
 		"FERNÁNDEZ RODRÍGUEZ":      "FERNANDEZ RODRIGUEZ",
 		"Pizza 🍕 Special 🔥":        "Pizza ? Special ?",
 		"👍🏽 ok":                    "? ok",
-		"a​b️":                     "ab",
+		"a\u200bb\ufe0f":           "ab",
 		"½ \xab \xfa":              "\xab \xab \xfa", // ½ and bytes already in PC437
 		"plain ASCII \x1b\x21\x10": "plain ASCII \x1b\x21\x10",
 		"\x1bJ\xc3":                "\x1bJ\xc3", // a command's argument byte stays
