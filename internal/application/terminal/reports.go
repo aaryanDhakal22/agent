@@ -342,7 +342,7 @@ func (s *Service) CloseBatch(ctx context.Context, a Actor, force bool, pin strin
 		}
 		s.journal(ctx, overrideEntry(a, st, approver, need, ""))
 	}
-	closed, finished, err := s.reports.CloseBatch(ctx, force)
+	closed, finished, err := s.reports.CloseBatch(order.WithCloseTrigger(ctx, "terminal"), force)
 	if err != nil {
 		return nil, err
 	}

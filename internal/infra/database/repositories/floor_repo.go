@@ -288,11 +288,13 @@ func (r *OrderRepository) CloseBatch(ctx context.Context, force bool) (closed *o
 	defer end(&err)
 	now := time.Now()
 	var clearedDrafts, closedDrawers []string
+	var unsettled *order.UnsettledList
 	defer func() {
 		if err == nil && closed != nil {
 			closed.ClearedDrafts = clearedDrafts
 			closed.ClosedDrawers = closedDrawers
 			closed.ZPending = true
+			closed.Unsettled = unsettled
 		}
 	}()
 	err = r.withTx(ctx, func(q *models.Queries) error {
@@ -300,6 +302,14 @@ func (r *OrderRepository) CloseBatch(ctx context.Context, force bool) (closed *o
 		if err != nil {
 			return fmt.Errorf("open batch: %w", err)
 		}
+		// Unsettled checks (contract 2.10s §4): a manual close is refused
+		// while an unpaid counter check is open; unpaid pickups (every
+		// non-delivery check at an auto-close) are carried, still payable.
+		list, carry, err := closeUnsettled(ctx, q, b.ID, order.CloseKindOf(ctx) == order.CloseAuto, now)
+		if err != nil {
+			return err
+		}
+		unsettled = list
 		rows, err := q.ListBatchLeftovers(ctx, b.ID)
 		if err != nil {
 			return err
@@ -316,9 +326,12 @@ func (r *OrderRepository) CloseBatch(ctx context.Context, force bool) (closed *o
 		var blocking []order.StoredOrder
 		var waiting []string
 		for _, so := range left {
-			if waitsForLater(so, now) {
+			switch {
+			case carry[so.Order.ID]:
+				// carried: stays as it is, on the Pickup list
+			case waitsForLater(so, now):
 				waiting = append(waiting, so.Order.ID)
-			} else {
+			default:
 				blocking = append(blocking, so)
 			}
 		}
@@ -328,8 +341,8 @@ func (r *OrderRepository) CloseBatch(ctx context.Context, force bool) (closed *o
 		ts := nullTS(now)
 		for i, so := range left {
 			row := rows[i] // mapRows keeps row order
-			if waitsForLater(so, now) {
-				continue // moved to the next batch below
+			if waitsForLater(so, now) || carry[so.Order.ID] {
+				continue // moved to the next batch below / carried
 			}
 			if so.Status.CameBack {
 				// Came back with its driver and nobody took it out again: it

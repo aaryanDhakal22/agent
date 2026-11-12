@@ -290,12 +290,17 @@ func TestVoidAfterTenderChangeGivesBackOnlyTheNet(t *testing.T) {
 	if _, err := r.svc.AddPayment(r.ctx, till, id, PaymentIn{ClientKey: tk(), Tender: "cash", AmountCents: 100, TipCents: 50, Refund: true, Reason: "change"}); err != nil {
 		t.Fatal(err)
 	}
-	v, err := r.svc.Void(r.ctx, till, id, VoidIn{Reason: "left"})
-	if err != nil {
-		t.Fatal(err)
+	// A void takes no money (contract 2.10s §5): 409 refund_first with
+	// exactly what is still held - the card's net after the cash given back.
+	var pf *terminal.PaidFirst
+	if _, err := r.svc.Void(r.ctx, till, id, VoidIn{Reason: "left"}); !errors.As(err, &pf) || pf.PaidCents != total-100+150 {
+		t.Fatalf("void of a paid order: %v", err)
 	}
-	if len(v.Refunds) != 1 || v.Refunds[0].Tender != "card" || v.Refunds[0].AmountCents != total-100 || v.Refunds[0].TipCents != 150 ||
-		v.RefundedCents != total-100+150 {
-		t.Fatalf("void refunds %+v (%d)", v.Refunds, v.RefundedCents)
+	back := refundAll(t, r, till, id)
+	if len(back) != 1 || back[0].Payment.Tender != "card" || back[0].Payment.AmountCents != total-100 || back[0].Payment.TipCents != 150 {
+		t.Fatalf("the void's split %+v", back)
+	}
+	if v, err := r.svc.Void(r.ctx, till, id, VoidIn{Reason: "left"}); err != nil || len(v.Refunds) != 0 || v.KickDrawer {
+		t.Fatalf("void after the refunds: %+v %v", v, err)
 	}
 }

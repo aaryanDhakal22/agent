@@ -26,7 +26,11 @@ func (s *Server) floorErr(w http.ResponseWriter, r *http.Request, err error) {
 	var lo *order.LeftoversError
 	var nr *order.ErrNotReady
 	var re *orderApp.RouteError
+	var un *order.UnsettledError
 	switch {
+	case errors.As(err, &un):
+		// contract 2.10s §4: a manual close over an unpaid counter check.
+		s.writeJSON(w, http.StatusConflict, map[string]any{"error": err.Error(), "code": "unsettled_checks", "checks": un.Checks})
 	case errors.As(err, &lo):
 		s.writeJSON(w, http.StatusConflict, map[string]any{"error": err.Error(), "code": "batch_has_leftovers", "leftovers": lo.Orders})
 	case errors.As(err, &re):
@@ -556,7 +560,11 @@ func (s *Server) handleCloseBatch(w http.ResponseWriter, r *http.Request) {
 		s.floorErr(w, r, err)
 		return
 	}
-	closed, finished, err := s.service.CloseBatch(r.Context(), req.Force)
+	ctx := r.Context()
+	if _, ok := r.Context().Value(deviceCtxKey{}).(*device.Device); !ok {
+		ctx = order.WithCloseTrigger(ctx, "web") // the Pi page (a session)
+	}
+	closed, finished, err := s.service.CloseBatch(ctx, req.Force)
 	if err != nil {
 		s.floorErr(w, r, err)
 		return
@@ -569,7 +577,8 @@ func (s *Server) handleCloseBatch(w http.ResponseWriter, r *http.Request) {
 		s.floorErr(w, r, err)
 		return
 	}
-	s.writeJSON(w, http.StatusOK, map[string]any{"closed": closed, "opened": opened.Batch, "auto_finished": finished})
+	s.writeJSON(w, http.StatusOK, map[string]any{"closed": closed, "opened": opened.Batch, "auto_finished": finished,
+		"unsettled": closed.Unsettled})
 }
 
 // POST /api/drivers/{id}/undo-return — 409 invalid_state when it isn't the

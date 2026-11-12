@@ -13,6 +13,7 @@ import (
 
 	"quiccpos/agent/internal/domain/order"
 	"quiccpos/agent/internal/domain/terminal"
+	"quiccpos/agent/internal/observability"
 
 	"github.com/google/uuid"
 	"github.com/rs/zerolog"
@@ -24,10 +25,11 @@ type Repo interface {
 	PickupRepo
 	DraftRepo
 	KeyRepo
+	UnsettledRepo
 	CounterOrderByKey(ctx context.Context, key string) (*order.StoredOrder, error)
 	PlaceCounterOrder(ctx context.Context, in terminal.NewCounterOrder) (order.StoredOrder, bool, error)
 	AddCounterPayment(ctx context.Context, orderID, clientKey, requestHash string, check terminal.MoneyCheck) (order.StoredOrder, terminal.Payment, bool, error)
-	VoidCounterOrder(ctx context.Context, id, reason, staffID, deviceID string, check terminal.MoneyCheck) (so, prev order.StoredOrder, refunds []terminal.Payment, returned bool, err error)
+	VoidCounterOrder(ctx context.Context, id, reason, wasteReason, staffID, deviceID string, check terminal.MoneyCheck) (so, prev order.StoredOrder, refunds []terminal.Payment, returned bool, err error)
 	ChangeCounterOrder(ctx context.Context, id, staffID, deviceID string, check terminal.ChangeCheck) (so, prev order.StoredOrder, changed bool, err error)
 	OrderPayments(ctx context.Context, orderID string) ([]terminal.Payment, error)
 	CounterOrders(ctx context.Context) ([]order.StoredOrder, error)
@@ -73,43 +75,50 @@ type Service struct {
 	reports   ReportFloor
 	storeName func() string
 	storeInfo func() map[string]any
+	// cm: the counter instruments (HARDENING-PLAN R-1a CM-3..CM-10).
+	cm *observability.CounterMeters
 }
 
 // NewService wires the terminal flow; the store's config changes reach the
 // staff book (sessions of removed staff end).
 func NewService(store *Store, repo Repo, orders Orders, pub Publisher, logger zerolog.Logger) *Service {
 	s := &Service{store: store, repo: repo, orders: orders, pub: pub, logger: logger.With().Str("module", "terminal").Logger(),
-		staff: newStaffBook(), now: time.Now}
+		staff: newStaffBook(), now: time.Now, cm: observability.Counter()}
 	store.OnConfig(s.staff.configChanged)
 	return s
 }
+
+// SetCounterMeters swaps the counter instruments (tests).
+func (s *Service) SetCounterMeters(cm *observability.CounterMeters) { s.cm = cm }
 
 // SetStoreInfo wires the store's receipt header / footer facts the
 // terminals print (contract 2.10q): name, address, phone, website, footer.
 func (s *Service) SetStoreInfo(fn func() map[string]any) { s.storeInfo = fn }
 
 // withStore adds "store" (the Pi's store_config + receipt footer) to main's
-// terminal settings as the terminals get them; main's own keys stay.
+// terminal settings as the terminals get them, and "waste_reasons" (the
+// defaults) when main sends none (contract 2.10s §5); main's own keys stay.
 func (s *Service) withStore(settings json.RawMessage) json.RawMessage {
-	if s.storeInfo == nil {
-		return settings
-	}
-	info := s.storeInfo()
-	if len(info) == 0 {
-		return settings
-	}
 	m := map[string]json.RawMessage{}
 	if len(settings) > 0 && json.Unmarshal(settings, &m) != nil {
 		return settings
 	}
-	if _, ok := m["store"]; ok {
-		return settings // main sends its own
+	changed := false
+	if raw, ok := m["waste_reasons"]; !ok || string(raw) == "null" || string(raw) == "[]" {
+		if b, err := json.Marshal(terminal.DefaultWasteReasons); err == nil {
+			m["waste_reasons"], changed = b, true
+		}
 	}
-	raw, err := json.Marshal(info)
-	if err != nil {
+	if _, ok := m["store"]; !ok && s.storeInfo != nil {
+		if info := s.storeInfo(); len(info) > 0 {
+			if raw, err := json.Marshal(info); err == nil {
+				m["store"], changed = raw, true
+			}
+		}
+	}
+	if !changed {
 		return settings
 	}
-	m["store"] = raw
 	out, err := json.Marshal(m)
 	if err != nil {
 		return settings
@@ -117,7 +126,6 @@ func (s *Service) withStore(settings json.RawMessage) json.RawMessage {
 	return out
 }
 
-// Store is the snapshot store.
 func (s *Service) Store() *Store { return s.store }
 
 func (s *Service) publish(typ string, v any) {
@@ -607,8 +615,11 @@ func (p PaymentIn) payment(a Actor, st terminal.Staff, orderID string, at time.T
 	if !terminal.ValidTender(p.Tender) {
 		return terminal.Payment{}, badRequest("tender must be cash, card, square_app, manual_card or comp")
 	}
-	if p.AmountCents < 1 || p.AmountCents > 10_000_00 || p.TipCents < 0 || p.TipCents > 1_000_00 {
-		return terminal.Payment{}, badRequest("amount_cents is 1-1000000, tip_cents 0-100000")
+	// A refund may give back a tip alone (amount 0): a void needs the
+	// order's net tip back too (contract 2.10s §5).
+	tipOnlyRefund := p.Refund && p.AmountCents == 0 && p.TipCents > 0
+	if (p.AmountCents < 1 && !tipOnlyRefund) || p.AmountCents > 10_000_00 || p.TipCents < 0 || p.TipCents > 1_000_00 {
+		return terminal.Payment{}, badRequest("amount_cents is 1-1000000 (0 on a tip-only refund), tip_cents 0-100000")
 	}
 	if p.ClientKey != "" && !keyRe.MatchString(p.ClientKey) {
 		return terminal.Payment{}, badRequest("client_key is 8-64 letters, digits, _ . : -")
@@ -921,6 +932,9 @@ func (s *Service) Orders(ctx context.Context, open bool) ([]order.StoredOrder, e
 	}
 	out := make([]order.StoredOrder, 0, len(all))
 	for _, so := range all {
+		if !open && so.Status.Carried {
+			continue // an earlier batch's check (contract 2.10s §4): on the open list only
+		}
 		if !open || IsOpen(so) {
 			out = append(out, so)
 		}
@@ -1126,28 +1140,76 @@ func voidRefunds(paid []terminal.Payment, id, reason string, st terminal.Staff, 
 	return refunds
 }
 
-// VoidIn is POST /api/terminal/orders/{id}/void.
+// VoidIn is POST /api/terminal/orders/{id}/void (and /waste).
 type VoidIn struct {
-	Reason     string `json:"reason"`
+	Reason string `json:"reason"`
+	// ManagerPIN: accepted for older terminals, not needed (a void takes no
+	// money since 2026-11-12).
 	ManagerPIN string `json:"manager_pin"`
 }
 
-// VoidResult is the voided order and the money given back.
+// VoidResult is the voided (or wasted) order.
 type VoidResult struct {
 	Order         order.StoredOrder  `json:"order"`
 	Refunds       []terminal.Payment `json:"refunds"`
 	RefundedCents int64              `json:"refunded_cents"`
 	Already       bool               `json:"already"`
-	// KickDrawer: the void gave cash back - the terminal opens its drawer.
+	// KickDrawer: always false now (a void gives no money back); kept for
+	// older terminals.
 	KickDrawer bool `json:"kick_drawer"`
 }
 
-// Void cancels a counter order of the open batch (accepted, ready or out).
-// Unpaid: free. Paid: everything taken is refunded by tender, which over the
-// staff member's refund limit needs manager_pin. A VOID slip prints on the
-// stations its tickets went to; main hears order.void.
+// heldBack is the money a void would have to give back: every tender's net
+// but a comp's (a comp moves no money and is reversed for free).
+func heldBack(refunds []terminal.Payment) int64 {
+	var n int64
+	for _, r := range refunds {
+		if r.Tender != terminal.TenderComp {
+			n += r.AmountCents + r.TipCents
+		}
+	}
+	return n
+}
+
+// Void cancels an unpaid counter order of the open batch, or a carried one
+// (accepted, ready or out): any staff member, no manager (the owner,
+// 2026-11-12). An order that holds money answers 409 refund_first: refund it
+// first under the refund rules. A comp on it is reversed for free. Every
+// station its tickets went to gets the VOID ticket (its lines under REMOVE /
+// QUITAR); main hears order.void {kind: void}.
 func (s *Service) Void(ctx context.Context, a Actor, id string, in VoidIn) (*VoidResult, error) {
-	st, cfg, err := s.staffOf(a)
+	return s.void(ctx, a, id, in, "")
+}
+
+// WasteIn is POST /api/terminal/orders/{id}/waste.
+type WasteIn struct {
+	Reason string `json:"reason"`
+}
+
+// BadWasteReason: the reason isn't on the store's list (400 bad_reason
+// {reasons}).
+type BadWasteReason struct{ Reasons []string }
+
+func (e *BadWasteReason) Error() string { return "pick a waste reason from the store's list" }
+
+// Waste throws away an unpaid order that was made (Void waste, contract
+// 2.10s §5): like a void but nothing prints; the reason (one of main's
+// waste_reasons) goes on the till / Z report's Waste section (journal
+// void.waste).
+func (s *Service) Waste(ctx context.Context, a Actor, id string, in WasteIn) (*VoidResult, error) {
+	_, cfg, err := s.staffOf(a)
+	if err != nil {
+		return nil, err
+	}
+	reason := cfg.WasteReasonOf(in.Reason)
+	if reason == "" {
+		return nil, &BadWasteReason{Reasons: cfg.WasteReasons()}
+	}
+	return s.void(ctx, a, id, VoidIn{Reason: reason}, reason)
+}
+
+func (s *Service) void(ctx context.Context, a Actor, id string, in VoidIn, waste string) (*VoidResult, error) {
+	st, _, err := s.staffOf(a)
 	if err != nil {
 		return nil, err
 	}
@@ -1158,75 +1220,69 @@ func (s *Service) Void(ctx context.Context, a Actor, id string, in VoidIn) (*Voi
 	if reason == "" || utf8.RuneCountInString(reason) > 140 {
 		return nil, badRequest("a void needs a reason (1-140 characters)")
 	}
-	// Who may give back how much is decided before the transaction (a
-	// manager's PIN is a bcrypt check); the transaction checks it again.
 	paid, err := s.repo.OrderPayments(ctx, id)
 	if err != nil {
 		return nil, err
 	}
 	now := s.now().UTC().Truncate(time.Millisecond)
-	var approver *terminal.Staff
-	need := terminal.RefundNeed(cfg, st, paid, voidRefunds(paid, id, reason, st, a, now, nil), terminal.ActionVoid)
-	if need != nil {
-		if approver, err = s.manager(a, cfg, in.ManagerPIN, need); err != nil {
-			return nil, err
-		}
+	if held := heldBack(voidRefunds(paid, id, reason, st, a, now, nil)); held > 0 {
+		s.cm.Void(ctx, st.Role, voidKind(waste), false)
+		return nil, &terminal.PaidFirst{PaidCents: held}
 	}
-	so, prev, refunds, returned, err := s.repo.VoidCounterOrder(ctx, id, reason, st.ID, a.DeviceID, func(cur order.StoredOrder, paid []terminal.Payment) ([]terminal.Payment, []terminal.Entry, error) {
-		amount, tip := netPaid(paid)
-		refunds := voidRefunds(paid, id, reason, st, a, now, approver)
-		if approver == nil {
-			if n := terminal.RefundNeed(cfg, st, paid, refunds, terminal.ActionVoid); n != nil {
-				return nil, nil, n // a payment raced the void
-			}
+	so, prev, refunds, returned, err := s.repo.VoidCounterOrder(ctx, id, reason, waste, st.ID, a.DeviceID, func(cur order.StoredOrder, paid []terminal.Payment) ([]terminal.Payment, []terminal.Entry, error) {
+		refunds := voidRefunds(paid, id, reason, st, a, now, nil)
+		if held := heldBack(refunds); held > 0 {
+			return nil, nil, &terminal.PaidFirst{PaidCents: held} // a payment raced the void
 		}
 		entries := []terminal.Entry{}
-		for _, r := range refunds {
+		for _, r := range refunds { // comps reversed: no money moves
 			entries = append(entries, terminal.Entry{StaffID: st.ID, DeviceID: a.DeviceID, Action: terminal.ActionRefund, OrderID: id,
 				Detail: detail(map[string]any{"payment_id": r.ID, "tender": r.Tender, "amount_cents": r.AmountCents, "tip_cents": r.TipCents, "reason": reason, "void": true})})
 		}
-		d := map[string]any{"reason": reason, "refunded_cents": amount + tip, "number": numberOf(cur), "state": cur.Status.State}
-		if approver != nil {
-			d["approved_by"] = approver.ID
-			entries = append(entries, overrideEntry(a, st, approver, need, id))
+		d := map[string]any{"reason": reason, "refunded_cents": 0, "number": numberOf(cur), "state": cur.Status.State,
+			"total_cents": cur.Order.Money.Total}
+		action := terminal.ActionVoid
+		if waste != "" {
+			action = terminal.ActionVoidWaste
+			items := make([]map[string]any, 0, len(cur.Order.Items))
+			for _, it := range cur.Order.Items {
+				items = append(items, map[string]any{"qty": max(it.Quantity, 1), "name": it.Name})
+			}
+			d["items"] = items
 		}
-		entries = append([]terminal.Entry{{StaffID: st.ID, DeviceID: a.DeviceID, Action: terminal.ActionVoid, OrderID: id, Detail: detail(d)}}, entries...)
-		if cents := kicks(refunds); cents > 0 {
-			entries = append(entries, kickEntry(a, st, id, "void", cents))
-		}
-		stampStart(cfg, refunds)
+		entries = append([]terminal.Entry{{StaffID: st.ID, DeviceID: a.DeviceID, Action: action, OrderID: id, Detail: detail(d)}}, entries...)
 		return refunds, entries, nil
 	})
 	if errors.Is(err, terminal.ErrAlreadyVoided) {
-		pays, _ := s.repo.OrderPayments(ctx, id)
-		var back []terminal.Payment
-		var cents int64
-		for _, p := range pays {
-			if p.Refund {
-				back = append(back, p)
-				cents += p.AmountCents + p.TipCents
-			}
-		}
-		if back == nil {
-			back = []terminal.Payment{}
-		}
-		return &VoidResult{Order: so, Refunds: back, RefundedCents: cents, Already: true}, nil
+		return &VoidResult{Order: so, Refunds: []terminal.Payment{}, Already: true}, nil
 	}
 	if err != nil {
 		return nil, err
 	}
-	s.orders.PrintVoidSlip(ctx, prev)
+	if waste == "" {
+		s.orders.PrintVoidSlip(ctx, prev)
+	}
 	s.orders.CounterOrderChanged(ctx, so, &prev, returned)
 	s.publish(EventOrderVoided, map[string]any{"order": so})
-	var cents int64
-	for _, r := range refunds {
-		cents += r.AmountCents + r.TipCents
-	}
 	if refunds == nil {
 		refunds = []terminal.Payment{}
 	}
-	s.orders.DevEvent(fmt.Sprintf("Counter order #%d voided", numberOf(so)))
-	return &VoidResult{Order: so, Refunds: refunds, RefundedCents: cents, KickDrawer: kicks(refunds) > 0}, nil
+	s.cm.Void(ctx, st.Role, voidKind(waste), false)
+	msg, what := "Counter order voided", "voided"
+	if waste != "" {
+		msg, what = "Counter order wasted", "wasted ("+waste+")"
+	}
+	s.orders.DevEvent(fmt.Sprintf("Counter order #%d %s", numberOf(so), what))
+	s.logger.Info().Ctx(ctx).Str("order_id", id).Int64("number", numberOf(so)).Str("staff_id", st.ID).Str("staff_name", st.Name()).
+		Str("role", st.Role).Str("device_id", a.DeviceID).Int64("amount_cents", prev.Order.Money.Total).Str("reason", reason).Msg(msg)
+	return &VoidResult{Order: so, Refunds: refunds}, nil
+}
+
+func voidKind(waste string) string {
+	if waste != "" {
+		return "waste"
+	}
+	return "void"
 }
 
 // SessionView is GET /api/terminal/session: who is on this terminal and the

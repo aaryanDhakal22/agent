@@ -110,6 +110,11 @@ func (s *Service) AutoCloseDue(ctx context.Context, now time.Time, loc *time.Loc
 		s.logger.Warn().Ctx(ctx).Err(err).Msg("auto-close: saving the slot failed (the 1 h rule still stops a second close)")
 	}
 	msg := fmt.Sprintf("Batch auto-closed at %s: %d orders", at, total)
+	// contract 2.10s §4: never blocked; the Unsettled Check List prints on
+	// the driver reports' printer and rides on the owner's page.
+	if line := s.printUnsettled(ctx, closed.Unsettled); line != "" {
+		msg += ". " + line
+	}
 	s.logger.Info().Ctx(ctx).Int64("batch", closed.ID).Int64("orders", total).Int("auto_finished", len(finished)).
 		Str("at", at).Msg("Batch auto-closed")
 	s.devEvent(devlog.Info, devlog.KindOrder, "%s", msg)

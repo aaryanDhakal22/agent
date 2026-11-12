@@ -147,7 +147,19 @@ func (r *OrderRepository) PickupOrders(ctx context.Context) (out []order.StoredO
 	if err != nil {
 		return nil, err
 	}
-	return mapRowsGeo(ctx, q, rows)
+	// Checks carried past their batch's close stay on the list until
+	// settled (contract 2.10s §4), oldest first.
+	carried, err := q.ListCarriedOrders(ctx)
+	if err != nil {
+		return nil, err
+	}
+	var all []models.Order
+	for _, c := range carried {
+		if c.BatchID != b.ID {
+			all = append(all, c)
+		}
+	}
+	return mapRowsGeo(ctx, q, append(all, rows...))
 }
 
 // MarkPickedUp finishes a pickup handed over at the counter (any source but
@@ -168,7 +180,7 @@ func (r *OrderRepository) MarkPickedUp(ctx context.Context, id string, journal f
 		if err != nil {
 			return fmt.Errorf("open batch: %w", err)
 		}
-		if !terminal.IsPickup(cur) || cur.Status.BatchID != b.ID {
+		if !terminal.IsPickup(cur) || (cur.Status.BatchID != b.ID && !cur.Status.Carried) {
 			return terminal.ErrNotPickable
 		}
 		switch cur.Status.State {
@@ -199,6 +211,9 @@ func (r *OrderRepository) MarkPickedUp(ctx context.Context, id string, journal f
 			return err
 		}
 		if err := recordOrderStatus(ctx, q, so, false, now); err != nil {
+			return err
+		}
+		if err := settleCarried(ctx, q, id); err != nil {
 			return err
 		}
 		return insertJournal(ctx, q, now, journal(cur))

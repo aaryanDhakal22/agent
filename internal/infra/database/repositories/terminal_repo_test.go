@@ -83,17 +83,42 @@ func TestCounterSequenceAndIdempotency(t *testing.T) {
 		t.Fatalf("order.status events: %v", st)
 	}
 
-	// Close batch: the counter sequence starts again at the start.
-	if _, _, err := r.CloseBatch(ctx, true); err != nil {
-		t.Fatal(err)
+	// A manual close is refused over the unpaid counter check (contract
+	// 2.10s §4), even forced; it lists the check.
+	var un *order.UnsettledError
+	if _, _, err := r.CloseBatch(ctx, true); !errors.As(err, &un) || len(un.Checks) != 1 || un.Checks[0].OrderID != a.Order.ID ||
+		un.Checks[0].DueCents != 1299 || !un.Checks[0].BlocksClose || un.Checks[0].Type != "counter" {
+		t.Fatalf("manual close over an unpaid counter check: %v", err)
 	}
+	// The auto-close carries it: still open, still on the list, payable.
+	closed, _, err := r.CloseBatch(order.WithCloseKind(ctx, order.CloseAuto), true)
+	if err != nil || closed.Unsettled == nil || closed.Unsettled.Count != 1 || closed.Unsettled.DueCents != 1299 {
+		t.Fatalf("auto close: %+v %v", closed, err)
+	}
+	// Close batch: the counter sequence starts again at the start.
 	c, _ := counterOrder(t, r, "key-cccc-3", 7, 100)
 	if *c.Status.KitchenNumber != 7 {
 		t.Fatalf("after close: %d", *c.Status.KitchenNumber)
 	}
 	list, err := r.CounterOrders(ctx)
-	if err != nil || len(list) != 1 || list[0].Order.ID != c.Order.ID {
-		t.Fatalf("open batch counter orders: %v %v", list, err)
+	if err != nil || len(list) != 2 || list[0].Order.ID != a.Order.ID || !list[0].Status.Carried || list[1].Order.ID != c.Order.ID {
+		t.Fatalf("open batch counter orders + the carried one: %v %v", list, err)
+	}
+	// A payment on the carried check lands in the new batch and settles it.
+	_, p, _, err := r.AddCounterPayment(ctx, a.Order.ID, "pay-carried-1", "", func(cur order.StoredOrder, paid []terminal.Payment) ([]terminal.Payment, []terminal.Entry, error) {
+		p := pay(terminal.TenderCash, 1299)
+		p.OrderID = a.Order.ID
+		return []terminal.Payment{p}, nil, nil
+	})
+	if err != nil || p.BatchID != c.Status.BatchID {
+		t.Fatalf("carried payment: %+v %v", p, err)
+	}
+	if got, _ := r.GetByID(ctx, uuid.MustParse(a.Order.ID)); got.Status.Carried || !got.Status.Paid {
+		t.Fatalf("settled: %+v", got.Status)
+	}
+	in, err := r.ZInputs(ctx, c.Status.BatchID)
+	if err != nil || len(in.Earlier) != 1 || in.Earlier[0].Order.ID != a.Order.ID {
+		t.Fatalf("z inputs of the new batch: earlier %v %v", in.Earlier, err)
 	}
 	if got, err := r.CounterOrderByKey(ctx, "key-bbbb-2"); err != nil || got == nil || got.Order.ID != b.Order.ID {
 		t.Fatalf("by key: %v %v", got, err)
@@ -138,7 +163,7 @@ func TestCounterPaymentsAndVoid(t *testing.T) {
 	// Void: refunds whatever check says, cancels, order.void.
 	refund := pay(terminal.TenderCash, 1500)
 	refund.Refund, refund.TipCents, refund.OrderID = true, 200, so.Order.ID
-	voided, prev, refunds, _, err := r.VoidCounterOrder(ctx, so.Order.ID, "customer left", "s1", "d1",
+	voided, prev, refunds, _, err := r.VoidCounterOrder(ctx, so.Order.ID, "customer left", "", "s1", "d1",
 		func(cur order.StoredOrder, paid []terminal.Payment) ([]terminal.Payment, []terminal.Entry, error) {
 			if len(paid) != 2 {
 				t.Fatalf("paid: %v", paid)
@@ -164,7 +189,7 @@ func TestCounterPaymentsAndVoid(t *testing.T) {
 		t.Fatalf("a counter void writes no order.status: %v", st)
 	}
 	// Again: already voided.
-	if _, _, _, _, err := r.VoidCounterOrder(ctx, so.Order.ID, "x", "s1", "d1", nil); !errors.Is(err, terminal.ErrAlreadyVoided) {
+	if _, _, _, _, err := r.VoidCounterOrder(ctx, so.Order.ID, "x", "", "s1", "d1", nil); !errors.Is(err, terminal.ErrAlreadyVoided) {
 		t.Fatalf("second void: %v", err)
 	}
 	// No payment on a voided order.

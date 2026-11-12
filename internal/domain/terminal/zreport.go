@@ -43,21 +43,26 @@ var ZTenderOrder = []string{TenderCash, TenderCard, TenderSquareApp, TenderManua
 
 // Z is the Z report.
 type Z struct {
-	ID            string     `json:"id"`
-	Version       int        `json:"version"`
-	BatchID       int64      `json:"batch_id"`
-	BusinessDate  string     `json:"business_date"` // the store-local date the batch opened
-	Timezone      string     `json:"timezone"`
-	OpenedAt      time.Time  `json:"opened_at"`
-	ClosedAt      time.Time  `json:"closed_at"`
-	CloseKind     string     `json:"close_kind"` // manual | auto
-	Forced        bool       `json:"forced"`
-	FirstOrderAt  *time.Time `json:"first_order_at"`
-	LastOrderAt   *time.Time `json:"last_order_at"`
-	Counts        ZCounts    `json:"counts"`
-	Sales         ZSales     `json:"sales"`
-	Tenders       []ZTender  `json:"tenders"`
-	Unpaid        ZAmount    `json:"unpaid"`
+	ID           string     `json:"id"`
+	Version      int        `json:"version"`
+	BatchID      int64      `json:"batch_id"`
+	BusinessDate string     `json:"business_date"` // the store-local date the batch opened
+	Timezone     string     `json:"timezone"`
+	OpenedAt     time.Time  `json:"opened_at"`
+	ClosedAt     time.Time  `json:"closed_at"`
+	CloseKind    string     `json:"close_kind"` // manual | auto
+	Forced       bool       `json:"forced"`
+	FirstOrderAt *time.Time `json:"first_order_at"`
+	LastOrderAt  *time.Time `json:"last_order_at"`
+	Counts       ZCounts    `json:"counts"`
+	Sales        ZSales     `json:"sales"`
+	Tenders      []ZTender  `json:"tenders"`
+	Unpaid       ZAmount    `json:"unpaid"`
+	// EarlierChecks: money (amounts, net) taken in this batch on checks an
+	// earlier close carried (contract 2.10s §4).
+	EarlierChecks ZAmount `json:"earlier_checks"`
+	// Waste: Void waste (contract 2.10s §5), from the batch's journal.
+	Waste         ZWaste     `json:"waste"`
 	Tips          ZTips      `json:"tips"`
 	Discounts     ZDiscounts `json:"discounts"`
 	Refunds       ZAmount    `json:"refunds"`
@@ -112,6 +117,49 @@ type ZTender struct {
 type ZAmount struct {
 	Count int64 `json:"count"`
 	Cents int64 `json:"cents"`
+}
+
+// ZWaste is the Waste section (contract 2.10s §5): orders thrown away
+// unpaid (Void waste), by reason; cents = their totals.
+type ZWaste struct {
+	Count   int64          `json:"count"`
+	Cents   int64          `json:"cents"`
+	Reasons []ZWasteReason `json:"reasons"`
+}
+
+// ZWasteReason is one waste reason's count and total.
+type ZWasteReason struct {
+	Reason string `json:"reason"`
+	Count  int64  `json:"count"`
+	Cents  int64  `json:"cents"`
+}
+
+// WasteOf sums the journal's void.waste rows (in their order of reasons'
+// first appearance).
+func WasteOf(journal []Entry) ZWaste {
+	w := ZWaste{Reasons: []ZWasteReason{}}
+	idx := map[string]int{}
+	for _, e := range journal {
+		if e.Action != ActionVoidWaste {
+			continue
+		}
+		var d struct {
+			Reason string `json:"reason"`
+			Total  int64  `json:"total_cents"`
+		}
+		_ = json.Unmarshal(e.Detail, &d)
+		i, ok := idx[d.Reason]
+		if !ok {
+			i = len(w.Reasons)
+			idx[d.Reason] = i
+			w.Reasons = append(w.Reasons, ZWasteReason{Reason: d.Reason})
+		}
+		w.Reasons[i].Count++
+		w.Reasons[i].Cents += d.Total
+		w.Count++
+		w.Cents += d.Total
+	}
+	return w
 }
 
 // ZTips are the tips by where they came from.
@@ -186,10 +234,11 @@ type ZReconcile struct {
 	RefundsCents       int64 `json:"refunds_cents"`
 	UnpaidCents        int64 `json:"unpaid_cents"`
 	SalesTotalCents    int64 `json:"sales_total_cents"`
-	TipsCents          int64 `json:"tips_cents"`         // net tips taken with terminal payments
-	OnCancelledCents   int64 `json:"on_cancelled_cents"` // terminal amounts (not tips) left on cancelled / voided orders
-	DifferenceCents    int64 `json:"difference_cents"`   // left side - right side
-	DrawersCashCents   int64 `json:"drawers_cash_cents"` // the drawers' cash flows + cash outside them
+	TipsCents          int64 `json:"tips_cents"`           // net tips taken with terminal payments
+	OnCancelledCents   int64 `json:"on_cancelled_cents"`   // terminal amounts (not tips) left on cancelled / voided orders
+	EarlierChecksCents int64 `json:"earlier_checks_cents"` // amounts taken here on earlier batches' carried checks
+	DifferenceCents    int64 `json:"difference_cents"`     // left side - right side
+	DrawersCashCents   int64 `json:"drawers_cash_cents"`   // the drawers' cash flows + cash outside them
 	DrawersDifferences int64 `json:"drawers_difference_cents"`
 }
 
@@ -211,11 +260,15 @@ type ZInput struct {
 	CloseKind string
 	Forced    bool
 	Orders    []order.StoredOrder
-	Payments  []Payment // the batch's terminal payments
-	Drawers   []Drawer  // the batch's sessions (closed)
-	Journal   []Entry   // the batch's journal rows
-	Drivers   []order.DriverReport
-	Now       time.Time
+	Payments  []Payment // the terminal payments taken in the batch
+	// Earlier: the earlier batches' (carried) checks some of Payments are
+	// on (contract 2.10s §4): their money counts here as earlier_checks,
+	// never as a sale.
+	Earlier []order.StoredOrder
+	Drawers []Drawer // the batch's sessions (closed)
+	Journal []Entry  // the batch's journal rows
+	Drivers []order.DriverReport
+	Now     time.Time
 	// Open: the batch is still open (ClosedAt is then the read time).
 	Open bool
 }
@@ -248,11 +301,24 @@ func BuildZ(in ZInput) Z {
 	for _, so := range in.Orders {
 		held[so.Order.ID] = true
 	}
+	earlier := map[string]bool{}
+	for _, so := range in.Earlier {
+		earlier[so.Order.ID] = true
+	}
 	for _, p := range in.Payments {
-		if !held[p.OrderID] {
+		if !held[p.OrderID] && !earlier[p.OrderID] {
 			continue // an order the Pi no longer holds (never on a fresh close)
 		}
-		byOrder[p.OrderID] = append(byOrder[p.OrderID], p)
+		if earlier[p.OrderID] {
+			a, _ := p.Signed()
+			z.EarlierChecks.Cents += a
+			if !p.Refund && p.AmountCents > 0 {
+				z.EarlierChecks.Count++
+			}
+			z.Reconcile.EarlierChecksCents += a
+		} else {
+			byOrder[p.OrderID] = append(byOrder[p.OrderID], p)
+		}
 		t := tender(p.Tender)
 		a, tip := p.Signed()
 		if p.Refund {
@@ -405,7 +471,9 @@ func BuildZ(in ZInput) Z {
 	z.Reconcile.UnpaidCents = z.Unpaid.Cents
 	z.Reconcile.SalesTotalCents = z.Sales.TotalCents
 	z.Reconcile.DifferenceCents = z.Reconcile.TendersCents - z.Reconcile.RefundsCents + z.Reconcile.UnpaidCents -
-		(z.Reconcile.SalesTotalCents + z.Reconcile.TipsCents + z.Reconcile.OnCancelledCents)
+		(z.Reconcile.SalesTotalCents + z.Reconcile.TipsCents + z.Reconcile.OnCancelledCents + z.Reconcile.EarlierChecksCents)
+
+	z.Waste = WasteOf(in.Journal)
 
 	// Price changes and comp lines (journal: price_change / comp rows).
 	for _, e := range in.Journal {

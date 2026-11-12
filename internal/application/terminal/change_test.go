@@ -85,6 +85,7 @@ func TestChangeCartAfterSend(t *testing.T) {
 		t.Fatalf("not found: %v", err)
 	}
 	// Voided: not editable.
+	refundAll(t, r, till, id)
 	if _, err := r.svc.Void(r.ctx, till, id, VoidIn{Reason: "left", ManagerPIN: "9876"}); err != nil {
 		t.Fatal(err)
 	}

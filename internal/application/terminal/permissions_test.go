@@ -73,20 +73,17 @@ func TestRefundPermissions(t *testing.T) {
 	if p, err := refund(mgrTill, "card", 500, ""); err != nil {
 		t.Fatalf("card refund by a manager logged in: %+v %v", p, err)
 	}
-	// Void of a card-paid order: a manager; a manager logged in just voids.
-	if _, err := r.svc.Void(r.ctx, till, id, VoidIn{Reason: "left"}); !errors.As(err, &mr) || mr.Action != terminal.NeedCardRefund {
-		t.Fatalf("void by card: %v", err)
+	// A paid order is refunded first (the refund rules), then voided - by
+	// anyone (contract 2.10s §5): no manager for the void itself.
+	var pf *terminal.PaidFirst
+	if _, err := r.svc.Void(r.ctx, mgrTill, id, VoidIn{Reason: "left"}); !errors.As(err, &pf) || pf.PaidCents != total-1000 {
+		t.Fatalf("void of a card-paid order: %v", err)
 	}
-	if v, err := r.svc.Void(r.ctx, mgrTill, id, VoidIn{Reason: "left"}); err != nil || v.RefundedCents != total-1000 {
-		t.Fatalf("manager void: %+v %v", v, err)
-	}
-	// A cash void within the cashier limit needs no one (unpaid is free anyway).
-	id, total = place("k-perm-0003")
-	if _, err := r.svc.AddPayment(r.ctx, till, id, PaymentIn{ClientKey: tk(), Tender: "cash", AmountCents: total}); err != nil {
+	if _, err := refund(mgrTill, "card", total-1000, ""); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := r.svc.Void(r.ctx, till, id, VoidIn{Reason: "left"}); total > 1000 && (!errors.As(err, &mr) || mr.Action != terminal.ActionVoid || mr.Limit != 1000) {
-		t.Fatalf("cash void over $10: %v", err)
+	if v, err := r.svc.Void(r.ctx, till, id, VoidIn{Reason: "left"}); err != nil || v.RefundedCents != 0 {
+		t.Fatalf("cashier void after the refund: %+v %v", v, err)
 	}
 	if o := journalOf(t, r, terminal.ActionOverride); len(o) != 2 {
 		t.Fatalf("overrides journaled: %v", o)
@@ -164,9 +161,12 @@ func TestGoodwillOutsideAndKick(t *testing.T) {
 	if _, err := r.svc.AddPayment(r.ctx, till, res.Order.Order.ID, PaymentIn{ClientKey: tk(), Tender: "cash", AmountCents: sodaTotal}); err != nil {
 		t.Fatal(err)
 	}
-	v, err := r.svc.Void(r.ctx, till, res.Order.Order.ID, VoidIn{Reason: "left"})
-	if err != nil || !v.KickDrawer {
-		t.Fatalf("void kick: %+v %v", v, err)
+	var pf *terminal.PaidFirst
+	if _, err := r.svc.Void(r.ctx, till, res.Order.Order.ID, VoidIn{Reason: "left"}); !errors.As(err, &pf) || pf.PaidCents != sodaTotal {
+		t.Fatalf("void of a cash-paid order: %v", err)
+	}
+	if back := refundAll(t, r, till, res.Order.Order.ID); len(back) != 1 || !back[0].KickDrawer {
+		t.Fatalf("the cash refund kicks the drawer: %+v", back)
 	}
 }
 

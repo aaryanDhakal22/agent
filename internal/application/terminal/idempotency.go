@@ -3,6 +3,7 @@ package terminal
 import (
 	"context"
 
+	"quiccpos/agent/internal/domain/order"
 	"quiccpos/agent/internal/domain/terminal"
 )
 
@@ -95,4 +96,14 @@ func (s *Service) duplicatePayment(ctx context.Context, orderID string, prev ter
 		return nil, err
 	}
 	return &PaymentResult{Order: v.Order, Payment: prev, Duplicate: true, BalanceCents: v.Order.Status.CashDueCents}, nil
+}
+
+// UnsettledRepo lists the unsettled checks (repositories.OrderRepository).
+type UnsettledRepo interface {
+	UnsettledChecks(ctx context.Context) (*order.UnsettledList, error)
+}
+
+// Unsettled is GET /api/terminal/unsettled (contract 2.10s §4).
+func (s *Service) Unsettled(ctx context.Context) (*order.UnsettledList, error) {
+	return s.repo.UnsettledChecks(ctx)
 }

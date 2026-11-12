@@ -9,6 +9,7 @@ import (
 
 	orderApp "quiccpos/agent/internal/application/order"
 	terminalApp "quiccpos/agent/internal/application/terminal"
+	"quiccpos/agent/internal/domain/order"
 	"quiccpos/agent/internal/domain/terminal"
 )
 
@@ -168,7 +169,12 @@ func (s *Server) handleTerminalClose(w http.ResponseWriter, r *http.Request) {
 		s.floorErr(w, r, err)
 		return
 	}
-	s.writeJSON(w, http.StatusOK, map[string]any{"closed": res.Closed, "opened": opened.Batch, "auto_finished": res.AutoFinished})
+	var unsettled *order.UnsettledList
+	if res.Closed != nil {
+		unsettled = res.Closed.Unsettled
+	}
+	s.writeJSON(w, http.StatusOK, map[string]any{"closed": res.Closed, "opened": opened.Batch, "auto_finished": res.AutoFinished,
+		"unsettled": unsettled})
 }
 
 // GET /api/terminal/checks — the All Checks Overview (contract §2.10o).

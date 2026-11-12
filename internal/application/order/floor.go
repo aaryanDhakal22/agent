@@ -11,6 +11,7 @@ import (
 
 	"quiccpos/agent/internal/domain/order"
 	"quiccpos/agent/internal/domain/terminal"
+	"quiccpos/agent/internal/observability"
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
@@ -202,13 +203,26 @@ func (s *Service) CloseBatch(ctx context.Context, force bool) (*order.Batch, []o
 	ctx, span := s.span(ctx, "batch.close", attribute.Bool("force", force))
 	defer span.End()
 	closed, finished, err := s.repo.CloseBatch(ctx, force)
+	cm := observability.Counter()
+	trigger := order.CloseTriggerOf(ctx)
 	if err != nil {
 		var lo *order.LeftoversError
 		if errors.As(err, &lo) {
+			cm.Close(ctx, trigger, "leftovers")
 			return nil, lo.Orders, err // not a failure — needs confirmation
 		}
+		var un *order.UnsettledError
+		if errors.As(err, &un) {
+			// contract 2.10s §4: pay or void the counter checks first.
+			cm.Close(ctx, trigger, "unsettled")
+			s.logger.Info().Ctx(ctx).Int("checks", len(un.Checks)).Str("trigger", trigger).
+				Msg("Batch close refused: unpaid counter checks are open")
+			return nil, nil, err
+		}
+		cm.Close(ctx, trigger, "error")
 		return nil, nil, spanErr(span, err)
 	}
+	cm.Close(ctx, trigger, "ok")
 	s.floorChanged()
 	s.logger.Info().Ctx(ctx).Int64("batch", closed.ID).Int("auto_finished", len(finished)).Msg("Batch closed")
 	for _, so := range finished {

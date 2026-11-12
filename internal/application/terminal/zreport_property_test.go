@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"testing"
 
+	"quiccpos/agent/internal/domain/order"
 	"quiccpos/agent/internal/domain/pricing"
 	"quiccpos/agent/internal/domain/terminal"
 )
@@ -40,7 +41,9 @@ func TestZReportMoneyReconciles(t *testing.T) {
 	r := newRig(t)
 	for day := 0; day < days; day++ {
 		m := runDay(t, r, rng, day)
-		closed, _, err := r.repo.CloseBatch(r.ctx, true)
+		// Auto-close: never refused over unpaid counter checks (they are
+		// carried, contract 2.10s §4; the model doesn't touch them again).
+		closed, _, err := r.repo.CloseBatch(order.WithCloseKind(r.ctx, order.CloseAuto), true)
 		if err != nil {
 			t.Fatalf("seed %d day %d: close batch: %v", seed, day, err)
 		}
@@ -265,16 +268,23 @@ func runDay(t *testing.T, r *rig, rng *rand.Rand, day int) *model {
 			if o == nil {
 				continue
 			}
-			res, err := r.svc.Void(r.ctx, a, o.id, VoidIn{Reason: "property", ManagerPIN: "9876"})
+			// A paid order is refunded first (contract 2.10s §5): the
+			// void's own split, as refunds; then the void takes no money.
+			var back []terminal.Payment
+			for _, pr := range refundAll(t, r, a, o.id) {
+				back = append(back, pr.Payment)
+			}
+			res, err := r.svc.Void(r.ctx, a, o.id, VoidIn{Reason: "property"})
 			if err != nil {
 				t.Fatalf("void: %v", err)
 			}
-			// A void gives back exactly what is still held - the net amount
-			// and the net tip - never more on a tender than it holds.
+			back = append(back, res.Refunds...) // comps reversed by the void
+			// The refunds give back exactly what is still held - the net
+			// amount and the net tip - never more on a tender than it holds.
 			byTender := o.netByTender()
 			amt, tip := o.net()
 			var backAmt, backTip int64
-			for _, p := range res.Refunds {
+			for _, p := range back {
 				w := byTender[p.Tender]
 				if p.AmountCents > max(w[0], 0) || p.TipCents > max(w[1], 0) {
 					t.Fatalf("void refund %s: %d+%d, the tender holds %v", p.Tender, p.AmountCents, p.TipCents, w)
@@ -284,7 +294,7 @@ func runDay(t *testing.T, r *rig, rng *rand.Rand, day int) *model {
 			if backAmt != max(amt, 0) || backTip != max(tip, 0) {
 				t.Fatalf("void gave back %d+%d, held %d+%d (%v)", backAmt, backTip, amt, tip, byTender)
 			}
-			m.record(o, a, res.Refunds...)
+			m.record(o, a, back...)
 			o.voided = true
 		case op < 84: // pay-in / pay-out
 			d := m.open[a.DeviceID]

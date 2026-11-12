@@ -325,6 +325,10 @@ func main() {
 		sc, _ := storeCtx.Load().(storeconfig.StoreContext)
 		return receipt.BuildUnassignedReport(rep, sc, orderService.PrintPrefs().DriverReportSize, from, time.Now())
 	})
+	orderService.SetUnsettledReport(func(l order.UnsettledList, from string) []byte { // contract 2.10s §4
+		sc, _ := storeCtx.Load().(storeconfig.StoreContext)
+		return receipt.BuildUnsettledList(l, sc, orderService.PrintPrefs().DriverReportSize, from, time.Now())
+	})
 
 	orderService.LoadReceiptPrefs(ctx)
 	receiptPrefs = orderService.PrintPrefs

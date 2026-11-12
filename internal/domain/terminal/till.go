@@ -126,6 +126,9 @@ type TillSummary struct {
 	StartingCash     int64 `json:"starting_cash_cents"`
 	ExpectedInDrawer int64 `json:"expected_in_drawer_cents"`
 	TransfersDrops   int64 `json:"transfers_drops_cents"`
+	// DriverCash (information only, the owner 2026-11-12): cash drivers
+	// collected at the door; never in TotalCash or ExpectedInDrawer.
+	DriverCash int64 `json:"driver_cash_cents"`
 }
 
 // TillCount is a count and an amount.
@@ -186,6 +189,8 @@ type TillDetail struct {
 	PayIns          int64            `json:"pay_ins_cents"`
 	PayOuts         int64            `json:"pay_outs_cents"`
 	Employees       []TillEmployee   `json:"employees"`
+	// Waste: Void waste in this scope (contract 2.10s §5).
+	Waste ZWaste `json:"waste"`
 }
 
 // CategoryIndex maps a line's menu item id to its category on the counter
@@ -277,6 +282,7 @@ func BuildTill(in TillInput) Till {
 
 	// The scope: which payments, which sales.
 	inPay := func(p Payment) bool { return true }
+	inEntry := func(e Entry) bool { return true }
 	sales := map[string]bool{}
 	byScope := in.Drawer != nil || in.Terminal != nil
 	if dev := in.Terminal; dev != nil && in.Drawer == nil {
@@ -284,6 +290,7 @@ func BuildTill(in TillInput) Till {
 		td := *dev
 		t.Terminal = &td
 		inPay = func(p Payment) bool { return p.DeviceID == dev.DeviceID }
+		inEntry = func(e Entry) bool { return e.DeviceID == dev.DeviceID }
 		for _, e := range z.Journal {
 			if e.Action == ActionOrderPlaced && e.DeviceID == dev.DeviceID && e.OrderID != "" {
 				sales[e.OrderID] = true
@@ -311,6 +318,7 @@ func BuildTill(in TillInput) Till {
 		t.State = d.State
 		t.Drawer = tillDrawerOf(*d)
 		within := func(at time.Time) bool { return !at.Before(from) && !at.After(to) }
+		inEntry = func(e Entry) bool { return e.DeviceID == d.DeviceID && within(e.At) }
 		inPay = func(p Payment) bool {
 			if p.DrawerID != "" {
 				return p.DrawerID == d.ID
@@ -340,8 +348,17 @@ func BuildTill(in TillInput) Till {
 	for _, so := range z.Orders {
 		held[so.Order.ID] = so
 	}
+	// An earlier batch's carried check paid here: money taken, not a sale
+	// (net payments applied).
+	earlier := map[string]bool{}
+	for _, so := range z.Earlier {
+		if _, ok := held[so.Order.ID]; !ok {
+			held[so.Order.ID] = so
+			earlier[so.Order.ID] = true
+		}
+	}
 	isSale := func(so order.StoredOrder) bool {
-		if so.Status.State == order.StateCancelled {
+		if so.Status.State == order.StateCancelled || earlier[so.Order.ID] {
 			return false
 		}
 		if byScope {
@@ -598,7 +615,17 @@ func BuildTill(in TillInput) Till {
 	s.TotalCash = cash.Amount
 	s.TotalCreditCard = t.Detail.CardsTotal.Amount
 	s.TotalCollected = s.TotalCash + s.TotalCreditCard + s.TotalOther
+	var scoped []Entry
+	for _, e := range z.Journal {
+		if inEntry(e) {
+			scoped = append(scoped, e)
+		}
+	}
+	t.Detail.Waste = WasteOf(scoped)
 	s.PaidInOut = t.Detail.PayIns - t.Detail.PayOuts
+	if v := other[TenderDriverCash]; v != nil {
+		s.DriverCash = v.Amount
+	}
 	t.Detail.TotalCollected = s.TotalCollected
 	return t
 }

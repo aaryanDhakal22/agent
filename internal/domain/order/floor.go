@@ -23,6 +23,9 @@ type Batch struct {
 	// this batch (built right after, contract 2.10l).
 	ClosedDrawers []string `json:"-"`
 	ZPending      bool     `json:"-"`
+	// Unsettled: the Unsettled Check List at the close (contract 2.10s §4;
+	// nil when not a close).
+	Unsettled *UnsettledList `json:"-"`
 }
 
 // Close kinds (the Z report's close_kind): Close batch by hand, or the Pi's
@@ -45,6 +48,26 @@ func CloseKindOf(ctx context.Context) string {
 		return k
 	}
 	return CloseManual
+}
+
+type closeTriggerKey struct{}
+
+// WithCloseTrigger tells CloseBatch who started it (the batch.closes metric:
+// terminal | tablet | web | auto).
+func WithCloseTrigger(ctx context.Context, trigger string) context.Context {
+	return context.WithValue(ctx, closeTriggerKey{}, trigger)
+}
+
+// CloseTriggerOf is the trigger on ctx ("auto" for an auto-close kind, else
+// "tablet" when none).
+func CloseTriggerOf(ctx context.Context) string {
+	if t, ok := ctx.Value(closeTriggerKey{}).(string); ok && t != "" {
+		return t
+	}
+	if CloseKindOf(ctx) == CloseAuto {
+		return "auto"
+	}
+	return "tablet"
 }
 
 // Driver statuses: off = clocked out (not in the queue), available = clocked

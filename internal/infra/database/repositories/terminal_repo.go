@@ -226,7 +226,18 @@ func (r *OrderRepository) CounterOrders(ctx context.Context) (out []order.Stored
 	if err != nil {
 		return nil, err
 	}
-	return mapRowsGeo(ctx, q, rows)
+	// Counter checks carried past their batch's close (contract 2.10s §4).
+	carried, err := q.ListCarriedOrders(ctx)
+	if err != nil {
+		return nil, err
+	}
+	var all []models.Order
+	for _, c := range carried {
+		if c.BatchID != b.ID && c.Source == order.SourceCounter {
+			all = append(all, c)
+		}
+	}
+	return mapRowsGeo(ctx, q, append(all, rows...))
 }
 
 // applyPayments appends payments to a counter order's snapshot (money
@@ -422,9 +433,11 @@ func recordPayment(ctx context.Context, q *models.Queries, so order.StoredOrder,
 	return insertEvent(ctx, q, id, so.Order.ID, terminal.EventOrderPayment, now, ev)
 }
 
-// VoidCounterOrder voids a counter order of the open batch (accepted, ready
-// or out; off its pool / run) and stores the refunds check decides.
-func (r *OrderRepository) VoidCounterOrder(ctx context.Context, id, reason, staffID, deviceID string, check terminal.MoneyCheck) (so, prev order.StoredOrder, refunds []terminal.Payment, returned bool, err error) {
+// VoidCounterOrder voids a counter order of the open batch or a carried one
+// (accepted, ready or out; off its pool / run) and stores the refunds check
+// decides (a comp reversed: a void takes no money, contract 2.10s §5).
+// wasteReason "" = a void; else a Void waste with that store reason.
+func (r *OrderRepository) VoidCounterOrder(ctx context.Context, id, reason, wasteReason, staffID, deviceID string, check terminal.MoneyCheck) (so, prev order.StoredOrder, refunds []terminal.Payment, returned bool, err error) {
 	ctx, _, end := dbSpan(ctx, "terminal.void_counter_order")
 	defer end(&err)
 	now := time.Now()
@@ -437,7 +450,7 @@ func (r *OrderRepository) VoidCounterOrder(ctx context.Context, id, reason, staf
 		if cur.Order.Source != order.SourceCounter {
 			return terminal.ErrNotCounterOrder
 		}
-		if cur.Status.State == order.StateCancelled && cur.Status.CancelReason == terminal.VoidReason {
+		if cur.Status.State == order.StateCancelled && (cur.Status.CancelReason == terminal.VoidReason || cur.Status.CancelReason == terminal.WasteReason) {
 			so = cur
 			return terminal.ErrAlreadyVoided
 		}
@@ -445,7 +458,7 @@ func (r *OrderRepository) VoidCounterOrder(ctx context.Context, id, reason, staf
 		if err != nil {
 			return fmt.Errorf("open batch: %w", err)
 		}
-		if cur.Status.BatchID != b.ID {
+		if cur.Status.BatchID != b.ID && !cur.Status.Carried {
 			return terminal.ErrNotVoidable
 		}
 		switch cur.Status.State {
@@ -466,7 +479,11 @@ func (r *OrderRepository) VoidCounterOrder(ctx context.Context, id, reason, staf
 				return err
 			}
 		}
-		n, err := q.CancelChannelOrder(ctx, models.CancelChannelOrderParams{CancelledAt: nullTS(now), Reason: terminal.VoidReason, ID: id})
+		cancelReason := terminal.VoidReason
+		if wasteReason != "" {
+			cancelReason = terminal.WasteReason
+		}
+		n, err := q.CancelChannelOrder(ctx, models.CancelChannelOrderParams{CancelledAt: nullTS(now), Reason: cancelReason, ID: id})
 		if err != nil {
 			return fmt.Errorf("void order: %w", err)
 		}
@@ -495,11 +512,17 @@ func (r *OrderRepository) VoidCounterOrder(ctx context.Context, id, reason, staf
 		}
 		evID := uuid.NewString()
 		ev := map[string]any{"event_id": evID, "type": terminal.EventOrderVoid, "order_id": id,
-			"at": now.UTC().Truncate(time.Millisecond), "reason": reason, "staff_id": nilIfEmpty(staffID)}
+			"at": now.UTC().Truncate(time.Millisecond), "reason": reason, "staff_id": nilIfEmpty(staffID), "kind": "void"}
+		if wasteReason != "" {
+			ev["kind"], ev["waste_reason"] = "waste", wasteReason
+		}
 		if len(refunds) > 0 && refunds[0].ApprovedBy != "" {
 			ev["approved_by"] = refunds[0].ApprovedBy
 		}
 		if err := insertEvent(ctx, q, evID, id, terminal.EventOrderVoid, now, ev); err != nil {
+			return err
+		}
+		if err := settleCarried(ctx, q, id); err != nil {
 			return err
 		}
 		return insertJournal(ctx, q, now, entries)

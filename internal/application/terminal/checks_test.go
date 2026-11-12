@@ -50,6 +50,7 @@ func TestChecksOverview(t *testing.T) {
 	a := place("k-chk-00001", "counter", PaymentIn{Tender: "cash", AmountCents: 2357, TenderedCents: 3000})
 	b := place("k-chk-00002", "delivery")
 	c := place("k-chk-00003", "pickup", PaymentIn{Tender: "card", AmountCents: 2357, Brand: "visa"})
+	refundAll(t, r, till, a)
 	if _, err := r.svc.Void(r.ctx, till, a, VoidIn{Reason: "test", ManagerPIN: "9876"}); err != nil {
 		t.Fatal(err)
 	}

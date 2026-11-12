@@ -65,12 +65,24 @@ func (r *OrderRepository) ZInputs(ctx context.Context, batchID int64) (in termin
 	if err != nil {
 		return in, err
 	}
+	held := make(map[string]bool, len(in.Orders))
+	for _, so := range in.Orders {
+		held[so.Order.ID] = true
+	}
 	for _, row := range pays {
 		p, err := paymentFromRow(row)
 		if err != nil {
 			return in, err
 		}
 		in.Payments = append(in.Payments, p)
+		// A payment taken here on an earlier batch's (carried) check
+		// (contract 2.10s §4): its order comes along, not as a sale.
+		if !held[p.OrderID] {
+			held[p.OrderID] = true
+			if so, err := loadOrder(ctx, q, p.OrderID); err == nil {
+				in.Earlier = append(in.Earlier, so)
+			}
+		}
 	}
 	if in.Drawers, err = drawersByBatch(ctx, q, batchID); err != nil {
 		return in, err

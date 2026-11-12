@@ -447,13 +447,16 @@ func TestPaymentsRefundsAndVoid(t *testing.T) {
 	if err != nil || p.BalanceCents != 500 || p.Order.Status.Paid {
 		t.Fatalf("small refund: %+v %v", p, err)
 	}
-	// Void of an order paid partly by card: the card refund needs a manager;
-	// then refunds by tender.
-	if _, err := r.svc.Void(r.ctx, till, id, VoidIn{Reason: "customer left"}); !errors.As(err, &mr) || mr.Action != terminal.NeedCardRefund {
-		t.Fatalf("void needs a manager: %v", err)
+	// Void of an order that holds money: refund first (contract 2.10s §5).
+	var pf *terminal.PaidFirst
+	if _, err := r.svc.Void(r.ctx, till, id, VoidIn{Reason: "customer left"}); !errors.As(err, &pf) || pf.PaidCents != total-500 {
+		t.Fatalf("void of a paid order: %v", err)
 	}
-	v, err := r.svc.Void(r.ctx, till, id, VoidIn{Reason: "customer left", ManagerPIN: "9876"})
-	if err != nil || v.Already || v.RefundedCents != total-500 || len(v.Refunds) != 2 || v.Order.Status.State != order.StateCancelled {
+	if back := refundAll(t, r, till, id); len(back) != 2 {
+		t.Fatalf("refunds by tender: %+v", back)
+	}
+	v, err := r.svc.Void(r.ctx, till, id, VoidIn{Reason: "customer left"})
+	if err != nil || v.Already || v.RefundedCents != 0 || len(v.Refunds) != 0 || v.Order.Status.State != order.StateCancelled {
 		t.Fatalf("void: %+v %v", v, err)
 	}
 	if len(r.orders.voids) != 1 || r.pub.count(EventOrderVoided) != 1 {

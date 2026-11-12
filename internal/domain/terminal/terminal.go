@@ -784,6 +784,10 @@ var ErrAlreadyVoided = errors.New("already voided")
 // VoidReason is cancel_reason on a voided counter order.
 const VoidReason = "void"
 
+// WasteReason is cancel_reason on a counter order thrown away unpaid (Void
+// waste, contract 2.10s §5; its reason text is in the journal).
+const WasteReason = "waste"
+
 // NewCounterOrder is a counter order to store: the snapshot the Pi built (no
 // number yet: the repository takes it from the counter sequence in the same
 // transaction), its payments and journal rows.
