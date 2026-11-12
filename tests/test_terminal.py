@@ -59,6 +59,10 @@ class FakeMain:
         # Floor event types answered "applied" here without asking main (an
         # event about an order only the Pi has, e.g. a resent online order).
         self.accept: set[str] = set()
+        # Agent→main RPCs answered here instead of by main: type ->
+        # fn(payload) -> (status, reply payload | error body).
+        self.rpc: dict = {}
+        self.rpc_seen: list[dict] = []
         self._streams: list = []
         self._lock = threading.Lock()
         outer = self
@@ -91,6 +95,19 @@ class FakeMain:
                 body = self.rfile.read(n) if n else None
                 if method == "POST" and self.path == "/store/v1/agent/rpc" and body:
                     env = json.loads(body)
+                    if env.get("type") in outer.rpc:
+                        with outer._lock:
+                            outer.rpc_seen.append(env)
+                        status, out = outer.rpc[env["type"]](env.get("payload") or {})
+                        if status == 200:
+                            out = {"type": env["type"] + ".reply", "id": env.get("id"), "payload": out}
+                        raw = json.dumps(out).encode()
+                        self.send_response(status)
+                        self.send_header("Content-Type", "application/json")
+                        self.send_header("Content-Length", str(len(raw)))
+                        self.end_headers()
+                        self.wfile.write(raw)
+                        return
                     if env.get("type") == "floor.events" and (outer.refuse or outer.accept):
                         return self._floor_refusing(env, dict(self.headers))
                     if env.get("type") == "floor.events":

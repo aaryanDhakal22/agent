@@ -27,7 +27,8 @@ def test_terminal_reads_printer_health(rig):  # noqa: F811
     printers = term.get(f"{agent.base}/api/printers", timeout=5)
     assert printers.status_code == 200, printers.text
     assert {p["name"] for p in printers.json()} == {"Front", "Pizza"}
-    assert term.post(f"{agent.base}/api/printers/test", json={}, timeout=5).json()["code"] == "terminal_only"
+    # Test slips are open to a terminal since the setup wizard (2.10y); adding a printer isn't.
+    assert term.post(f"{agent.base}/api/printers/add", json={}, timeout=5).json()["code"] == "terminal_only"
     st = term.get(f"{agent.base}/api/terminal/status", timeout=5).json()
     assert {p["name"] for p in st["printers"]} == {"Front", "Pizza"} and st["printers_down"] == 0
     assert st["main"]["connected"] is True and st["main"]["state"] == "connected"
