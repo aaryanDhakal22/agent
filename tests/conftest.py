@@ -32,6 +32,7 @@ import subprocess
 import tempfile
 import threading
 import time
+import uuid
 from contextlib import closing
 from pathlib import Path
 from typing import Iterator
@@ -450,3 +451,18 @@ def agent_session(agent_base_url: str, agent_ready: None) -> requests.Session:
     if r.status_code != 200:
         pytest.skip(f"can't log in to the agent at {agent_base_url} ({r.status_code}) — set AGENT_UI_PASSWORD")
     return s
+
+
+class TermSession(requests.Session):
+    """A paired terminal's HTTP session. Like the real terminal (contract
+    2.10s §1) it sends a fresh client_key per tap on POST .../payments and
+    PUT .../cart when the test gave none (tests that test the key give their
+    own)."""
+
+    def request(self, method, url, *args, **kwargs):
+        body = kwargs.get("json")
+        if isinstance(body, dict) and "client_key" not in body and (
+                (method.upper() == "POST" and url.rstrip("/").endswith("/payments"))
+                or (method.upper() == "PUT" and url.rstrip("/").endswith("/cart"))):
+            kwargs["json"] = {**body, "client_key": f"tap-{uuid.uuid4()}"}
+        return super().request(method, url, *args, **kwargs)

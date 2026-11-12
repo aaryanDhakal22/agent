@@ -9,8 +9,9 @@
 // apart. Any other 401 (unknown_key, no code, a proxy page), a 5xx or a
 // transport error never wipes: the Pi keeps retrying, raises the sticky
 // problem main_auth_failing and pages the owner at most once an hour. A main
-// without whoami (404 / 405) falls back to the old rule, but only after 401s
-// seen twice ConfirmAfter apart.
+// without whoami (404 / 405, or a whoami 401 with no code: a main before the
+// codes) falls back to the old rule, but only after 401s seen twice
+// ConfirmAfter apart.
 package revoke
 
 import (
@@ -121,10 +122,12 @@ func (g *Guard) check(key, code string) {
 		g.revokedAt, g.failing = time.Time{}, time.Time{}
 	case err == nil && status == http.StatusUnauthorized && who == CodeDeviceRevoked:
 		g.confirm(key, now, "whoami says device_revoked")
-	case err == nil && (status == http.StatusNotFound || status == http.StatusMethodNotAllowed):
-		// A main without whoami: the old rule, but confirmed over time.
+	case err == nil && (status == http.StatusNotFound || status == http.StatusMethodNotAllowed ||
+		(status == http.StatusUnauthorized && who == "")):
+		// A main without whoami (or without 401 codes yet): the old rule,
+		// but confirmed over time.
 		g.legacyMain = true
-		g.confirm(key, now, "401 from a main without whoami")
+		g.confirm(key, now, "401 from a main without whoami / codes")
 	default:
 		// unknown_key (a main restored from an older backup), another code,
 		// 5xx, unreachable: never wipe.

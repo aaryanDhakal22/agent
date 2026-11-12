@@ -21,7 +21,7 @@ from datetime import datetime
 import pytest
 import requests
 
-from conftest import MAIN_BASE_URL, STORE_V1, FakePrinter, manager_session, provision, wait_until
+from conftest import MAIN_BASE_URL, STORE_V1, FakePrinter, TermSession, manager_session, provision, wait_until
 from test_terminal import FakeMain, counter_menu, pizza_line, staff_config
 
 # bcrypt (cost 4) of the drivers' PINs, made with the agent's golang.org/x/crypto/bcrypt.
@@ -40,7 +40,7 @@ def pair_terminal(agent, name: str) -> requests.Session:
     code = agent.http.post(f"{agent.base}/api/pairing/code", timeout=5).json()["code"]
     r = requests.post(f"{agent.base}/api/pair", json={"code": code, "name": name, "kind": "terminal"}, timeout=5)
     assert r.status_code == 201, r.text
-    s = requests.Session()
+    s = TermSession()
     s.headers["X-Agent-Device-Key"] = r.json()["key"]
     return s
 

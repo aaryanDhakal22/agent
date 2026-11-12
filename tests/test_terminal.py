@@ -25,7 +25,7 @@ from pathlib import Path
 import pytest
 import requests
 
-from conftest import (MAIN_BASE_URL, STORE_V1, FakePrinter, manager_session, provision, wait_until)
+from conftest import (MAIN_BASE_URL, STORE_V1, FakePrinter, TermSession, manager_session, provision, wait_until)
 
 CASE = Path(__file__).resolve().parent.parent / "internal/domain/pricing/testdata/cases/33_one_specialty_on_a_half.json"
 CHEESE = "00000000-0000-0000-0000-0000000000a1"
@@ -55,6 +55,7 @@ class FakeMain:
         # Floor event types this fake main refuses for good (answered
         # "invalid" here, never forwarded): the sync-stall rule's tests.
         self.refuse: set[str] = set()
+        self.refused: list[dict] = []  # every event answered "invalid" here
         self._streams: list = []
         self._lock = threading.Lock()
         outer = self
@@ -128,6 +129,7 @@ class FakeMain:
                 results = [{"event_id": e["event_id"], "result": "invalid"} for e in events if e.get("type") in outer.refuse]
                 with outer._lock:
                     outer.events.extend(keep)
+                    outer.refused.extend(e for e in events if e.get("type") in outer.refuse)
                 if keep:
                     fwd = {**env, "payload": {"events": keep}}
                     h = {k: v for k, v in headers.items() if k.lower() not in ("host", "content-length", "connection")}
@@ -229,7 +231,7 @@ def rig(admin, main_store, spawn_agent, fakes):
     code = agent.http.post(f"{agent.base}/api/pairing/code", timeout=5).json()["code"]
     r = requests.post(f"{agent.base}/api/pair", json={"code": code, "name": "Till 1", "kind": "terminal"}, timeout=5)
     assert r.status_code == 201 and r.json()["kind"] == "terminal", r.text
-    term = requests.Session()
+    term = TermSession()
     term.headers["X-Agent-Device-Key"] = r.json()["key"]
     wait_until(lambda: term.get(f"{agent.base}/api/terminal/menu", timeout=5).status_code == 200, timeout=30, what="counter menu fetched")
     wait_until(lambda: term.post(f"{agent.base}/api/terminal/login", json={"pin": "1234"}, timeout=5).status_code == 200,
@@ -320,6 +322,8 @@ def test_pick_up_list_payment_void_limits(rig):
     total = 2357
     open_ids = [o["order"]["id"] for o in term.get(f"{base}/api/terminal/orders?open=1", timeout=5).json()]
     assert oid in open_ids
+    r = term.post(f"{base}/api/terminal/orders/{oid}/payments", json={"tender": "cash", "amount_cents": 100, "client_key": ""}, timeout=5)
+    assert r.status_code == 400 and r.json()["code"] == "client_key_required"
     r = term.post(f"{base}/api/terminal/orders/{oid}/payments", json={"tender": "cash", "amount_cents": total + 1}, timeout=5)
     assert r.status_code == 409 and r.json()["code"] == "over_balance"
     r = term.post(f"{base}/api/terminal/orders/{oid}/payments",
@@ -328,17 +332,30 @@ def test_pick_up_list_payment_void_limits(rig):
     dup = term.post(f"{base}/api/terminal/orders/{oid}/payments",
                     json={"tender": "square_app", "amount_cents": total, "client_key": "pay-key-0001"}, timeout=5).json()
     assert dup["duplicate"] and dup["payment"]["id"] == r["payment"]["id"]
+    # The same key with another amount: 409 key_reused, nothing stored.
+    reused = term.post(f"{base}/api/terminal/orders/{oid}/payments",
+                       json={"tender": "square_app", "amount_cents": total - 1, "client_key": "pay-key-0001"}, timeout=5)
+    assert reused.status_code == 409 and reused.json()["code"] == "key_reused"
     wait_until(lambda: fm.of_type("order.payment"), what="order.payment synced")
-    # Void of a paid order over the cashier's $10: a manager's PIN.
+    # Void of a paid order: refund first (contract 2.10s §5); the card refund
+    # needs a manager, then any cashier voids.
     r = term.post(f"{base}/api/terminal/orders/{oid}/void", json={"reason": "customer left"}, timeout=5)
-    assert r.status_code == 403 and r.json()["code"] == "manager_required" and r.json()["requested"] == total
-    r = term.post(f"{base}/api/terminal/orders/{oid}/void", json={"reason": "customer left", "manager_pin": "1234"}, timeout=5)
+    assert r.status_code == 409 and r.json()["code"] == "refund_first" and r.json()["paid_cents"] == total
+    r = term.post(f"{base}/api/terminal/orders/{oid}/payments", json={"tender": "square_app", "amount_cents": total, "refund": True,
+                                                                     "reason": "customer left"}, timeout=5)
+    assert r.status_code == 403 and r.json()["code"] == "manager_required"
+    r = term.post(f"{base}/api/terminal/orders/{oid}/payments", json={"tender": "square_app", "amount_cents": total, "refund": True,
+                                                                     "reason": "customer left", "manager_pin": "1234"}, timeout=5)
     assert r.json()["code"] == "manager_pin_invalid"
-    r = term.post(f"{base}/api/terminal/orders/{oid}/void", json={"reason": "customer left", "manager_pin": "9876"}, timeout=5).json()
-    assert r["refunded_cents"] == total and r["order"]["status"]["state"] == "cancelled"
-    wait_until(lambda: any("VOID" in j.decode("latin-1") for j in fakes["Pizza"].jobs), what="VOID slip")
+    r = term.post(f"{base}/api/terminal/orders/{oid}/payments", json={"tender": "square_app", "amount_cents": total, "refund": True,
+                                                                     "reason": "customer left", "manager_pin": "9876"}, timeout=5)
+    assert r.status_code == 200, r.text
+    r = term.post(f"{base}/api/terminal/orders/{oid}/void", json={"reason": "customer left"}, timeout=5).json()
+    assert r["refunded_cents"] == 0 and r["order"]["status"]["state"] == "cancelled"
+    wait_until(lambda: any("VOID" in j.decode("latin-1") and "REMOVE / QUITAR" in j.decode("latin-1") for j in fakes["Pizza"].jobs),
+               what="VOID ticket with the REMOVE band")
     wait_until(lambda: fm.of_type("order.void"), what="order.void synced")
-    assert fm.of_type("order.void")[0]["approved_by"] == "s-manager"
+    assert fm.of_type("order.void")[0]["kind"] == "void"
     # A discount over 10 % needs the manager too.
     r = place(rig, cart={"lines": [pizza_line()], "discount": {"pct": 20, "reason": "regular"}})
     assert r.status_code == 403 and r.json()["code"] == "manager_required"
@@ -437,8 +454,10 @@ def test_kitchen_change_after_send(rig):
     assert term.post(f"{base}/api/terminal/orders/{oid}/payments", json={"tender": "cash", "amount_cents": total}, timeout=5).status_code == 200
     r = term.put(f"{base}/api/terminal/orders/{oid}/cart", json={"cart": {"lines": [{"item_id": SODA, "qty": 1}]}}, timeout=10)
     assert r.status_code == 409 and r.json()["code"] == "refund_first"
-    # Voided: not editable.
-    assert term.post(f"{base}/api/terminal/orders/{oid}/void", json={"reason": "test", "manager_pin": "9876"}, timeout=5).status_code == 200
+    # Voided (refunded first): not editable.
+    assert term.post(f"{base}/api/terminal/orders/{oid}/payments", json={"tender": "cash", "amount_cents": total, "refund": True,
+                                                                        "reason": "test", "manager_pin": "9876"}, timeout=5).status_code == 200
+    assert term.post(f"{base}/api/terminal/orders/{oid}/void", json={"reason": "test"}, timeout=5).status_code == 200
     r = term.put(f"{base}/api/terminal/orders/{oid}/cart", json=body | {"client_key": "chg-key-00002"}, timeout=10)
     assert r.status_code == 409 and r.json()["code"] == "not_editable"
     actions = [e["action"] for e in term.get(f"{base}/api/terminal/journal", timeout=5).json()]
