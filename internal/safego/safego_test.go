@@ -78,3 +78,29 @@ func (s *syncWriter) Write(p []byte) (int, error) {
 	defer s.mu.Unlock()
 	return s.w.Write(p)
 }
+
+func TestTakeNewCrashesOnce(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "crash-20260105T000000Z.txt"), []byte("fatal error: concurrent map writes\n\ngoroutine 1"), 0o600)
+	got := TakeNewCrashes(dir)
+	if len(got) != 1 || !strings.Contains(got[0], "concurrent map writes") {
+		t.Fatalf("got %v", got)
+	}
+	if again := TakeNewCrashes(dir); len(again) != 0 {
+		t.Fatalf("reported twice: %v", again)
+	}
+}
+
+func TestNoteStartCrashLoop(t *testing.T) {
+	dir := t.TempDir()
+	now := time.Unix(1_700_000_000, 0)
+	if NoteStart(dir, now) || NoteStart(dir, now.Add(time.Minute)) {
+		t.Fatal("two starts are no loop")
+	}
+	if !NoteStart(dir, now.Add(2*time.Minute)) {
+		t.Fatal("3 starts in 10 min = a loop")
+	}
+	if NoteStart(dir, now.Add(time.Hour)) {
+		t.Fatal("an hour later is no loop")
+	}
+}

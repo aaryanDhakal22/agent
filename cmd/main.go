@@ -26,6 +26,7 @@ import (
 	"quiccpos/agent/internal/application/autoclose"
 	"quiccpos/agent/internal/application/backup"
 	"quiccpos/agent/internal/application/catchup"
+	"quiccpos/agent/internal/application/dbhealth"
 	"quiccpos/agent/internal/application/devlog"
 	"quiccpos/agent/internal/application/driverreset"
 	"quiccpos/agent/internal/application/escalation"
@@ -42,6 +43,7 @@ import (
 	"quiccpos/agent/internal/application/statesync"
 	terminalApp "quiccpos/agent/internal/application/terminal"
 	"quiccpos/agent/internal/application/update"
+	"quiccpos/agent/internal/application/watchdog"
 	"quiccpos/agent/internal/config"
 	"quiccpos/agent/internal/domain/order"
 	domainprinter "quiccpos/agent/internal/domain/printer"
@@ -57,6 +59,7 @@ import (
 	"quiccpos/agent/internal/migrate"
 	"quiccpos/agent/internal/observability"
 	agentrpc "quiccpos/agent/internal/rpc"
+	"quiccpos/agent/internal/safego"
 	"quiccpos/agent/internal/transport"
 
 	"github.com/rs/zerolog"
@@ -154,7 +157,9 @@ func main() {
 	}
 	zerolog.SetGlobalLevel(level)
 
-	rawLogger := zerolog.New(writer).With().Timestamp().Logger()
+	// CM-0: the OTLP bridge sits at the writer, so every field of a line
+	// reaches Loki as a log attribute (a hook only sees the message).
+	rawLogger := zerolog.New(observability.LogWriter(writer, cfg.OTELServiceName)).With().Timestamp().Logger()
 	// Developer-mode events (GET /api/dev/events): floor events the services
 	// add + every warn/error log line (its message only, never its fields).
 	devRing := devlog.New(devlog.DefaultSize)
@@ -167,6 +172,30 @@ func main() {
 		Str("otel_endpoint", cfg.OTELEndpoint).
 		Msg("Agent starting")
 	logger.Info().Ctx(ctx).Str("db_path", cfg.AgentDBPath).Msg("Database ready (migrations applied)")
+
+	// Hardening F-1: recovered panics are logged through the agent's logger;
+	// a fatal crash (an unrecovered panic, a runtime fatal error) is written
+	// to crash/crash-<ts>.txt next to the DB (newest 5 kept) and reported
+	// at the next start. F-6: 3 starts in 10 minutes = a crash loop (paged).
+	safego.SetLogger(logger)
+	crashDir := filepath.Join(filepath.Dir(cfg.AgentDBPath), "crash")
+	crashes := safego.TakeNewCrashes(crashDir)
+	for _, c := range crashes {
+		logger.Error().Str("crash", c).Msg("The agent crashed last time")
+	}
+	if _, err := safego.SetCrashOutput(crashDir, time.Now()); err != nil {
+		logger.Warn().Err(err).Msg("Crash file not set up")
+	}
+	crashLoop := safego.NoteStart(crashDir, time.Now())
+
+	// R-1: Go runtime metrics (goroutines, memory, GC) + pprof on loopback
+	// when PPROF_ADDR is set.
+	if err := observability.StartRuntimeMetrics(); err != nil {
+		logger.Warn().Err(err).Msg("Runtime metrics not started")
+	}
+	if _, err := observability.StartPprof(ctx, cfg.PprofAddr, logger); err != nil {
+		logger.Warn().Err(err).Msg("pprof not started")
+	}
 
 	orderRepo := repositories.NewOrderRepository(db, logger)
 	settingsRepo := repositories.NewSettingsRepository(db, logger)
@@ -182,6 +211,26 @@ func main() {
 	if err := notifier.Send(ctx, "Agent started", "classical"); err != nil {
 		logger.Warn().Err(err).Msg("Startup notification failed — continuing")
 	}
+	if crashLoop || len(crashes) > 0 {
+		msg := "The Pi's agent crashed and restarted"
+		if crashLoop {
+			msg = "The Pi's agent is crash-looping (3+ starts in 10 minutes)"
+		}
+		if len(crashes) > 0 {
+			msg += ": " + crashes[0]
+		}
+		safego.Go("notify.crash", func() {
+			if err := notifier.Send(context.WithoutCancel(ctx), msg, "siren"); err != nil {
+				logger.Warn().Err(err).Msg("Crash notification failed")
+			}
+		})
+	}
+
+	// F-15: the SD card's health (read-only / full / I/O errors) — a sticky
+	// problem, a Pushover at most hourly, on the diagnostics and the
+	// terminals' status. Repos report through dbhealth.Note.
+	dbMonitor := dbhealth.New(notifier.Send, meters.DBErrors, logger)
+	safego.Go("dbhealth", func() { dbMonitor.Run(ctx, db, 5*time.Minute) })
 
 	// --- Printer roster + dispatcher --------------------------------------
 	// Roster is dynamic: rebuilt on every store_config SSE handshake. On boot
@@ -208,6 +257,14 @@ func main() {
 	}
 
 	dispatcher := printerApp.NewDispatcher(ctx, factory, printerRegistry, notifier, cfg.PrinterDetectDelay, receiptBuilder, logger, meters)
+	// L-5: a printer counts as down only after failing this long without a
+	// break: location setting printer_down_after_seconds (main's Store
+	// pages; default 30, 10–600).
+	dispatcher.SetDownAfter(func() time.Duration {
+		sc, _ := storeCtx.Load().(storeconfig.StoreContext)
+		secs := sc.LocationConfigInt("printer_down_after_seconds", int(printerApp.DefaultDownAfter/time.Second))
+		return time.Duration(min(max(secs, 10), 600)) * time.Second
+	})
 	dispatcher.SetStatusHook(func(up bool, msg string) {
 		if up {
 			devRing.Add(devlog.Info, devlog.KindPrinter, msg)
@@ -256,6 +313,8 @@ func main() {
 	broker := ssebroker.New()
 	orderService := orderApp.NewService(orderRepo, settingsRepo, printFn, notifier, broker, logger, meters)
 	orderService.SetDevLog(devRing)
+	// F-7: auto-accepts (and their prints) run on a worker, off the SSE reader.
+	orderService.StartAcceptWorker(ctx)
 	// Driver reports print on the receipt printer (failover like a ticket),
 	// formatted with the live store context (timezone + store name).
 	orderService.SetDocumentPrinting(dispatcher.PrintDocument, func(rep order.DriverReport, from string) []byte {
@@ -347,7 +406,7 @@ func main() {
 		return terminalApp.StoreInfo(sc, orderService.PrintPrefs())
 	})
 	orderService.OnClosed(termSvc.AfterBatchClose)
-	go termSvc.BuildPendingZ(ctx)
+	safego.Go("terminal.pending_z", func() { termSvc.BuildPendingZ(ctx) })
 	termStore.Load(ctx)
 	registry.Register(terminalApp.MsgMenuChanged, termStore.HandleMenuChanged)
 	registry.Register(terminalApp.MsgTerminalChanged, termStore.HandleTerminalChanged)
@@ -373,7 +432,7 @@ func main() {
 	termSvc.SetCustomers(custBook)
 	registry.Register(terminalApp.MsgCustomersChanged, custBook.HandleChanged)
 	orderService.OnCustomerOrder(func(rc context.Context, phone string, at time.Time) { custBook.NoteOrder(rc, "", phone, at) })
-	go custBook.Run(ctx, 3*time.Minute, sseCtrl.Configured)
+	safego.Go("terminal.customers", func() { custBook.Run(ctx, 3*time.Minute, sseCtrl.Configured) })
 	// Delivery maps + AUTO: the store pin and map for /api/floor, and the
 	// agent->main geo RPCs (pin, trip).
 	orderService.SetGeo(orderApp.GeoDeps{
@@ -409,7 +468,7 @@ func main() {
 		},
 	})
 	mapFile.OnChange(broker.PublishFloorChanged)
-	go mapFile.Run(ctx)
+	safego.Go("mapfile", func() { mapFile.Run(ctx) })
 	printerWatcher.SetMain(registry.Send, func() bool { return sseCtrl.Status().Connected })
 
 	// Pi updates: gate + drop update.request for the root updater, follow
@@ -452,8 +511,8 @@ func main() {
 	}
 	registry.Register(update.MsgUpdate, updateCmd(update.ActionUpdate))
 	registry.Register(update.MsgRollback, updateCmd(update.ActionRollback))
-	go updater.Run(ctx)
-	go printerWatcher.Run(ctx)
+	safego.Go("update", func() { updater.Run(ctx) })
+	safego.Go("printernet", func() { printerWatcher.Run(ctx) })
 	// Pi auto-update (2.2.0): after a successful Close batch (its driver
 	// reports printed), a newer agent in the manifest is installed through
 	// the normal update path (requested_by auto) when auto_update is on.
@@ -472,11 +531,26 @@ func main() {
 	// to main, which re-sends anything unacked after 10 s.
 	orderAcker := acker.New(registry.Report, sseCtrl.Configured, logger)
 	orderService.OnStored(orderAcker.Ack)
-	go orderAcker.Run(ctx)
+	safego.Go("acker", func() { orderAcker.Run(ctx) })
+	// F-1: an order frame that panicked twice is acked (main stops
+	// redelivering it) and paged for manual entry — no customer data.
+	sseCtrl.OnPoison(func(rc context.Context, snap order.Snapshot) {
+		orderAcker.Ack(snap.ID)
+		short := snap.ID
+		if len(short) > 8 {
+			short = short[len(short)-8:]
+		}
+		msg := "An online order (…" + short + ") made the Pi fail twice: it was set aside. Find it on main's order list and enter it by hand."
+		safego.Go("notify.poison", func() {
+			if err := notifier.SendFloor(context.WithoutCancel(rc), msg, "siren"); err != nil {
+				logger.Warn().Err(err).Msg("Poison order notification failed")
+			}
+		})
+	})
 
 	// Floor state for a replacement Pi (agent.state) + the heartbeat.
 	stateSync := statesync.New(orderRepo.AgentState, registry.Report, sseCtrl.Configured, logger)
-	go stateSync.Run(ctx)
+	safego.Go("statesync", func() { stateSync.Run(ctx) })
 	// The paired tablets (+ Quibase versions) come from the HTTP server,
 	// built further down.
 	var httpRef atomic.Pointer[transport.Server]
@@ -516,7 +590,7 @@ func main() {
 		},
 		Update: func(rc context.Context) any { return updater.Health(rc) },
 	}, registry.Report, sseCtrl.Configured, cfg.AgentDBPath, version, logger)
-	go heartbeat.Run(ctx, 5*time.Minute)
+	safego.Go("health", func() { heartbeat.Run(ctx, 5*time.Minute) })
 
 	// Auto-reset on a definitive revoke: if main rejects our token (401 — the
 	// device was revoked/hard-deleted on main), wipe the local provisioning
@@ -561,7 +635,7 @@ func main() {
 	// and every 5 minutes; tablets download them over the LAN.
 	appUpdater := appupdate.New(filepath.Join(filepath.Dir(cfg.AgentDBPath), "apk"), orderRepo, mainClient, sseCtrl.CurrentKey, logger)
 	appUpdater.Load(ctx)
-	go appUpdater.Run(ctx, 5*time.Minute)
+	safego.Go("appupdate", func() { appUpdater.Run(ctx, 5*time.Minute) })
 	recoverySvc := recovery.New(settingsRepo, orderRepo, mainClient, logger)
 	pushoverFromEnv := os.Getenv("PUSHOVER_APP_TOKEN") != "" || os.Getenv("PUSHOVER_USER_KEY") != ""
 	recoverySvc.OnSecrets = func(sec order.Secrets) {
@@ -607,7 +681,7 @@ func main() {
 		}
 	}
 	sink.postApply = reportPrinters
-	go func() {
+	safego.Go("printer.report", func() {
 		t := time.NewTicker(30 * time.Second)
 		defer t.Stop()
 		for {
@@ -618,7 +692,7 @@ func main() {
 				reportPrinters(ctx)
 			}
 		}
-	}()
+	})
 
 	// Store key comes ONLY from the local DB — keys are minted on-site via the
 	// web-UI login, never seeded from env/Doppler. Empty ⇒ unconfigured ⇒ the UI
@@ -708,7 +782,26 @@ func main() {
 	nightly := backup.New(db, cfg.AgentDBPath, func(rc context.Context, path string, body []byte, ct string) (int, []byte, error) {
 		return mainClient.Upload(rc, sseCtrl.CurrentKey(), path, body, ct)
 	}, settingsRepo, sseCtrl.Configured, storeTZ, logger)
-	go nightly.Run(ctx)
+	// F-7: the copy reads on its own read-only connection, never while
+	// orders are in play, never around the auto-close minute.
+	nightly.SetQuiet(func(rc context.Context) bool {
+		rows, err := orderRepo.CountOpenFloor(rc)
+		if err != nil {
+			return false
+		}
+		for _, r := range rows {
+			if r.N > 0 && r.State != order.StateScheduled {
+				return false
+			}
+		}
+		return true
+	})
+	nightly.SetAvoid(func() (int, int, bool) {
+		tc, _ := termStore.Config()
+		return parseHHMM(tc.AutoCloseAt())
+	})
+	defer nightly.Close()
+	safego.Go("backup", func() { nightly.Run(ctx) })
 
 	// Manager-login link (headless SD swap). A Pi that was linked without
 	// telemetry restarts once so the OTEL exporters pick up the endpoint.
@@ -741,22 +834,11 @@ func main() {
 	// tablets on the SSE stream, the store hub's link, the agent version.
 	if _, err := observability.RegisterLive(observability.Live{
 		FloorOpen: func(rc context.Context) ([]observability.FloorCount, error) {
-			rows, err := orderRepo.CountOpenFloor(rc)
-			if err != nil {
-				return nil, err
-			}
-			out := make([]observability.FloorCount, 0, len(rows))
-			for _, r := range rows {
-				src := order.SourceOnline
-				if r.Channel {
-					src = order.SourceWeb
-				}
-				out = append(out, observability.FloorCount{State: floorStateLabel(r.State), Source: src, N: r.N})
-			}
-			return out, nil
+			return openFloorBySource(rc, db)
 		},
-		TabletsConnected: httpServer.TabletsConnected,
-		TabletVersions:   httpServer.TabletVersions,
+		TabletsConnected:   httpServer.TabletsConnected,
+		TerminalsConnected: httpServer.TerminalsConnected,
+		TabletVersions:     httpServer.TabletVersions,
 		Hub: func() (observability.HubLink, bool) {
 			now := time.Now()
 			v := orderService.IntegrationView(now)
@@ -776,7 +858,8 @@ func main() {
 
 	resetAccess := httpServer.ResetAccess
 	onWipe.Store(&resetAccess)
-	go httpServer.Start(ctx)
+	httpServer.SetDBHealth(dbMonitor.State)
+	safego.Go("http", func() { httpServer.Start(ctx) })
 	// LAN discovery: the Quibase setup wizard finds this Pi by UDP broadcast.
 	hostname, _ := os.Hostname()
 	httpPort, _ := strconv.Atoi(cfg.HTTPPort)
@@ -789,31 +872,114 @@ func main() {
 		}
 		return discovery.State{Linked: key != "", LinkAvailable: true, Store: store}
 	}, logger).Run(ctx)
-	go retention.Run(ctx, orderRepo, cfg.KeepBatches, logger, meters)
-	go floorSender.Run(ctx)
-	go escalation.Run(ctx, orderService, logger)
-	go driverreset.Run(ctx, orderService, storeTZ, logger)
+	safego.Go("retention", func() { retention.Run(ctx, orderRepo, cfg.KeepBatches, logger, meters) })
+	safego.Go("floorsync", func() { floorSender.Run(ctx) })
+	safego.Go("escalation", func() { escalation.Run(ctx, orderService, logger) })
+	safego.Go("driverreset", func() { driverreset.Run(ctx, orderService, storeTZ, logger) })
 	// Batch auto-close at main's terminal setting auto_close_batch_at
 	// (default 04:00 store time; off until the Pi has main's terminal config).
 	autoCloseTick := time.NewTicker(autoclose.Tick)
 	defer autoCloseTick.Stop()
-	go autoclose.Run(ctx, orderService, autoclose.Deps{
-		Setting: func() string { cfg, _ := termStore.Config(); return cfg.AutoCloseAt() },
-		Loc:     storeTZ, Now: time.Now, Ticks: autoCloseTick.C,
-	}, logger)
+	safego.Go("autoclose", func() {
+		autoclose.Run(ctx, orderService, autoclose.Deps{
+			Setting: func() string { cfg, _ := termStore.Config(); return cfg.AutoCloseAt() },
+			Loc:     storeTZ, Now: time.Now, Ticks: autoCloseTick.C,
+		}, logger)
+	})
 
 	// Late online orders: terminal.order.late once each (the terminals' Info feed).
 	lateTick := time.NewTicker(lateorders.Tick)
 	defer lateTick.Stop()
-	go lateorders.New(orderService, broker, logger).Run(ctx, lateTick.C, time.Now)
+	safego.Go("lateorders", func() { lateorders.New(orderService, broker, logger).Run(ctx, lateTick.C, time.Now) })
+
+	// F-6: tell systemd we're up, then ping its watchdog while the one DB
+	// connection answers and the SSE goroutine is alive (no-op without
+	// NOTIFY_SOCKET).
+	safego.Go("watchdog", func() {
+		watchdog.Run(ctx, watchdog.Interval(20*time.Second), []watchdog.Check{
+			watchdog.DBCheck(db),
+			func(context.Context) error {
+				if !sseCtrl.Alive(2 * time.Minute) {
+					return fmt.Errorf("the SSE client has been silent for 2 minutes")
+				}
+				return nil
+			},
+		}, logger)
+	})
 
 	<-ctx.Done()
+	shutdown(logger, httpServer, orderService, floorSender)
 	logger.Info().Msg("Agent shut down")
 	if restart.Load() {
 		_ = shutdownOtel(context.Background())
 		db.Close()
 		os.Exit(75) // systemd Restart=always brings it back with the new settings
 	}
+}
+
+// shutdown drains in order (hardening F-15), inside the unit's
+// TimeoutStopSec=15: the HTTP servers finish their requests (5 s), the
+// background workers finish what they hold (8 s: an accept's print, driver
+// reports), one last floor flush pushes what is queued (3 s); the deferred
+// db.Close runs after.
+func shutdown(logger zerolog.Logger, hs *transport.Server, svc *orderApp.Service, floor *floorsync.Sender) {
+	wait := func(name string, d time.Duration, done <-chan struct{}) {
+		select {
+		case <-done:
+		case <-time.After(d):
+			logger.Warn().Str("step", name).Dur("after", d).Msg("Shutdown step timed out")
+		}
+	}
+	wait("http", transport.ShutdownTimeout+time.Second, hs.Stopped())
+	workers := make(chan struct{})
+	go func() {
+		svc.WaitAccepts()
+		svc.WaitBackground()
+		close(workers)
+	}()
+	wait("workers", 8*time.Second, workers)
+	fctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	if err := floor.Flush(fctx); err != nil {
+		logger.Info().Err(err).Msg("Last floor flush before shutdown didn't finish (kept queued)")
+	}
+}
+
+// openFloorBySource counts the open batch's in-play orders by state and
+// source for floor.orders.open: counter (the terminals, CM-12), web (every
+// other channel) or online.
+func openFloorBySource(ctx context.Context, db *sql.DB) ([]observability.FloorCount, error) {
+	rows, err := db.QueryContext(ctx, `SELECT state,
+       CASE WHEN source = 'counter' THEN 'counter'
+            WHEN source IN ('online', 'pos', '') THEN 'online' ELSE 'web' END AS src,
+       count(*)
+FROM orders
+WHERE batch_id = (SELECT id FROM batches WHERE closed_at IS NULL ORDER BY id DESC LIMIT 1)
+  AND state IN ('arrived', 'scheduled', 'accepted', 'ready', 'on_delivery')
+GROUP BY state, src`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []observability.FloorCount
+	for rows.Next() {
+		var st, src string
+		var n int64
+		if err := rows.Scan(&st, &src, &n); err != nil {
+			return nil, err
+		}
+		out = append(out, observability.FloorCount{State: floorStateLabel(order.State(st)), Source: src, N: n})
+	}
+	return out, rows.Err()
+}
+
+// parseHHMM reads "HH:MM" (the auto-close setting); ok=false for "" / bad.
+func parseHHMM(v string) (int, int, bool) {
+	t, err := time.Parse("15:04", v)
+	if err != nil {
+		return 0, 0, false
+	}
+	return t.Hour(), t.Minute(), true
 }
 
 // persistedStoreSlugs reads the linked store's tenant + location slugs from

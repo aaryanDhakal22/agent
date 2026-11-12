@@ -31,7 +31,16 @@ func (s *Server) handleTerminalStatus(w http.ResponseWriter, r *http.Request) {
 			down++
 		}
 	}
+	// F-15: the SD card's state, so the terminals can show a banner when the
+	// Pi can't save ({trouble: "" | readonly | full | ioerr, since?}).
+	db := map[string]any{"ok": true, "trouble": ""}
+	if s.dbHealth != nil {
+		if st := s.dbHealth(); st.Trouble != "" {
+			db = map[string]any{"ok": false, "trouble": st.Trouble, "since": st.Since}
+		}
+	}
 	s.writeJSON(w, http.StatusOK, map[string]any{
+		"db":              db,
 		"printers":        printers,
 		"printers_down":   down,
 		"main":            main,

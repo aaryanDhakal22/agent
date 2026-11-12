@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"quiccpos/agent/internal/observability"
+	"quiccpos/agent/internal/safego"
 
 	"github.com/google/uuid"
 	"github.com/rs/zerolog"
@@ -90,7 +91,13 @@ func (r *Registry) Handle(ctx context.Context, raw []byte) {
 		r.logger.Debug().Ctx(ctx).Str("type", env.Type).Msg("no handler for command type")
 		return
 	}
-	reply, err := h(ctx, env.Payload)
+	// One handler's panic is recovered (logged with its stack, counted on
+	// agent.panics) and answered like an error: the SSE reader goes on.
+	var reply any
+	var err error
+	if perr := safego.Do(ctx, "rpc."+env.Type, func() { reply, err = h(ctx, env.Payload) }); perr != nil {
+		err = perr
+	}
 	if err != nil {
 		r.meters.RPCCommandsReceived.Add(ctx, 1, metric.WithAttributes(typeAttr, attribute.String("result", "error")))
 		span.RecordError(err)

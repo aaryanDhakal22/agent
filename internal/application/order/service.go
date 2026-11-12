@@ -15,6 +15,7 @@ import (
 	"quiccpos/agent/internal/infra/notify"
 	"quiccpos/agent/internal/infra/ssebroker"
 	"quiccpos/agent/internal/observability"
+	"quiccpos/agent/internal/safego"
 
 	"github.com/google/uuid"
 	"github.com/rs/zerolog"
@@ -93,6 +94,10 @@ type Service struct {
 	// preview: the callout PREVIEW "on this tablet" audio (2.3.2,
 	// callout_preview.go), in memory only.
 	preview previewState
+	// acceptQ: the auto-accept worker's queue (accept_worker.go; nil =
+	// accept inline).
+	acceptQ  atomic.Pointer[chan acceptJob]
+	acceptWG sync.WaitGroup
 }
 
 func NewService(
@@ -130,23 +135,22 @@ func (s *Service) floorChanged() {
 // OnArrival is called by the SSE listener when a new order lands from main/.
 func (s *Service) OnArrival(ctx context.Context, snap order.Snapshot) error {
 	id := snap.MustParseID()
-	customerName := snap.Customer.DisplayName
 
 	ctx, span := s.tracer.Start(ctx, "order.on_arrival",
 		trace.WithAttributes(
 			attribute.String("order.id", id.String()),
 			attribute.String("order.source_event_id", snap.SourceEventID),
 			attribute.String("order.fulfillment_type", snap.Fulfillment.Type),
-			attribute.String("order.customer_name", customerName),
 			attribute.Int("order.item_count", len(snap.Items)),
 			attribute.Int64("order.total_cents", snap.Money.Total),
 		),
 	)
 	defer span.End()
 
+	// No customer data in logs or spans (hardening L-4): the order id only.
 	s.logger.Info().Ctx(ctx).
 		Str("order_id", id.String()).
-		Str("customer_name", customerName).
+		Str("source", snap.Source).
 		Msg("Order arrived from main/, persisting as 'arrived'")
 
 	inserted, err := s.storeArrived(ctx, snap)
@@ -188,18 +192,35 @@ func (s *Service) OnArrival(ctx context.Context, snap order.Snapshot) error {
 			span.RecordError(err)
 		} else {
 			s.logger.Info().Ctx(ctx).Str("order_id", id.String()).Msg("Auto-accept ON — accepting immediately")
-			if _, err := s.AutoAccept(ctx, id); err != nil {
-				s.logger.Error().Ctx(ctx).Err(err).Str("order_id", id.String()).Msg("Auto-accept failed — order remains arrived")
-				span.RecordError(err)
-				// Fall through to broadcast so mobile sees the pending order.
-			} else {
-				return nil
+			// Hardening F-7: the order is stored and acked; the accept (and
+			// its print, up to the dispatcher's 25 s budget) runs on the
+			// accept worker so the SSE reader takes the next frame at once.
+			if !s.queueAutoAccept(ctx, id, snap) {
+				s.autoAcceptOrRing(ctx, id, snap)
 			}
+			return nil
 		}
 	}
 
-	// Announce the stored row (batch, arrival time) — or, if auto-accept
-	// raced with a manual accept, whatever state it's in now.
+	s.announceStored(ctx, id, snap)
+	return nil
+}
+
+// autoAcceptOrRing auto-accepts a stored order; when that fails the order
+// rings like any other (announced as arrived). Reports whether it accepted.
+func (s *Service) autoAcceptOrRing(ctx context.Context, id uuid.UUID, snap order.Snapshot) bool {
+	if _, err := s.AutoAccept(ctx, id); err != nil {
+		s.logger.Error().Ctx(ctx).Err(err).Str("order_id", id.String()).Msg("Auto-accept failed — order remains arrived")
+		trace.SpanFromContext(ctx).RecordError(err)
+		s.announceStored(ctx, id, snap) // mobile sees the pending order
+		return false
+	}
+	return true
+}
+
+// announceStored tells the tablets about a stored order: arrived (it rings),
+// or, if auto-accept raced with a manual accept, whatever state it's in now.
+func (s *Service) announceStored(ctx context.Context, id uuid.UUID, snap order.Snapshot) {
 	so, err := s.repo.GetByID(ctx, id)
 	if err != nil {
 		so = &order.StoredOrder{Order: snap, Status: order.Status{State: order.StateArrived}}
@@ -209,7 +230,6 @@ func (s *Service) OnArrival(ctx context.Context, snap order.Snapshot) error {
 	} else {
 		s.publishUpdated(*so)
 	}
-	return nil
 }
 
 // Accept transitions an order from arrived to accepted and prints it: claim
@@ -680,13 +700,11 @@ func (s *Service) alertPrintIssues(ctx context.Context, so order.StoredOrder, ou
 	if s.notifier == nil {
 		return
 	}
-	who := snap.Customer.DisplayName
-	if who == "" {
-		who = "(no name)"
-	}
-	msg := fmt.Sprintf("Order %s: %s", who, strings.Join(parts, "; "))
+	// The order's number only, never the customer (hardening L-4).
+	msg := fmt.Sprintf("Print trouble on %s: %s", what, strings.Join(parts, "; "))
 	// In the background: the accept response mustn't wait on Pushover.
 	go func(ctx context.Context) {
+		defer safego.Recover("order.print_alert")
 		if err := s.notifier.SendFloor(ctx, msg, "siren"); err != nil {
 			s.logger.Warn().Ctx(ctx).Err(err).Msg("Pushover print-issue alert failed (non-fatal)")
 		}

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"quiccpos/agent/internal/domain/order"
+	"quiccpos/agent/internal/safego"
 
 	"github.com/google/uuid"
 )
@@ -54,6 +55,7 @@ func (s *Service) background(ctx context.Context, fn func(context.Context)) {
 	s.bg.Add(1)
 	go func() {
 		defer s.bg.Done()
+		defer safego.Recover("order.background")
 		fn(context.WithoutCancel(ctx))
 	}()
 }

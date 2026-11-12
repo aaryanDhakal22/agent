@@ -11,11 +11,14 @@ package sseclient
 import (
 	"context"
 	"sync"
+	"time"
 
 	orderApp "quiccpos/agent/internal/application/order"
+	"quiccpos/agent/internal/domain/order"
 	sseraw "quiccpos/agent/internal/infra/sse"
 	"quiccpos/agent/internal/observability"
 	agentrpc "quiccpos/agent/internal/rpc"
+	"quiccpos/agent/internal/safego"
 
 	"github.com/rs/zerolog"
 )
@@ -70,6 +73,25 @@ func (c *Controller) OnConnected(f func()) { c.state.SetOnConnected(f) }
 // OnDisconnected runs f when an established SSE stream to main ends.
 func (c *Controller) OnDisconnected(f func()) { c.state.SetOnDisconnected(f) }
 
+// OnPoison runs f when the same order's frame panicked twice (hardening F-1).
+func (c *Controller) OnPoison(f func(ctx context.Context, snap order.Snapshot)) {
+	c.state.SetOnPoison(f)
+}
+
+// Alive reports whether the SSE goroutine showed life within d (a line read,
+// a connect attempt, a backoff tick); always true with no key (no goroutine).
+// The systemd watchdog loop reads it (hardening F-6).
+func (c *Controller) Alive(d time.Duration) bool {
+	c.mu.Lock()
+	hasKey := c.key != ""
+	c.mu.Unlock()
+	if !hasKey {
+		return true
+	}
+	t := c.state.Snapshot().LastTickAt
+	return t == 0 || time.Since(time.Unix(t, 0)) <= d
+}
+
 // Status returns a snapshot of the live SSE connection health (for the web UI's
 // green light + /api/session). Not connected when there's no key.
 func (c *Controller) Status() sseraw.ConnStatus {
@@ -118,7 +140,7 @@ func (c *Controller) startLocked(reason string) {
 	ctx, cancel := context.WithCancel(c.parentCtx)
 	c.cancel = cancel
 	client := sseraw.New(c.serverURL, c.key, c.svc, c.sink, c.commands, c.state, c.logger, c.meters)
-	go client.Start(ctx)
+	safego.Go("sse.client", func() { client.Start(ctx) })
 	c.logger.Info().Str("reason", reason).Msg("SSE client (re)started")
 }
 

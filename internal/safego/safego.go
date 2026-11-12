@@ -102,6 +102,11 @@ func Do(ctx context.Context, name string, fn func()) (err error) {
 	return nil
 }
 
+// Report logs and counts a panic value someone else recovered (an HTTP
+// middleware that must answer 500 itself). Call it in the deferred function,
+// right after recover(): the stack still holds the panicking frames.
+func Report(ctx context.Context, name string, v any) { report(ctx, name, v) }
+
 func report(ctx context.Context, name string, r any) {
 	stack := string(debug.Stack())
 	l := log()
@@ -139,7 +144,8 @@ func SetCrashOutput(dir string, now time.Time) (string, error) {
 	return path, nil
 }
 
-// CrashFiles lists dir's crash files with content, newest first.
+// CrashFiles lists dir's crash files not reported yet (with content), newest
+// first.
 func CrashFiles(dir string) []string {
 	m, _ := filepath.Glob(filepath.Join(dir, "crash-*.txt"))
 	var out []string
@@ -152,10 +158,26 @@ func CrashFiles(dir string) []string {
 	return out
 }
 
-// PruneCrashFiles removes empty crash files (clean runs) and all but the
-// newest keep non-empty ones.
+// TakeNewCrashes returns the first lines of the crash files a previous run
+// left (newest first) and marks them reported (renamed *.txt.reported), so the
+// next start doesn't report them again.
+func TakeNewCrashes(dir string) []string {
+	var out []string
+	for _, p := range CrashFiles(dir) {
+		b, err := os.ReadFile(p)
+		if err != nil {
+			continue
+		}
+		out = append(out, filepath.Base(p)+": "+Short(string(b)))
+		_ = os.Rename(p, p+".reported")
+	}
+	return out
+}
+
+// PruneCrashFiles removes empty crash files (clean runs) and keeps the newest
+// keep of the rest (reported or not).
 func PruneCrashFiles(dir string, keep int) {
-	m, _ := filepath.Glob(filepath.Join(dir, "crash-*.txt"))
+	m, _ := filepath.Glob(filepath.Join(dir, "crash-*.txt*"))
 	var full []string
 	for _, p := range m {
 		st, err := os.Stat(p)
@@ -173,6 +195,35 @@ func PruneCrashFiles(dir string, keep int) {
 		os.Remove(full[0])
 		full = full[1:]
 	}
+}
+
+// NoteStart records this process start in dir/starts (the last 5) and reports
+// whether it is the 3rd start or more within 10 minutes: a crash loop
+// (hardening F-6), worth a page.
+func NoteStart(dir string, now time.Time) bool {
+	path := filepath.Join(dir, "starts")
+	var starts []time.Time
+	if b, err := os.ReadFile(path); err == nil {
+		for _, ln := range strings.Split(strings.TrimSpace(string(b)), "\n") {
+			if t, err := time.Parse(time.RFC3339, strings.TrimSpace(ln)); err == nil {
+				starts = append(starts, t)
+			}
+		}
+	}
+	starts = append(starts, now.UTC())
+	if len(starts) > 5 {
+		starts = starts[len(starts)-5:]
+	}
+	var lines []string
+	recent := 0
+	for _, t := range starts {
+		lines = append(lines, t.Format(time.RFC3339))
+		if now.Sub(t) <= 10*time.Minute {
+			recent++
+		}
+	}
+	_ = os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o600)
+	return recent >= 3
 }
 
 // Short is the first line of a panic value / crash file, for a notification.

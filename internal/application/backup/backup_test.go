@@ -2,6 +2,7 @@ package backup
 
 import (
 	"context"
+	"database/sql"
 	"os"
 	"path/filepath"
 	"strings"
@@ -92,5 +93,84 @@ func TestNowUploadsASQLiteFile(t *testing.T) {
 				t.Fatalf("left %s in %s", e.Name(), dir)
 			}
 		}
+	}
+}
+
+// F-7: no backup while orders are in play, nor around the auto-close minute.
+func TestHeldWhenBusyOrAtAutoClose(t *testing.T) {
+	ny, _ := time.LoadLocation("America/New_York")
+	busy := true
+	s := New(nil, "", nil, &memSettings{}, nil, func() *time.Location { return ny }, zerolog.Nop())
+	s.SetQuiet(func(context.Context) bool { return !busy })
+	s.SetAvoid(func() (int, int, bool) { return 4, 0, true })
+	ctx := context.Background()
+	at := func(h, m int) time.Time { return time.Date(2026, 10, 17, h, m, 0, 0, ny) }
+	if s.due(ctx, at(19, 0)) {
+		t.Fatal("never backed up, but orders are in play: must wait")
+	}
+	busy = false
+	if !s.due(ctx, at(19, 0)) {
+		t.Fatal("quiet → due")
+	}
+	for _, m := range []int{0, 10} {
+		if s.due(ctx, at(4, m)) {
+			t.Fatalf("04:%02d is the auto-close's window", m)
+		}
+	}
+	if s.due(ctx, at(3, 56)) {
+		t.Fatal("03:56 is inside the 5 minutes before the auto-close")
+	}
+	if !s.due(ctx, at(4, 16)) {
+		t.Fatal("04:16 → due")
+	}
+}
+
+// F-7: the copy runs on its own read-only connection, so a write on the
+// agent's one connection isn't held up while a big file is copied.
+func TestBackupDoesNotBlockWrites(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "agent.db")
+	if err := migrate.Run(ctx, path); err != nil {
+		t.Fatal(err)
+	}
+	db, err := database.Open(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err := db.ExecContext(ctx, `CREATE TABLE pad(b BLOB)`); err != nil {
+		t.Fatal(err)
+	}
+	blob := make([]byte, 1<<20)
+	for i := 0; i < 24; i++ {
+		if _, err := db.ExecContext(ctx, `INSERT INTO pad(b) VALUES (?)`, blob); err != nil {
+			t.Fatal(err)
+		}
+	}
+	usedRO := false
+	s := New(db, path, func(context.Context, string, []byte, string) (int, []byte, error) { return 201, nil, nil },
+		&memSettings{}, nil, nil, zerolog.Nop())
+	s.TempDir = t.TempDir()
+	s.OpenRO = func(p string) (*sql.DB, error) { usedRO = true; return openReadOnly(p) }
+	defer s.Close()
+	done := make(chan error, 1)
+	go func() { _, err := s.Now(ctx); done <- err }()
+	var worst time.Duration
+	for i := 0; i < 20; i++ {
+		start := time.Now()
+		if _, err := db.ExecContext(ctx, `UPDATE settings SET id = id WHERE id = 1`); err != nil {
+			t.Fatal(err)
+		}
+		worst = max(worst, time.Since(start))
+		time.Sleep(5 * time.Millisecond)
+	}
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if !usedRO {
+		t.Fatal("the backup didn't use its own read-only connection")
+	}
+	if limit := 200 * time.Millisecond; worst > limit && os.Getenv("GATE_PARALLEL") == "" {
+		t.Fatalf("a write waited %v during the backup", worst)
 	}
 }

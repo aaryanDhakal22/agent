@@ -106,6 +106,9 @@ type diagMain struct {
 	LastError      string     `json:"last_error"`
 	Reconnects     int64      `json:"reconnects"`
 	Reachable      bool       `json:"reachable"`
+	// ClockSkewS (hardening F-13): main's clock minus the Pi's at the last
+	// connect, seconds (absent until a connect carried a Date header).
+	ClockSkewS *float64 `json:"clock_skew_s,omitempty"`
 }
 
 type diagHealth struct {
@@ -148,6 +151,9 @@ type diagResponse struct {
 	// Tablets (2.2.0): the paired tablets, their Quibase version and
 	// whether they are on /api/events now.
 	Tablets []TabletInfo `json:"tablets"`
+	// DBTrouble (hardening F-15): readonly | full | ioerr while the SD card
+	// is in trouble ("" = fine).
+	DBTrouble string `json:"db_trouble,omitempty"`
 }
 
 // sseState is the main-connection verdict shared by /api/session and /api/diag.
@@ -190,6 +196,10 @@ func (s *Server) handleDiag(w http.ResponseWriter, r *http.Request) {
 		st := s.sseController.Status()
 		out.Main.ConnectedSince, out.Main.LastEventAt = unixPtr(st.ConnectedSince), unixPtr(st.LastEventAt)
 		out.Main.LastError, out.Main.Reconnects = st.LastError, st.Reconnects
+		if st.SkewKnown {
+			skew := st.ClockSkewSeconds
+			out.Main.ClockSkewS = &skew
+		}
 	}
 	if s.mainClient != nil {
 		out.Main.Reachable = s.mainReach.reachable(ctx, s.mainClient.BaseURL())
@@ -238,9 +248,16 @@ func (s *Server) handleDiag(w http.ResponseWriter, r *http.Request) {
 	}
 
 	out.Tablets = s.Tablets(ctx)
+	if s.dbHealth != nil {
+		out.DBTrouble = s.dbHealth().Trouble
+	}
 	out.Problems = diagProblems(out)
 	s.writeJSON(w, http.StatusOK, out)
 }
+
+// clockSkewProblemS: a Pi clock further off main's than this is the
+// clock_skew problem (hardening F-13; sse.SkewProblemSeconds).
+const clockSkewProblemS = 30
 
 // diagProblems lists short codes for what's wrong, most physical first. A
 // missing health file (dev box) isn't a problem; an old one is.
@@ -264,6 +281,12 @@ func diagProblems(d diagResponse) []string {
 	}
 	if d.Main.State != "unconfigured" && d.Main.State != "connected" {
 		p = append(p, "main_down")
+	}
+	if sk := d.Main.ClockSkewS; sk != nil && (*sk > clockSkewProblemS || *sk < -clockSkewProblemS) {
+		p = append(p, "clock_skew")
+	}
+	if d.DBTrouble != "" {
+		p = append(p, "db_"+d.DBTrouble)
 	}
 	for _, pr := range d.Printers {
 		if !pr.Up && pr.LastChecked != nil {

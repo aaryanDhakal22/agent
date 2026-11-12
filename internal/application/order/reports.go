@@ -8,6 +8,7 @@ import (
 
 	"quiccpos/agent/internal/domain/order"
 	"quiccpos/agent/internal/domain/printer"
+	"quiccpos/agent/internal/safego"
 
 	"go.opentelemetry.io/otel/attribute"
 )
@@ -219,11 +220,12 @@ func (s *Service) PrintDriverReports(ctx context.Context, batchID int64) ([]Repo
 func (s *Service) printReportsAfterClose(ctx context.Context, batchID int64, then func(context.Context)) {
 	if s.printDoc == nil || s.buildReport == nil {
 		if then != nil {
-			go then(context.WithoutCancel(ctx))
+			safego.Go("order.after_close", func() { then(context.WithoutCancel(ctx)) })
 		}
 		return
 	}
 	go func(ctx context.Context) {
+		defer safego.Recover("order.reports_after_close")
 		if then != nil {
 			defer then(ctx)
 		}
@@ -244,6 +246,7 @@ func (s *Service) alertFloor(ctx context.Context, msg string) {
 		return
 	}
 	go func(ctx context.Context) {
+		defer safego.Recover("order.floor_alert")
 		if err := s.notifier.SendFloor(ctx, msg, "siren"); err != nil {
 			s.logger.Warn().Ctx(ctx).Err(err).Msg("Pushover alert failed (non-fatal)")
 		}

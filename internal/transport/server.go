@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"quiccpos/agent/internal/application/appupdate"
+	"quiccpos/agent/internal/application/dbhealth"
 	"quiccpos/agent/internal/application/devlog"
 	"quiccpos/agent/internal/application/mapfile"
 	orderApp "quiccpos/agent/internal/application/order"
@@ -26,6 +27,7 @@ import (
 	"quiccpos/agent/internal/domain/settingslog"
 	"quiccpos/agent/internal/infra/mainclient"
 	"quiccpos/agent/internal/infra/ssebroker"
+	"quiccpos/agent/internal/safego"
 
 	"github.com/google/uuid"
 	"github.com/rs/zerolog"
@@ -40,6 +42,10 @@ const (
 	// timeout (nginx default 60s). 25s matches main/'s convention.
 	sseKeepalive = 25 * time.Second
 )
+
+// eventsWriteTimeout bounds each /api/events write + flush (R-2; a var so
+// tests can shorten it).
+var eventsWriteTimeout = 10 * time.Second
 
 type Server struct {
 	service       *orderApp.Service
@@ -75,6 +81,15 @@ type Server struct {
 	// (floor.tablets.connected counts the tablets, not the streams).
 	tabletMu      sync.Mutex
 	tabletStreams map[string]int
+	// terminalStreams: open /api/events streams per paired terminal id
+	// (terminal.connected, CM-2); under tabletMu.
+	terminalStreams map[string]int
+	// stopped is closed once the HTTP server finished its graceful
+	// shutdown (Stopped; hardening F-15).
+	stopped chan struct{}
+	// dbHealth: the SD card's state for the terminals' status route and
+	// the diagnostics (F-15; SetDBHealth); nil = unknown.
+	dbHealth func() dbhealth.State
 	// appVersions: the Quibase version each device last reported (2.2.0).
 	appVerMu    sync.Mutex
 	appVersions map[string]appVersionSeen
@@ -112,23 +127,25 @@ func NewServer(
 	logger zerolog.Logger,
 ) *Server {
 	return &Server{
-		service:       svc,
-		broker:        broker,
-		printers:      printers,
-		settings:      settings,
-		sseController: sseController,
-		mainClient:    mainClient,
-		session:       session,
-		devices:       devices,
-		pairing:       &pairingCodes{},
-		touched:       map[string]time.Time{},
-		tabletStreams: map[string]int{},
-		appVersions:   map[string]appVersionSeen{},
-		version:       version,
-		commit:        commit,
-		port:          port,
-		started:       time.Now(),
-		logger:        logger.With().Str("module", "http-server").Logger(),
+		service:         svc,
+		broker:          broker,
+		printers:        printers,
+		settings:        settings,
+		sseController:   sseController,
+		mainClient:      mainClient,
+		session:         session,
+		devices:         devices,
+		pairing:         &pairingCodes{},
+		touched:         map[string]time.Time{},
+		tabletStreams:   map[string]int{},
+		terminalStreams: map[string]int{},
+		appVersions:     map[string]appVersionSeen{},
+		stopped:         make(chan struct{}),
+		version:         version,
+		commit:          commit,
+		port:            port,
+		started:         time.Now(),
+		logger:          logger.With().Str("module", "http-server").Logger(),
 	}
 }
 
@@ -154,24 +171,28 @@ func (s *Server) Start(ctx context.Context) {
 	// sits inside otelhttp so the span already exists when it runs.
 	// No request needs more than ~256 KB (a tablet's diagnostics report); the
 	// open routes decode JSON, so cap every body against a memory blow-up.
-	handler := otelhttp.NewHandler(capBodies(traceIDHeader(mux)), "agent-http",
-		otelhttp.WithServerName("quicc-agent"),
-	)
+	handler := s.Handler(mux)
 
-	// No WriteTimeout: /api/events is a long-lived SSE stream.
+	// No WriteTimeout: /api/events is a long-lived SSE stream (its writes
+	// carry their own deadline, R-2).
 	srv := &http.Server{
 		Addr:              fmt.Sprintf(":%s", s.port),
 		Handler:           handler,
 		ReadHeaderTimeout: 10 * time.Second,
-		IdleTimeout:       2 * time.Minute,
+		IdleTimeout:       idleTimeout,
 	}
 
+	// Graceful shutdown (F-15): in-flight requests get ShutdownTimeout;
+	// Stopped() closes once that is over, so cmd/main.go stops the workers
+	// and closes the DB only after the last request.
+	shutdownDone := make(chan struct{})
 	go func() {
+		defer close(shutdownDone)
 		<-ctx.Done()
 		s.logger.Info().Msg("HTTP server shutting down")
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), ShutdownTimeout)
 		defer cancel()
-		srv.Shutdown(shutdownCtx)
+		_ = srv.Shutdown(shutdownCtx)
 	}()
 
 	if s.altPort != "" && s.altPort != s.port {
@@ -182,6 +203,53 @@ func (s *Server) Start(ctx context.Context) {
 	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		s.logger.Error().Err(err).Msg("HTTP server error")
 	}
+	if ctx.Err() != nil {
+		<-shutdownDone
+	}
+	close(s.stopped)
+}
+
+// ShutdownTimeout bounds the HTTP servers' graceful shutdown (F-15: the
+// systemd unit's TimeoutStopSec=15 covers it, the workers and a floor flush).
+const ShutdownTimeout = 5 * time.Second
+
+// idleTimeout closes keep-alive connections nobody uses (R-7), on both ports.
+const idleTimeout = 2 * time.Minute
+
+// SetDBHealth wires the SD card monitor (F-15).
+func (s *Server) SetDBHealth(f func() dbhealth.State) { s.dbHealth = f }
+
+// Stopped is closed once Start returned (after the graceful shutdown).
+func (s *Server) Stopped() <-chan struct{} { return s.stopped }
+
+// Handler is the full HTTP stack around the mux: otelhttp (a server span per
+// request, inbound traceparent; it records http.server.request.duration with
+// the mux's route, CM-1), panic recovery (F-1), the body cap and the
+// X-Trace-Id echo. Exposed for tests.
+func (s *Server) Handler(mux http.Handler, opts ...otelhttp.Option) http.Handler {
+	return otelhttp.NewHandler(recoverPanics(s.logger, capBodies(traceIDHeader(mux))), "agent-http",
+		append([]otelhttp.Option{otelhttp.WithServerName("quicc-agent")}, opts...)...,
+	)
+}
+
+// recoverPanics turns a handler's panic into a 500 (F-1): logged with its
+// stack and counted on agent.panics{where="http"}. net/http would recover it
+// too, but only to stderr and by dropping the connection.
+func recoverPanics(logger zerolog.Logger, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer func() {
+			if v := recover(); v != nil {
+				if v == http.ErrAbortHandler {
+					panic(v)
+				}
+				safego.Report(r.Context(), "http", v)
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusInternalServerError)
+				_, _ = w.Write([]byte(`{"error":"internal error","code":"internal"}` + "\n"))
+			}
+		}()
+		next.ServeHTTP(w, r)
+	})
 }
 
 // traceIDHeader echoes the request's trace id as an X-Trace-Id response
@@ -426,8 +494,24 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 
 	ch, unsubscribe := s.broker.Subscribe()
 	defer unsubscribe()
-	if d, ok := ctx.Value(deviceCtxKey{}).(*device.Device); ok && d.Kind == device.KindTablet {
-		defer s.tabletOnStream(d.ID)()
+	if d, ok := ctx.Value(deviceCtxKey{}).(*device.Device); ok {
+		switch d.Kind {
+		case device.KindTablet:
+			defer s.tabletOnStream(d.ID)()
+		case device.KindTerminal:
+			defer s.terminalOnStream(d.ID)()
+		}
+	}
+	// R-2: every write gets a deadline, so a tablet that sleeps without
+	// closing its socket frees this goroutine within eventsWriteTimeout
+	// instead of the kernel's ~15 min.
+	rc := http.NewResponseController(w)
+	write := func(format string, args ...any) bool {
+		_ = rc.SetWriteDeadline(time.Now().Add(eventsWriteTimeout))
+		if _, err := fmt.Fprintf(w, format, args...); err != nil {
+			return false
+		}
+		return rc.Flush() == nil
 	}
 
 	s.logger.Info().Ctx(ctx).Int("subscribers", s.broker.Subscribers()).Msg("Mobile SSE client connected")
@@ -441,18 +525,16 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 		case <-ctx.Done():
 			return
 		case <-keepalive.C:
-			if _, err := fmt.Fprint(w, ": keepalive\n\n"); err != nil {
+			if !write(": keepalive\n\n") {
 				return
 			}
-			flusher.Flush()
 		case ev, ok := <-ch:
 			if !ok {
 				return
 			}
-			if _, err := fmt.Fprintf(w, "event: %s\ndata: %s\n\n", ev.Type, string(ev.Data)); err != nil {
+			if !write("event: %s\ndata: %s\n\n", ev.Type, string(ev.Data)) {
 				return
 			}
-			flusher.Flush()
 		}
 	}
 }
@@ -470,6 +552,47 @@ func (s *Server) tabletOnStream(id string) func() {
 		}
 		s.tabletMu.Unlock()
 	}
+}
+
+// terminalOnStream marks a paired terminal as on the SSE stream (CM-2); the
+// returned func takes it off again.
+func (s *Server) terminalOnStream(id string) func() {
+	s.tabletMu.Lock()
+	s.terminalStreams[id]++
+	s.tabletMu.Unlock()
+	return func() {
+		s.tabletMu.Lock()
+		if s.terminalStreams[id]--; s.terminalStreams[id] <= 0 {
+			delete(s.terminalStreams, id)
+		}
+		s.tabletMu.Unlock()
+	}
+}
+
+// TerminalsConnected is terminal.connected (CM-2): every paired, unrevoked
+// terminal by its name, 1 while it has an /api/events stream, else 0.
+func (s *Server) TerminalsConnected(ctx context.Context) map[string]int {
+	out := map[string]int{}
+	if s.devices == nil {
+		return out
+	}
+	ds, err := s.devices.List(ctx)
+	if err != nil {
+		return out
+	}
+	s.tabletMu.Lock()
+	defer s.tabletMu.Unlock()
+	for _, d := range ds {
+		if d.RevokedAt != nil || d.Kind != device.KindTerminal {
+			continue
+		}
+		if s.terminalStreams[d.ID] > 0 {
+			out[d.Name] = 1
+		} else if _, ok := out[d.Name]; !ok {
+			out[d.Name] = 0
+		}
+	}
+	return out
 }
 
 // TabletsConnected is how many paired tablets are on /api/events right now
@@ -533,10 +656,14 @@ func capBodies(h http.Handler) http.Handler {
 		r2 := *r
 		r2.Body = http.MaxBytesReader(w, r.Body, limit)
 		h.ServeHTTP(w, &r2)
+		// CM-1: the mux set the route on the copy; otelhttp reads it from
+		// the request it handed in (http.route on the request metrics).
+		r.Pattern = r2.Pattern
 	})
 }
 
 func (s *Server) writeError(w http.ResponseWriter, r *http.Request, status int, err error) {
+	dbhealth.Note(r.Context(), err) // a read-only / full SD card shows here first (F-15)
 	s.logger.Warn().Ctx(r.Context()).Err(err).Int("status", status).Str("path", r.URL.Path).Msg("Request failed")
 	s.writeJSON(w, status, map[string]string{"error": err.Error()})
 }

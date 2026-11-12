@@ -11,6 +11,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -44,7 +45,9 @@ type Store interface {
 // Fetcher is the device-keyed client to main (mainclient.Client).
 type Fetcher interface {
 	Get(ctx context.Context, key, path, rawQuery string) (int, []byte, error)
-	Download(ctx context.Context, key, path, rawQuery string) (int, []byte, error)
+	// DownloadTo streams the APK into w (≤ limit bytes; R-5: never whole in
+	// memory).
+	DownloadTo(ctx context.Context, key, path, rawQuery string, w io.Writer, limit int64) (int, int64, error)
 }
 
 type Updater struct {
@@ -151,22 +154,32 @@ func (u *Updater) Check(ctx context.Context) error {
 		return nil
 	}
 
-	status, apk, err := u.fetch.Download(ctx, key, "/store/v1/agent/app/releases/"+strconv.FormatInt(rel.VersionCode, 10)+"/apk", q)
-	if err != nil {
-		return err
-	}
-	if status != http.StatusOK {
-		return fmt.Errorf("download: HTTP %d", status)
-	}
-	sum := sha256.Sum256(apk)
-	if got := hex.EncodeToString(sum[:]); !strings.EqualFold(got, rel.SHA256) || int64(len(apk)) != rel.Size {
-		return fmt.Errorf("download: checksum/size mismatch")
-	}
+	// Streamed to the temp file and hashed on the way (R-5: an APK is tens of
+	// MB; the Pi used to hold it whole in memory).
 	if err := os.MkdirAll(u.dir, 0o755); err != nil {
 		return err
 	}
 	tmp := u.Path(rel) + ".tmp"
-	if err := os.WriteFile(tmp, apk, 0o644); err != nil {
+	f, err := os.OpenFile(tmp, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o644)
+	if err != nil {
+		return err
+	}
+	h := sha256.New()
+	status, n, err := u.fetch.DownloadTo(ctx, key, "/store/v1/agent/app/releases/"+strconv.FormatInt(rel.VersionCode, 10)+"/apk", q,
+		io.MultiWriter(f, h), rel.Size)
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	if err == nil && status != http.StatusOK {
+		err = fmt.Errorf("download: HTTP %d", status)
+	}
+	if err == nil {
+		if got := hex.EncodeToString(h.Sum(nil)); !strings.EqualFold(got, rel.SHA256) || n != rel.Size {
+			err = fmt.Errorf("download: checksum/size mismatch")
+		}
+	}
+	if err != nil {
+		_ = os.Remove(tmp)
 		return err
 	}
 	if err := os.Rename(tmp, u.Path(rel)); err != nil {

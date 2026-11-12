@@ -5,6 +5,8 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -34,12 +36,19 @@ func (f *fakeMain) Get(_ context.Context, _, path, _ string) (int, []byte, error
 	b, _ := json.Marshal(f.latest)
 	return 200, b, nil
 }
-func (f *fakeMain) Download(_ context.Context, _, path, _ string) (int, []byte, error) {
+func (f *fakeMain) DownloadTo(_ context.Context, _, path, _ string, w io.Writer, limit int64) (int, int64, error) {
 	f.downloads++
 	if !strings.HasSuffix(path, "/apk") {
-		return 404, nil, nil
+		return 404, 0, nil
 	}
-	return 200, f.apk, nil
+	body := f.apk
+	if int64(len(body)) > limit {
+		body = body[:limit+1]
+		n, _ := w.Write(body)
+		return 200, int64(n), fmt.Errorf("body larger than %d bytes", limit)
+	}
+	n, err := w.Write(body)
+	return 200, int64(n), err
 }
 
 func release(code int64, apk []byte) *Release {

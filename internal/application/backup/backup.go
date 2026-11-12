@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"github.com/rs/zerolog"
@@ -38,6 +39,62 @@ type Service struct {
 	Hour int
 	// TempDir holds the VACUUM INTO copy while it uploads (os.TempDir()).
 	TempDir string
+
+	// Hardening F-7: the copy reads through its own read-only connection
+	// (the agent's one connection stays free for orders), and only when the
+	// floor is quiet and not around the auto-close minute.
+	quiet  func(ctx context.Context) bool
+	avoid  func() (hour, minute int, ok bool)
+	roOnce sync.Once
+	ro     *sql.DB
+	roErr  error
+	OpenRO func(path string) (*sql.DB, error) // tests swap it
+}
+
+// SetQuiet: the backup waits while quiet answers false (orders in play on
+// the floor). nil = always quiet.
+func (s *Service) SetQuiet(f func(ctx context.Context) bool) { s.quiet = f }
+
+// SetAvoid: the backup never starts from 5 minutes before to 15 minutes
+// after this store-time minute (the batch auto-close; ok=false = none).
+func (s *Service) SetAvoid(f func() (hour, minute int, ok bool)) { s.avoid = f }
+
+// openReadOnly opens the agent's file a second time, read-only, with its own
+// connection (VACUUM INTO works on a read-only database).
+func openReadOnly(path string) (*sql.DB, error) {
+	db, err := sql.Open("sqlite", "file:"+path+"?mode=ro&_pragma=busy_timeout(5000)")
+	if err != nil {
+		return nil, err
+	}
+	db.SetMaxOpenConns(1)
+	return db, nil
+}
+
+// Close closes the read-only connection (shutdown).
+func (s *Service) Close() {
+	if s.ro != nil {
+		s.ro.Close()
+	}
+}
+
+// reader is the connection VACUUM INTO runs on: the read-only one when the
+// file path is known, else the shared handle (tests).
+func (s *Service) reader() *sql.DB {
+	if s.dbPath == "" {
+		return s.db
+	}
+	s.roOnce.Do(func() {
+		open := s.OpenRO
+		if open == nil {
+			open = openReadOnly
+		}
+		s.ro, s.roErr = open(s.dbPath)
+	})
+	if s.roErr != nil || s.ro == nil {
+		s.logger.Warn().Err(s.roErr).Msg("read-only connection for the backup unavailable; using the shared one")
+		return s.db
+	}
+	return s.ro
 }
 
 func New(db *sql.DB, dbPath string, upload Uploader, settings Settings, configured func() bool, loc func() *time.Location, logger zerolog.Logger) *Service {
@@ -69,6 +126,9 @@ func (s *Service) due(ctx context.Context, now time.Time) bool {
 	if s.configured != nil && !s.configured() {
 		return false
 	}
+	if s.held(ctx, now) {
+		return false
+	}
 	raw, _ := s.settings.GetLastBackup(ctx)
 	last, err := time.Parse(time.RFC3339, raw)
 	if err != nil {
@@ -86,6 +146,34 @@ func (s *Service) due(ctx context.Context, now time.Time) bool {
 	return !n.Before(slot) && last.Before(slot)
 }
 
+// held: not now — orders are in play (the backup reads the whole file), or
+// it is the auto-close's minute (Close batch writes a lot at once). The
+// ">26 h old" rule used to start a backup at dinner time after an outage.
+func (s *Service) held(ctx context.Context, now time.Time) bool {
+	if s.quiet != nil && !s.quiet(ctx) {
+		return true
+	}
+	if s.avoid == nil {
+		return false
+	}
+	h, m, ok := s.avoid()
+	if !ok {
+		return false
+	}
+	loc := time.Local
+	if s.loc != nil {
+		loc = s.loc()
+	}
+	n := now.In(loc)
+	at := time.Date(n.Year(), n.Month(), n.Day(), h, m, 0, 0, loc)
+	for _, a := range []time.Time{at.AddDate(0, 0, -1), at, at.AddDate(0, 0, 1)} {
+		if !n.Before(a.Add(-5*time.Minute)) && n.Before(a.Add(15*time.Minute)) {
+			return true
+		}
+	}
+	return false
+}
+
 // Now takes a backup and uploads it; returns the uploaded size.
 func (s *Service) Now(ctx context.Context) (int, error) {
 	// The copy goes to the temp dir, not next to the database: on the Pi the
@@ -94,7 +182,7 @@ func (s *Service) Now(ctx context.Context) (int, error) {
 	tmp := filepath.Join(s.TempDir, fmt.Sprintf("quicc-backup-%d.db", time.Now().UnixNano()))
 	defer os.Remove(tmp)
 	// VACUUM INTO writes a consistent, compacted copy without stopping writers.
-	if _, err := s.db.ExecContext(ctx, "VACUUM INTO ?", tmp); err != nil {
+	if _, err := s.reader().ExecContext(ctx, "VACUUM INTO ?", tmp); err != nil {
 		return 0, fmt.Errorf("vacuum into: %w", err)
 	}
 	data, err := os.ReadFile(tmp)

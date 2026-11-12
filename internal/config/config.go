@@ -26,7 +26,10 @@ type Config struct {
 	HTTPPort      string
 	// HTTPAltPort (HTTP_ALT_PORT, optional) is a second port serving the same
 	// API + web UI — 80 on a Pi, so the address needs no ":8080". Empty = off.
-	HTTPAltPort        string
+	HTTPAltPort string
+	// PprofAddr (PPROF_ADDR, optional, hardening R-1): net/http/pprof on its
+	// own loopback listener, e.g. 127.0.0.1:6061; empty = off.
+	PprofAddr          string
 	LogLevel           string // trace|debug|info|warn|error — default "info"
 	LogOutput          string // console|json|file — default "console"
 	PrinterDetectDelay time.Duration
@@ -70,6 +73,7 @@ func Load() (*Config, error) {
 		MainServerURL:        os.Getenv("MAIN_SERVER_URL"),
 		HTTPPort:             getEnvDefault("HTTP_PORT", "8080"),
 		HTTPAltPort:          getEnvDefault("HTTP_ALT_PORT", ""),
+		PprofAddr:            os.Getenv("PPROF_ADDR"),
 		PrinterDetectDelay:   getPrinterDetectDelay(),
 		PushoverAppToken:     os.Getenv("PUSHOVER_APP_TOKEN"),
 		PushoverUserKey:      os.Getenv("PUSHOVER_USER_KEY"),

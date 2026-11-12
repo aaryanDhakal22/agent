@@ -63,3 +63,6 @@ sql/apk/
 CLAUDE.md
 CLAUDE.local.md
 .claude/
+
+# Crash files + start stamps next to the DB (safego, hardening F-1 / F-6)
+sql/crash/
