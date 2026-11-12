@@ -246,6 +246,21 @@ func (r *OrderRepository) CounterOrders(ctx context.Context) (out []order.Stored
 	return mapRowsGeo(ctx, q, append(all, rows...))
 }
 
+// EarlierBatchOrder: is the order of an earlier batch and not carried (a
+// refund on it needs a manager, 2026-11-12)?
+func (r *OrderRepository) EarlierBatchOrder(ctx context.Context, id string) (bool, error) {
+	q := models.New(r.db)
+	cur, err := loadOrder(ctx, q, id)
+	if err != nil {
+		return false, err
+	}
+	b, err := q.GetOpenBatch(ctx)
+	if err != nil {
+		return false, err
+	}
+	return !terminal.PayableBatch(cur.Status.BatchID == b.ID, cur.Status.Carried), nil
+}
+
 // applyPayments appends payments to a counter order's snapshot (money
 // columns too) and stores them. An online pickup's snapshot stays main's:
 // only its money columns move (applyOnlinePayments).
@@ -338,9 +353,8 @@ func (r *OrderRepository) AddCounterPayment(ctx context.Context, orderID, client
 		}
 		// A counter order, or (contract 2.10i) an online / website pickup
 		// with cash to collect at the counter.
-		if cur.Order.Source != order.SourceCounter && !terminal.IsPickup(cur) {
-			return terminal.ErrNotCounterOrder
-		}
+		// A counter order, or (contracts 2.10i, 2.10aa) any order from main:
+		// an online pickup's cash, an online order's balance after an edit.
 		if clientKey != "" {
 			switch row, err := q.GetOrderPaymentByKey(ctx, models.GetOrderPaymentByKeyParams{OrderID: orderID, ClientKey: clientKey}); {
 			case err == nil:
@@ -362,11 +376,15 @@ func (r *OrderRepository) AddCounterPayment(ctx context.Context, orderID, client
 		}
 		// The open batch's orders, and a check carried past its batch's
 		// close (contract 2.10s §4: still payable until settled).
-		if !terminal.PayableBatch(cur.Status.BatchID == b.ID, cur.Status.Carried) || cur.Status.State == order.StateCancelled {
+		// An earlier batch's order (not carried) takes a refund with a
+		// manager only (2026-11-12): check (the service) decides, seeing
+		// Status.EarlierBatch; its payment lands in today's batch.
+		cur.Status.EarlierBatch = !terminal.PayableBatch(cur.Status.BatchID == b.ID, cur.Status.Carried)
+		if cur.Status.State == order.StateCancelled {
 			return terminal.ErrNotPayable
 		}
-		if cur.Order.Source != order.SourceCounter && !terminal.OnPickupStates(cur) {
-			return terminal.ErrNotPayable // an online order still ringing, picked up, ...
+		if cur.Order.Source != order.SourceCounter && !cur.Status.EarlierBatch && !terminal.OnlinePayableStates(cur) {
+			return terminal.ErrNotPayable // an online order still waiting, picked up, ...
 		}
 		paid, err := listPayments(ctx, q, orderID)
 		if err != nil {
@@ -421,6 +439,7 @@ func (r *OrderRepository) AddCounterPayment(ctx context.Context, orderID, client
 				return err
 			}
 		}
+		so.Status.EarlierBatch = cur.Status.EarlierBatch // main: earlier_day
 		if err := recordPayment(ctx, q, so, pay, now); err != nil {
 			return err
 		}
@@ -439,6 +458,9 @@ func recordPayment(ctx context.Context, q *models.Queries, so order.StoredOrder,
 	ev := map[string]any{"event_id": id, "type": terminal.EventOrderPayment, "order_id": so.Order.ID,
 		"at": now.UTC().Truncate(time.Millisecond), "payment": p.Wire(),
 		"balance_cents": so.Status.CashDueCents, "paid": so.Status.Paid}
+	if so.Status.EarlierBatch {
+		ev["earlier_day"] = true // an earlier day's order refunded today (main flags it without a manager)
+	}
 	return insertEvent(ctx, q, id, so.Order.ID, terminal.EventOrderPayment, now, ev)
 }
 

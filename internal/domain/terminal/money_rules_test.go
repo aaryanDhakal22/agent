@@ -57,11 +57,12 @@ func TestMoneyRules(t *testing.T) {
 		r.Refund, r.By = true, c.By
 		rp := pay(r)
 		var got string
+		earlier := !terminal.PayableBatch(c.Order.Batch == "" || c.Order.Batch == "open", c.Order.Batch == "carried")
 		switch {
-		case !terminal.PayableBatch(c.Order.Batch == "" || c.Order.Batch == "open", c.Order.Batch == "carried"):
-			got = mr.Answer(nil, terminal.ErrNotPayable)
 		case terminal.RefundRefused(paid, rp) != nil:
 			got = mr.Answer(nil, terminal.RefundRefused(paid, rp))
+		case earlier:
+			got = mr.Answer(terminal.EarlierDayRefundNeed(cfg, tab.Staff(cfg, c.By), []terminal.Payment{rp}), nil)
 		default:
 			got = mr.Answer(terminal.RefundNeed(cfg, tab.Staff(cfg, c.By), paid, []terminal.Payment{rp}, terminal.ActionRefund), nil)
 		}
@@ -69,6 +70,18 @@ func TestMoneyRules(t *testing.T) {
 	}
 	for _, c := range tab.GeneralRefunds {
 		check(c, mr.Answer(terminal.GeneralRefundNeed(cfg, tab.Staff(cfg, c.By), c.Cents), nil))
+	}
+	for _, c := range tab.Tips {
+		p := pay(c.Payment)
+		p.StaffID = c.By
+		var err error
+		switch {
+		case c.TipAfter && !terminal.IsCard(p.Tender):
+			err = terminal.ErrNotTippable
+		case !c.TipAfter && !terminal.TipAllowed(p):
+			err = terminal.ErrTipCardOnly
+		}
+		check(c, mr.Answer(nil, err))
 	}
 	for _, c := range tab.Comps {
 		var need *terminal.ManagerRequired

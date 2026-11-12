@@ -41,11 +41,16 @@ def test_drawers_and_z_report_reach_main(rig):  # noqa: F811
     assert d1["start_cents"] == 12000 and d1["state"] == "open" and d1["staff_id"] == "00000000-0000-4000-8000-0000000000c1"
     r = term.post(f"{base}/api/terminal/drawer/open", json={"start_cents": 1}, timeout=5)
     assert r.status_code == 409 and r.json()["code"] == "drawer_open"
-    # A cash sale with a tip and change goes in the drawer; a card sale doesn't.
+    # A cash sale with change goes in the drawer (a tip on cash is refused: tips are card only); a card sale
+    # (its tip on the card) doesn't.
     cart = {"lines": [pizza_line()]}
     total = quote(rig, cart)
     r = term.post(f"{base}/api/terminal/orders", json={"client_key": f"z-{uuid.uuid4()}", "type": "counter", "cart": cart,
                                                          "payments": [{"tender": "cash", "amount_cents": total, "tip_cents": 100,
+                                                                       "tendered_cents": total + 2000}]}, timeout=10)
+    assert r.status_code == 400 and r.json()["code"] == "tip_card_only", r.text
+    r = term.post(f"{base}/api/terminal/orders", json={"client_key": f"z-{uuid.uuid4()}", "type": "counter", "cart": cart,
+                                                         "payments": [{"tender": "cash", "amount_cents": total,
                                                                        "tendered_cents": total + 2000}]}, timeout=10)
     assert r.status_code == 201, r.text
     r = term.post(f"{base}/api/terminal/orders", json={"client_key": f"z-{uuid.uuid4()}", "type": "pickup", "cart": cart,
@@ -60,7 +65,7 @@ def test_drawers_and_z_report_reach_main(rig):  # noqa: F811
     assert r.status_code == 200 and r.json()["movement"]["approved_by"] == "00000000-0000-4000-8000-0000000000e1", r.text
     r = term.post(f"{base}/api/terminal/journal", json={"action": "no_sale"}, timeout=5)
     assert r.status_code == 201 and r.json()["detail"]["drawer_id"] == d1["id"], r.text
-    expected = 12000 + total + 100 + 500 - 2500
+    expected = 12000 + total + 500 - 2500
     v = term.get(f"{base}/api/terminal/drawer", timeout=5).json()
     assert v["drawer"]["expected_cents"] == expected and v["drawer"]["no_sales"] == 1 and len(v["drawer"]["movements"]) == 2
     # Count out, $1 short.
@@ -85,8 +90,8 @@ def test_drawers_and_z_report_reach_main(rig):  # noqa: F811
     assert z["reconcile"]["difference_cents"] == 0 and z["reconcile"]["drawers_difference_cents"] == 0, z["reconcile"]
     assert z["counts"]["counter"] == 1 and z["counts"]["pickup"] == 1 and z["sales"]["total_cents"] == 2 * total
     tenders = {t["tender"]: t for t in z["tenders"]}
-    assert tenders["cash"]["collected_cents"] == total + 100 and tenders["card"]["collected_cents"] == total
-    assert z["tips"]["cash_cents"] == 100 and z["over_short_cents"] == -100 and z["no_sales"] == 1
+    assert tenders["cash"]["collected_cents"] == total and tenders["card"]["collected_cents"] == total
+    assert z["tips"]["cash_cents"] == 0 and z["over_short_cents"] == -100 and z["no_sales"] == 1
     drawers = {d["id"]: d for d in z["drawers"]}
     assert drawers[d1["id"]]["counted_cents"] == expected - 100
     assert drawers[d2["id"]]["close_reason"] == "batch_close" and drawers[d2["id"]]["flagged"] and drawers[d2["id"]]["counted_cents"] is None

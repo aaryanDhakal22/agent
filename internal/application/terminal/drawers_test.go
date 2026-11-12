@@ -80,11 +80,16 @@ func TestDrawerLifecycle(t *testing.T) {
 	r.svc.Logout(r.ctx, till2)
 	r.login(t, till2, "9876")
 
-	// A cash sale on Till 1 goes in its drawer (tip too, change not).
+	// A cash sale on Till 1 goes in its drawer (change not); a tip on cash
+	// is refused (tips are card only, 2026-11-12).
 	q, _ := r.svc.Quote(r.ctx, till, QuoteIn{Cart: sodaCart(2)})
 	total := q.Quote.(pricing.Quote).TotalCents
+	if _, err := r.svc.PlaceOrder(r.ctx, till, OrderIn{ClientKey: "drw-0000", Type: "counter", Cart: sodaCart(2),
+		Payments: []PaymentIn{{Tender: "cash", AmountCents: total, TipCents: 100, TenderedCents: 5000}}}); !errors.Is(err, terminal.ErrTipCardOnly) {
+		t.Fatalf("a cash tip: %v", err)
+	}
 	res, err := r.svc.PlaceOrder(r.ctx, till, OrderIn{ClientKey: "drw-0001", Type: "counter", Cart: sodaCart(2),
-		Payments: []PaymentIn{{Tender: "cash", AmountCents: total, TipCents: 100, TenderedCents: 5000}}})
+		Payments: []PaymentIn{{Tender: "cash", AmountCents: total, TenderedCents: 5000}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -128,9 +133,9 @@ func TestDrawerLifecycle(t *testing.T) {
 	if err != nil || !strings.Contains(string(e.Detail), d.ID) {
 		t.Fatalf("no sale: %+v %v", e, err)
 	}
-	want := int64(12000) + total + 100 + 500 - 2500
+	want := int64(12000) + total + 500 - 2500
 	v, _ = r.svc.Drawer(r.ctx, till)
-	if v.Drawer.ExpectedCents != want || v.Drawer.CashSalesCents != total || v.Drawer.CashTipsCents != 100 || v.Drawer.NoSales != 1 ||
+	if v.Drawer.ExpectedCents != want || v.Drawer.CashSalesCents != total || v.Drawer.CashTipsCents != 0 || v.Drawer.NoSales != 1 ||
 		len(v.Drawer.Movements) != 2 {
 		t.Fatalf("expected %d: %+v", want, v.Drawer)
 	}

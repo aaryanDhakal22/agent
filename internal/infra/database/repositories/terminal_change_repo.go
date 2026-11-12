@@ -100,6 +100,113 @@ func (r *OrderRepository) ChangeCounterOrder(ctx context.Context, id, staffID, d
 	return so, prev, changed, err
 }
 
+// ChangeOnlineOrder writes a terminal edit of an online / website order of
+// the open batch that is accepted or ready (agent contract §2.10aa): like
+// ChangeCounterOrder, but its money columns are the online kind (what is due
+// = the new total less what it arrived paid with and what the terminals
+// took) and main's order.changed carries extra()'s fields (refund_owed_cents,
+// refund_due) read after check ran.
+func (r *OrderRepository) ChangeOnlineOrder(ctx context.Context, id, staffID, deviceID string, check terminal.ChangeCheck,
+	extra func() map[string]any) (so, prev order.StoredOrder, changed bool, err error) {
+	ctx, _, end := dbSpan(ctx, "terminal.change_online_order")
+	defer end(&err)
+	now := time.Now()
+	err = r.withTx(ctx, func(q *models.Queries) error {
+		cur, err := loadOrder(ctx, q, id)
+		if err != nil {
+			return err
+		}
+		prev, so = cur, cur
+		if cur.Order.Source == order.SourceCounter {
+			return terminal.ErrNotEditable
+		}
+		b, err := q.GetOpenBatch(ctx)
+		if err != nil {
+			return fmt.Errorf("open batch: %w", err)
+		}
+		if cur.Status.BatchID != b.ID {
+			return terminal.ErrNotEditable
+		}
+		switch cur.Status.State {
+		case order.StateAccepted, order.StateReady:
+		default:
+			return terminal.ErrNotEditable
+		}
+		paid, err := listPayments(ctx, q, id)
+		if err != nil {
+			return err
+		}
+		snap, entries, err := check(cur, paid)
+		if err != nil || snap == nil {
+			return err
+		}
+		raw, err := json.Marshal(snap)
+		if err != nil {
+			return err
+		}
+		var net, tips int64
+		for _, p := range paid {
+			a, t := p.Signed()
+			net, tips = net+a, tips+t
+		}
+		due := max(snap.CashDue()-net, 0)
+		paidAt := sql.NullString{}
+		switch {
+		case due == 0 && cur.Status.PaidAt != nil:
+			paidAt = nullTS(*cur.Status.PaidAt)
+		case due == 0:
+			paidAt = nullTS(now)
+		}
+		if err := q.SetCounterMoney(ctx, models.SetCounterMoneyParams{Snapshot: string(raw), Paid: due == 0,
+			CashDueCents: sql.NullInt64{Int64: due, Valid: true}, TipCents: sql.NullInt64{Int64: tips, Valid: true},
+			PaidAt: paidAt, ID: id}); err != nil {
+			return fmt.Errorf("change online order: %w", err)
+		}
+		if deliveryMoved(cur.Order, *snap) {
+			if err := q.DeleteOrderGeo(ctx, id); err != nil {
+				return fmt.Errorf("drop old geo: %w", err)
+			}
+		}
+		if so, err = loadOrder(ctx, q, id); err != nil {
+			return err
+		}
+		changed = true
+		wire, err := changedSnapshot(so, paid, staffID, deviceID)
+		if err != nil {
+			return err
+		}
+		evID := uuid.NewString()
+		ev := map[string]any{"event_id": evID, "type": terminal.EventOrderChanged, "order_id": id,
+			"at": now.UTC().Truncate(time.Millisecond), "snapshot": wire, "staff_id": nilIfEmpty(staffID)}
+		if extra != nil {
+			for k, v := range extra() {
+				ev[k] = v
+			}
+		}
+		if err := insertEvent(ctx, q, evID, id, terminal.EventOrderChanged, now, ev); err != nil {
+			return err
+		}
+		if err := claimDraft(ctx, q, deviceID); err != nil {
+			return err
+		}
+		return insertJournal(ctx, q, now, entries)
+	})
+	return so, prev, changed, err
+}
+
+// OnlineOrder is an order from main (any batch the Pi holds): the terminals
+// read an online delivery the same way as an online pickup (§2.10aa).
+func (r *OrderRepository) OnlineOrder(ctx context.Context, id string) (order.StoredOrder, error) {
+	so, err := loadOrder(ctx, models.New(r.db), id)
+	if err != nil {
+		return order.StoredOrder{}, err
+	}
+	if so.Order.Source == order.SourceCounter {
+		return order.StoredOrder{}, order.ErrNotFound
+	}
+	return so, nil
+}
+
 // deliveryMoved: does after deliver somewhere before didn't (another street,
 // town, state or zip; a line2 or a note alone is the same place)?
 func deliveryMoved(before, after order.Snapshot) bool {

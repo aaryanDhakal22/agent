@@ -210,6 +210,9 @@ class AgentProc:
             # LAN discovery off unless a test asks: the roster agent (or another
             # throwaway one) may already hold UDP 48080 on this host.
             "AGENT_DISCOVERY_PORT": "0",
+            # The kept accept path (agent 2.10aa: real arrivals are placed on arrival, no accept step):
+            # the older suites accept orders themselves. A test of the placement passes "0".
+            "AGENT_TEST_ACCEPT_STEP": "1",
             **(extra_env or {}),
         }
         self._binary, self._env = binary, env

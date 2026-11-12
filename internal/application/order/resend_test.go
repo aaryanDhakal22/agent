@@ -84,6 +84,7 @@ func newTestService(t *testing.T, autoAccept bool) (*Service, *fakeRepo, *int, c
 	broker := ssebroker.New()
 	events, _ := broker.Subscribe()
 	svc := NewService(repo, fakeSettings{autoAccept: autoAccept}, print, nil, broker, zerolog.Nop(), meters)
+	svc.legacyArrival = true // the kept accept path (§2.10aa: real arrivals are placed)
 	return svc, repo, &prints, events
 }
 

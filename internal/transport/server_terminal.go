@@ -95,6 +95,8 @@ func (s *Server) terminalError(w http.ResponseWriter, r *http.Request, err error
 		s.writeJSON(w, http.StatusServiceUnavailable, errCodeMap(err.Error(), "menu_unavailable"))
 	case errors.Is(err, terminal.ErrNoConfig):
 		s.writeJSON(w, http.StatusServiceUnavailable, errCodeMap(err.Error(), "config_unavailable"))
+	case errors.Is(err, terminal.ErrTipCardOnly):
+		s.writeJSON(w, http.StatusBadRequest, errCodeMap(err.Error(), "tip_card_only"))
 	case errors.Is(err, terminal.ErrOverBalance):
 		s.writeJSON(w, http.StatusConflict, errCodeMap(err.Error(), "over_balance"))
 	case errors.Is(err, terminal.ErrGoodwillCounterOnly):

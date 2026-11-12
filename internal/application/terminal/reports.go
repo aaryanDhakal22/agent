@@ -36,7 +36,7 @@ var (
 	// ErrReportsOff: the Manager tab's floor isn't wired.
 	ErrReportsOff = errors.New("reports aren't available")
 	// ErrNotTippable: a tip goes on a card payment only (409 not_tippable).
-	ErrNotTippable = errors.New("a tip is added to a card payment only")
+	ErrNotTippable = terminal.ErrNotTippable
 	errNoTipChange = errors.New("the tip is already that")
 )
 

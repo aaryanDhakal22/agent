@@ -101,6 +101,21 @@ type Service struct {
 	// stamp: stamps an arriving order's lines before it is stored (the
 	// terminal store's show_on_driver_ticket flags; SetArrivalStamp).
 	stamp atomic.Pointer[func(*order.Snapshot)]
+	// prepSource: a placed order's default prep (SetPrepSource, §2.10aa).
+	prepSource atomic.Pointer[func(fulfillment string) int64]
+	placeOnce  sync.Once
+	// legacyArrival (Go tests of the kept accept path only): an arrival
+	// with the auto-accept setting off waits arrived, as before §2.10aa.
+	legacyArrival bool
+}
+
+// waitsArrived: only the tests' legacy mode keeps an order arrived.
+func (s *Service) waitsArrived(ctx context.Context) bool {
+	if !s.legacyArrival {
+		return false
+	}
+	auto, err := s.settings.GetAutoAccept(ctx)
+	return err != nil || !auto
 }
 
 func NewService(
@@ -141,6 +156,7 @@ func (s *Service) OnArrival(ctx context.Context, snap order.Snapshot) error {
 	if fn := s.stamp.Load(); fn != nil && *fn != nil {
 		(*fn)(&snap)
 	}
+	placedDirectMeta(&snap) // status.placed_direct (§2.10aa)
 
 	ctx, span := s.tracer.Start(ctx, "order.on_arrival",
 		trace.WithAttributes(
@@ -175,40 +191,17 @@ func (s *Service) OnArrival(ctx context.Context, snap order.Snapshot) error {
 	}
 	s.devEvent(devlog.Info, devlog.KindOrder, "Order %s arrived (%s)", devlog.Short(id.String()), snap.Fulfillment.Type)
 
-	autoAccept, err := s.settings.GetAutoAccept(ctx)
-	if err != nil {
-		s.logger.Warn().Ctx(ctx).Err(err).Msg("Failed to read auto-accept setting, defaulting to manual")
-		autoAccept = false
+	// §2.10aa: every order from main is placed like a called-in order (no
+	// accept step, no ring; the auto-accept setting no longer matters). The
+	// print runs on the accept worker (hardening F-7) so the SSE reader takes
+	// the next frame at once.
+	if s.waitsArrived(ctx) {
+		s.announceStored(ctx, id, snap)
+		return nil
 	}
-	span.SetAttributes(attribute.Bool("order.auto_accept", autoAccept))
-
-	if autoAccept {
-		// A future order isn't cooked now: it is scheduled with the default
-		// time for its type as the lead, and auto-accepted when it rings
-		// again at ring_at (RaiseDue) — that accept prints.
-		if cur, gerr := s.repo.GetByID(ctx, id); gerr == nil && cur.Status.Future && cur.Status.State == order.StateArrived {
-			lead := s.FutureLead(ctx, *cur)
-			span.SetAttributes(attribute.Bool("order.future", true))
-			_, err := s.Schedule(ctx, id.String(), lead)
-			if err == nil {
-				s.logger.Info().Ctx(ctx).Str("order_id", id.String()).Int("lead_minutes", lead).Msg("Auto-accept ON — future order scheduled")
-				return nil
-			}
-			s.logger.Error().Ctx(ctx).Err(err).Str("order_id", id.String()).Msg("Auto-schedule failed — order rings")
-			span.RecordError(err)
-		} else {
-			s.logger.Info().Ctx(ctx).Str("order_id", id.String()).Msg("Auto-accept ON — accepting immediately")
-			// Hardening F-7: the order is stored and acked; the accept (and
-			// its print, up to the dispatcher's 25 s budget) runs on the
-			// accept worker so the SSE reader takes the next frame at once.
-			if !s.queueAutoAccept(ctx, id, snap) {
-				s.autoAcceptOrRing(ctx, id, snap)
-			}
-			return nil
-		}
+	if !s.queueAutoAccept(ctx, id, snap) {
+		s.placeOrSchedule(ctx, id, snap)
 	}
-
-	s.announceStored(ctx, id, snap)
 	return nil
 }
 
@@ -410,7 +403,7 @@ func (s *Service) RecoverInterruptedAccepts(ctx context.Context) int {
 			continue
 		}
 		n++
-		s.logger.Warn().Ctx(ctx).Str("order_id", raw).Msg("Accept was interrupted (agent stopped mid-print) — order rings again")
+		s.logger.Warn().Ctx(ctx).Str("order_id", raw).Msg("Accept was interrupted (agent stopped mid-print) — it is placed again")
 	}
 	return n
 }
@@ -517,13 +510,13 @@ func (s *Service) resendExisting(ctx context.Context, so *order.StoredOrder) err
 		_, err := s.Reprint(ctx, uuid.MustParse(so.Order.ID))
 		return err
 	}
-	autoAccept, err := s.settings.GetAutoAccept(ctx)
-	if err == nil && autoAccept {
-		_, err := s.AutoAccept(ctx, uuid.MustParse(so.Order.ID))
-		return err
+	if s.waitsArrived(ctx) {
+		s.broadcastArrived(ctx, *so)
+		return nil
 	}
-	s.broadcastArrived(ctx, *so)
-	return nil
+	// §2.10aa: a waiting order is placed (never rung again).
+	_, err := s.Place(ctx, uuid.MustParse(so.Order.ID))
+	return err
 }
 
 // Reprint prints the order's customer receipt again (receipt only, normal

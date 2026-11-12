@@ -79,6 +79,7 @@ func newRouteService(t *testing.T) (*Service, *repositories.OrderRepository, cha
 		return printer.Outcome{Printed: []printer.TicketResult{{Kind: printer.TicketFull}}}, nil
 	}
 	svc := NewService(repo, repositories.NewSettingsRepository(db, zerolog.Nop()), print, n, broker, zerolog.Nop(), meters)
+	svc.legacyArrival = true // the kept accept path (§2.10aa: real arrivals are placed)
 	noAutoAssign(t, repo)
 	svc.SetGeo(GeoDeps{Floor: func() (*FloorStore, *FloorMap) { return &FloorStore{Lat: 39.40000, Lng: -76.60000}, nil }})
 	return svc, repo, events, fake

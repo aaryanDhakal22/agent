@@ -64,6 +64,9 @@ type ChangeResult struct {
 	BalanceCents int64             `json:"balance_cents"`
 	// TypeChanged: the order moved takeout <-> delivery (ChangeIn.Type).
 	TypeChanged bool `json:"type_changed"`
+	// RefundDue (an online order, §2.10aa): this change's refund owed to its
+	// customer (the terminal prints the REFUND DUE slip); nil = none.
+	RefundDue *terminal.RefundDue `json:"refund_due"`
 }
 
 // orderAddress is a terminal address as the order keeps it (nil = none given:
@@ -242,6 +245,9 @@ func (s *Service) changeCart(ctx context.Context, a Actor, id string, in ChangeI
 		}
 		return &ChangeResult{Order: cur.Order, Added: nonNil(e.Added), Removed: nonNil(e.Removed), Changed: true, Duplicate: true,
 			BalanceCents: cur.Order.Status.CashDueCents}, nil
+	}
+	if cur.Order.Order.Source != order.SourceCounter {
+		return s.changeOnline(ctx, a, st, cfg, cur.Order, in, hash) // §2.10aa
 	}
 	m, ms := s.store.Menu()
 	if m == nil {

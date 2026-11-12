@@ -96,7 +96,36 @@ func NewService(store *Store, repo Repo, orders Orders, pub Publisher, logger ze
 	s := &Service{store: store, repo: repo, orders: orders, pub: pub, logger: logger.With().Str("module", "terminal").Logger(),
 		staff: newStaffBook(), now: time.Now, cm: observability.Counter()}
 	store.OnConfig(s.configChanged)
+	// Online orders are placed with a terminal SEND's default prep (§2.10aa).
+	if ps, ok := orders.(interface {
+		SetPrepSource(func(fulfillment string) int64)
+	}); ok {
+		ps.SetPrepSource(s.DefaultPrep)
+	}
 	return s
+}
+
+// earlierDay: is the order of an earlier batch, not carried (a refund on it
+// needs a manager)? A repo that can't tell answers no.
+func earlierDay(ctx context.Context, repo Repo, orderID string) bool {
+	if r, ok := repo.(interface {
+		EarlierBatchOrder(ctx context.Context, id string) (bool, error)
+	}); ok {
+		v, err := r.EarlierBatchOrder(ctx, orderID)
+		return err == nil && v
+	}
+	return false
+}
+
+// DefaultPrep is a SEND's default minutes for a fulfillment type with no
+// time quoted (an online order placed on arrival takes it too, §2.10aa).
+func (s *Service) DefaultPrep(fulfillment string) int64 {
+	cfg, _ := s.store.Config()
+	typ := terminal.TypeDelivery
+	if fulfillment != "delivery" {
+		typ = terminal.TypePickup
+	}
+	return s.prepMinutes(cfg, typ, fulfillment, nil)
 }
 
 // EventSessionEnded tells the terminals a staff session ended on the Pi's
@@ -585,6 +614,9 @@ func (s *Service) Quote(ctx context.Context, a Actor, in QuoteIn) (*QuoteView, e
 		if err != nil {
 			return nil, err
 		}
+		if cur.Order.Order.Source != order.SourceCounter {
+			return s.onlineQuote(m, cur.Order.Order, in.Cart) // §2.10aa
+		}
 		placed = &cur.Order.Order
 	}
 	// Rung prices kept, gone items sold as custom lines (rung.go, §2.10u).
@@ -835,6 +867,9 @@ func (p PaymentIn) payment(a Actor, st terminal.Staff, orderID string, at time.T
 	}
 	if len(p.Ref) > 120 || len(p.Last4) > 4 {
 		return terminal.Payment{}, badRequest("ref is at most 120 characters, last4 at most 4")
+	}
+	if !p.Refund && p.TipCents > 0 && !terminal.IsCard(p.Tender) {
+		return terminal.Payment{}, terminal.ErrTipCardOnly // tips are card only (the owner, 2026-11-12)
 	}
 	reason := strings.TrimSpace(p.Reason)
 	if p.Refund && (reason == "" || utf8.RuneCountInString(reason) > 140) {
@@ -1138,8 +1173,21 @@ func (s *Service) Order(ctx context.Context, id string) (*OrderView, error) {
 	}
 	if found == nil {
 		if found, err = s.pickupOrder(ctx, id); err != nil {
-			return nil, err
+			// An online delivery (§2.10aa: edited like ours).
+			orp, ok := s.repo.(onlineRepo)
+			if !ok {
+				return nil, err
+			}
+			so, oerr := orp.OnlineOrder(ctx, id)
+			if oerr != nil {
+				return nil, err
+			}
+			found = &so
 		}
+	}
+	if found.Order.Source != order.SourceCounter {
+		v := withOnlineCart(*found)
+		found = &v
 	}
 	pays, err := s.repo.OrderPayments(ctx, id)
 	if err != nil {
@@ -1333,6 +1381,10 @@ func (s *Service) addPayment(ctx context.Context, a Actor, orderID string, in Pa
 		if err := terminal.RefundRefused(before, pay); err != nil {
 			return nil, err // refused for anyone: no manager is asked first
 		}
+		// An earlier day's order (not carried): a manager's refund (2026-11-12).
+		if earlierDay(ctx, s.repo, orderID) {
+			need = terminal.EarlierDayRefundNeed(cfg, st, []terminal.Payment{pay})
+		}
 	case pay.Tender == terminal.TenderComp && !cfg.MayComp(st):
 		// A driver's comp needs a manager (contract §2.10i).
 		need = &terminal.ManagerRequired{Action: terminal.ActionComp, Requested: pay.AmountCents}
@@ -1359,7 +1411,14 @@ func (s *Service) addPayment(ctx context.Context, a Actor, orderID string, in Pa
 				if n := terminal.RefundNeed(cfg, st, paid, []terminal.Payment{pay}, terminal.ActionRefund); n != nil {
 					return nil, nil, n // another refund raced this one
 				}
+				if cur.Status.EarlierBatch {
+					if n := terminal.EarlierDayRefundNeed(cfg, st, []terminal.Payment{pay}); n != nil {
+						return nil, nil, n
+					}
+				}
 			}
+		} else if cur.Status.EarlierBatch {
+			return nil, nil, terminal.ErrNotPayable // an earlier day's order takes refunds only
 		} else if due := terminal.DueOf(cur); pay.AmountCents > due {
 			return nil, nil, fmt.Errorf("%w: the balance is %d", terminal.ErrOverBalance, due)
 		}

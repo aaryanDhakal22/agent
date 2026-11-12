@@ -45,6 +45,7 @@ func newPoolService(t *testing.T) (*Service, *repositories.OrderRepository, chan
 		return printer.Outcome{Printed: []printer.TicketResult{{Kind: printer.TicketFull}}}, nil
 	}
 	svc := NewService(repo, repositories.NewSettingsRepository(db, zerolog.Nop()), print, nil, broker, zerolog.Nop(), meters)
+	svc.legacyArrival = true // the kept accept path (§2.10aa: real arrivals are placed)
 	noAutoAssign(t, repo)
 	return svc, repo, events
 }

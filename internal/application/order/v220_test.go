@@ -307,7 +307,7 @@ func TestAutoAcceptedMark(t *testing.T) {
 		t.Fatalf("auto_accepted on a staff accept: %s", b)
 	}
 
-	// Nothing printed: reverted to arrived, mark cleared, and it rings.
+	// Nothing printed (§2.10aa): the order stays placed - no revert, no ring.
 	svc.print = func(context.Context, order.Snapshot, printer.Mode) (printer.Outcome, error) {
 		return printer.Outcome{}, errors.New("all printers down")
 	}
@@ -316,11 +316,11 @@ func TestAutoAcceptedMark(t *testing.T) {
 	s3 := snap()
 	svc.OnArrival(ctx, s3)
 	back, _ := repo.GetByID(ctx, uuid.MustParse(s3.ID))
-	if back.Status.State != order.StateArrived || back.Status.AutoAccepted {
-		t.Fatalf("reverted: %+v", back.Status)
+	if back.Status.State != order.StateAccepted || !back.Status.AutoAccepted || !back.Status.PlacedDirect {
+		t.Fatalf("not placed: %+v", back.Status)
 	}
-	if _, ok := eventOf(events, "order.arrived"); !ok {
-		t.Fatal("a failed auto-accept didn't ring")
+	if _, ok := eventOf(events, "order.arrived"); ok {
+		t.Fatal("a placed order rang")
 	}
 }
 

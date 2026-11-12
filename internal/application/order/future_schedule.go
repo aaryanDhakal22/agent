@@ -109,30 +109,27 @@ func (s *Service) RaiseDue(ctx context.Context, now time.Time) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	auto := false
-	if len(list) > 0 {
-		if auto, err = s.settings.GetAutoAccept(ctx); err != nil {
-			s.logger.Warn().Ctx(ctx).Err(err).Msg("Failed to read auto-accept setting, defaulting to manual")
-			auto = false
-		}
-	}
+	// §2.10aa: a due future order is placed at its ring time (it never
+	// rings); only a failed claim leaves it waiting for the tablets.
+	wait := len(list) > 0 && s.waitsArrived(ctx)
 	for _, so := range list {
-		if auto {
-			id := uuid.MustParse(so.Order.ID)
-			if _, err := s.AutoAccept(ctx, id); err == nil {
-				s.logger.Info().Ctx(ctx).Str("order_id", so.Order.ID).Msg("Future order is due: auto-accepted")
+		id := uuid.MustParse(so.Order.ID)
+		if wait {
+			s.broadcastArrived(ctx, so)
+			continue
+		}
+		if _, err := s.Place(ctx, id); err == nil {
+			s.logger.Info().Ctx(ctx).Str("order_id", so.Order.ID).Msg("Future order is due: placed")
+			continue
+		}
+		if cur, gerr := s.repo.GetByID(ctx, id); gerr == nil {
+			if cur.Status.State != order.StateArrived {
+				s.publishUpdated(*cur)
 				continue
 			}
-			s.logger.Error().Ctx(ctx).Str("order_id", so.Order.ID).Msg("Auto-accept of a due future order failed — ringing")
-			if cur, gerr := s.repo.GetByID(ctx, id); gerr == nil {
-				if cur.Status.State != order.StateArrived {
-					s.publishUpdated(*cur)
-					continue
-				}
-				so = *cur
-			}
+			so = *cur
 		}
-		s.logger.Info().Ctx(ctx).Str("order_id", so.Order.ID).Msg("Future order is due: ringing again")
+		s.logger.Error().Ctx(ctx).Str("order_id", so.Order.ID).Msg("Placing a due future order failed - it waits on the tablets")
 		s.broadcastArrived(ctx, so)
 	}
 	return len(list), nil

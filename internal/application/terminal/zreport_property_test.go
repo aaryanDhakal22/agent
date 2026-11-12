@@ -217,12 +217,12 @@ func runDay(t *testing.T, r *rig, rng *rand.Rand, day int) *model {
 			}
 			switch rng.Intn(4) {
 			case 0: // unpaid (pay later)
-			case 1: // all cash with a tip and change
-				tip := int64(rng.Intn(3)) * 100
-				in.Payments = []PaymentIn{{Tender: "cash", AmountCents: total, TipCents: tip, TenderedCents: total + tip + int64(rng.Intn(2000))}}
+			case 1: // all cash with change (tips are card only, 2026-11-12)
+				in.Payments = []PaymentIn{{Tender: "cash", AmountCents: total, TenderedCents: total + int64(rng.Intn(2000))}}
 			case 2: // split
 				part := 1 + rng.Int63n(total-1)
-				in.Payments = []PaymentIn{{Tender: tenders[rng.Intn(5)], AmountCents: part, TipCents: int64(rng.Intn(2)) * 150},
+				t0 := tenders[rng.Intn(5)]
+				in.Payments = []PaymentIn{{Tender: t0, AmountCents: part, TipCents: cardTip(t0, int64(rng.Intn(2))*150)},
 					{Tender: "card", AmountCents: total - part}}
 			case 3: // one tender (comp with the manager's PIN)
 				in.Payments = []PaymentIn{{Tender: tenders[rng.Intn(len(tenders))], AmountCents: total}}
@@ -246,7 +246,8 @@ func runDay(t *testing.T, r *rig, rng *rand.Rand, day int) *model {
 			}
 			amt, _ := o.net()
 			due := o.total - amt
-			pay := PaymentIn{Tender: tenders[rng.Intn(len(tenders))], AmountCents: 1 + rng.Int63n(due), TipCents: int64(rng.Intn(3)) * 50,
+			tn := tenders[rng.Intn(len(tenders))]
+			pay := PaymentIn{Tender: tn, AmountCents: 1 + rng.Int63n(due), TipCents: cardTip(tn, int64(rng.Intn(3))*50),
 				ManagerPIN: "9876", ClientKey: nextKey()}
 			res, err := r.svc.AddPayment(r.ctx, a, o.id, pay)
 			if err != nil {
@@ -545,4 +546,12 @@ func (m *model) check(t *testing.T, where string, z *terminal.Z) {
 	if z.OverShort != overShort {
 		t.Fatalf("%s: over/short %d, model %d", where, z.OverShort, overShort)
 	}
+}
+
+// cardTip is tip on a card tender, 0 on any other (tips are card only).
+func cardTip(tender string, tip int64) int64 {
+	if terminal.IsCard(tender) {
+		return tip
+	}
+	return 0
 }

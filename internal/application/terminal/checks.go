@@ -50,6 +50,9 @@ type Check struct {
 	DriverName    string        `json:"driver_name"`
 	PaymentsCount int           `json:"payments_count"`
 	PromisedAt    *time.Time    `json:"promised_at"`
+	// RefundOwedCents (an online order edited at a terminal, §2.10aa): what
+	// its customer is owed (the manager refunds it outside); 0 = none.
+	RefundOwedCents int64 `json:"refund_owed_cents"`
 
 	// What the filters look at besides the fields above.
 	staffs, devices map[string]bool
@@ -305,7 +308,8 @@ func (s *Service) checksOf(ctx context.Context, batchID int64, staffNames map[st
 			Voided:   so.Status.State == order.StateCancelled && snap.Source == order.SourceCounter && so.Status.CancelReason == terminal.VoidReason,
 			PlacedAt: snap.PlacedAt.UTC(), Customer: CheckCustomer{Name: snap.Customer.DisplayName, Phone: snap.Customer.Phone},
 			TotalCents: snap.Money.Total, Paid: so.Status.CashDueCents == 0, CashDueCents: so.Status.CashDueCents,
-			Tenders: []string{}, staffs: map[string]bool{}, devices: map[string]bool{}}
+			RefundOwedCents: so.Status.RefundOwedCents,
+			Tenders:         []string{}, staffs: map[string]bool{}, devices: map[string]bool{}}
 		if so.Status.State == order.StateCancelled {
 			c.Paid, c.CashDueCents = false, 0 // nothing to collect; the paid filter skips it
 		}
@@ -483,7 +487,7 @@ func (s *Service) CheckByID(ctx context.Context, a Actor, id string) (*CheckDeta
 			d := &CheckDetail{Check: cs[i], Payments: []terminal.Payment{}, Adjustments: []order.Discount{}, Journal: []terminal.Entry{}}
 			for _, so := range in.Orders {
 				if so.Order.ID == id {
-					d.Order = so
+					d.Order = withOnlineCart(so) // an online order's cart (§2.10aa)
 				}
 			}
 			if pays, err := s.repo.OrderPayments(ctx, id); err == nil && pays != nil {

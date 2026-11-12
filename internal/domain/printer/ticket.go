@@ -15,6 +15,10 @@ const (
 	// TicketStation is a kitchen ticket: only the station's own items in full,
 	// then the rest of the order listed small below a rule.
 	TicketStation TicketKind = "station"
+	// TicketDeliveryCopies (agent §2.10aa): an online delivery's Merchant
+	// Copy + Customer Copy in the terminal's delivery layout, one job on the
+	// receipt printer (receipt.BuildDeliveryCopies).
+	TicketDeliveryCopies TicketKind = "delivery_copies"
 )
 
 // Mode is which of an order's tickets a print job produces
@@ -63,6 +67,12 @@ const (
 	// with lines on it, its new type on top, a NOW <TYPE> / WAS <TYPE> band
 	// and the station's lines (to find the bag). No receipt.
 	ModeTypeChange Mode = "type_change"
+	// ModePlaced (agent §2.10aa, the owner 2026-11-12: online orders =
+	// called-in orders): an online / website order placed on arrival prints
+	// like a terminal SEND - the station tickets (ModeKitchen's, no ticket
+	// switches) and, for a delivery, the Merchant + Customer Copy on the
+	// receipt printer. A pickup prints no customer receipt then.
+	ModePlaced Mode = "placed"
 )
 
 // Ticket is one thing to print for an order. A planned order is a set of

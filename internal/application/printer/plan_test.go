@@ -462,3 +462,23 @@ func TestPlan_NoKitchenTicket(t *testing.T) {
 		t.Fatalf("sole printer: %+v", tk)
 	}
 }
+
+// §2.10aa: an online order placed on arrival prints like a SEND - the
+// stations (whatever the online ticket switches say), and for a delivery the
+// Merchant + Customer Copy on the receipt printer; a pickup no receipt.
+func TestPlanPlaced_StationsAndDeliveryCopies(t *testing.T) {
+	roster := []RosterEntry{front, pizza, wings}
+	off := Rules{Tickets: order.DefaultTicketToggles()}
+	off.Tickets.OnlineCashPickup, off.Tickets.OnlineCashDelivery, off.Tickets.OnlineCard = false, false, false
+	items := []order.LineItem{item("Pepperoni", order.RoutingMatched, pizza.ID), item("Hot Wings", order.RoutingMatched, wings.ID)}
+	deliv := order.Snapshot{Source: "online", Fulfillment: order.Fulfillment{Type: "delivery"}, Money: order.Money{Total: 2500}, Items: items}
+	if tk, _ := PlanWith(deliv, roster, printer.ModePlaced, off); !reflect.DeepEqual(kinds(tk),
+		[]string{"station:p-pizza", "station:p-wings", "delivery_copies:p-front"}) {
+		t.Fatalf("placed delivery: %v", kinds(tk))
+	}
+	pick := deliv
+	pick.Fulfillment.Type = "pickup"
+	if tk, _ := PlanWith(pick, roster, printer.ModePlaced, off); !reflect.DeepEqual(kinds(tk), []string{"station:p-pizza", "station:p-wings"}) {
+		t.Fatalf("placed pickup: %v", kinds(tk))
+	}
+}

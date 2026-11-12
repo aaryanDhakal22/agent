@@ -36,6 +36,7 @@ type RuleTable struct {
 	Refunds        []RuleCase `json:"refunds"`
 	GeneralRefunds []RuleCase `json:"general_refunds"`
 	Comps          []RuleCase `json:"comps"`
+	Tips           []RuleCase `json:"tips"`
 	Discounts      []RuleCase `json:"discounts"`
 	PriceChanges   []RuleCase `json:"price_changes"`
 }
@@ -66,8 +67,12 @@ type RuleCase struct {
 		Batch    string    `json:"batch"`
 		Payments []RulePay `json:"payments"`
 	} `json:"order"`
-	Refund RulePay         `json:"refund"`
-	Pi     json.RawMessage `json:"pi"`
+	Refund RulePay `json:"refund"`
+	// Payment / TipAfter: a tips case (a payment taken with its tip, or a
+	// tip set afterwards on it).
+	Payment  RulePay         `json:"payment"`
+	TipAfter bool            `json:"tip_after"`
+	Pi       json.RawMessage `json:"pi"`
 }
 
 // LoadRules reads the table from path.
@@ -130,6 +135,10 @@ func Answer(need *terminal.ManagerRequired, err error) string {
 		return `{"refused":"refund_too_big"}`
 	case err != nil && errors.Is(err, terminal.ErrNotPayable):
 		return `{"refused":"not_payable"}`
+	case err != nil && errors.Is(err, terminal.ErrTipCardOnly):
+		return `{"refused":"tip_card_only"}`
+	case err != nil && errors.Is(err, terminal.ErrNotTippable):
+		return `{"refused":"not_tippable"}`
 	case err != nil:
 		return "error: " + err.Error()
 	case need != nil:

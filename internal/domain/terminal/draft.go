@@ -157,6 +157,17 @@ func OnPickupList(so order.StoredOrder) bool {
 	return DueOf(so) > 0 || so.Status.FinishedAt == nil
 }
 
+// OnlinePayableStates: an online / website order takes money at a terminal
+// (its balance after an edit, a cash pickup's total, §2.10aa) while it is
+// accepted, ready or scheduled; a delivery also once out or delivered (the
+// balance collected after the run).
+func OnlinePayableStates(so order.StoredOrder) bool {
+	if OnPickupStates(so) {
+		return true
+	}
+	return so.IsDelivery() && (so.Status.State == order.StateOnDelivery || so.Status.State == order.StateDelivered)
+}
+
 // OnPickupStates: accepted, ready or scheduled (the states a pickup is on
 // the list in; an online order still ringing is not).
 func OnPickupStates(so order.StoredOrder) bool {

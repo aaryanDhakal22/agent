@@ -115,6 +115,7 @@ func newIntegService(t *testing.T) (*Service, *repositories.OrderRepository, cha
 		return printer.Outcome{Printed: printed}, nil
 	}
 	svc := NewService(repo, repositories.NewSettingsRepository(db, zerolog.Nop()), print, nil, broker, zerolog.Nop(), meters)
+	svc.legacyArrival = true // the kept accept path (§2.10aa: real arrivals are placed)
 	noAutoAssign(t, repo)
 	svc.LoadIntegrationSettings(ctx)
 	rpc := &rpcLog{}
@@ -427,7 +428,8 @@ func TestAutoAcceptSchedulesFutureOrders(t *testing.T) {
 		!got.Status.AutoAccepted {
 		t.Fatalf("at ring = %+v", got.Status)
 	}
-	if p := prints.all(); len(p) != 2 || p[1].OrderID != s.ID || p[1].Mode != printer.ModeAccept {
+	// §2.10aa: placed like a called-in order (stations + a delivery's copies).
+	if p := prints.all(); len(p) != 2 || p[1].OrderID != s.ID || p[1].Mode != printer.ModePlaced {
 		t.Fatalf("prints = %+v", p)
 	}
 }

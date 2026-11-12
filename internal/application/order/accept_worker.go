@@ -39,7 +39,7 @@ func (s *Service) StartAcceptWorker(ctx context.Context) {
 			case <-ctx.Done():
 				return
 			case j := <-q:
-				_ = safego.Do(j.ctx, "order.auto_accept", func() { s.autoAcceptOrRing(j.ctx, j.id, j.snap) })
+				_ = safego.Do(j.ctx, "order.auto_accept", func() { s.placeOrSchedule(j.ctx, j.id, j.snap) })
 			}
 		}
 	}()

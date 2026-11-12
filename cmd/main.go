@@ -338,6 +338,16 @@ func main() {
 	broker := ssebroker.New()
 	orderService := orderApp.NewService(orderRepo, settingsRepo, printFn, notifier, broker, logger, meters)
 	orderService.SetDevLog(devRing)
+	// §2.10aa: every order from main is placed on arrival. AGENT_TEST_ACCEPT_STEP=1 (dev only, the
+	// older pytest suites of the kept accept path) lets arrivals wait for the auto-accept setting.
+	if os.Getenv("AGENT_TEST_ACCEPT_STEP") == "1" {
+		if cfg.AppEnv == "dev" {
+			orderService.KeepAcceptStep(true)
+			logger.Warn().Msg("AGENT_TEST_ACCEPT_STEP: arrivals wait for an accept (dev tests only)")
+		} else {
+			logger.Warn().Str("app_env", cfg.AppEnv).Msg("AGENT_TEST_ACCEPT_STEP refused outside dev: orders are placed on arrival")
+		}
+	}
 	// F-7: auto-accepts (and their prints) run on a worker, off the SSE reader.
 	orderService.StartAcceptWorker(ctx)
 	// Driver reports print on the receipt printer (failover like a ticket),

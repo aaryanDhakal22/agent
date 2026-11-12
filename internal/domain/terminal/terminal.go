@@ -756,8 +756,13 @@ var (
 	ErrManagerPINWrong = errors.New("that isn't a manager's PIN")
 	ErrNotCounterOrder = errors.New("not a counter order")
 	ErrNotPayable      = errors.New("this order can't take a payment")
-	ErrOverBalance     = errors.New("more than the order's balance")
-	ErrRefundTooBig    = errors.New("more than was paid")
+	// ErrTipCardOnly (the owner, 2026-11-12): a tip goes on a card payment
+	// only - a cash or comp payment with a tip is 400 tip_card_only.
+	ErrTipCardOnly = errors.New("a tip goes on a card payment only")
+	// ErrNotTippable: a tip set afterwards goes on a card payment only (409).
+	ErrNotTippable  = errors.New("a tip is added to a card payment only")
+	ErrOverBalance  = errors.New("more than the order's balance")
+	ErrRefundTooBig = errors.New("more than was paid")
 	// ErrGoodwillCounterOnly: a goodwill refund (contract 2.10n) lowers the
 	// order's money, which only a terminal's own order may (400).
 	ErrGoodwillCounterOnly = errors.New("a goodwill refund is for the terminal's own orders (an online order's money is main's)")
@@ -786,7 +791,30 @@ const (
 	NeedCashForCard = "cash_for_card"
 	// NeedCloseBatch: the day's close (Close batch = the Z) from a terminal.
 	NeedCloseBatch = "close_batch"
+	// NeedRefundEarlierDay: a refund on an earlier day's order (not carried):
+	// a manager's (the owner, 2026-11-12; money-rules R24/R25/R33-R36). It
+	// lands in today's batch, drawer and Z.
+	NeedRefundEarlierDay = "refund_earlier_day"
 )
+
+// EarlierDayRefundNeed is what a refund on an earlier day's order needs: a
+// manager (or anyone main made unlimited) gives it alone, anyone else gets
+// manager_required refund_earlier_day for the whole refund (amount + tip).
+// The other refund rules (RefundRefused) still apply first.
+func EarlierDayRefundNeed(c *Config, st Staff, refunds []Payment) *ManagerRequired {
+	if c.LimitsOf(st).Unlimited {
+		return nil
+	}
+	var n int64
+	for _, r := range refunds {
+		n += r.AmountCents + r.TipCents
+	}
+	return &ManagerRequired{Action: NeedRefundEarlierDay, Requested: n}
+}
+
+// TipAllowed: a payment may carry a tip only on a card (card, Square app,
+// manually entered); a refund gives back what it gives back.
+func TipAllowed(p Payment) bool { return p.Refund || p.TipCents == 0 || IsCard(p.Tender) }
 
 // CashierRefunded is what the order's refunds gave back without a manager
 // (amount + tip): refunds no manager approved, made by someone with a limit
@@ -830,9 +858,10 @@ func RefundRefused(paid []Payment, r Payment) error {
 	return nil
 }
 
-// PayableBatch: an order takes money (and refunds) only in the open batch,
-// or while it is carried past its close (contract 2.10s §4); an earlier
-// batch's is refused for anyone (409 not_payable).
+// PayableBatch: an order takes money only in the open batch, or while it is
+// carried past its close (contract 2.10s §4); an earlier batch's is refused
+// (409 not_payable) - except a refund with a manager (EarlierDayRefundNeed,
+// 2026-11-12).
 func PayableBatch(inOpenBatch, carried bool) bool { return inOpenBatch || carried }
 
 // RefundNeed is what a manager must approve for refunds about to be made

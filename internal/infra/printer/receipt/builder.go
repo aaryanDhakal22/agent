@@ -43,6 +43,9 @@ const (
 // it printed on a stand-in printer. order.DefaultReceiptPrefs() prints exactly
 // what the agent printed before the settings existed.
 func Build(snap order.Snapshot, sc storeconfig.StoreContext, t printer.Ticket, prefs order.ReceiptPrefs) []byte {
+	if t.Kind == printer.TicketDeliveryCopies {
+		return BuildDeliveryCopies(snap, sc, prefs, t.ReroutedFrom)
+	}
 	snap = localize(snap, sc)
 	prefs = prefs.Normalize()
 	if t.Kind == printer.TicketStation {

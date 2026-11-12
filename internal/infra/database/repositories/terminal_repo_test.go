@@ -200,11 +200,9 @@ func TestCounterPaymentsAndVoid(t *testing.T) {
 	if len(pays) != 3 || !pays[2].Refund {
 		t.Fatalf("payments: %+v", pays)
 	}
-	// Not a counter order, nor a pickup (contract 2.10i: online pickups may be paid here).
-	web := accept(t, r, arriveWeb(t, r, "web", "delivery", true))
-	if _, _, _, err := r.AddCounterPayment(ctx, web.Order.ID, "", "", nil); !errors.Is(err, terminal.ErrNotCounterOrder) {
-		t.Fatalf("web delivery: %v", err)
-	}
+	// Every order from main takes money at a terminal now (§2.10aa: online
+	// deliveries too, their balance after an edit); the service decides
+	// what (application/terminal pickups_test).
 }
 
 func TestJournalAndSnapshots(t *testing.T) {

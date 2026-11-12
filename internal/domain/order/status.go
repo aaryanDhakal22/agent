@@ -87,6 +87,19 @@ type Status struct {
 	// order auto-accepted at its re-ring too). The tablet shows a banner.
 	AutoAccepted bool `json:"auto_accepted,omitempty"`
 
+	// PlacedDirect (§2.10aa): an order from main placed on arrival like a
+	// called-in order - it never rang and nobody accepted it (Quibase shows
+	// no banner, no prep prompt). RefundOwedCents: what an edited online
+	// order owes its customer (a removal below what it arrived paid with;
+	// the manager refunds it outside, no money moved here). Read from the
+	// snapshot's Pi metadata (Snapshot.PlacedDirect / RefundOwedCents).
+	PlacedDirect bool `json:"placed_direct,omitempty"`
+	// EarlierBatch (never on the wire): set by the payment transaction on an
+	// order of an earlier batch that isn't carried (it takes refunds only,
+	// with a manager).
+	EarlierBatch    bool  `json:"-"`
+	RefundOwedCents int64 `json:"refund_owed_cents,omitempty"`
+
 	// Not delivered (2.2.1): the driver came back with the food. CameBack
 	// holds a retried order aside (ready, no driver, no pool) until staff
 	// release it; NotDelivered is the last such action (kept after release

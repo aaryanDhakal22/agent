@@ -96,8 +96,9 @@ func TestOnlineCashPickupPaidAtTheTerminalThenPickedUp(t *testing.T) {
 	if _, err := r.svc.AddPayment(r.ctx, till, card.Order.ID, PaymentIn{ClientKey: tk(), Tender: terminal.TenderCash, AmountCents: 1}); !errors.Is(err, terminal.ErrOverBalance) {
 		t.Fatalf("a card order owes nothing: %v", err)
 	}
-	if _, err := r.svc.AddPayment(r.ctx, till, deliv.Order.ID, PaymentIn{ClientKey: tk(), Tender: terminal.TenderCash, AmountCents: 1}); !errors.Is(err, terminal.ErrNotCounterOrder) {
-		t.Fatalf("a delivery is the driver's: %v", err)
+	// An online delivery takes its balance at a terminal too (§2.10aa).
+	if _, err := r.svc.AddPayment(r.ctx, till, deliv.Order.ID, PaymentIn{ClientKey: tk(), Tender: terminal.TenderCash, AmountCents: 1}); err != nil {
+		t.Fatalf("an online delivery's balance: %v", err)
 	}
 	pay, err := r.svc.AddPayment(r.ctx, till, cash.Order.ID, PaymentIn{Tender: terminal.TenderCash, AmountCents: 2000, TenderedCents: 2500, ClientKey: "pay-online-01"})
 	if err != nil || pay.BalanceCents != 0 || !pay.Order.Status.Paid || pay.Payment.ChangeCents != 500 {
@@ -106,14 +107,14 @@ func TestOnlineCashPickupPaidAtTheTerminalThenPickedUp(t *testing.T) {
 	if pay.Order.Order.Money.Total != 2000 || len(pay.Order.Order.Payments) != 0 {
 		t.Fatalf("main's snapshot is never rewritten: %+v", pay.Order.Order)
 	}
-	if r.pub.count(EventOrderPaid) != 1 {
+	if r.pub.count(EventOrderPaid) != 2 { // the delivery's balance above + this
 		t.Fatal("terminal.order.paid")
 	}
 	// An online pickup paid at the counter stays listed (paid) until it is finished.
 	if so, ok := pickupIDs(t, r)[cash.Order.ID]; !ok || !so.Status.Paid {
 		t.Fatal("a paid online pickup stays until finished")
 	}
-	if len(journalOf(t, r, terminal.ActionPayment)) != 1 {
+	if len(journalOf(t, r, terminal.ActionPayment)) != 2 { // the delivery's balance + this
 		t.Fatal("payment journaled")
 	}
 	// Handed over: finished, off the list, announced; again = already.

@@ -234,6 +234,7 @@ func toStored(row models.Order) (order.StoredOrder, error) {
 	st.Paid, st.Rerung = row.Paid, row.Rerung
 	st.Carried = row.Carried
 	st.AutoAccepted = row.AutoAccepted
+	st.PlacedDirect, st.RefundOwedCents = s.PlacedDirect(), s.RefundOwedCents()
 	st.CameBack = row.CameBack
 	st.RunSeq = optInt(row.RunSeq)
 	if row.NotDeliveredAction != "" {

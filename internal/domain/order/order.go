@@ -251,6 +251,11 @@ func (s Snapshot) CashDue() int64 {
 		}
 		return max(due, 0)
 	}
+	if ob := s.OnlineBase(); ob != nil {
+		// An online order edited at a terminal (§2.10aa): what it arrived
+		// paid with covers the new total, the rest is due.
+		return max(s.Money.Total-ob.PaidCents, 0)
+	}
 	if len(s.Payments) == 0 {
 		return s.Money.Total
 	}
