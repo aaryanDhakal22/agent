@@ -6,6 +6,8 @@
   <meta name="color-scheme" content="light dark" />
   <title>Quicc POS — Agent</title>
   <link rel="stylesheet" href="/static/app.css" />
+  <link rel="icon" href="/static/favicon.ico" sizes="48x48" />
+  <link rel="icon" href="/static/quiccpos-icon.svg" type="image/svg+xml" />
   <!-- app.js registers the Alpine component on alpine:init, so it loads first;
        both are deferred and run in order. Icons: Lucide (ISC), see static/LICENSES.md. -->
   <script defer src="/static/app.js"></script>
@@ -18,7 +20,7 @@
 <!-- Loading (visible until the first /api/session answer)                  -->
 <!-- ===================================================================== -->
 <div class="auth" x-show="state === 'loading'">
-  <div class="auth-mid"><div class="auth-head"><div class="brand-tile lg" aria-hidden="true">q</div><p>Loading…</p></div></div>
+  <div class="auth-mid"><div class="auth-head"><img class="brand-tile lg" src="/static/quiccpos-icon.svg" alt="" aria-hidden="true" /><p>Loading…</p></div></div>
 </div>
 
 <!-- ===================================================================== -->
@@ -33,7 +35,7 @@
   <main class="auth-mid">
     <div class="auth-col">
       <div class="auth-head">
-        <div class="brand-tile lg" aria-hidden="true">q</div>
+        <img class="brand-tile lg" src="/static/quiccpos-icon.svg" alt="" aria-hidden="true" />
         <div x-show="state === 'unconfigured'">
           <h1>Set up this Pi</h1>
           <p x-show="session.link_available !== false">Sign in with the store manager login. The Pi links itself to your store and brings back the open batch, drivers and settings.</p>
@@ -103,7 +105,7 @@
   <header class="topbar">
     <button type="button" class="btn btn-g icon-btn" @click="navOpen = true" aria-label="Open menu" :aria-expanded="navOpen" aria-controls="side" x-html="icon('menu', 20)"></button>
     <div class="brand">
-      <div class="brand-tile" aria-hidden="true">q</div>
+      <img class="brand-tile" src="/static/quiccpos-icon.svg" alt="" aria-hidden="true" />
       <div style="min-width:0"><div class="brand-name" x-text="storeName"></div>
         <div class="conn" :class="connTone" :title="connTitle"><span class="dot"></span><span x-text="connLabel"></span></div></div>
     </div>
@@ -114,7 +116,7 @@
 
   <aside id="side" class="side" :class="{ open: navOpen }" aria-label="Main menu">
     <div class="brand">
-      <div class="brand-tile" aria-hidden="true">q</div>
+      <img class="brand-tile" src="/static/quiccpos-icon.svg" alt="" aria-hidden="true" />
       <div style="min-width:0;flex:1">
         <div class="brand-name" x-text="storeName"></div>
         <div class="conn" :class="connTone" :title="connTitle"><span class="dot"></span><span x-text="connLabel"></span><span class="sr-only" x-text="connTitle"></span></div>
