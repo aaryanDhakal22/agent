@@ -7,6 +7,7 @@ import (
 	"errors"
 	"net/http"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -336,4 +337,45 @@ func TestRefusedMoneyAndCustomersStayQueued(t *testing.T) {
 	if KeepRefused("order.payment", "stale") || KeepRefused("order.status", "invalid") || !KeepRefused("customer.upsert", "invalid") {
 		t.Fatal("KeepRefused")
 	}
+}
+
+// The soak (2026-11-12): after a dead link the queue waited out its backoff (30 s after a 45 s outage,
+// up to 5 min at the ceiling) although main was back. Reconnected ends the backoff at once.
+func TestReconnectedEndsTheBackoff(t *testing.T) {
+	r, m := setup(t)
+	var posts [][]json.RawMessage
+	var down atomic.Bool
+	down.Store(true)
+	ok := mainStub(&posts)
+	s := New(r, func(ctx context.Context, body []byte) (int, []byte, error) {
+		if down.Load() {
+			return 0, nil, errors.New("dial tcp: connection refused")
+		}
+		return ok(ctx, body)
+	}, zerolog.Nop(), m)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	seed(t, r, 1)
+	go s.Run(ctx)
+	// main down: the first flush fails; three more wakes grow the backoff past 5 s (5, 10, 20 s waits).
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) && len(posts) == 0 {
+		s.Wake()
+		time.Sleep(20 * time.Millisecond)
+	}
+	down.Store(false)
+	s.Wake() // a wake alone still waits out the backoff (≥ 5 s): hammering a down main helps nobody
+	time.Sleep(200 * time.Millisecond)
+	if n, _ := r.CountUnsyncedEvents(context.Background()); n == 0 {
+		t.Fatal("a plain wake skipped the backoff")
+	}
+	s.Reconnected()
+	deadline = time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if n, _ := r.CountUnsyncedEvents(context.Background()); n == 0 {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatal("Reconnected did not flush within 2 s")
 }

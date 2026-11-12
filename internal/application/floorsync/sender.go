@@ -84,15 +84,20 @@ const AlertEvery = time.Hour
 
 // Sender drains the floor_events outbox to main.
 type Sender struct {
-	repo    Repo
-	post    Poster
-	wake    chan struct{}
-	logger  zerolog.Logger
-	meters  observability.Meters
-	tracer  trace.Tracer
-	now     func() time.Time
-	backoff time.Duration
-	pager   Pager
+	repo Repo
+	post Poster
+	wake chan struct{}
+	// reconnected: the SSE link to main is back (Reconnected), so the
+	// queue's backoff ends now instead of running out (soak 2026-11-12: a
+	// 45 s dead link left the money events waiting 30 s more; at the 5 min
+	// ceiling a store back online would wait up to 5 min).
+	reconnected chan struct{}
+	logger      zerolog.Logger
+	meters      observability.Meters
+	tracer      trace.Tracer
+	now         func() time.Time
+	backoff     time.Duration
+	pager       Pager
 	// unalerted: events parked since the last Pushover (one an hour).
 	unalerted int
 	onParked  func(n int)
@@ -123,15 +128,16 @@ func (s *Sender) OnParked(fn func(n int)) { s.onParked = fn }
 
 func New(repo Repo, post Poster, logger zerolog.Logger, meters observability.Meters) *Sender {
 	return &Sender{
-		repo:    repo,
-		post:    post,
-		wake:    make(chan struct{}, 1),
-		logger:  logger.With().Str("module", "floorsync").Logger(),
-		meters:  meters,
-		tracer:  otel.Tracer("quiccpos/agent/floorsync"),
-		now:     time.Now,
-		cm:      observability.Counter(),
-		retryAt: map[string]time.Time{},
+		repo:        repo,
+		post:        post,
+		wake:        make(chan struct{}, 1),
+		reconnected: make(chan struct{}, 1),
+		logger:      logger.With().Str("module", "floorsync").Logger(),
+		meters:      meters,
+		tracer:      otel.Tracer("quiccpos/agent/floorsync"),
+		now:         time.Now,
+		cm:          observability.Counter(),
+		retryAt:     map[string]time.Time{},
 	}
 }
 
@@ -139,6 +145,16 @@ func New(repo Repo, post Poster, logger zerolog.Logger, meters observability.Met
 func (s *Sender) Wake() {
 	select {
 	case s.wake <- struct{}{}:
+	default:
+	}
+}
+
+// Reconnected tells the sender main is reachable again (the SSE stream is
+// back): the backoff is dropped and the queue flushes at once
+// (non-blocking; coalesces). A refused event's own retry time is unchanged.
+func (s *Sender) Reconnected() {
+	select {
+	case s.reconnected <- struct{}{}:
 	default:
 	}
 }
@@ -160,14 +176,19 @@ func (s *Sender) Run(ctx context.Context) {
 		case <-ctx.Done():
 			timer.Stop()
 			return
+		case <-s.reconnected:
+			timer.Stop()
+			s.backoff = 0
 		case <-s.wake:
 			timer.Stop()
 			// A wake during backoff still waits out the backoff — hammering a
-			// down main on every tap helps nobody.
+			// down main on every tap helps nobody — unless main is back.
 			if s.backoff > 0 {
 				select {
 				case <-ctx.Done():
 					return
+				case <-s.reconnected:
+					s.backoff = 0
 				case <-time.After(s.backoff):
 				}
 			}

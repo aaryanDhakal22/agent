@@ -39,6 +39,9 @@ type Service struct {
 	Hour int
 	// TempDir holds the VACUUM INTO copy while it uploads (os.TempDir()).
 	TempDir string
+	// Every is how often Run checks whether a backup is due (10 min; only
+	// AGENT_DEV_TIMERS on dev changes it — when it is due stays the same).
+	Every time.Duration
 
 	// Hardening F-7: the copy reads through its own read-only connection
 	// (the agent's one connection stays free for orders), and only when the
@@ -99,13 +102,17 @@ func (s *Service) reader() *sql.DB {
 
 func New(db *sql.DB, dbPath string, upload Uploader, settings Settings, configured func() bool, loc func() *time.Location, logger zerolog.Logger) *Service {
 	return &Service{db: db, dbPath: dbPath, upload: upload, settings: settings, configured: configured, loc: loc,
-		Hour: 4, TempDir: os.TempDir(), logger: logger.With().Str("module", "backup").Logger()}
+		Hour: 4, TempDir: os.TempDir(), Every: 10 * time.Minute, logger: logger.With().Str("module", "backup").Logger()}
 }
 
-// Run checks every 10 minutes whether a backup is due: once a day after Hour
-// (store time), or right away when the last one is more than 26 h old.
+// Run checks every 10 minutes (Every) whether a backup is due: once a day
+// after Hour (store time), or right away when the last one is more than 26 h old.
 func (s *Service) Run(ctx context.Context) {
-	t := time.NewTicker(10 * time.Minute)
+	every := s.Every
+	if every <= 0 {
+		every = 10 * time.Minute
+	}
+	t := time.NewTicker(every)
 	defer t.Stop()
 	for {
 		select {
