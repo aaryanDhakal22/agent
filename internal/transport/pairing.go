@@ -210,6 +210,10 @@ func (s *Server) floor(h http.HandlerFunc) http.HandlerFunc {
 				s.writeJSON(w, http.StatusForbidden, errCodeMap("an integration key can't use this route", "integration_only"))
 				return
 			}
+			if d.Kind == device.KindPhone { // a cashier phone opens /api/phone/* only (2.10z)
+				s.writeJSON(w, http.StatusForbidden, errCodeMap("a phone key opens /api/phone/* only", "phone_only"))
+				return
+			}
 			if d.Kind == device.KindTerminal && !terminalMayUse(r) {
 				s.writeJSON(w, http.StatusForbidden, errCodeMap("a terminal key opens /api/terminal/*, /api/events and GET /api/printers only", "terminal_only"))
 				return
@@ -319,9 +323,9 @@ func (s *Server) handlePairingCode(w http.ResponseWriter, r *http.Request) {
 	}
 	kind := strings.TrimSpace(body.Kind)
 	switch kind {
-	case "", device.KindTablet, device.KindIntegration, device.KindTerminal:
+	case "", device.KindTablet, device.KindIntegration, device.KindTerminal, device.KindPhone: // phone: 2.10z
 	default:
-		s.writeJSON(w, http.StatusBadRequest, errCodeMap("kind must be tablet, integration or terminal", "bad_request"))
+		s.writeJSON(w, http.StatusBadRequest, errCodeMap("kind must be tablet, integration, terminal or phone", "bad_request"))
 		return
 	}
 	minter, name, via := "web", "Pi web page", ""

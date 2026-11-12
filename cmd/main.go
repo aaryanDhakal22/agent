@@ -35,6 +35,7 @@ import (
 	"quiccpos/agent/internal/application/lateorders"
 	"quiccpos/agent/internal/application/mapfile"
 	orderApp "quiccpos/agent/internal/application/order"
+	phoneApp "quiccpos/agent/internal/application/phonepay"
 	printerApp "quiccpos/agent/internal/application/printer"
 	"quiccpos/agent/internal/application/printernet"
 	"quiccpos/agent/internal/application/recovery"
@@ -797,6 +798,12 @@ func main() {
 	httpServer.SetDevLog(devRing)
 	httpServer.SetSettingsLog(repositories.NewSettingsLogRepository(db))
 	httpServer.SetSetup(repositories.NewSetupRepository(db)) // admin pairing code + setup results (2.10y)
+	// Send to phone (2.10z): cashier phones charge with Square's app.
+	phonePay := phoneApp.New(phoneApp.Deps{Repo: repositories.NewPhoneChargeRepository(db), Term: termSvc, Devices: deviceRepo,
+		RPC: func() phoneApp.Sender { return registry }, Publish: broker.Publish, AppEnv: cfg.AppEnv, Logger: logger})
+	httpServer.SetPhonePay(phonePay)
+	httpServer.AddProblems(phonePay.Problems) // phone_charge_unrecorded
+	safego.Go("phonepay.sweep", func() { phonePay.Run(ctx) })
 	httpRef.Store(httpServer)
 	httpServer.SetAppUpdater(appUpdater)
 	httpServer.SetTerminalAppUpdater(termAppUpdater, func(rc context.Context) bool {

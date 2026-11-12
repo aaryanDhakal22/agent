@@ -18,6 +18,9 @@ const (
 	KindTablet      = "tablet"
 	KindIntegration = "integration"
 	KindTerminal    = "terminal"
+	// KindPhone is a cashier phone for "Send to phone" (contract §2.10z):
+	// its key (the page's cookie) opens /api/phone/* only.
+	KindPhone = "phone"
 )
 
 // Device is one paired tablet (the key itself is never stored or returned).

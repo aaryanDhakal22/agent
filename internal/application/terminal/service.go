@@ -1245,7 +1245,7 @@ func resultOf(err error) string {
 }
 
 func (s *Service) addPayment(ctx context.Context, a Actor, orderID string, in PaymentIn) (*PaymentResult, error) {
-	st, cfg, err := s.staffOf(a)
+	st, cfg, err := s.staffFor(ctx, a) // staffOf, or the phone charge's sender (phonepay_hooks.go)
 	if err != nil {
 		return nil, err
 	}

@@ -31,7 +31,7 @@ type RouteInfo struct {
 
 // routes returns the full route table. Add/rename/re-gate a route HERE — the
 // mux and the /__routes report both follow automatically.
-func (s *Server) routes() []routeDef {
+func (s *Server) baseRoutes() []routeDef {
 	return []routeDef{
 		// Web UI — served by the agent binary itself (no nginx).
 		{"GET", "/", "none", "Embedded web UI (SPA); 404s unmatched /api/* GETs", s.handleUI},
@@ -279,6 +279,8 @@ func (s *Server) register(mux *http.ServeMux) {
 			wrap = s.integration
 		case "terminal":
 			wrap = s.terminal
+		case "phone":
+			wrap = s.phone // Send to phone (server_phone.go)
 		}
 		mux.HandleFunc(r.Method+" "+r.Path, wrap(r.Handler))
 	}

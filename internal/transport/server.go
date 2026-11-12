@@ -16,6 +16,7 @@ import (
 	"quiccpos/agent/internal/application/devlog"
 	"quiccpos/agent/internal/application/mapfile"
 	orderApp "quiccpos/agent/internal/application/order"
+	phoneApp "quiccpos/agent/internal/application/phonepay"
 	printerApp "quiccpos/agent/internal/application/printer"
 	"quiccpos/agent/internal/application/printernet"
 	"quiccpos/agent/internal/application/recovery"
@@ -108,6 +109,7 @@ type Server struct {
 	floorSyncWake func()
 	// terminalSvc: the POS terminals' API (terminal stage 0d).
 	terminalSvc *terminalApp.Service
+	phonePay    *phoneApp.Service // Send to phone (2.10z)
 	// setups: the admin pairing code + each device's last setup result
 	// (contract 2.10y, SetSetup); adminCodes throttles admin-code guesses.
 	setups     device.SetupStore

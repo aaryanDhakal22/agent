@@ -161,8 +161,8 @@ CREATE TABLE paired_devices (
     created_at   text NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     last_seen_at text,
     revoked_at   text,
-    -- 00014_integration: tablet | integration (the store hub); 00025_terminal: | terminal.
-    kind         text NOT NULL DEFAULT 'tablet' CHECK (kind IN ('tablet', 'integration', 'terminal')),
+    -- 00014_integration: tablet | integration (the store hub); 00025_terminal: | terminal; 00039_phone_pay: | phone.
+    kind         text NOT NULL DEFAULT 'tablet' CHECK (kind IN ('tablet', 'integration', 'terminal', 'phone')),
     -- 00016_v220: the Quibase version the tablet last sent (X-Quibase-Version).
     app_version         text NOT NULL DEFAULT '',
     app_version_seen_at text
@@ -518,3 +518,45 @@ CREATE INDEX idx_orders_carried ON orders (carried) WHERE carried;
 -- 00034_journal_key: a terminal's journal rows deduplicated by detail.client_key.
 CREATE INDEX idx_journal_client_key ON journal (device_id, action, json_extract(detail, '$.client_key'))
 WHERE json_extract(detail, '$.client_key') IS NOT NULL;
+
+-- 00039_phone_pay ("Send to phone", contract/agent.md §2.10z): a card charge a
+-- terminal sends to a cashier's phone, which charges it with Square's Point
+-- of Sale app (Tap to Pay on the phone) and reports Square's answer back.
+-- One row per charge; the payment it records is an order_payments row
+-- (tender square_app, client_key = the charge's client_key).
+CREATE TABLE phone_charges (
+    id                    text    PRIMARY KEY,
+    client_key            text    NOT NULL,
+    request_hash          text    NOT NULL DEFAULT '',
+    order_id              text    NOT NULL,
+    number                integer NOT NULL DEFAULT 0,
+    phone_id              text    NOT NULL,
+    phone_name            text    NOT NULL DEFAULT '',
+    device_id             text    NOT NULL DEFAULT '',
+    device_name           text    NOT NULL DEFAULT '',
+    staff_id              text    NOT NULL DEFAULT '',
+    staff_name            text    NOT NULL DEFAULT '',
+    amount_cents          integer NOT NULL,
+    tip_cents             integer NOT NULL DEFAULT 0,
+    code                  text    NOT NULL,
+    note                  text    NOT NULL DEFAULT '',
+    status                text    NOT NULL,
+    message               text    NOT NULL DEFAULT '',
+    created_at            text    NOT NULL,
+    updated_at            text    NOT NULL,
+    expires_at            text    NOT NULL,
+    opened_at             text,
+    finished_at           text,
+    transaction_id        text    NOT NULL DEFAULT '',
+    client_transaction_id text    NOT NULL DEFAULT '',
+    error_code            text    NOT NULL DEFAULT '',
+    payment_id            text    NOT NULL DEFAULT '',
+    square_payment_id     text    NOT NULL DEFAULT '',
+    brand                 text    NOT NULL DEFAULT '',
+    last4                 text    NOT NULL DEFAULT '',
+    entry                 text    NOT NULL DEFAULT '',
+    extra_tip_cents       integer NOT NULL DEFAULT 0
+);
+CREATE UNIQUE INDEX idx_phone_charges_key ON phone_charges (client_key);
+CREATE INDEX idx_phone_charges_phone ON phone_charges (phone_id, status);
+CREATE INDEX idx_phone_charges_order ON phone_charges (order_id);
