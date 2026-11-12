@@ -116,8 +116,9 @@ def test_relay_places_like_a_phone_order(rig):
                what="the delivery ticket on the store's receipt printer")
     assert text_of(fakes["Front"]).count(TAKEN_BY) == 2  # both copies
     # Nothing rings: no order waits for an accept.
-    floor = relay(rig, "GET", "floor")
-    assert floor["status"] == 200 and [o["status"]["state"] for o in floor["body"]["orders"] if o["order"]["id"] == oid] == ["accepted"]
+    floor = relay(rig, "GET", "floor")  # the Pi's GET /api/floor (the open batch + the floor's settings)
+    assert floor["status"] == 200 and floor["body"]["batch"]["id"] > 0 and "kitchen_next" in floor["body"]
+    assert agent.http.get(f"{base}/api/orders/{oid}", timeout=5).json()["status"]["state"] == "accepted"
 
     # main hears order.placed with what its per-agent report reads.
     snap = wait_until(lambda: next((e["snapshot"] for e in fm.of_type("order.placed") if e["order_id"] == oid), None), what="order.placed")
