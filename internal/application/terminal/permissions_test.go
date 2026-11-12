@@ -1,7 +1,10 @@
 package terminal
 
 import (
+	"encoding/json"
 	"errors"
+	"fmt"
+	"strings"
 	"testing"
 
 	"quiccpos/agent/internal/domain/pricing"
@@ -102,4 +105,139 @@ func mustOrderID(t *testing.T, r *rig, key string) string {
 		t.Fatalf("order %s: %v", key, err)
 	}
 	return so.Order.ID
+}
+
+// Goodwill refunds, refunds made outside (Square's dashboard) and the drawer
+// kick (contract 2.10n, the owner 2026-11-12).
+func TestGoodwillOutsideAndKick(t *testing.T) {
+	r := newRig(t)
+	r.login(t, till, "1234") // cashier, $10 limit
+	res, err := r.svc.PlaceOrder(r.ctx, till, OrderIn{ClientKey: "k-good-0001", Cart: Cart{Cart: pricing.Cart{Lines: []pricing.Line{pizzaLine()}}},
+		Payments: []PaymentIn{{Tender: "cash", AmountCents: 2357, TenderedCents: 3000}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, total := res.Order.Order.ID, res.Order.Order.Money.Total
+	g, err := r.svc.AddPayment(r.ctx, till, id, PaymentIn{Tender: "cash", AmountCents: 500, Refund: true, Goodwill: true, Reason: "late"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := g.Order.Order.Money
+	if m.Total != total-500 || g.BalanceCents != 0 || !g.Order.Status.Paid || !g.KickDrawer || g.Payment.RefundKind != terminal.RefundGoodwill {
+		t.Fatalf("goodwill: total %d (was %d) balance %d kick %v %+v", m.Total, total, g.BalanceCents, g.KickDrawer, g.Payment)
+	}
+	if d := m.Discounts[len(m.Discounts)-1]; d.Type != terminal.DiscountAdjustment || d.Label != "Goodwill: late" || d.Amount != 500 {
+		t.Fatalf("adjustment %+v", m.Discounts)
+	}
+	if k := journalOf(t, r, terminal.ActionDrawerKick); len(k) != 1 || k[0]["reason"] != "refund" || k[0]["cents"] != float64(500) {
+		t.Fatalf("kick journaled: %v", k)
+	}
+	// Goodwill counts against the cashier's $10 per order like any cash refund.
+	var mr *terminal.ManagerRequired
+	if _, err := r.svc.AddPayment(r.ctx, till, id, PaymentIn{Tender: "cash", AmountCents: 501, Refund: true, Goodwill: true, Reason: "more"}); !errors.As(err, &mr) ||
+		mr.Requested != 1001 {
+		t.Fatalf("goodwill over the limit: %v", err)
+	}
+	if _, err := r.svc.AddPayment(r.ctx, till, id, PaymentIn{Tender: "cash", AmountCents: 1, TipCents: 1, Refund: true, Goodwill: true, Reason: "x"}); !errors.Is(err, ErrBadRequest) {
+		t.Fatalf("goodwill tip: %v", err)
+	}
+
+	// Refunded outside (Square's dashboard): a manager's; nothing kicks.
+	res, _ = r.svc.PlaceOrder(r.ctx, till, OrderIn{ClientKey: "k-good-0002", Cart: Cart{Cart: pricing.Cart{Lines: []pricing.Line{pizzaLine()}}},
+		Payments: []PaymentIn{{Tender: "square_app", AmountCents: 2357}}})
+	id2 := res.Order.Order.ID
+	out := PaymentIn{Tender: "square_app", AmountCents: 2357, Refund: true, Outside: true, Reason: "Square dashboard"}
+	if _, err := r.svc.AddPayment(r.ctx, till, id2, out); !errors.As(err, &mr) || mr.Action != terminal.NeedCardRefund {
+		t.Fatalf("outside by a cashier: %v", err)
+	}
+	out.ManagerPIN = "9876"
+	o, err := r.svc.AddPayment(r.ctx, till, id2, out)
+	if err != nil || o.KickDrawer || o.Payment.RefundKind != terminal.RefundOutside || o.Payment.DrawerID != "" {
+		t.Fatalf("outside: %+v %v", o, err)
+	}
+	if _, err := r.svc.AddPayment(r.ctx, till, id, PaymentIn{Tender: "cash", AmountCents: 1, Refund: true, Outside: true, Reason: "x"}); !errors.Is(err, ErrBadRequest) {
+		t.Fatalf("outside on cash: %v", err)
+	}
+	// A void that hands cash back kicks the drawer.
+	res, _ = r.svc.PlaceOrder(r.ctx, till, OrderIn{ClientKey: "k-good-0003", Cart: Cart{Cart: pricing.Cart{Lines: []pricing.Line{{Qty: 1, Selection: pricing.Selection{ItemID: soda}}}}}})
+	sodaTotal := res.Order.Order.Money.Total
+	if _, err := r.svc.AddPayment(r.ctx, till, res.Order.Order.ID, PaymentIn{Tender: "cash", AmountCents: sodaTotal}); err != nil {
+		t.Fatal(err)
+	}
+	v, err := r.svc.Void(r.ctx, till, res.Order.Order.ID, VoidIn{Reason: "left"})
+	if err != nil || !v.KickDrawer {
+		t.Fatalf("void kick: %+v %v", v, err)
+	}
+}
+
+// A tip written on a manually entered card's receipt, added afterwards
+// (contract 2.10p): the difference is its own payment; lowering it refunds
+// the cut; only card payments take one.
+func TestTipAddedToACardPayment(t *testing.T) {
+	r := newRig(t)
+	r.login(t, till, "1234")
+	res, err := r.svc.PlaceOrder(r.ctx, till, OrderIn{ClientKey: "k-tip-00001", Cart: Cart{Cart: pricing.Cart{Lines: []pricing.Line{pizzaLine()}}},
+		Payments: []PaymentIn{{Tender: "manual_card", AmountCents: 2356, Last4: "4242"}, {Tender: "cash", AmountCents: 1, TenderedCents: 1}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := res.Order.Order.ID
+	pays, _ := r.repo.OrderPayments(r.ctx, id)
+	card, cash := pays[0], pays[1]
+	tr, err := r.svc.AddTip(r.ctx, till, id, card.ID, PaymentTipIn{TipCents: 300})
+	if err != nil || tr.TipCents != 300 || tr.Payment == nil || tr.Payment.AmountCents != 0 || tr.Payment.TipCents != 300 ||
+		tr.Payment.Ref != card.ID || tr.Payment.Tender != "manual_card" || tr.Order.Status.TipCents != 300 {
+		t.Fatalf("add tip: %+v %v", tr, err)
+	}
+	tr, err = r.svc.AddTip(r.ctx, till, id, card.ID, PaymentTipIn{TipCents: 100})
+	if err != nil || tr.TipCents != 100 || !tr.Payment.Refund || tr.Payment.TipCents != 200 || tr.Order.Status.TipCents != 100 {
+		t.Fatalf("lower tip: %+v %v", tr, err)
+	}
+	if same, err := r.svc.AddTip(r.ctx, till, id, card.ID, PaymentTipIn{TipCents: 100}); err != nil || same.Payment != nil {
+		t.Fatalf("same tip: %+v %v", same, err)
+	}
+	if _, err := r.svc.AddTip(r.ctx, till, id, cash.ID, PaymentTipIn{TipCents: 100}); !errors.Is(err, ErrNotTippable) {
+		t.Fatalf("cash: %v", err)
+	}
+	if j := journalOf(t, r, terminal.ActionPaymentTip); len(j) != 2 || j[0]["to_cents"] == nil {
+		t.Fatalf("journal: %v", j)
+	}
+}
+
+// The same cashier may be logged in on both terminals at once.
+func TestSameCashierOnTwoTerminals(t *testing.T) {
+	r := newRig(t)
+	other := Actor{DeviceID: "dev-2", DeviceName: "Till 2"}
+	r.login(t, till, "1234")
+	r.login(t, other, "1234")
+	for i, a := range []Actor{till, other} {
+		if _, err := r.svc.PlaceOrder(r.ctx, a, OrderIn{ClientKey: fmt.Sprintf("k-two-%05d", i), Cart: Cart{Cart: pricing.Cart{Lines: []pricing.Line{pizzaLine()}}},
+			Payments: []PaymentIn{{Tender: "cash", AmountCents: 2357, TenderedCents: 3000}}}); err != nil {
+			t.Fatalf("terminal %d: %v", i, err)
+		}
+	}
+}
+
+// The store's receipt header / footer reach the terminals with main's
+// settings (contract 2.10q): login and the menu carry settings.store.
+func TestSettingsCarryTheStore(t *testing.T) {
+	r := newRig(t)
+	r.svc.SetStoreInfo(func() map[string]any {
+		return map[string]any{"name": "Lombardi's", "address": "931 Taylor Ave", "phone": "4105550100", "website": "lombardis.com", "footer": "Thank you"}
+	})
+	res, err := r.svc.Login(r.ctx, till, "1234")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got struct {
+		AutoLock int            `json:"auto_lock_minutes"`
+		Store    map[string]any `json:"store"`
+	}
+	if err := json.Unmarshal(res.Settings, &got); err != nil || got.Store["address"] != "931 Taylor Ave" || got.Store["footer"] != "Thank you" || got.AutoLock != 3 {
+		t.Fatalf("login settings: %s %v", res.Settings, err)
+	}
+	body, _, err := r.svc.MenuView()
+	if err != nil || !strings.Contains(string(body), `"website":"lombardis.com"`) {
+		t.Fatalf("menu: %v", err)
+	}
 }

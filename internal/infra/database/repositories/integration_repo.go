@@ -40,6 +40,20 @@ func feedReady(ctx context.Context, q *models.Queries, so order.StoredOrder, at 
 	return insertFeed(ctx, q, order.FeedOrderReady, at, d)
 }
 
+// feedPaidAfterReady appends order.ready again (trigger "paid") when a
+// payment made a ready terminal pickup paid (the owner, 2026-11-12: an
+// unpaid READY pickup is called out when it gets paid). Nothing for any
+// other order or payment.
+func feedPaidAfterReady(ctx context.Context, q *models.Queries, before, after order.StoredOrder, at time.Time) error {
+	if before.Status.Paid || !after.Status.Paid || after.Order.Source != order.SourceCounter ||
+		after.Order.Fulfillment.Type != "pickup" || after.Status.State != order.StateReady || after.Status.FinishedAt != nil {
+		return nil
+	}
+	d := order.OrderReadyData{FeedOrderRef: order.RefOf(after), Number: after.Number(), FulfillmentType: after.Order.Fulfillment.Type,
+		Paid: true, CashDueCents: after.Status.CashDueCents, Trigger: order.ReadyTriggerPaid}
+	return insertFeed(ctx, q, order.FeedOrderReady, at, d)
+}
+
 // --- settings ------------------------------------------------------------------
 
 func integrationSettings(ctx context.Context, q *models.Queries) (order.IntegrationSettings, error) {

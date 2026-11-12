@@ -266,4 +266,10 @@ type OrderReadyData struct {
 	// Callout false (2.4.0): READY was held on the tablet - not called out.
 	// Absent (an older Pi) = true.
 	Callout *bool `json:"callout,omitempty"`
+	// Trigger (2026-11-12): "paid" = a ready, unpaid terminal pickup just got
+	// paid (the hub calls it out now); absent = the READY itself.
+	Trigger string `json:"trigger,omitempty"`
 }
+
+// ReadyTriggerPaid is OrderReadyData.Trigger for a pickup paid after READY.
+const ReadyTriggerPaid = "paid"

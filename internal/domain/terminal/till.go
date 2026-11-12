@@ -30,8 +30,9 @@ const TillVersion = 1
 
 // Till scopes.
 const (
-	TillScopeDrawer = "drawer"
-	TillScopeBatch  = "batch"
+	TillScopeTerminal = "terminal" // one terminal = one drawer, for the batch (the owner, 2026-11-12)
+	TillScopeDrawer   = "drawer"
+	TillScopeBatch    = "batch"
 )
 
 // Labels on the till report.
@@ -61,8 +62,15 @@ type Till struct {
 	To           time.Time    `json:"to"`
 	Batch        TillBatchRef `json:"batch"`
 	Drawer       *TillDrawer  `json:"drawer"`
+	Terminal     *TillDevice  `json:"terminal"`
 	Summary      TillSummary  `json:"summary"`
 	Detail       TillDetail   `json:"detail"`
+}
+
+// TillDevice is the terminal of a terminal-scope report.
+type TillDevice struct {
+	DeviceID   string `json:"device_id"`
+	DeviceName string `json:"device_name"`
 }
 
 // TillBatchRef is the batch the report belongs to.
@@ -112,7 +120,12 @@ type TillSummary struct {
 	TotalCollected     int64 `json:"total_collected_cents"`
 	Unpaid             int64 `json:"unpaid_cents"`
 	PaidInOut          int64 `json:"paid_in_out_cents"`
-	TransfersDrops     int64 `json:"transfers_drops_cents"`
+	// The drawer(s) counted here (the owner, 2026-11-12): the starting cash
+	// (main's drawer_start_cents, default $100 per terminal) and what should
+	// be in it = start + cash taken - cash given back (+ pay-ins - pay-outs).
+	StartingCash     int64 `json:"starting_cash_cents"`
+	ExpectedInDrawer int64 `json:"expected_in_drawer_cents"`
+	TransfersDrops   int64 `json:"transfers_drops_cents"`
 }
 
 // TillCount is a count and an amount.
@@ -208,9 +221,12 @@ func NewCategoryIndex(cats []menuview.BuildCategory) *CategoryIndex {
 // TillInput is what a till report is built from: the batch's orders,
 // terminal payments, drawers and journal (ZInput), and the scope.
 type TillInput struct {
-	Z          ZInput
-	Store      string
-	Drawer     *Drawer // nil = the whole batch
+	Z      ZInput
+	Store  string
+	Drawer *Drawer // one session (drawer scope)
+	// Terminal: one terminal for the whole batch (terminal scope); nil with
+	// no Drawer = the whole batch.
+	Terminal   *TillDevice
 	Categories *CategoryIndex
 	StaffNames map[string]string // staff id -> name ("Cara S.")
 }
@@ -226,6 +242,18 @@ func discountKind(d order.Discount) string {
 		return "deals"
 	}
 	return "other"
+}
+
+// tillDrawerOf is a session as the till report shows it.
+func tillDrawerOf(d Drawer) *TillDrawer {
+	td := &TillDrawer{ID: d.ID, DeviceID: d.DeviceID, DeviceName: d.DeviceName, StaffID: d.StaffID, StaffName: d.StaffName,
+		OpenedAt: d.OpenedAt.UTC(), State: d.State, CloseReason: d.CloseReason, StartCents: d.StartCents, ExpectedCents: d.ExpectedCents,
+		CountedCents: d.CountedCents, OverShortCents: d.OverShortCents, Flagged: d.Flagged, NoSales: d.NoSales}
+	if d.ClosedAt != nil {
+		c := d.ClosedAt.UTC()
+		td.ClosedAt = &c
+	}
+	return td
 }
 
 // BuildTill builds the till report (pure).
@@ -250,7 +278,30 @@ func BuildTill(in TillInput) Till {
 	// The scope: which payments, which sales.
 	inPay := func(p Payment) bool { return true }
 	sales := map[string]bool{}
-	if d := in.Drawer; d != nil {
+	byScope := in.Drawer != nil || in.Terminal != nil
+	if dev := in.Terminal; dev != nil && in.Drawer == nil {
+		t.Scope = TillScopeTerminal
+		td := *dev
+		t.Terminal = &td
+		inPay = func(p Payment) bool { return p.DeviceID == dev.DeviceID }
+		for _, e := range z.Journal {
+			if e.Action == ActionOrderPlaced && e.DeviceID == dev.DeviceID && e.OrderID != "" {
+				sales[e.OrderID] = true
+			}
+		}
+		for _, d := range z.Drawers {
+			if d.DeviceID != dev.DeviceID {
+				continue
+			}
+			t.Detail.PayIns += d.PayInsCents
+			t.Detail.PayOuts += d.PayOutsCents
+			t.Summary.StartingCash += d.StartCents
+			t.Summary.ExpectedInDrawer += d.ExpectedCents
+			if t.Drawer == nil {
+				t.Drawer = tillDrawerOf(d) // its (first) session of the batch
+			}
+		}
+	} else if d := in.Drawer; d != nil {
 		t.Scope = TillScopeDrawer
 		from, to := d.OpenedAt, z.Now
 		if d.ClosedAt != nil {
@@ -258,14 +309,7 @@ func BuildTill(in TillInput) Till {
 		}
 		t.From, t.To = from.UTC(), to.UTC()
 		t.State = d.State
-		td := &TillDrawer{ID: d.ID, DeviceID: d.DeviceID, DeviceName: d.DeviceName, StaffID: d.StaffID, StaffName: d.StaffName,
-			OpenedAt: d.OpenedAt.UTC(), State: d.State, CloseReason: d.CloseReason, StartCents: d.StartCents, ExpectedCents: d.ExpectedCents,
-			CountedCents: d.CountedCents, OverShortCents: d.OverShortCents, Flagged: d.Flagged, NoSales: d.NoSales}
-		if d.ClosedAt != nil {
-			c := d.ClosedAt.UTC()
-			td.ClosedAt = &c
-		}
-		t.Drawer = td
+		t.Drawer = tillDrawerOf(*d)
 		within := func(at time.Time) bool { return !at.Before(from) && !at.After(to) }
 		inPay = func(p Payment) bool {
 			if p.DrawerID != "" {
@@ -279,10 +323,13 @@ func BuildTill(in TillInput) Till {
 			}
 		}
 		t.Detail.PayIns, t.Detail.PayOuts = d.PayInsCents, d.PayOutsCents
+		t.Summary.StartingCash, t.Summary.ExpectedInDrawer = d.StartCents, d.ExpectedCents
 	} else {
 		for _, d := range z.Drawers {
 			t.Detail.PayIns += d.PayInsCents
 			t.Detail.PayOuts += d.PayOutsCents
+			t.Summary.StartingCash += d.StartCents
+			t.Summary.ExpectedInDrawer += d.ExpectedCents
 		}
 		for _, r := range z.Drivers {
 			t.Summary.TipsPaid += r.TipCents
@@ -297,7 +344,7 @@ func BuildTill(in TillInput) Till {
 		if so.Status.State == order.StateCancelled {
 			return false
 		}
-		if in.Drawer != nil {
+		if byScope {
 			return sales[so.Order.ID]
 		}
 		return true
@@ -348,7 +395,7 @@ func BuildTill(in TillInput) Till {
 			emp[p.StaffID] = e
 		}
 		e.Amount += money
-		if !p.Refund {
+		if !p.Refund && p.AmountCents > 0 { // a tip added afterwards (amount 0) is no new payment
 			bucket.Count++
 			e.Count++
 		}

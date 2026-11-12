@@ -24,6 +24,8 @@ import (
 //	         SMITH, ANA               (bold)
 //	[ MAKE AT 6:30 · READY 6:45 ]     (reverse: a future order only)
 //	------------------------------------------------
+//	NOTE: ring the side bell          (bold: the order's note, when it has one)
+//	------------------------------------------------
 //	2  PEPPERONI PIZZA (LARGE)        (bold, the store's item size)
 //	   - Extra cheese
 //	   - Well done                    (a food note is a line too)
@@ -110,6 +112,18 @@ func buildStation(snap order.Snapshot, t printer.Ticket, prefs order.ReceiptPref
 	w(cmdLeft)
 	w(strings.Repeat(ruleChar, stationWidth))
 	nl()
+	// The order's note (the owner, 2026-11-12: on the station tickets too,
+	// under the header; the receipt keeps it as well).
+	if note := strings.TrimSpace(snap.Notes); note != "" {
+		w(cmdBoldOn)
+		for _, l := range wordWrap(printable("NOTE: "+note), stationWidth, "      ") {
+			w(l)
+			nl()
+		}
+		w(cmdBoldOff)
+		w(strings.Repeat(ruleChar, stationWidth))
+		nl()
+	}
 
 	if change && t.WasType != "" {
 		// Moved takeout <-> delivery after SEND: the new type (also on top) and the old one.

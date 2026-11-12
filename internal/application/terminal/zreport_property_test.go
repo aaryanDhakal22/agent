@@ -128,7 +128,7 @@ func (m *model) record(o *mOrder, a Actor, pays ...terminal.Payment) {
 			if id == "" {
 				panic(fmt.Sprintf("payment %s on %s: no session opened by itself", p.ID, a.DeviceID))
 			}
-			md := &mDrawer{id: id, open: true, staff: p.StaffID, terminalDeviceID: a.DeviceID}
+			md := &mDrawer{id: id, start: terminal.DefaultDrawerStartCents, open: true, staff: p.StaffID, terminalDeviceID: a.DeviceID}
 			m.drawers[id], m.open[a.DeviceID] = md, md
 		}
 		mp := mPay{tender: p.Tender, amount: p.AmountCents, tip: p.TipCents, refund: p.Refund}

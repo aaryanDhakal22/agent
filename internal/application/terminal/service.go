@@ -71,6 +71,7 @@ type Service struct {
 	// The Manager tab (contract 2.10m): batches, driver reports, the close.
 	reports   ReportFloor
 	storeName func() string
+	storeInfo func() map[string]any
 }
 
 // NewService wires the terminal flow; the store's config changes reach the
@@ -80,6 +81,39 @@ func NewService(store *Store, repo Repo, orders Orders, pub Publisher, logger ze
 		staff: newStaffBook(), now: time.Now}
 	store.OnConfig(s.staff.configChanged)
 	return s
+}
+
+// SetStoreInfo wires the store's receipt header / footer facts the
+// terminals print (contract 2.10q): name, address, phone, website, footer.
+func (s *Service) SetStoreInfo(fn func() map[string]any) { s.storeInfo = fn }
+
+// withStore adds "store" (the Pi's store_config + receipt footer) to main's
+// terminal settings as the terminals get them; main's own keys stay.
+func (s *Service) withStore(settings json.RawMessage) json.RawMessage {
+	if s.storeInfo == nil {
+		return settings
+	}
+	info := s.storeInfo()
+	if len(info) == 0 {
+		return settings
+	}
+	m := map[string]json.RawMessage{}
+	if len(settings) > 0 && json.Unmarshal(settings, &m) != nil {
+		return settings
+	}
+	if _, ok := m["store"]; ok {
+		return settings // main sends its own
+	}
+	raw, err := json.Marshal(info)
+	if err != nil {
+		return settings
+	}
+	m["store"] = raw
+	out, err := json.Marshal(m)
+	if err != nil {
+		return settings
+	}
+	return out
 }
 
 // Store is the snapshot store.
@@ -135,7 +169,7 @@ func (s *Service) Login(ctx context.Context, a Actor, pin string) (*LoginResult,
 	s.staff.login(a.DeviceID, st.ID)
 	s.journal(ctx, terminal.Entry{StaffID: st.ID, DeviceID: a.DeviceID, Action: terminal.ActionLogin,
 		Detail: detail(map[string]any{"role": st.Role, "device_name": a.DeviceName})})
-	res := &LoginResult{Staff: st.Public(), Role: st.Role, Limits: cfg.LimitsOf(st), Settings: cfg.Settings}
+	res := &LoginResult{Staff: st.Public(), Role: st.Role, Limits: cfg.LimitsOf(st), Settings: s.withStore(cfg.Settings)}
 	if st.Role == terminal.RoleDriver && s.drv.floor != nil {
 		// Link him to the roster now; a failure never blocks the login (the
 		// driver routes try again).
@@ -325,6 +359,7 @@ func (s *Service) MenuView() (body []byte, etag string, err error) {
 	if cfg != nil {
 		settings = cfg.Settings
 	}
+	settings = s.withStore(settings)
 	body, err = json.Marshal(map[string]any{"menu_version": ms.Version, "fetched_at": ms.FetchedAt.UTC(),
 		"config_version": cs.Version, "settings": settings, "counter_menu": json.RawMessage(ms.Body)})
 	return body, fmt.Sprintf(`"%s-%s"`, ms.ETag, cs.ETag), err
@@ -559,6 +594,11 @@ type PaymentIn struct {
 	// Brand: a card payment's brand (contract 2.10m; amex | discover |
 	// mastercard | visa | other, Square's names too). Ignored on cash / comp.
 	Brand string `json:"brand"`
+	// Goodwill: a refund with no item removed, kept as an adjustment on the
+	// order (contract 2.10n). Outside: a Square app / manual card refund a
+	// manager already made in Square's dashboard, recorded here.
+	Goodwill bool `json:"goodwill"`
+	Outside  bool `json:"outside"`
 }
 
 // payment checks a payment in and makes the stored one.
@@ -579,9 +619,24 @@ func (p PaymentIn) payment(a Actor, st terminal.Staff, orderID string, at time.T
 	if p.Refund && (reason == "" || utf8.RuneCountInString(reason) > 140) {
 		return terminal.Payment{}, badRequest("a refund needs a reason (1-140 characters)")
 	}
+	kind := ""
+	switch {
+	case (p.Goodwill || p.Outside) && !p.Refund:
+		return terminal.Payment{}, badRequest("goodwill / outside are kinds of refund")
+	case p.Goodwill && p.Outside:
+		return terminal.Payment{}, badRequest("a refund is goodwill or outside, not both")
+	case p.Goodwill && p.TipCents != 0:
+		return terminal.Payment{}, badRequest("a goodwill refund gives back an amount, not a tip")
+	case p.Goodwill:
+		kind = terminal.RefundGoodwill
+	case p.Outside && p.Tender != terminal.TenderSquareApp && p.Tender != terminal.TenderManualCard:
+		return terminal.Payment{}, badRequest("refunded outside is for square_app or manual_card payments")
+	case p.Outside:
+		kind = terminal.RefundOutside
+	}
 	out := terminal.Payment{ID: uuid.Must(uuid.NewV7()).String(), OrderID: orderID, ClientKey: p.ClientKey, At: at.UTC().Truncate(time.Millisecond),
 		Tender: p.Tender, AmountCents: p.AmountCents, TipCents: p.TipCents, Ref: p.Ref, Last4: p.Last4, Refund: p.Refund,
-		Reason: reason, StaffID: st.ID, DeviceID: a.DeviceID}
+		Reason: reason, StaffID: st.ID, DeviceID: a.DeviceID, RefundKind: kind}
 	if terminal.IsCard(p.Tender) {
 		out.Brand = terminal.NormBrand(p.Brand)
 	}
@@ -783,6 +838,7 @@ func (s *Service) PlaceOrder(ctx context.Context, a Actor, in OrderIn) (*PlaceRe
 		journal = append(journal, terminal.Entry{StaffID: st.ID, DeviceID: a.DeviceID, Action: terminal.ActionPayment, OrderID: id, Detail: detail(d)})
 	}
 	prep := s.prepMinutes(cfg, typ, ful.Type, in.PrepMinutes)
+	stampStart(cfg, pays)
 	so, created, err := s.repo.PlaceCounterOrder(ctx, terminal.NewCounterOrder{Snapshot: snap, ClientKey: in.ClientKey,
 		CounterStart: cfg.CounterStart(), PrepMinutes: prep, Payments: pays, Journal: journal,
 		StaffID: st.ID, DeviceID: a.DeviceID, Now: now})
@@ -878,6 +934,24 @@ type PaymentResult struct {
 	Payment      terminal.Payment  `json:"payment"`
 	Duplicate    bool              `json:"duplicate"`
 	BalanceCents int64             `json:"balance_cents"`
+	// KickDrawer: cash went back - the terminal opens its drawer (2.10n).
+	KickDrawer bool `json:"kick_drawer"`
+}
+
+// kicks: cash given back by these refunds (the drawer opens for it).
+func kicks(refunds []terminal.Payment) int64 {
+	var n int64
+	for _, r := range refunds {
+		if r.Refund && r.Tender == terminal.TenderCash && r.RefundKind != terminal.RefundOutside {
+			n += r.AmountCents + r.TipCents
+		}
+	}
+	return n
+}
+
+func kickEntry(a Actor, st terminal.Staff, orderID, reason string, cents int64) terminal.Entry {
+	return terminal.Entry{StaffID: st.ID, DeviceID: a.DeviceID, Action: terminal.ActionDrawerKick, OrderID: orderID,
+		Detail: detail(map[string]any{"order_id": orderID, "reason": reason, "cents": cents})}
 }
 
 func netPaid(pays []terminal.Payment) (amount, tip int64) {
@@ -949,6 +1023,12 @@ func (s *Service) AddPayment(ctx context.Context, a Actor, orderID string, in Pa
 			"change_cents": pay.ChangeCents}
 		if pay.Refund {
 			d["reason"] = pay.Reason
+			switch pay.RefundKind {
+			case terminal.RefundGoodwill:
+				d["goodwill"] = true
+			case terminal.RefundOutside:
+				d["outside"] = true
+			}
 		}
 		if approver != nil {
 			d["approved_by"] = approver.ID
@@ -957,6 +1037,10 @@ func (s *Service) AddPayment(ctx context.Context, a Actor, orderID string, in Pa
 		if approver != nil {
 			entries = append(entries, overrideEntry(a, st, approver, need, orderID))
 		}
+		if cents := kicks([]terminal.Payment{pay}); cents > 0 {
+			entries = append(entries, kickEntry(a, st, orderID, "refund", cents))
+		}
+		pay.DrawerStart = cfg.DrawerStartCents()
 		return []terminal.Payment{pay}, entries, nil
 	})
 	if err != nil {
@@ -966,7 +1050,8 @@ func (s *Service) AddPayment(ctx context.Context, a Actor, orderID string, in Pa
 		s.orders.CounterOrderChanged(ctx, so, nil, false)
 		s.publish(EventOrderPaid, map[string]any{"order": so, "payment": got})
 	}
-	return &PaymentResult{Order: so, Payment: got, Duplicate: dup, BalanceCents: so.Status.CashDueCents}, nil
+	return &PaymentResult{Order: so, Payment: got, Duplicate: dup, BalanceCents: so.Status.CashDueCents,
+		KickDrawer: !dup && kicks([]terminal.Payment{got}) > 0}, nil
 }
 
 // voidReduceOrder: which tenders' refunds shrink first when another tender
@@ -1038,6 +1123,8 @@ type VoidResult struct {
 	Refunds       []terminal.Payment `json:"refunds"`
 	RefundedCents int64              `json:"refunded_cents"`
 	Already       bool               `json:"already"`
+	// KickDrawer: the void gave cash back - the terminal opens its drawer.
+	KickDrawer bool `json:"kick_drawer"`
 }
 
 // Void cancels a counter order of the open batch (accepted, ready or out).
@@ -1089,6 +1176,10 @@ func (s *Service) Void(ctx context.Context, a Actor, id string, in VoidIn) (*Voi
 			entries = append(entries, overrideEntry(a, st, approver, need, id))
 		}
 		entries = append([]terminal.Entry{{StaffID: st.ID, DeviceID: a.DeviceID, Action: terminal.ActionVoid, OrderID: id, Detail: detail(d)}}, entries...)
+		if cents := kicks(refunds); cents > 0 {
+			entries = append(entries, kickEntry(a, st, id, "void", cents))
+		}
+		stampStart(cfg, refunds)
 		return refunds, entries, nil
 	})
 	if errors.Is(err, terminal.ErrAlreadyVoided) {
@@ -1120,7 +1211,7 @@ func (s *Service) Void(ctx context.Context, a Actor, id string, in VoidIn) (*Voi
 		refunds = []terminal.Payment{}
 	}
 	s.orders.DevEvent(fmt.Sprintf("Counter order #%d voided", numberOf(so)))
-	return &VoidResult{Order: so, Refunds: refunds, RefundedCents: cents}, nil
+	return &VoidResult{Order: so, Refunds: refunds, RefundedCents: cents, KickDrawer: kicks(refunds) > 0}, nil
 }
 
 // SessionView is GET /api/terminal/session: who is on this terminal and the
@@ -1148,4 +1239,12 @@ func (s *Service) Session(a Actor) SessionView {
 		v.Staff, v.Role, v.Limits = &p, st.Role, &l
 	}
 	return v
+}
+
+// stampStart gives each payment the starting cash of a drawer session it
+// may open by itself (main's drawer_start_cents, default $100).
+func stampStart(cfg *terminal.Config, pays []terminal.Payment) {
+	for i := range pays {
+		pays[i].DrawerStart = cfg.DrawerStartCents()
+	}
 }

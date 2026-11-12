@@ -343,6 +343,22 @@ func (r *OrderRepository) AddCounterPayment(ctx context.Context, orderID, client
 		if len(pays) != 1 {
 			return fmt.Errorf("one payment expected, got %d", len(pays))
 		}
+		goodwill := pays[0].Refund && pays[0].RefundKind == terminal.RefundGoodwill
+		if goodwill {
+			// Money back with no item removed (contract 2.10n): the order's
+			// money goes down by an adjustment, so the balance stays.
+			if cur.Order.Source != order.SourceCounter {
+				return terminal.ErrGoodwillCounterOnly
+			}
+			amt := pays[0].AmountCents
+			if amt > cur.Order.Money.Total {
+				return fmt.Errorf("%w: the total is %d", terminal.ErrRefundTooBig, cur.Order.Money.Total)
+			}
+			m := &cur.Order.Money
+			m.Discounts = append(append([]order.Discount(nil), m.Discounts...),
+				order.Discount{Type: terminal.DiscountAdjustment, Label: terminal.GoodwillLabel(pays[0].Reason), Amount: amt})
+			m.Total -= amt
+		}
 		if _, err := applyPayments(ctx, q, cur, pays, now); err != nil {
 			return err
 		}
@@ -350,7 +366,26 @@ func (r *OrderRepository) AddCounterPayment(ctx context.Context, orderID, client
 		if so, err = loadOrder(ctx, q, orderID); err != nil {
 			return err
 		}
+		if goodwill {
+			after, err := listPayments(ctx, q, orderID)
+			if err != nil {
+				return err
+			}
+			wire, err := changedSnapshot(so, after, pay.StaffID, pay.DeviceID)
+			if err != nil {
+				return err
+			}
+			evID := uuid.NewString()
+			ev := map[string]any{"event_id": evID, "type": terminal.EventOrderChanged, "order_id": orderID,
+				"at": now.UTC().Truncate(time.Millisecond), "snapshot": wire, "staff_id": nilIfEmpty(pay.StaffID)}
+			if err := insertEvent(ctx, q, evID, orderID, terminal.EventOrderChanged, now, ev); err != nil {
+				return err
+			}
+		}
 		if err := recordPayment(ctx, q, so, pay, now); err != nil {
+			return err
+		}
+		if err := feedPaidAfterReady(ctx, q, cur, so, now); err != nil {
 			return err
 		}
 		return insertJournal(ctx, q, now, entries)

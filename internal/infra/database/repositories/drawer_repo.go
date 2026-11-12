@@ -439,11 +439,14 @@ func drawerForPayment(ctx context.Context, q *models.Queries, p *terminal.Paymen
 	return id, nil
 }
 
-// autoOpenDrawer opens the terminal's session (start 0, auto) for the
+// autoOpenDrawer opens the terminal's session (start = p.DrawerStart, main's
+// drawer_start_cents; auto) for the
 // payment, in its transaction: drawer.opened to main + journal drawer.open.
 func autoOpenDrawer(ctx context.Context, q *models.Queries, p *terminal.Payment) (string, error) {
-	name := "Pi web page"
-	if p.DeviceID != "web" {
+	name := ""
+	if p.DeviceID == "web" {
+		name = "Pi web page"
+	} else {
 		if n, err := q.GetPairedDeviceName(ctx, p.DeviceID); err == nil {
 			name = n
 		} else if !errors.Is(err, sql.ErrNoRows) {
@@ -455,9 +458,9 @@ func autoOpenDrawer(ctx context.Context, q *models.Queries, p *terminal.Payment)
 		at = time.Now()
 	}
 	d := terminal.Drawer{ID: uuid.Must(uuid.NewV7()).String(), DeviceID: p.DeviceID, DeviceName: name, StaffID: p.StaffID,
-		OpenedAt: at.UTC().Truncate(time.Millisecond), Auto: true}
+		OpenedAt: at.UTC().Truncate(time.Millisecond), StartCents: p.DrawerStart, Auto: true}
 	journal := []terminal.Entry{{StaffID: p.StaffID, DeviceID: p.DeviceID, Action: terminal.ActionDrawerOpen,
-		Detail: jsonDetail(map[string]any{"drawer_id": d.ID, "start_cents": 0, "auto": true})}}
+		Detail: jsonDetail(map[string]any{"drawer_id": d.ID, "start_cents": d.StartCents, "auto": true})}}
 	if err := openDrawerTx(ctx, q, &d, journal, at); err != nil {
 		return "", err
 	}

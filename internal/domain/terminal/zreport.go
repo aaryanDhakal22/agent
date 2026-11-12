@@ -260,7 +260,9 @@ func BuildZ(in ZInput) Z {
 			z.Refunds.Count++
 			z.Refunds.Cents += p.AmountCents + p.TipCents
 		} else {
-			t.Count++
+			if p.AmountCents > 0 { // a tip added afterwards (amount 0) is no new payment
+				t.Count++
+			}
 			t.CollectedCents += p.AmountCents + p.TipCents
 		}
 		t.TipsCents += tip

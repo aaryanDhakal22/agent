@@ -394,6 +394,27 @@ func NewDriverReportLine(so StoredOrder) DriverReportLine {
 			l.Address += ", " + l2
 		}
 	}
+	if snap.Source == SourceCounter {
+		// A terminal's delivery (the owner, 2026-11-12): the tips taken with
+		// its payments at the counter are the driver's (the store owes them
+		// to him); a comp lists at $0; split card + cash at the door: he
+		// collects (and owes) only the cash part still due.
+		var comp int64
+		for _, p := range snap.Payments {
+			if p.Method == "other" {
+				comp += p.AmountCents
+			}
+		}
+		base := max(snap.Money.Total-comp, 0)
+		l.TotalCents = base
+		l.TipCents = max(so.Status.TipCents, 0)
+		if due := snap.CashDue(); due > 0 {
+			l.Cash, l.CashCents = true, due
+		}
+		l.setSlipMoney(base, l.TipCents)
+		l.addDoorTip(so.Status.DoorTipCents)
+		return l
+	}
 	if due := snap.CashDue(); due > 0 {
 		l.Cash, l.CashCents = true, max(due-snap.Money.Tip, 0)
 		l.setSlipMoney(snap.Money.Total-snap.Money.Tip, snap.Money.Tip) // an online total includes the tip

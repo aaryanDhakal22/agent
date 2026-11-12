@@ -132,3 +132,41 @@ def test_driver_reports_and_the_close_from_a_terminal(rig):  # noqa: F811
     assert term.get(f"{base}/api/terminal/reports/drivers?batch={closed_id}", timeout=5).json()["batch_id"] == closed_id
     till = term.get(f"{base}/api/terminal/reports/till?batch={closed_id}", timeout=10).json()["report"]
     assert till["state"] == "closed" and till["batch"]["closed_at"]
+
+
+def test_goodwill_checks_tip_and_terminal_till(rig):  # noqa: F811
+    """Owner batch 2026-11-12 over HTTP: a goodwill refund (an adjustment, the drawer kick), a tip added to
+    a manually entered card afterwards, the All Checks Overview, the till report per terminal."""
+    base, term = rig["agent"].base, rig["term"]
+    oid, total = _place(rig, payments=[{"tender": "cash", "amount_cents": 2357, "tendered_cents": 3000}])
+    r = term.post(f"{base}/api/terminal/orders/{oid}/payments",
+                  json={"tender": "cash", "amount_cents": 300, "refund": True, "goodwill": True, "reason": "late"}, timeout=5)
+    assert r.status_code == 200 and r.json()["kick_drawer"] is True and r.json()["balance_cents"] == 0, r.text
+    money = r.json()["order"]["order"]["money"]
+    assert money["total_cents"] == total - 300 and money["discounts"][-1]["type"] == "adjustment"
+    assert r.json()["payment"]["refund_kind"] == "goodwill"
+    # A manually entered card on a delivery; its tip comes back written on the receipt.
+    body = {"client_key": f"k-{uuid.uuid4()}", "type": "delivery", "cart": {"lines": [pizza_line()]},
+            "customer": {"name": "Erik Davis", "phone": "4105550101", "address": {"line1": "12 Main St", "city": "Towson"}}}
+    q = term.post(f"{base}/api/terminal/quote", json={"type": "delivery", "cart": body["cart"]}, timeout=5).json()
+    body["payments"] = [{"tender": "manual_card", "amount_cents": q["quote"]["total_cents"], "last4": "4242"}]
+    r = term.post(f"{base}/api/terminal/orders", json=body, timeout=10)
+    assert r.status_code == 201, r.text
+    did = r.json()["order"]["order"]["id"]
+    pid = term.get(f"{base}/api/terminal/orders/{did}", timeout=5).json()["payments"][0]["id"]
+    r = term.post(f"{base}/api/terminal/orders/{did}/payments/{pid}/tip", json={"tip_cents": 500}, timeout=5)
+    assert r.status_code == 200 and r.json()["tip_cents"] == 500 and r.json()["payment"]["amount_cents"] == 0, r.text
+    # All Checks Overview.
+    page = term.get(f"{base}/api/terminal/checks", params={"type": "delivery"}, timeout=5).json()
+    assert page["total"] == 1 and page["checks"][0]["order_id"] == did and page["checks"][0]["tip_cents"] == 500
+    assert term.get(f"{base}/api/terminal/checks", params={"q": "erik"}, timeout=5).json()["total"] == 1
+    assert term.get(f"{base}/api/terminal/checks", params={"type": "boat"}, timeout=5).status_code == 400
+    one = term.get(f"{base}/api/terminal/checks/{oid}", timeout=5).json()
+    assert one["adjustments"][-1]["label"] == "Goodwill: late" and any(e["action"] == "drawer.kick" for e in one["journal"])
+    # The till report for this terminal: every payment taken on it.
+    dev = one["check"]["device_id"]
+    t = term.get(f"{base}/api/terminal/reports/till", params={"terminal": dev}, timeout=10).json()["report"]
+    s = t["summary"]
+    assert t["scope"] == "terminal" and t["terminal"]["device_id"] == dev
+    assert s["total_collected_cents"] + s["unpaid_cents"] == s["gross_receipts_cents"]
+    assert s["total_cash_cents"] == 2357 - 300 and s["tips_collected_cents"] == 500

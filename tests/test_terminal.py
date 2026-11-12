@@ -540,7 +540,8 @@ def test_no_kitchen_ticket_item(rig):
     wait_until(lambda: fakes["Pizza"].jobs, what="pizza station ticket")
     ticket = fakes["Pizza"].text()
     soda_name = items[1]["name"].upper()
-    assert soda_name not in ticket and "ALSO ON THIS ORDER" not in ticket.upper(), ticket
+    assert soda_name not in ticket.upper(), ticket  # not its own line, not under "Also on this order"
+    assert "nothing else" in ticket, ticket
     # Only the soda: no station ticket at all (the receipt is the terminal's own).
     before = len(fakes["Pizza"].jobs)
     assert place(rig, cart={"lines": [{"item_id": SODA, "qty": 1}]}).status_code == 201

@@ -25,6 +25,8 @@ func (s *Server) reportError(w http.ResponseWriter, r *http.Request, err error) 
 		s.writeJSON(w, http.StatusNotFound, errCodeMap(err.Error(), "not_found"))
 	case errors.Is(err, terminalApp.ErrReportsOff):
 		s.writeJSON(w, http.StatusServiceUnavailable, errCodeMap(err.Error(), "reports_unavailable"))
+	case errors.Is(err, terminalApp.ErrNotTippable):
+		s.writeJSON(w, http.StatusConflict, errCodeMap(err.Error(), "not_tippable"))
 	case errors.Is(err, orderApp.ErrPrintingUnavailable):
 		s.writeJSON(w, http.StatusServiceUnavailable, errCodeMap("This Pi has no printer to print reports on.", "printing_unavailable"))
 	case errors.As(err, &none):
@@ -64,9 +66,9 @@ func (s *Server) handleTerminalTill(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	q := r.URL.Query()
-	drawer, batch := strings.TrimSpace(q.Get("drawer")), q.Get("batch")
-	if drawer != "" && strings.TrimSpace(batch) != "" {
-		s.writeJSON(w, http.StatusBadRequest, errCodeMap("give drawer or batch, not both", "bad_request"))
+	drawer, term, batch := strings.TrimSpace(q.Get("drawer")), strings.TrimSpace(q.Get("terminal")), q.Get("batch")
+	if drawer != "" && (strings.TrimSpace(batch) != "" || term != "") {
+		s.writeJSON(w, http.StatusBadRequest, errCodeMap("a drawer stands alone: no batch or terminal with it", "bad_request"))
 		return
 	}
 	id, ok := reportBatch(batch)
@@ -74,7 +76,7 @@ func (s *Server) handleTerminalTill(w http.ResponseWriter, r *http.Request) {
 		s.writeJSON(w, http.StatusBadRequest, errCodeMap("batch is a number or 'current'", "bad_request"))
 		return
 	}
-	t, err := s.terminalSvc.Till(r.Context(), actor(r), terminalApp.TillQuery{DrawerID: drawer, BatchID: id})
+	t, err := s.terminalSvc.Till(r.Context(), actor(r), terminalApp.TillQuery{DrawerID: drawer, TerminalID: term, BatchID: id})
 	if err != nil {
 		s.reportError(w, r, err)
 		return
@@ -167,4 +169,53 @@ func (s *Server) handleTerminalClose(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.writeJSON(w, http.StatusOK, map[string]any{"closed": res.Closed, "opened": opened.Batch, "auto_finished": res.AutoFinished})
+}
+
+// GET /api/terminal/checks — the All Checks Overview (contract §2.10o).
+func (s *Server) handleTerminalChecks(w http.ResponseWriter, r *http.Request) {
+	if !s.terminalReady(w) {
+		return
+	}
+	q, err := terminalApp.ParseChecksQuery(r.URL.Query().Get, s.service.StoreLocation())
+	if err != nil {
+		s.reportError(w, r, err)
+		return
+	}
+	page, err := s.terminalSvc.Checks(r.Context(), actor(r), q)
+	if err != nil {
+		s.reportError(w, r, err)
+		return
+	}
+	s.writeJSON(w, http.StatusOK, page)
+}
+
+// GET /api/terminal/checks/{id} — one order in full.
+func (s *Server) handleTerminalCheck(w http.ResponseWriter, r *http.Request) {
+	if !s.terminalReady(w) {
+		return
+	}
+	d, err := s.terminalSvc.CheckByID(r.Context(), actor(r), r.PathValue("id"))
+	if err != nil {
+		s.reportError(w, r, err)
+		return
+	}
+	s.writeJSON(w, http.StatusOK, d)
+}
+
+// POST /api/terminal/orders/{id}/payments/{payment_id}/tip {tip_cents, client_key?}
+// — a tip added to a card payment afterwards (contract §2.10p).
+func (s *Server) handleTerminalPaymentTip(w http.ResponseWriter, r *http.Request) {
+	if !s.terminalReady(w) {
+		return
+	}
+	var in terminalApp.PaymentTipIn
+	if !s.decodeTerminal(w, r, &in) {
+		return
+	}
+	res, err := s.terminalSvc.AddTip(r.Context(), actor(r), r.PathValue("id"), r.PathValue("payment_id"), in)
+	if err != nil {
+		s.reportError(w, r, err)
+		return
+	}
+	s.writeJSON(w, http.StatusOK, res)
 }

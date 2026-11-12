@@ -2,6 +2,7 @@ package terminal
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -34,6 +35,9 @@ var (
 	ErrReportNotFound = errors.New("no such drawer or batch on the Pi")
 	// ErrReportsOff: the Manager tab's floor isn't wired.
 	ErrReportsOff = errors.New("reports aren't available")
+	// ErrNotTippable: a tip goes on a card payment only (409 not_tippable).
+	ErrNotTippable = errors.New("a tip is added to a card payment only")
+	errNoTipChange = errors.New("the tip is already that")
 )
 
 // SetReports wires the Manager tab's floor (cmd/main.go).
@@ -57,8 +61,9 @@ func (s *Service) reportStaff(a Actor) (terminal.Staff, *terminal.Config, error)
 // TillQuery picks the till report: one drawer session, else a batch (0 =
 // the open one).
 type TillQuery struct {
-	DrawerID string
-	BatchID  int64
+	DrawerID   string
+	TerminalID string // one terminal = one drawer, for the batch (the owner, 2026-11-12)
+	BatchID    int64
 }
 
 // openBatchID is the open batch's id.
@@ -133,8 +138,47 @@ func (s *Service) Till(ctx context.Context, a Actor, q TillQuery) (*terminal.Til
 	if s.storeName != nil {
 		store = s.storeName()
 	}
-	t := terminal.BuildTill(terminal.TillInput{Z: in, Store: store, Drawer: drawer, Categories: cats, StaffNames: names})
+	var dev *terminal.TillDevice
+	if q.TerminalID != "" && drawer == nil {
+		if dev = terminalOf(in, q.TerminalID); dev == nil {
+			return nil, ErrReportNotFound
+		}
+	}
+	t := terminal.BuildTill(terminal.TillInput{Z: in, Store: store, Drawer: drawer, Terminal: dev, Categories: cats, StaffNames: names})
 	return &t, nil
+}
+
+// terminalOf is a terminal that worked in the batch (a drawer session, a
+// payment or a journal row of it), with its name; nil = none.
+func terminalOf(in terminal.ZInput, deviceID string) *terminal.TillDevice {
+	dev := &terminal.TillDevice{DeviceID: deviceID}
+	seen := false
+	for _, d := range in.Drawers {
+		if d.DeviceID == deviceID {
+			seen, dev.DeviceName = true, d.DeviceName
+		}
+	}
+	for _, p := range in.Payments {
+		seen = seen || p.DeviceID == deviceID
+	}
+	for _, e := range in.Journal {
+		if e.DeviceID != deviceID {
+			continue
+		}
+		seen = true
+		if dev.DeviceName == "" && e.Action == terminal.ActionLogin {
+			var d struct {
+				Name string `json:"device_name"`
+			}
+			if json.Unmarshal(e.Detail, &d) == nil {
+				dev.DeviceName = d.Name
+			}
+		}
+	}
+	if !seen {
+		return nil
+	}
+	return dev
 }
 
 // Batches are the open batch and the kept closed ones, newest first.

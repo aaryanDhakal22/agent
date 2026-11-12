@@ -84,6 +84,8 @@ func (s *Server) terminalError(w http.ResponseWriter, r *http.Request, err error
 		s.writeJSON(w, http.StatusServiceUnavailable, errCodeMap(err.Error(), "config_unavailable"))
 	case errors.Is(err, terminal.ErrOverBalance):
 		s.writeJSON(w, http.StatusConflict, errCodeMap(err.Error(), "over_balance"))
+	case errors.Is(err, terminal.ErrGoodwillCounterOnly):
+		s.writeJSON(w, http.StatusBadRequest, errCodeMap(err.Error(), "bad_request"))
 	case errors.Is(err, terminal.ErrRefundTooBig):
 		s.writeJSON(w, http.StatusConflict, errCodeMap(err.Error(), "refund_too_big"))
 	case errors.Is(err, terminal.ErrNotPayable):

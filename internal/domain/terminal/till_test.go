@@ -171,6 +171,15 @@ func TestTillBatchAndDrawer(t *testing.T) {
 		len(d.Detail.Employees) != 1 || d.Detail.Employees[0].Name != "Cara S." || d.Summary.PaidInOut != 500 {
 		t.Fatalf("drawer %+v / %+v", d.Summary, d.Detail.Employees)
 	}
+
+	// Terminal scope (the owner, 2026-11-12: drawer A = counter A): every payment on t1 in the batch.
+	tt := BuildTill(TillInput{Z: z, Terminal: &TillDevice{DeviceID: "t1", DeviceName: "Till 1"}, Categories: cats, StaffNames: names})
+	checkTill(t, "terminal", tt)
+	if tt.Scope != TillScopeTerminal || tt.Terminal.DeviceName != "Till 1" || tt.Drawer == nil || tt.Drawer.ID != "d1" ||
+		tt.Summary.GrossSales != 3000+1500 || tt.Summary.TotalCash != 544-300 || tt.Summary.TotalCreditCard != 2700 ||
+		tt.Summary.StartingCash != 10000 || d.Summary.StartingCash != 10000 {
+		t.Fatalf("terminal %+v %+v", tt.Summary, tt.Drawer)
+	}
 }
 
 // Random days: the identity holds for the batch and for every drawer.
@@ -258,6 +267,9 @@ func TestTillProperty(t *testing.T) {
 		checkTill(t, fmt.Sprintf("seed %d batch", seed), BuildTill(TillInput{Z: z, Categories: cats}))
 		for i := range drawers {
 			checkTill(t, fmt.Sprintf("seed %d drawer %d", seed, i), BuildTill(TillInput{Z: z, Drawer: &drawers[i], Categories: cats}))
+		}
+		for _, dev := range devices {
+			checkTill(t, fmt.Sprintf("seed %d terminal %s", seed, dev), BuildTill(TillInput{Z: z, Terminal: &TillDevice{DeviceID: dev}, Categories: cats}))
 		}
 	}
 }

@@ -118,6 +118,22 @@ type Settings struct {
 	// DefaultPickupMinutes: a pickup's quoted minutes when the terminal
 	// sends none (main's default_pickup_minutes, default 15).
 	DefaultPickupMinutes *int `json:"default_pickup_minutes"`
+	// DrawerStartCents: the cash left in each terminal's drawer at opening
+	// (the owner, 2026-11-12; missing = DefaultDrawerStartCents).
+	DrawerStartCents *int64 `json:"drawer_start_cents"`
+}
+
+// DefaultDrawerStartCents is the starting cash in each drawer when main's
+// settings don't say (main's own default, the owner's X: $100).
+const DefaultDrawerStartCents = 10000
+
+// DrawerStartCents is the starting cash a drawer session opened by itself
+// gets (bounded 0-1,000,000 cents).
+func (c *Config) DrawerStartCents() int64 {
+	if c == nil || c.parsed.DrawerStartCents == nil {
+		return DefaultDrawerStartCents
+	}
+	return min(max(*c.parsed.DrawerStartCents, 0), 1_000_000)
 }
 
 // DefaultPickupMinutes is main's default_pickup_minutes (false when main's
@@ -449,6 +465,9 @@ type Payment struct {
 	// (money back, no item removed: an adjustment on the order) |
 	// RefundOutside (refunded in Square's dashboard, recorded here).
 	RefundKind string `json:"refund_kind,omitempty"`
+	// DrawerStart (not stored): the starting cash a drawer session the Pi
+	// opens by itself with this payment gets (main's drawer_start_cents).
+	DrawerStart int64 `json:"-"`
 }
 
 // Refund kinds (Payment.RefundKind).
@@ -456,6 +475,18 @@ const (
 	RefundGoodwill = "goodwill"
 	RefundOutside  = "outside"
 )
+
+// DiscountAdjustment is the discount type of a goodwill refund on the order's
+// money (contract 2.10n; the Z / till report count it with "other").
+const DiscountAdjustment = "adjustment"
+
+// GoodwillLabel is a goodwill refund's adjustment label.
+func GoodwillLabel(reason string) string {
+	if r := strings.TrimSpace(reason); r != "" {
+		return "Goodwill: " + r
+	}
+	return "Goodwill"
+}
 
 // Card brands (Payment.Brand, the till report's cards).
 const (
@@ -563,6 +594,12 @@ const (
 	// {batch_id, forced, approved_by?}.
 	ActionReportPrint = "report.print"
 	ActionBatchClose  = "batch.close"
+	// ActionDrawerKick: cash went back (a refund, a void): the terminal opens
+	// its drawer {order_id, reason: refund | void, cents} (contract 2.10n).
+	ActionDrawerKick = "drawer.kick"
+	// ActionPaymentTip: a tip added to a card payment afterwards
+	// {payment_id, from_cents, to_cents} (contract 2.10p).
+	ActionPaymentTip = "payment.tip"
 	// ActionNoSale is the terminal's own no-sale row (it posts it; the Pi
 	// adds the open drawer's id and counts them per drawer).
 	ActionNoSale = "no_sale"
@@ -575,7 +612,7 @@ var reserved = map[string]bool{ActionLogin: true, ActionLoginFailed: true, Actio
 	ActionDriverLinked:  true, ActionDriverClaim: true, ActionDriverTip: true, ActionDriverClose: true, ActionDriverReport: true,
 	ActionSyncParked: true, ActionSyncRetry: true, ActionDrawerOpen: true, ActionDrawerPayIn: true, ActionDrawerPayOut: true,
 	ActionDrawerClose: true, ActionDrawerHandover: true, ActionZReport: true, ActionCustomLine: true,
-	ActionReportPrint: true, ActionBatchClose: true}
+	ActionReportPrint: true, ActionBatchClose: true, ActionDrawerKick: true, ActionPaymentTip: true}
 
 var actionRe = regexp.MustCompile(`^[a-z][a-z0-9_.]{1,39}$`)
 
@@ -612,21 +649,24 @@ const (
 
 // Errors.
 var (
-	ErrNoMenu           = errors.New("no counter menu from the server yet")
-	ErrNoConfig         = errors.New("no terminal config (staff) from the server yet")
-	ErrLoginRequired    = errors.New("log in with your PIN")
-	ErrBadPIN           = errors.New("a PIN is 2-4 digits")
-	ErrWrongPIN         = errors.New("wrong PIN")
-	ErrManagerPINWrong  = errors.New("that isn't a manager's PIN")
-	ErrNotCounterOrder  = errors.New("not a counter order")
-	ErrNotPayable       = errors.New("this order can't take a payment")
-	ErrOverBalance      = errors.New("more than the order's balance")
-	ErrRefundTooBig     = errors.New("more than was paid")
-	ErrNotVoidable      = errors.New("this order can't be voided")
-	ErrDuplicateKeyUsed = errors.New("that client_key belongs to another order")
-	ErrDriverOnly       = errors.New("only a driver can do this")
-	ErrNotYourOrder     = errors.New("that isn't one of your orders")
-	ErrDriverOut        = errors.New("you are out on a run: close your orders first")
+	ErrNoMenu          = errors.New("no counter menu from the server yet")
+	ErrNoConfig        = errors.New("no terminal config (staff) from the server yet")
+	ErrLoginRequired   = errors.New("log in with your PIN")
+	ErrBadPIN          = errors.New("a PIN is 2-4 digits")
+	ErrWrongPIN        = errors.New("wrong PIN")
+	ErrManagerPINWrong = errors.New("that isn't a manager's PIN")
+	ErrNotCounterOrder = errors.New("not a counter order")
+	ErrNotPayable      = errors.New("this order can't take a payment")
+	ErrOverBalance     = errors.New("more than the order's balance")
+	ErrRefundTooBig    = errors.New("more than was paid")
+	// ErrGoodwillCounterOnly: a goodwill refund (contract 2.10n) lowers the
+	// order's money, which only a terminal's own order may (400).
+	ErrGoodwillCounterOnly = errors.New("a goodwill refund is for the terminal's own orders (an online order's money is main's)")
+	ErrNotVoidable         = errors.New("this order can't be voided")
+	ErrDuplicateKeyUsed    = errors.New("that client_key belongs to another order")
+	ErrDriverOnly          = errors.New("only a driver can do this")
+	ErrNotYourOrder        = errors.New("that isn't one of your orders")
+	ErrDriverOut           = errors.New("you are out on a run: close your orders first")
 )
 
 // ManagerRequired: the action is over the staff member's limit and needs a

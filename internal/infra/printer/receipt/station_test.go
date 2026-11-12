@@ -58,15 +58,15 @@ func TestBuildStation_Content(t *testing.T) {
 		"2  PEPPERONI PIZZA\n   (LARGE)\n", "   - Extra cheese\n", "   - well done\n",
 		"1  MYSTERY\n", "** UNMATCHED **",
 		"Also on this order:\n   1 Fries\n",
+		"NOTE: Ring the bell twice\n", // the order's note, under the header (the owner, 2026-11-12)
 	} {
 		if !bytes.Contains(got, []byte(want)) {
 			t.Errorf("station ticket missing %q", want)
 		}
 	}
-	// The kitchen ticket is the type, the number, the name and the food; the
-	// order's notes are on the customer receipt only. No reverse print here
-	// (REROUTED included), no prices.
-	for _, gone := range []string{"Order #4417", "Ring the bell", "Order notes", cmdInvertOn, "$", "#1104"} {
+	// The kitchen ticket is the type, the number, the name, the order's note
+	// and the food. No reverse print here (REROUTED included), no prices.
+	for _, gone := range []string{"Order #4417", "Order notes", cmdInvertOn, "$", "#1104"} {
 		if bytes.Contains(got, []byte(gone)) {
 			t.Errorf("station ticket should not carry %q", gone)
 		}
