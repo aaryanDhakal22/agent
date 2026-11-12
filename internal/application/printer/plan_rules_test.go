@@ -3,7 +3,6 @@ package printer
 import (
 	"reflect"
 	"testing"
-	"time"
 
 	"quiccpos/agent/internal/domain/order"
 	"quiccpos/agent/internal/domain/printer"
@@ -39,12 +38,11 @@ func TestPlanWith_OnlineMatrix(t *testing.T) {
 		{"card delivery, card off", ruleSnap("online", "delivery", card), Rules{Tickets: order.TicketToggles{OnlineCashDelivery: true}}, rcpt},
 		{"cash delivery, switch on", ruleSnap("online", "delivery", nil), Rules{Tickets: on}, full},
 		{"cash delivery, switch off", ruleSnap("online", "delivery", nil), Rules{Tickets: order.TicketToggles{OnlineCard: true}}, rcpt},
-		// Cash pickup: tickets only with the switch AND the hub inserting live.
-		{"cash pickup, switch on, insert not live", ruleSnap("online", "pickup", nil), Rules{Tickets: on, InsertLive: false}, rcpt},
-		{"cash pickup, switch on, insert live", ruleSnap("online", "pickup", nil), Rules{Tickets: on, InsertLive: true}, full},
-		{"cash pickup, switch off, insert live", ruleSnap("online", "pickup", nil),
-			Rules{Tickets: order.TicketToggles{OnlineCard: true, OnlineCashDelivery: true}, InsertLive: true}, rcpt},
-		{"cash pickup, switch off, insert not live", ruleSnap("online", "pickup", nil), Rules{Tickets: off}, rcpt},
+		// Cash pickup: its switch alone (H3: no "insert live" rule any more).
+		{"cash pickup, switch on", ruleSnap("online", "pickup", nil), Rules{Tickets: on}, full},
+		{"cash pickup, switch off", ruleSnap("online", "pickup", nil),
+			Rules{Tickets: order.TicketToggles{OnlineCard: true, OnlineCashDelivery: true}}, rcpt},
+		{"cash pickup, everything off", ruleSnap("online", "pickup", nil), Rules{Tickets: off}, rcpt},
 		{"cash dine-in prints as before", ruleSnap("online", "dine_in", nil), Rules{Tickets: off}, full},
 	} {
 		tk, _ := PlanWith(tc.snap, roster, printer.ModeAccept, tc.rules)
@@ -54,7 +52,7 @@ func TestPlanWith_OnlineMatrix(t *testing.T) {
 	}
 }
 
-func TestPlanWith_DefaultsAreThe207Rule(t *testing.T) {
+func TestPlanWith_Defaults(t *testing.T) {
 	roster := []RosterEntry{front, pizza, wings}
 	for _, snap := range []order.Snapshot{ruleSnap("online", "pickup", nil), ruleSnap("online", "pickup", card), ruleSnap("online", "delivery", nil)} {
 		a, _ := PlanFor(snap, roster, printer.ModeAccept)
@@ -63,94 +61,16 @@ func TestPlanWith_DefaultsAreThe207Rule(t *testing.T) {
 			t.Fatalf("PlanFor != PlanWith(defaults): %v vs %v", kinds(a), kinds(b))
 		}
 	}
-	if tk, _ := PlanFor(ruleSnap("online", "pickup", nil), roster, printer.ModeAccept); !reflect.DeepEqual(kinds(tk), rcpt) {
-		t.Fatalf("default cash pickup = %v, want receipt only", kinds(tk))
-	}
-}
-
-func TestPlanWith_POSOrders(t *testing.T) {
-	roster := []RosterEntry{front, pizza, wings}
-	all := Rules{Tickets: order.TicketToggles{PosDelivery: true, PosTakeout: true, PosCounter: true}, InsertLive: true}
-	for _, tc := range []struct {
-		name  string
-		ftype string
-		rules Rules
-		want  []string
-	}{
-		{"delivery off", "delivery", DefaultRules(), nil},
-		{"takeout off", "pickup", DefaultRules(), nil},
-		{"counter off", "dine_in", DefaultRules(), nil},
-		{"delivery on: stations, never a receipt", "delivery", Rules{Tickets: order.TicketToggles{PosDelivery: true}}, stns},
-		{"takeout on", "pickup", Rules{Tickets: order.TicketToggles{PosTakeout: true}}, stns},
-		{"counter on", "dine_in", Rules{Tickets: order.TicketToggles{PosCounter: true}}, stns},
-		{"takeout switch doesn't print a delivery", "delivery", Rules{Tickets: order.TicketToggles{PosTakeout: true}}, nil},
-		{"all on", "delivery", all, stns},
-	} {
-		snap := ruleSnap(order.SourcePOS, tc.ftype, nil)
-		tk, _ := PlanWith(snap, roster, printer.ModeAccept, tc.rules)
-		got := kinds(tk)
-		if len(tc.want) == 0 && len(got) == 0 {
-			continue
-		}
-		if !reflect.DeepEqual(got, tc.want) {
-			t.Errorf("%s: got %v, want %v", tc.name, got, tc.want)
-		}
-	}
-	// Reprint = the receipt, Resend = the stations, whatever the switches.
-	snap := ruleSnap(order.SourcePOS, "delivery", nil)
-	if tk, _ := PlanWith(snap, roster, printer.ModeReceipt, DefaultRules()); !reflect.DeepEqual(kinds(tk), rcpt) {
-		t.Errorf("POS reprint = %v", kinds(tk))
-	}
-	if tk, _ := PlanWith(snap, roster, printer.ModeKitchen, DefaultRules()); !reflect.DeepEqual(kinds(tk), stns) {
-		t.Errorf("POS resend = %v", kinds(tk))
-	}
-}
-
-// A POS line without a Pi printer is not for this kitchen (no station, not
-// reported unrouted); one naming a printer this Pi lacks goes everywhere.
-func TestPlanWith_POSLinesWithoutPrinter(t *testing.T) {
-	roster := []RosterEntry{front, pizza, wings}
-	snap := order.Snapshot{Source: order.SourcePOS, Fulfillment: order.Fulfillment{Type: "delivery"}, Items: []order.LineItem{
-		item("Pizza", order.RoutingMatched, pizza.ID), item("Coke", order.RoutingUnassigned, ""),
-	}}
-	tk, un := PlanWith(snap, roster, printer.ModeAccept, Rules{Tickets: order.TicketToggles{PosDelivery: true}})
-	if !reflect.DeepEqual(kinds(tk), []string{"station:p-pizza"}) || un != nil {
-		t.Fatalf("got %v unrouted=%v", kinds(tk), un)
-	}
-	// 2.4.0: a line no kitchen station makes isn't listed under other printers.
-	if !reflect.DeepEqual(names(tk[0].Mine), []string{"Pizza"}) || len(tk[0].Others) != 0 {
-		t.Fatalf("pizza ticket = %+v", tk[0])
-	}
-	snap.Items = []order.LineItem{item("Coke", order.RoutingUnassigned, "")}
-	if tk, _ := PlanWith(snap, roster, printer.ModeAccept, Rules{Tickets: order.TicketToggles{PosDelivery: true}}); len(tk) != 0 {
-		t.Fatalf("nothing for the kitchen, got %v", kinds(tk))
-	}
-	snap.Items = []order.LineItem{item("Calzone", order.RoutingMatched, "p-gone")}
-	tk, un = PlanWith(snap, roster, printer.ModeAccept, Rules{Tickets: order.TicketToggles{PosDelivery: true}})
-	if !reflect.DeepEqual(kinds(tk), stns) || !reflect.DeepEqual(un, []string{"Calzone"}) {
-		t.Fatalf("unknown printer: %v unrouted=%v", kinds(tk), un)
-	}
-}
-
-// A POS check built by the domain routes as the planner expects.
-func TestPlanWith_POSSnapshotFromHub(t *testing.T) {
-	e := order.ExternalOrder{CheckType: "pickup", Hash: "h", Items: []order.ExternalItem{
-		{Name: "Cheese Pizza", Quantity: 1, PrinterID: pizza.ID}, {Name: "Soda", Quantity: 1},
-	}}
-	snap := e.Snapshot("id", "t", "l", "1234", time.Now())
-	tk, _ := PlanWith(snap, []RosterEntry{front, pizza, wings}, printer.ModeAccept, Rules{Tickets: order.TicketToggles{PosTakeout: true}})
-	if !reflect.DeepEqual(kinds(tk), []string{"station:p-pizza"}) {
-		t.Fatalf("got %v", kinds(tk))
+	if tk, _ := PlanFor(ruleSnap("online", "pickup", nil), roster, printer.ModeAccept); !reflect.DeepEqual(kinds(tk), full) {
+		t.Fatalf("default cash pickup = %v, want the station tickets + the receipt", kinds(tk))
 	}
 }
 
 // 2.5.0: a channel order (the store's website) always prints the station
-// tickets + the receipt, whatever the online switches and the hub say, and is
-// never inserted into the POS.
+// tickets + the receipt, whatever the online switches say.
 func TestPlanWith_ChannelOrders(t *testing.T) {
 	roster := []RosterEntry{front, pizza, wings}
 	off := Rules{Tickets: order.TicketToggles{}}
-	live := Rules{Tickets: order.DefaultTicketToggles(), InsertLive: true}
 	for _, tc := range []struct {
 		name  string
 		snap  order.Snapshot
@@ -158,8 +78,7 @@ func TestPlanWith_ChannelOrders(t *testing.T) {
 	}{
 		{"web card pickup, switches off", ruleSnap("web", "pickup", card), off},
 		{"web cash pickup, switches off", ruleSnap("web", "pickup", nil), off},
-		{"web cash pickup, defaults (2.0.7 rule)", ruleSnap("web", "pickup", nil), DefaultRules()},
-		{"web cash pickup, insert live", ruleSnap("web", "pickup", nil), live},
+		{"web cash pickup, defaults", ruleSnap("web", "pickup", nil), DefaultRules()},
 		{"web cash delivery, switches off", ruleSnap("web", "delivery", nil), off},
 		{"web card delivery, switches off", ruleSnap("web", "delivery", card), off},
 		{"operator cash pickup", ruleSnap("operator", "pickup", nil), off},
@@ -169,21 +88,15 @@ func TestPlanWith_ChannelOrders(t *testing.T) {
 		if got := kinds(tk); !reflect.DeepEqual(got, full) {
 			t.Errorf("%s: got %v, want %v", tc.name, got, full)
 		}
-		if InsertsLive(tc.snap, tc.rules) {
-			t.Errorf("%s: a channel order must never be insert-expected", tc.name)
-		}
 		// Kitchen-only accept (future order whose receipt printed early).
 		tk, _ = PlanWith(tc.snap, roster, printer.ModeAcceptKitchen, tc.rules)
 		if got := kinds(tk); !reflect.DeepEqual(got, stns) {
 			t.Errorf("%s accept_kitchen: got %v, want %v", tc.name, got, stns)
 		}
 	}
-	// The same cash pickup from the vendor keeps the 2.0.7 rule.
+	// The same cash pickup from the vendor follows its switch.
 	if tk, _ := PlanWith(ruleSnap("online", "pickup", nil), roster, printer.ModeAccept, off); !reflect.DeepEqual(kinds(tk), rcpt) {
 		t.Fatalf("online cash pickup = %v, want receipt only", kinds(tk))
-	}
-	if !InsertsLive(ruleSnap("online", "pickup", nil), live) {
-		t.Fatal("online cash pickup with insert live must still be insert-expected")
 	}
 	// VOID (CANCEL ORDER): station tickets only, no receipt.
 	tk, _ := PlanWith(ruleSnap("web", "delivery", card), roster, printer.ModeVoid, off)

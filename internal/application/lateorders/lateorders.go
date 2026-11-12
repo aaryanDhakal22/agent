@@ -55,10 +55,10 @@ func New(list Lister, pub Publisher, logger zerolog.Logger) *Watcher {
 	return &Watcher{list: list, pub: pub, logger: logger.With().Str("module", "lateorders").Logger(), seen: map[string]bool{}}
 }
 
-// IsLate: an accepted online order (not counter, not a POS check) whose
-// estimated ready time has passed.
+// IsLate: an accepted online order (not a counter order) whose estimated
+// ready time has passed.
 func IsLate(so order.StoredOrder, now time.Time) bool {
-	return so.Status.State == order.StateAccepted && !so.IsPOS() && so.Order.Source != order.SourceCounter &&
+	return so.Status.State == order.StateAccepted && so.Order.Source != order.SourceCounter &&
 		so.Status.EstimatedReadyAt != nil && now.After(*so.Status.EstimatedReadyAt)
 }
 

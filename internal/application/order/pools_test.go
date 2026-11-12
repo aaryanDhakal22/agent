@@ -152,7 +152,7 @@ func TestGeoCommandReplies(t *testing.T) {
 func TestPoolAndSendOutPublish(t *testing.T) {
 	ctx := context.Background()
 	svc, _, events := newPoolService(t)
-	d, _ := svc.CreateDriver(ctx, "Ann", "")
+	d, _ := svc.CreateDriver(ctx, "Ann")
 	svc.ClockIn(ctx, d.ID)
 	id := readyDelivery(t, svc, 5*time.Minute)
 	drain(events)
@@ -176,7 +176,7 @@ func TestPoolAndSendOutPublish(t *testing.T) {
 func TestClockOutUnpoolsAndPublishes(t *testing.T) {
 	ctx := context.Background()
 	svc, _, events := newPoolService(t)
-	d, _ := svc.CreateDriver(ctx, "Ann", "")
+	d, _ := svc.CreateDriver(ctx, "Ann")
 	svc.ClockIn(ctx, d.ID)
 	id := readyDelivery(t, svc, time.Minute)
 	svc.Pool(ctx, []string{id}, d.ID)
@@ -200,8 +200,8 @@ func TestAutoPlanSimpleCaseAndConfirm(t *testing.T) {
 	if _, err := svc.PlanDeliveries(ctx); !errors.Is(err, ErrNoDrivers) {
 		t.Fatalf("no drivers: %v", err)
 	}
-	ann, _ := svc.CreateDriver(ctx, "Ann", "")
-	bob, _ := svc.CreateDriver(ctx, "Bob", "")
+	ann, _ := svc.CreateDriver(ctx, "Ann")
+	bob, _ := svc.CreateDriver(ctx, "Bob")
 	svc.ClockIn(ctx, ann.ID)
 	svc.ClockIn(ctx, bob.ID)
 
@@ -297,7 +297,7 @@ func TestConfirmOnlyGivenIDs(t *testing.T) {
 	ctx := context.Background()
 	svc, repo, _ := newPoolService(t)
 	svc.SetGeo(GeoDeps{Floor: func() (*FloorStore, *FloorMap) { return &FloorStore{Lat: 40.66, Lng: -74.11}, nil }})
-	ann, _ := svc.CreateDriver(ctx, "Ann", "")
+	ann, _ := svc.CreateDriver(ctx, "Ann")
 	svc.ClockIn(ctx, ann.ID)
 	a := readyDelivery(t, svc, 20*time.Minute)
 	b := readyDelivery(t, svc, 15*time.Minute)
@@ -320,7 +320,7 @@ func TestPoolTripLocalFallbackAndRemote(t *testing.T) {
 	ctx := context.Background()
 	svc, _, _ := newPoolService(t)
 	svc.SetGeo(GeoDeps{Floor: func() (*FloorStore, *FloorMap) { return &FloorStore{Lat: 40.66, Lng: -74.11}, nil }})
-	d, _ := svc.CreateDriver(ctx, "Ann", "")
+	d, _ := svc.CreateDriver(ctx, "Ann")
 	svc.ClockIn(ctx, d.ID)
 	far := readyDelivery(t, svc, 5*time.Minute)
 	near := readyDelivery(t, svc, 4*time.Minute)
@@ -436,8 +436,8 @@ func TestPoolSeqFollowsTripOrder(t *testing.T) {
 	ctx := context.Background()
 	svc, repo, events := newPoolService(t)
 	svc.SetGeo(GeoDeps{Floor: func() (*FloorStore, *FloorMap) { return &FloorStore{Lat: 40.66, Lng: -74.11}, nil }})
-	ann, _ := svc.CreateDriver(ctx, "Ann", "")
-	bob, _ := svc.CreateDriver(ctx, "Bob", "")
+	ann, _ := svc.CreateDriver(ctx, "Ann")
+	bob, _ := svc.CreateDriver(ctx, "Bob")
 	svc.ClockIn(ctx, ann.ID)
 	svc.ClockIn(ctx, bob.ID)
 	// Placed order far, near, mid; driving order near -> mid -> far.
@@ -500,7 +500,7 @@ func TestConfirmSeqAndPlainSendOutKeepsThePlan(t *testing.T) {
 	ctx := context.Background()
 	svc, repo, _ := newPoolService(t)
 	svc.SetGeo(GeoDeps{Floor: func() (*FloorStore, *FloorMap) { return &FloorStore{Lat: 40.66, Lng: -74.11}, nil }})
-	ann, _ := svc.CreateDriver(ctx, "Ann", "")
+	ann, _ := svc.CreateDriver(ctx, "Ann")
 	svc.ClockIn(ctx, ann.ID)
 	a := readyDelivery(t, svc, 25*time.Minute)
 	b := readyDelivery(t, svc, 20*time.Minute)
@@ -552,8 +552,8 @@ func TestConfirmSeqAndPlainSendOutKeepsThePlan(t *testing.T) {
 func TestMovingClearsThePlanLink(t *testing.T) {
 	ctx := context.Background()
 	svc, repo, _ := newPoolService(t)
-	ann, _ := svc.CreateDriver(ctx, "Ann", "")
-	bob, _ := svc.CreateDriver(ctx, "Bob", "")
+	ann, _ := svc.CreateDriver(ctx, "Ann")
+	bob, _ := svc.CreateDriver(ctx, "Bob")
 	svc.ClockIn(ctx, ann.ID)
 	svc.ClockIn(ctx, bob.ID)
 	a := readyDelivery(t, svc, 20*time.Minute)
@@ -586,7 +586,7 @@ func TestMovingClearsThePlanLink(t *testing.T) {
 func TestGeoOnAcceptReadyAndSendOut(t *testing.T) {
 	ctx := context.Background()
 	svc, _, events := newPoolService(t)
-	d, _ := svc.CreateDriver(ctx, "Ann", "")
+	d, _ := svc.CreateDriver(ctx, "Ann")
 	svc.ClockIn(ctx, d.ID)
 	s := order.Snapshot{ID: uuid.NewString(), TenantID: uuid.NewString(), LocationID: uuid.NewString(), Source: "online",
 		SourceEventID: "1", PlacedAt: time.Now().UTC(), Fulfillment: order.Fulfillment{Type: "delivery"}}

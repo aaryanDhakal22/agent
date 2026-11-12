@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"time"
 
@@ -125,19 +124,6 @@ func (r *OrderRepository) Undeliver(ctx context.Context, id string) (result *ord
 	return &fresh, nil
 }
 
-// feedDriver is a driver as the hub's feed carries it (nil = no driver).
-func feedDriver(d *models.Driver) *order.FeedDriver {
-	if d == nil {
-		return nil
-	}
-	fd := &order.FeedDriver{ID: d.ID, Name: d.Name}
-	if d.PosNumber != "" {
-		v := d.PosNumber
-		fd.PosNumber = &v
-	}
-	return fd
-}
-
 // ReassignDeliveries — see order.FloorRepository.
 func (r *OrderRepository) ReassignDeliveries(ctx context.Context, ids []string, driverID string, by order.MarkedBy) (moved []order.StoredOrder, driversChanged bool, err error) {
 	ctx, _, end := dbSpan(ctx, "floor.reassign")
@@ -158,9 +144,8 @@ func (r *OrderRepository) ReassignDeliveries(ctx context.Context, ids []string, 
 			if err != nil || !d.Active {
 				return order.ErrDriverNotFound
 			}
-			// Clocked out: nothing moves to them - unless the POS says so
-			// (a cashier set the driver; the record follows the POS).
-			if d.Status != order.DriverAvailable && d.Status != order.DriverOut && by.Kind != order.ByPOS {
+			// Clocked out: nothing moves to them.
+			if d.Status != order.DriverAvailable && d.Status != order.DriverOut {
 				return order.ErrDriverNotAvailable
 			}
 			to = &d
@@ -189,15 +174,6 @@ func (r *OrderRepository) ReassignDeliveries(ctx context.Context, ids []string, 
 			}
 			if to == nil && so.IsUnassigned() {
 				continue
-			}
-			var from *models.Driver
-			if so.Status.DriverID != "" {
-				switch d, err := q.GetDriver(ctx, so.Status.DriverID); {
-				case err == nil:
-					from = &d
-				case !errors.Is(err, sql.ErrNoRows):
-					return err
-				}
 			}
 			p := models.SetOrderDriverParams{ID: so.Order.ID}
 			md := so.Status.MarkedDelivered
@@ -247,12 +223,6 @@ func (r *OrderRepository) ReassignDeliveries(ctx context.Context, ids []string, 
 			}
 			if err := recordOrderStatus(ctx, q, fresh, false, now); err != nil {
 				return err
-			}
-			if fresh.IsPOS() && by.Kind != order.ByPOS { // the POS already shows it
-				if err := insertFeed(ctx, q, order.FeedOrderDriverChanged, now, order.OrderDriverChangedData{
-					FeedOrderRef: order.RefOf(fresh), From: feedDriver(from), To: feedDriver(to), OutAt: fresh.Status.OutAt}); err != nil {
-					return err
-				}
 			}
 			moved = append(moved, fresh)
 		}

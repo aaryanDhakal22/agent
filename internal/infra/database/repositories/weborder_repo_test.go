@@ -76,8 +76,8 @@ func TestSetAddedTipRules(t *testing.T) {
 func TestTipLockOnClockOutAndCloseBatch(t *testing.T) {
 	r := newFloorRepo(t)
 	ctx := context.Background()
-	d, _ := r.CreateDriver(ctx, "Sam", "")
-	other, _ := r.CreateDriver(ctx, "Ana", "")
+	d, _ := r.CreateDriver(ctx, "Sam")
+	other, _ := r.CreateDriver(ctx, "Ana")
 	clockIn(t, r, d.ID, other.ID)
 	a := accept(t, r, arriveWeb(t, r, "web", "delivery", true))
 	b := accept(t, r, arriveWeb(t, r, "web", "delivery", true))
@@ -161,7 +161,7 @@ func TestTipLockOnClockOutAndCloseBatch(t *testing.T) {
 func TestCancelChannelOrder(t *testing.T) {
 	r := newFloorRepo(t)
 	ctx := context.Background()
-	d, _ := r.CreateDriver(ctx, "Sam", "")
+	d, _ := r.CreateDriver(ctx, "Sam")
 	clockIn(t, r, d.ID)
 
 	// Out on a run alone: cancelled, off the run, the driver is back.
@@ -230,7 +230,7 @@ func TestCancelChannelOrder(t *testing.T) {
 func TestSetAddedTipRefusals(t *testing.T) {
 	r := newFloorRepo(t)
 	ctx := context.Background()
-	d, _ := r.CreateDriver(ctx, "Sam", "")
+	d, _ := r.CreateDriver(ctx, "Sam")
 	clockIn(t, r, d.ID)
 
 	out := accept(t, r, arriveWeb(t, r, "web", "delivery", true))
@@ -259,10 +259,6 @@ func TestSetAddedTipRefusals(t *testing.T) {
 	if _, err := r.SetAddedTip(ctx, cancelled.Order.ID, 100); !errors.Is(err, order.ErrNotTippable) {
 		t.Errorf("cancelled: %v", err)
 	}
-	pos := upsertPOS(t, r, "7001", posOrder("pickup", "tip-pos"))
-	if _, err := r.SetAddedTip(ctx, pos.Order.Order.ID, 100); !errors.Is(err, order.ErrNotTippable) {
-		t.Errorf("POS check: %v", err)
-	}
 	before := len(eventsOfType(t, r, order.FloorEventOrderTip))
 	if _, err := r.DriverReturned(ctx, d.ID); err != nil {
 		t.Fatal(err)
@@ -289,7 +285,7 @@ func TestSetAddedTipRefusals(t *testing.T) {
 func TestCancelChannelOrderEdges(t *testing.T) {
 	r := newFloorRepo(t)
 	ctx := context.Background()
-	d, _ := r.CreateDriver(ctx, "Sam", "")
+	d, _ := r.CreateDriver(ctx, "Sam")
 	clockIn(t, r, d.ID)
 
 	ready := accept(t, r, arriveWeb(t, r, "web", "pickup", true))
@@ -340,10 +336,6 @@ func TestCancelChannelOrderEdges(t *testing.T) {
 		t.Errorf("picked up: %v", err)
 	}
 
-	pos := upsertPOS(t, r, "7002", posOrder("delivery", "cancel-pos"))
-	if _, _, _, err := r.CancelChannelOrder(ctx, pos.Order.Order.ID, order.CancelOther); !errors.Is(err, order.ErrNotCancellable) {
-		t.Errorf("POS check: %v", err)
-	}
 	claiming := arriveWeb(t, r, "web", "pickup", true)
 	if _, err := r.ClaimAccept(ctx, uuid.MustParse(claiming.Order.ID), 15, false); err != nil {
 		t.Fatal(err)
@@ -351,7 +343,7 @@ func TestCancelChannelOrderEdges(t *testing.T) {
 	if _, _, _, err := r.CancelChannelOrder(ctx, claiming.Order.ID, order.CancelOther); !errors.Is(err, order.ErrNotCancellable) {
 		t.Errorf("mid-accept (printing): %v", err)
 	}
-	if err := r.RecordAccepted(ctx, get(t, r, claiming.Order.ID), false); err != nil {
+	if err := r.RecordAccepted(ctx, get(t, r, claiming.Order.ID)); err != nil {
 		t.Fatal(err)
 	}
 	if _, _, _, err := r.CancelChannelOrder(ctx, uuid.NewString(), order.CancelOther); !errors.Is(err, order.ErrNotFound) {

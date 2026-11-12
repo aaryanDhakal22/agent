@@ -294,7 +294,7 @@ func BuildTill(in TillInput) Till {
 		held[so.Order.ID] = so
 	}
 	isSale := func(so order.StoredOrder) bool {
-		if so.IsPOS() || so.Status.State == order.StateCancelled {
+		if so.Status.State == order.StateCancelled {
 			return false
 		}
 		if in.Drawer != nil {

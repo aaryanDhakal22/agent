@@ -263,16 +263,10 @@ SELECT * FROM drivers WHERE id = ?;
 SELECT CAST(COALESCE(MAX(position), 0) + 1 AS INTEGER) AS next_position FROM drivers;
 
 -- name: CreateDriver :exec
-INSERT INTO drivers (id, name, position, pos_number, pushover_device) VALUES (?, ?, ?, ?, ?);
+INSERT INTO drivers (id, name, position, pushover_device) VALUES (?, ?, ?, ?);
 
 -- name: SetDriverPushoverDevice :execrows
 UPDATE drivers SET pushover_device = ? WHERE id = ? AND active;
-
--- name: SetDriverPosNumber :execrows
-UPDATE drivers SET pos_number = ? WHERE id = ? AND active;
-
--- name: GetActiveDriverByPosNumber :one
-SELECT * FROM drivers WHERE pos_number = ? AND pos_number <> '' AND active;
 
 -- name: RenameDriver :execrows
 UPDATE drivers SET name = ? WHERE id = ? AND active;
@@ -616,7 +610,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 
         ?, ?, ?, ?, ?);
 
 -- name: RestoreDriver :exec
-INSERT INTO drivers (id, name, active, position, status, last_returned_at, pos_number) VALUES (?, ?, true, ?, ?, ?, ?);
+INSERT INTO drivers (id, name, active, position, status, last_returned_at) VALUES (?, ?, true, ?, ?, ?);
 
 -- name: RestoreShift :exec
 INSERT INTO driver_shifts (id, driver_id, driver_name, batch_id, clock_in) VALUES (?, ?, ?, ?, ?);
@@ -632,18 +626,15 @@ SELECT CAST(count(*) AS INTEGER) AS total,
 FROM orders
 WHERE batch_id = (SELECT id FROM batches WHERE closed_at IS NULL ORDER BY id DESC LIMIT 1);
 
--- Metrics: floor.orders.open (open batch, by state and online/POS; POS
--- counter checks with no kitchen item are left out, as on Kitchen).
+-- Metrics: floor.orders.open (open batch, by state and online / channel).
 -- name: CountOpenFloorOrders :many
 SELECT state,
-       CAST(ext_source <> '' AS INTEGER) AS pos,
        CAST(source NOT IN ('online', 'pos', '') AS INTEGER) AS channel,
        CAST(count(*) AS INTEGER) AS n
 FROM orders
 WHERE batch_id = (SELECT id FROM batches WHERE closed_at IS NULL ORDER BY id DESC LIMIT 1)
   AND state IN ('arrived', 'scheduled', 'accepted', 'ready', 'on_delivery')
-  AND board_hidden = 0
-GROUP BY state, pos, channel;
+GROUP BY state, channel;
 
 -- name: GetUpdateState :one
 SELECT update_job, update_notified FROM settings WHERE id = 1;
@@ -782,67 +773,8 @@ SELECT map_file FROM settings WHERE id = 1;
 -- name: SetMapFile :exec
 UPDATE settings SET map_file = ? WHERE id = 1;
 
--- POS orders from the store hub (2.1.0) ------------------------------------------
-
--- name: InsertExternalOrder :exec
--- A POS check the hub pulled: stored accepted (no kitchen number), local only.
-INSERT INTO orders (id, tenant_id, location_id, source, source_event_id, snapshot, state, arrival_date,
-                    batch_id, prep_minutes, estimated_ready_at, accepted_at,
-                    ext_source, ext_ref, ext_hash, ext_driver_pos, display_number, paid, cash_due_cents,
-                    tip_cents, board_hidden, sent_at, local_only, paid_at)
-VALUES (sqlc.arg(id), sqlc.arg(tenant_id), sqlc.arg(location_id), sqlc.arg(source), sqlc.arg(source_event_id),
-        sqlc.arg(snapshot), 'accepted', sqlc.arg(arrival_date),
-        (SELECT id FROM batches WHERE closed_at IS NULL ORDER BY id DESC LIMIT 1),
-        sqlc.arg(prep_minutes), sqlc.arg(estimated_ready_at), sqlc.arg(accepted_at),
-        sqlc.arg(ext_source), sqlc.arg(ext_ref), sqlc.arg(ext_hash), '', sqlc.arg(display_number),
-        sqlc.arg(paid), sqlc.arg(cash_due_cents), sqlc.arg(tip_cents), sqlc.arg(board_hidden),
-        sqlc.arg(sent_at), true, sqlc.narg(paid_at));
-
--- name: GetOrderByExtRef :one
--- The newest order for a POS check (a check number is never reused by the POS).
-SELECT * FROM orders WHERE ext_source = ? AND ext_ref = ? AND ext_ref <> ''
-ORDER BY arrival_date DESC LIMIT 1;
-
--- name: UpdateExternalOrder :exec
--- A changed POS check: the new snapshot (items, money, notes, address) and
--- the paid / cash / tip / hidden figures. No state change. paid_at (2.4.0)
--- moves when the check goes from a balance due to paid.
-UPDATE orders
-SET snapshot = sqlc.arg(snapshot), ext_hash = sqlc.arg(ext_hash), display_number = sqlc.arg(display_number),
-    paid = sqlc.arg(paid), cash_due_cents = sqlc.arg(cash_due_cents), tip_cents = sqlc.arg(tip_cents),
-    board_hidden = sqlc.arg(board_hidden),
-    paid_at = CASE WHEN sqlc.arg(paid) AND NOT paid THEN sqlc.arg(now) ELSE paid_at END
-WHERE id = sqlc.arg(id);
-
--- name: SetExtDriverPos :exec
-UPDATE orders SET ext_driver_pos = ?, pos_driver_note = ? WHERE id = ?;
-
--- name: CancelExternalOrder :execrows
--- A void at the POS (or Close batch): cancelled, out of any pool. A delivered
--- order stays delivered (its driver collected it).
-UPDATE orders
-SET state = 'cancelled', cancelled_at = ?, pool_driver_id = NULL, pooled_at = NULL, pool_seq = NULL,
-    pool_plan_id = NULL, accept_pending = 0, came_back = false
-WHERE id = ? AND state NOT IN ('cancelled', 'delivered');
-
 -- name: SetOrderSnapshot :exec
 UPDATE orders SET snapshot = ? WHERE id = ?;
-
--- name: ListLocalOnlyByBatch :many
-SELECT * FROM orders WHERE batch_id = ? AND local_only ORDER BY arrival_date ASC;
-
--- name: SetOrderPaid :exec
--- An online order the hub inserted into the POS was paid there (paid_at as
--- on a POS check, 2.4.0).
-UPDATE orders
-SET paid = sqlc.arg(paid), paid_at = CASE WHEN sqlc.arg(paid) AND NOT paid THEN sqlc.arg(now) ELSE paid_at END
-WHERE id = sqlc.arg(id);
-
--- name: SetPosCheckNumber :exec
-UPDATE orders SET pos_check_number = ? WHERE id = ?;
-
--- name: SetOrderFlag :exec
-UPDATE orders SET flag = ? WHERE id = ?;
 
 -- Future orders (2.1.0) --------------------------------------------------------
 
@@ -927,36 +859,11 @@ UPDATE settings SET integration_status = ? WHERE id = 1;
 UPDATE orders SET finished_at = sqlc.arg(finished_at), finished_by = sqlc.arg(finished_by)
 WHERE id = sqlc.arg(id) AND state = 'ready' AND finished_at IS NULL;
 
--- name: FinishHiddenClosed :execrows
--- A POS check that was never on Kitchen (board hidden) closed at the POS:
--- ready and finished at once (no feed event: nothing is called out).
-UPDATE orders SET state = 'ready', ready_at = sqlc.arg(at), finished_at = sqlc.arg(at), finished_by = 'pos'
-WHERE id = sqlc.arg(id) AND state = 'accepted' AND board_hidden;
-
 -- name: ListDueOnlinePickups :many
 -- Online pickups / dine-in ready since before the cutoff and not finished yet.
 SELECT id FROM orders
-WHERE state = 'ready' AND finished_at IS NULL AND ext_source = '' AND ready_at IS NOT NULL AND ready_at <= sqlc.arg(cutoff)
+WHERE state = 'ready' AND finished_at IS NULL AND ready_at IS NOT NULL AND ready_at <= sqlc.arg(cutoff)
   AND COALESCE(json_extract(snapshot, '$.fulfillment.type'), '') <> 'delivery';
-
--- name: SetPosClosed :exec
-UPDATE orders SET pos_closed = ? WHERE id = ?;
-
--- name: SetPosChange :exec
-UPDATE orders SET pos_change = ? WHERE id = ?;
-
--- name: ReopenPosOrder :execrows
--- A ready POS order the terminal added a kitchen item to: back to cooking,
--- out of any pool, not finished.
-UPDATE orders
-SET state = 'accepted', ready_at = NULL, finished_at = NULL, finished_by = '', estimated_ready_at = sqlc.arg(estimated_ready_at),
-    pool_driver_id = NULL, pooled_at = NULL, pool_seq = NULL, pool_plan_id = NULL
-WHERE id = sqlc.arg(id) AND state = 'ready' AND NOT came_back;
-
--- name: ShowPosOrder :exec
--- A hidden POS check that now qualifies for Kitchen: shown as if new.
-UPDATE orders SET board_hidden = false, accepted_at = sqlc.arg(at), estimated_ready_at = sqlc.arg(estimated_ready_at)
-WHERE id = sqlc.arg(id);
 
 -- name: InsertSettingsChange :exec
 INSERT INTO settings_log (at, section, by_kind, by_name, device_id, changes)
@@ -973,14 +880,14 @@ SELECT * FROM settings_log WHERE at >= sqlc.arg(since) ORDER BY id DESC LIMIT sq
 -- 2.5.0 ADD TIP: the whole tip added after the order (absolute). Only an
 -- order of the given (open) batch that isn't cancelled, POS or locked (0 rows).
 UPDATE orders SET added_tip_cents = sqlc.arg(tip_cents)
-WHERE id = sqlc.arg(id) AND ext_source = '' AND NOT tip_locked AND state <> 'cancelled'
+WHERE id = sqlc.arg(id) AND NOT tip_locked AND state <> 'cancelled'
   AND batch_id = sqlc.arg(batch_id);
 
 -- name: LockShiftTips :many
 -- 2.5.0: a driver's shift ended - main charges the card deliveries they took
 -- out during it, so their tips can't change any more. Returns the ids locked.
 UPDATE orders SET tip_locked = true
-WHERE driver_id = sqlc.arg(driver_id) AND ext_source = '' AND NOT tip_locked
+WHERE driver_id = sqlc.arg(driver_id) AND NOT tip_locked
   AND state IN ('on_delivery', 'delivered')
   AND COALESCE(out_at, delivered_at, sqlc.arg(clock_in)) >= sqlc.arg(clock_in)
   AND batch_id = sqlc.arg(batch_id)
@@ -988,7 +895,7 @@ RETURNING id;
 
 -- name: LockBatchTips :exec
 -- 2.5.0 Close batch: main charges everything left, every tip is final.
-UPDATE orders SET tip_locked = true WHERE batch_id = ? AND ext_source = '' AND NOT tip_locked;
+UPDATE orders SET tip_locked = true WHERE batch_id = ? AND NOT tip_locked;
 
 -- name: CancelChannelOrder :execrows
 -- 2.5.0 CANCEL ORDER on a channel (website) order not delivered yet: off any
@@ -998,7 +905,7 @@ SET state = 'cancelled', cancelled_at = sqlc.arg(cancelled_at), cancel_reason = 
     ring_at = NULL, came_back = false,
     driver_id = NULL, driver_name = '', out_at = NULL, delivered_at = NULL, run_seq = NULL,
     pool_driver_id = NULL, pooled_at = NULL, pool_seq = NULL, pool_plan_id = NULL
-WHERE id = sqlc.arg(id) AND ext_source = '' AND accept_pending = 0
+WHERE id = sqlc.arg(id) AND accept_pending = 0
   AND state IN ('arrived', 'scheduled', 'accepted', 'ready', 'on_delivery');
 
 -- ===== 00025 terminal (stage 0d): the Pi serves the store's POS terminals =====
@@ -1109,7 +1016,7 @@ ON CONFLICT (staff_id) DO UPDATE SET driver_id = excluded.driver_id, linked_at =
 -- A tip the driver got at the door (absolute). Only a delivery of the given
 -- (open) batch that is out or delivered, not a POS check.
 UPDATE orders SET door_tip_cents = sqlc.arg(tip_cents)
-WHERE id = sqlc.arg(id) AND ext_source = '' AND state IN ('on_delivery', 'delivered')
+WHERE id = sqlc.arg(id) AND state IN ('on_delivery', 'delivered')
   AND batch_id = sqlc.arg(batch_id);
 
 -- name: GetAutoCloseLast :one
@@ -1150,9 +1057,9 @@ DELETE FROM terminal_drafts RETURNING id;
 
 -- name: ListPickupOrders :many
 -- The terminals' Pickup list (contract 2.10i): a batch's pickup / counter orders of
--- every source but the old POS, oldest first (the service filters states).
+-- every source, oldest first (the service filters states).
 SELECT * FROM orders
-WHERE batch_id = ? AND ext_source = ''
+WHERE batch_id = ?
   AND COALESCE(json_extract(snapshot, '$.fulfillment.type'), '') <> 'delivery'
 ORDER BY arrival_date, id;
 
@@ -1236,8 +1143,8 @@ SELECT count(*) FROM customers;
 
 -- name: ListOrdersMentioning :many
 -- Orders whose snapshot holds the text (a phone's last digits, a customer
--- id), newest first; the caller checks each one. POS checks are left out.
-SELECT * FROM orders WHERE local_only = 0 AND instr(snapshot, sqlc.arg(text)) > 0
+-- id), newest first; the caller checks each one.
+SELECT * FROM orders WHERE instr(snapshot, sqlc.arg(text)) > 0
 ORDER BY arrival_date DESC LIMIT sqlc.arg(max_rows);
 
 -- name: ListLocatedDeliveries :many

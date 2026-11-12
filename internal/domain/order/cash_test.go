@@ -55,12 +55,6 @@ func TestDriverReportLine_TipRules(t *testing.T) {
 			true, 2500, 0, 2500},
 		{"online cash tip above cash due: floored at 0", StoredOrder{Order: Snapshot{Source: "online", Money: Money{Total: 3000, Tip: 2500},
 			Payments: []PaymentSummary{{Method: "card", AmountCents: 1000}, {Method: "cash", AmountCents: 2000}}}}, true, 0, 0, 0},
-		{"POS paid card: tip counts", StoredOrder{Order: Snapshot{Source: SourcePOS, Money: Money{Total: 3000, Tip: 400}},
-			Status: Status{ExtSource: ExtSourceSoftTouch, Paid: true, TipCents: 400}}, false, 0, 400, -376},
-		{"POS cash: the hub's cash due, tip ignored", StoredOrder{Order: Snapshot{Source: SourcePOS, Money: Money{Total: 3000, Tip: 400}},
-			Status: Status{ExtSource: ExtSourceSoftTouch, CashDueCents: 2600, TipCents: 400}}, true, 2600, 0, 2600},
-		{"POS unpaid, nothing due: no tip", StoredOrder{Order: Snapshot{Source: SourcePOS, Money: Money{Total: 3000}},
-			Status: Status{ExtSource: ExtSourceSoftTouch, TipCents: 300}}, true, 0, 0, 0},
 	} {
 		l := NewDriverReportLine(tc.so)
 		if l.Cash != tc.cash || l.CashCents != tc.cashC || l.TipCents != tc.tipC {

@@ -183,12 +183,6 @@ func (r *OrderRepository) ClaimDelivered(ctx context.Context, driverID string, i
 			if err := recordOrderStatus(ctx, q, fresh, false, now); err != nil {
 				return err
 			}
-			if fresh.IsPOS() {
-				if err := insertFeed(ctx, q, order.FeedOrderDriverChanged, now, order.OrderDriverChangedData{
-					FeedOrderRef: order.RefOf(fresh), To: feedDriver(&d), OutAt: fresh.Status.OutAt}); err != nil {
-					return err
-				}
-			}
 			claimed = append(claimed, fresh)
 		}
 		return nil

@@ -203,11 +203,6 @@ func TestCancelFuture(t *testing.T) {
 	if _, err := svc.CancelFuture(ctx, readyDelivery(t, svc, time.Minute)); !errors.Is(err, order.ErrInvalidState) {
 		t.Fatalf("accepted = %v", err)
 	}
-	// A POS check is never a future order.
-	pos := mustUpsert(t, svc, "77", extOrder("pickup", "p"))
-	if _, err := svc.CancelFuture(ctx, pos.OrderID); err == nil {
-		t.Fatal("cancelled a POS check")
-	}
 }
 
 // The store's colours: defaults, a partial PUT keeps the rest, bad hex refused.

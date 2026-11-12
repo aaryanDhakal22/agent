@@ -107,7 +107,7 @@ func routeEvent(t *testing.T, events chan ssebroker.Event) DriverRoute {
 func TestSendOutPushesTheRouteInAutoOrder(t *testing.T) {
 	ctx := context.Background()
 	svc, repo, events, fake := newRouteService(t)
-	ann, _ := svc.CreateDriver(ctx, "Ann", "")
+	ann, _ := svc.CreateDriver(ctx, "Ann")
 	if err := svc.SetDriverDevice(ctx, ann.ID, "ann_phone"); err != nil {
 		t.Fatal(err)
 	}
@@ -169,7 +169,7 @@ func runSeqs(t *testing.T, repo *repositories.OrderRepository, ids ...string) []
 func TestSendOutWithoutDeviceSendsNothing(t *testing.T) {
 	ctx := context.Background()
 	svc, _, _, fake := newRouteService(t)
-	bob, _ := svc.CreateDriver(ctx, "Bob", "")
+	bob, _ := svc.CreateDriver(ctx, "Bob")
 	svc.ClockIn(ctx, bob.ID)
 	a := readyDelivery(t, svc, 10*time.Minute)
 	svc.Pool(ctx, []string{a}, bob.ID)
@@ -186,7 +186,7 @@ func TestSendOutRouteFailureTellsTheTablet(t *testing.T) {
 	ctx := context.Background()
 	svc, _, events, fake := newRouteService(t)
 	fake.status, fake.body = 400, `{"errors":["device name is not valid for user"],"status":0}`
-	cat, _ := svc.CreateDriver(ctx, "Cat", "")
+	cat, _ := svc.CreateDriver(ctx, "Cat")
 	svc.SetDriverDevice(ctx, cat.ID, "wrong")
 	svc.ClockIn(ctx, cat.ID)
 	a := readyDelivery(t, svc, 10*time.Minute)
@@ -204,7 +204,7 @@ func TestSendOutRouteFailureTellsTheTablet(t *testing.T) {
 func TestTestRoute(t *testing.T) {
 	ctx := context.Background()
 	svc, _, _, fake := newRouteService(t)
-	d, _ := svc.CreateDriver(ctx, "Dee", "")
+	d, _ := svc.CreateDriver(ctx, "Dee")
 	if err := svc.TestRoute(ctx, d.ID); !errors.Is(err, ErrNoDevice) {
 		t.Fatalf("no device: %v", err)
 	}
@@ -295,17 +295,17 @@ func TestRouteMessageLayout(t *testing.T) {
 			Items:       []order.LineItem{{Name: "Coke", Size: "2 Liter", Quantity: 1, PrinterID: "p-receipt"}}},
 		Status: order.Status{KitchenNumber: ptr[int64](323), RunSeq: ptr[int64](2)},
 	}
-	pos := order.StoredOrder{
-		Order: order.Snapshot{ID: "o2", Source: order.SourcePOS,
+	counter := order.StoredOrder{
+		Order: order.Snapshot{ID: "o2", Source: order.SourceCounter,
 			Fulfillment: order.Fulfillment{Type: "delivery", Address: &order.Address{Line1: "12 Main St"}},
 			Items:       []order.LineItem{{Name: "Snapple Peach", Quantity: 1}}},
-		Status: order.Status{DisplayNumber: ptr[int64](223), ExtSource: order.ExtSourceSoftTouch, Paid: true, RunSeq: ptr[int64](1)},
+		Status: order.Status{KitchenNumber: ptr[int64](223), Paid: true, RunSeq: ptr[int64](1)},
 	}
-	title, text := routeMessage(routeStops([]order.StoredOrder{online, pos}), 2)
+	title, text := routeMessage(routeStops([]order.StoredOrder{online, counter}), 2)
 	if want := "#223 12 Main St\n#323 4108 Old Court Rd Apt 2B"; text != want || title != "Route · 2 stops" {
 		t.Fatalf("title %q text =\n%s\nwant\n%s", title, text, want)
 	}
-	if _, text := routeMessage(routeStops([]order.StoredOrder{online, pos}), 1); !strings.HasSuffix(text, "Map: the first 1 stops") {
+	if _, text := routeMessage(routeStops([]order.StoredOrder{online, counter}), 1); !strings.HasSuffix(text, "Map: the first 1 stops") {
 		t.Fatalf("carried: %q", text)
 	}
 	if _, text := routeMessage([]RouteStop{testStop}, 1); text != "#TEST 5601 Loch Raven Blvd" {

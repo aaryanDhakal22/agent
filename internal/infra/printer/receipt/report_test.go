@@ -12,7 +12,7 @@ import (
 )
 
 func reportFixture() (order.DriverReport, storeconfig.StoreContext) {
-	k1, k2, pos := int64(1104), int64(1107), int64(57)
+	k1, k2, k3 := int64(1104), int64(1107), int64(1110)
 	opened := time.Date(2026, 10, 16, 14, 2, 0, 0, time.UTC)
 	closed := time.Date(2026, 10, 17, 3, 48, 0, 0, time.UTC)
 	rep := order.DriverReport{BatchID: 3, BatchOpenedAt: opened, BatchClosedAt: &closed, DriverName: "Abdul",
@@ -21,7 +21,7 @@ func reportFixture() (order.DriverReport, storeconfig.StoreContext) {
 				OrderTipCents: 200, SlipTotalCents: 2249},
 			{KitchenNumber: &k2, Customer: "Ana P.", Address: "4 Elm St", Street: "4 Elm St", Cash: true, CashCents: 1850, SlipTotalCents: 1850},
 			{Customer: "Lee H.", Address: "9 Oak Ave", Street: "9 Oak Ave", TipCents: 400, OrderTipCents: 400, SlipTotalCents: 3000},
-			{DisplayNumber: &pos, Source: order.SourcePOS, Customer: "Customer", TipCents: 500, OrderTipCents: 500, SlipTotalCents: 2900}, // POS card, PII wiped
+			{KitchenNumber: &k3, Source: "web", Customer: "Customer", Street: "5 Pine Rd", TipCents: 500, OrderTipCents: 500, SlipTotalCents: 2900}, // website card
 		}}
 	rep.Finish(600)
 	sc := storeconfig.StoreContext{Location: storeconfig.LocationContext{Name: "Lombardi's Pizza", Timezone: "America/New_York"}}
@@ -66,7 +66,7 @@ func TestBuildDriverReport_Content(t *testing.T) {
 		"CARD ORDERS (2)",
 		"---- 9 Oak Ave",
 		leftRight("Tip: $4.00", "Total: $30.00", W),
-		"57" + cmdBoldOff, // a POS check, no address
+		"1110 5 Pine Rd" + cmdBoldOff,
 		leftRight("Tip: $5.00", "Total: $29.00", W),
 		leftRight("Card tips", "$9.00", W),
 		leftRight("Deliveries", "4", W),
@@ -81,7 +81,7 @@ func TestBuildDriverReport_Content(t *testing.T) {
 		}
 	}
 	// No customer names, no "#" on ticket numbers, no apartment.
-	for _, not := range []string{"Erik", "Ana P", "Lee H", "Customer", "#1104", "#57", "Apt 3"} {
+	for _, not := range []string{"Erik", "Ana P", "Lee H", "Customer", "#1104", "#1110", "Apt 3"} {
 		if strings.Contains(s, not) {
 			t.Errorf("the slip must not print %q", not)
 		}

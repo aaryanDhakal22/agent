@@ -139,7 +139,7 @@ func TestKitchenTicket_TypesAndNumber(t *testing.T) {
 	for _, c := range []struct {
 		typ, source, want string
 	}{
-		{"dine_in", order.SourceCounter, "COUNTER"}, {"dine_in", order.SourcePOS, "COUNTER"}, {"pickup", "online", "PICKUP"},
+		{"dine_in", order.SourceCounter, "COUNTER"}, {"pickup", "online", "PICKUP"},
 		{"delivery", "web", "DELIVERY"}, {"dine_in", "online", "DINE IN"}, {"", "online", "ORDER"},
 	} {
 		if got := stationType(order.Snapshot{Source: c.source, Fulfillment: order.Fulfillment{Type: c.typ}}); got != c.want {

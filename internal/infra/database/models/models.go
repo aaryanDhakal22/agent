@@ -99,7 +99,6 @@ type Driver struct {
 	Status         string         `json:"status"`
 	LastReturnedAt sql.NullString `json:"last_returned_at"`
 	CreatedAt      string         `json:"created_at"`
-	PosNumber      string         `json:"pos_number"`
 	PushoverDevice string         `json:"pushover_device"`
 }
 
@@ -185,20 +184,10 @@ type Order struct {
 	PooledAt             sql.NullString `json:"pooled_at"`
 	PoolSeq              sql.NullInt64  `json:"pool_seq"`
 	PoolPlanID           sql.NullString `json:"pool_plan_id"`
-	ExtSource            string         `json:"ext_source"`
-	ExtRef               string         `json:"ext_ref"`
-	ExtHash              string         `json:"ext_hash"`
-	ExtDriverPos         string         `json:"ext_driver_pos"`
-	DisplayNumber        sql.NullInt64  `json:"display_number"`
 	Paid                 bool           `json:"paid"`
 	CashDueCents         sql.NullInt64  `json:"cash_due_cents"`
 	TipCents             sql.NullInt64  `json:"tip_cents"`
-	BoardHidden          bool           `json:"board_hidden"`
 	SentAt               sql.NullString `json:"sent_at"`
-	LocalOnly            bool           `json:"local_only"`
-	Flag                 string         `json:"flag"`
-	PosCheckNumber       sql.NullInt64  `json:"pos_check_number"`
-	PosDriverNote        string         `json:"pos_driver_note"`
 	ScheduledLeadMinutes sql.NullInt64  `json:"scheduled_lead_minutes"`
 	RingAt               sql.NullString `json:"ring_at"`
 	Rerung               bool           `json:"rerung"`
@@ -210,8 +199,6 @@ type Order struct {
 	RunSeq               sql.NullInt64  `json:"run_seq"`
 	FinishedAt           sql.NullString `json:"finished_at"`
 	FinishedBy           string         `json:"finished_by"`
-	PosClosed            bool           `json:"pos_closed"`
-	PosChange            string         `json:"pos_change"`
 	MarkedDelivered      string         `json:"marked_delivered"`
 	PaidAt               sql.NullString `json:"paid_at"`
 	EarlyKitchen         bool           `json:"early_kitchen"`

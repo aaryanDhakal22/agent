@@ -39,21 +39,12 @@ CREATE TABLE orders (
     -- 00013_pool_seq: stop order inside the pool (1..n).
     pool_seq           integer,
     pool_plan_id       text,
-    -- 00014_integration: POS orders from the store hub + future orders.
-    ext_source             text    NOT NULL DEFAULT '',
-    ext_ref                text    NOT NULL DEFAULT '',
-    ext_hash               text    NOT NULL DEFAULT '',
-    ext_driver_pos         text    NOT NULL DEFAULT '',
-    display_number         integer,
+    -- 00014_integration: future orders + the money a terminal took (paid, cash due,
+    -- tip, sent_at); the POS columns went in 00030_softtouch_out.
     paid                   boolean NOT NULL DEFAULT false,
     cash_due_cents         integer,
     tip_cents              integer,
-    board_hidden           boolean NOT NULL DEFAULT false,
     sent_at                text,
-    local_only             boolean NOT NULL DEFAULT false,
-    flag                   text    NOT NULL DEFAULT '',
-    pos_check_number       integer,
-    pos_driver_note        text    NOT NULL DEFAULT '',
     scheduled_lead_minutes integer,
     ring_at                text,
     rerung                 boolean NOT NULL DEFAULT false,
@@ -65,14 +56,11 @@ CREATE TABLE orders (
     not_delivered_at        text,
     not_delivered_driver_id text    NOT NULL DEFAULT '',
     run_seq                 integer,
-    -- 00019_callout: finished (picked up) + by whom (pos | auto), the POS
-    -- closed the check, the unacknowledged terminal change (JSON).
+    -- 00019_callout: finished (picked up) + by whom (terminal | auto).
     finished_at             text,
     finished_by             text    NOT NULL DEFAULT '',
-    pos_closed              boolean NOT NULL DEFAULT false,
-    pos_change              text    NOT NULL DEFAULT '',
     -- 00022_floor_24: delivered with no driver (Unassigned; JSON) and when
-    -- a POS check was last paid.
+    -- the order was last paid.
     marked_delivered        text    NOT NULL DEFAULT '',
     paid_at                 text,
     -- 00022: a future order's tickets printed early (first ACCEPT).
@@ -97,7 +85,6 @@ CREATE INDEX idx_orders_state_pending ON orders (arrival_date DESC) WHERE state 
 CREATE INDEX idx_orders_source_event ON orders (source, source_event_id);
 CREATE INDEX idx_orders_batch ON orders (batch_id, arrival_date DESC);
 CREATE INDEX idx_orders_pool ON orders (pool_driver_id) WHERE pool_driver_id IS NOT NULL;
-CREATE INDEX idx_orders_ext ON orders (ext_source, ext_ref) WHERE ext_ref <> '';
 CREATE INDEX idx_orders_scheduled ON orders (ring_at) WHERE state = 'scheduled';
 CREATE UNIQUE INDEX idx_orders_client_key ON orders (client_key) WHERE client_key <> '';
 
@@ -110,13 +97,10 @@ CREATE TABLE drivers (
     status           text    NOT NULL DEFAULT 'off',
     last_returned_at text,
     created_at       text    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
-    -- 00014_integration: the driver's POS login number (unique when set).
-    pos_number       text    NOT NULL DEFAULT '',
     -- 00020_driver_route: the driver's phone in Pushover ('' = none).
     pushover_device  text    NOT NULL DEFAULT '',
     CHECK (status IN ('off', 'available', 'out'))
 );
-CREATE UNIQUE INDEX idx_drivers_pos_number ON drivers (pos_number) WHERE pos_number <> '' AND active;
 
 CREATE TABLE driver_shifts (
     id          text    PRIMARY KEY,

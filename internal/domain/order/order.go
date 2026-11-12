@@ -45,9 +45,9 @@ type Snapshot struct {
 	EstimatedReadyAt *time.Time `json:"estimated_ready_at,omitempty"`
 	DriverName       string     `json:"driver_name,omitempty"`
 
-	// RemovedItems (POS orders only): lines voided at the terminal after the
-	// check was on the tablet - struck through, red, REMOVED on Kitchen and in
-	// History. Never printed or counted (Items is what the order is now).
+	// RemovedItems (terminal orders): lines removed at a terminal after SEND
+	// (§2.10d) - struck through, red, REMOVED on Kitchen and in History.
+	// Never printed or counted (Items is what the order is now).
 	RemovedItems []LineItem `json:"removed_items,omitempty"`
 
 	// MakeAt (printing only, never on the wire): when the kitchen starts a
@@ -144,13 +144,6 @@ type LineItem struct {
 	MenuItemID string `json:"menu_item_id,omitempty"`
 	PrinterID  string `json:"printer_id,omitempty"`
 	Routing    string `json:"routing,omitempty"` // matched | unmatched | unassigned | none | "" (pre-routing)
-
-	// POS orders only: PosRef is the POS line's own id (stable across
-	// edits), Kitchen says the POS sends it to a kitchen station, Added marks
-	// a line rung at the terminal after the check was on the tablet (ADDED).
-	PosRef  string `json:"pos_ref,omitempty"`
-	Kitchen bool   `json:"kitchen,omitempty"`
-	Added   bool   `json:"added,omitempty"`
 }
 
 // Portions and modes (LineItem.Portion / Mode).
@@ -236,13 +229,13 @@ func (s Snapshot) CashDue() int64 {
 }
 
 // IsChannel (2.5.0) reports an order from one of the store's own channels:
-// any source other than the vendor's "online" and the hub's "pos" (main
-// sends "web" for the website, later "operator" / "counter"). An empty
-// source is an old online order. Channel orders always print station
-// tickets + the receipt and never go into the store's POS.
+// any source other than the vendor's "online" (main sends "web" for the
+// website, "counter" for the terminals, later "operator"). An empty source
+// is an old online order; "pos" was the old POS's (SoftTouch, gone in H3).
+// Channel orders always print station tickets + the receipt.
 func (s Snapshot) IsChannel() bool {
 	src := strings.ToLower(strings.TrimSpace(s.Source))
-	return src != "" && src != SourceOnline && src != SourcePOS
+	return src != "" && src != SourceOnline && src != "pos"
 }
 
 // MustParseID returns the snapshot id as a uuid.UUID. The wire shape uses

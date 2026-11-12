@@ -274,7 +274,7 @@ func main() {
 	// the hub inserts online cash pickups live, per job.
 	orderService.LoadIntegrationSettings(ctx)
 	dispatcher.SetRules(func() printerApp.Rules {
-		return printerApp.Rules{Tickets: orderService.IntegrationSettings().Tickets, InsertLive: orderService.InsertLive()}
+		return printerApp.Rules{Tickets: orderService.IntegrationSettings().Tickets}
 	})
 	// POS orders are made on this Pi: they carry the linked tenant + location.
 	orderService.SetStoreIDs(func() (string, string) {
@@ -583,9 +583,8 @@ func main() {
 			logger.Debug().Err(err).Msg("Pushover secrets refresh failed")
 		}
 		catchupHook()
-		orderService.RelocatePOS(ctx) // POS deliveries pulled while main was away
-		termStore.Kick("")            // the terminals' menu + config, fresh at every connect
-		custBook.Kick()               // the store's customers too
+		termStore.Kick("") // the terminals' menu + config, fresh at every connect
+		custBook.Kick()    // the store's customers too
 	})
 	// Reconciliation: a quiet catch-up pass every minute while connected.
 	go catchup.Reconcile(ctx, time.Minute, func(rc context.Context, path, rawQuery string) (int, []byte, error) {
@@ -745,10 +744,7 @@ func main() {
 			out := make([]observability.FloorCount, 0, len(rows))
 			for _, r := range rows {
 				src := order.SourceOnline
-				switch {
-				case r.POS:
-					src = order.SourcePOS
-				case r.Channel:
+				if r.Channel {
 					src = order.SourceWeb
 				}
 				out = append(out, observability.FloorCount{State: floorStateLabel(r.State), Source: src, N: r.N})

@@ -175,7 +175,7 @@ func stationType(snap order.Snapshot) string {
 	case "counter":
 		return "COUNTER"
 	case "dine_in":
-		if snap.Source == order.SourceCounter || snap.Source == order.SourcePOS {
+		if snap.Source == order.SourceCounter {
 			return "COUNTER"
 		}
 		return "DINE IN"

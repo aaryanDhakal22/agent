@@ -71,7 +71,7 @@ type Z struct {
 	NoSales       int64      `json:"no_sales"`
 	Reconcile     ZReconcile `json:"reconcile"`
 	GeneratedAt   time.Time  `json:"generated_at"`
-	POSChecksLeft int64      `json:"pos_checks"` // the old POS's checks on the Pi (not counted here)
+	POSChecksLeft int64      `json:"pos_checks"` // always 0 since H3 (the old POS's checks; kept for the shape)
 }
 
 // ZCounts are order counts by type (counter / pickup / delivery are the
@@ -276,10 +276,6 @@ func BuildZ(in ZInput) Z {
 		z.Reconcile.TipsCents += tip
 	}
 	for _, so := range in.Orders {
-		if so.IsPOS() {
-			z.POSChecksLeft++
-			continue
-		}
 		snap := so.Order
 		counter := snap.Source == order.SourceCounter
 		var netAmt, netTip int64

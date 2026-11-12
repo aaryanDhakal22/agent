@@ -90,8 +90,6 @@ type Service struct {
 	onClosed atomic.Pointer[func(ctx context.Context, closed order.Batch)]
 	// autoMu: one auto-assign at a time (autoassign.go).
 	autoMu sync.Mutex
-	// ledger: the POS driver ledger from the store hub (2.3.0, ledger.go).
-	ledger ledgerState
 	// preview: the callout PREVIEW "on this tablet" audio (2.3.2,
 	// callout_preview.go), in memory only.
 	preview previewState
@@ -302,7 +300,7 @@ func (s *Service) accept(ctx context.Context, id uuid.UUID, prepMinutes *int, au
 	}
 	// The tickets printed: the accept must reach main even if the tablet's
 	// request was cancelled meanwhile.
-	if err := s.repo.RecordAccepted(context.WithoutCancel(ctx), *so, out.InsertExpected); err != nil {
+	if err := s.repo.RecordAccepted(context.WithoutCancel(ctx), *so); err != nil {
 		s.logger.Error().Ctx(ctx).Err(err).Str("order_id", id.String()).Msg("Failed to record accepted floor event (main won't see it)")
 	}
 	s.floorChanged()

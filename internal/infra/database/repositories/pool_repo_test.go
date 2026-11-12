@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"quiccpos/agent/internal/domain/order"
-	"quiccpos/agent/internal/infra/database/models"
 
 	"github.com/google/uuid"
 )
@@ -19,8 +18,8 @@ func poolSetup(t *testing.T, deliveries int) (*OrderRepository, *order.Driver, *
 	t.Helper()
 	ctx := context.Background()
 	r := newFloorRepo(t)
-	a, _ := r.CreateDriver(ctx, "Ann", "")
-	b, _ := r.CreateDriver(ctx, "Bob", "")
+	a, _ := r.CreateDriver(ctx, "Ann")
+	b, _ := r.CreateDriver(ctx, "Bob")
 	clockIn(t, r, a.ID, b.ID)
 	var out []order.StoredOrder
 	for range deliveries {
@@ -120,7 +119,7 @@ func TestPoolRules(t *testing.T) {
 		t.Fatalf("unknown order: %v", err)
 	}
 	// Off driver.
-	off, _ := r.CreateDriver(ctx, "Off", "")
+	off, _ := r.CreateDriver(ctx, "Off")
 	if _, err := r.PoolOrders(ctx, ids(os[0]), off.ID); !errors.Is(err, order.ErrDriverNotAvailable) {
 		t.Fatalf("off driver: %v", err)
 	}
@@ -591,53 +590,5 @@ func TestRecallDriver(t *testing.T) {
 	}
 	if _, err := r.PoolOrders(ctx, ids(os[0]), b.ID); err != nil {
 		t.Fatalf("re-pool a recalled order to another driver: %v", err)
-	}
-}
-
-// TestRecallDriverPOS (2.4.1): a POS check in a recalled run tells the hub
-// (order.not_delivered, action recall: un-dispatched in SoftTouch) and keeps
-// the came-back mark so the next POS pull doesn't mirror it out again.
-func TestRecallDriverPOS(t *testing.T) {
-	ctx := context.Background()
-	r := newFloorRepo(t)
-	a, _ := r.CreateDriver(ctx, "Ann", "")
-	clockIn(t, r, a.ID)
-	if err := r.SetDriverPosNumber(ctx, a.ID, "12"); err != nil {
-		t.Fatal(err)
-	}
-	res := upsertPOS(t, r, "5001", posOrder("delivery", "h1"))
-	id := res.Order.Order.ID
-	if _, err := r.MarkReady(ctx, id, true); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := r.PoolOrders(ctx, []string{id}, a.ID); err != nil {
-		t.Fatal(err)
-	}
-	if _, _, err := r.SendOut(ctx, a.ID, nil, false, order.RunMeta{}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := r.RecallDriver(ctx, a.ID); err != nil {
-		t.Fatal(err)
-	}
-	evs, _, err := r.ListFeed(ctx, 0, 1000)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var nd *order.OrderNotDeliveredData
-	for _, e := range evs {
-		if e.Type == order.FeedOrderNotDelivered {
-			var d order.OrderNotDeliveredData
-			if err := json.Unmarshal(e.Data, &d); err != nil {
-				t.Fatal(err)
-			}
-			nd = &d
-		}
-	}
-	if nd == nil || nd.Action != order.NotDeliveredRecall || nd.DriverPosNumber == nil || *nd.DriverPosNumber != "12" {
-		t.Fatalf("hub feed: %+v", nd)
-	}
-	row, err := models.New(r.db).GetOrderByID(ctx, id)
-	if err != nil || row.ExtDriverPos != order.CameBackMark+"12" {
-		t.Fatalf("came-back mark: %q %v", row.ExtDriverPos, err)
 	}
 }

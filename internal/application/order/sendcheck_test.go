@@ -28,8 +28,8 @@ func newHoldFloor(t *testing.T) *holdFloor {
 	svc, _, _ := newPoolService(t)
 	svc.SetGeo(GeoDeps{Floor: func() (*FloorStore, *FloorMap) { return &FloorStore{Lat: 40.0, Lng: -74.0}, nil }})
 	f := &holdFloor{svc: svc}
-	ann, _ := svc.CreateDriver(ctx, "Ann", "")
-	abdul, _ := svc.CreateDriver(ctx, "Abdul Karim", "")
+	ann, _ := svc.CreateDriver(ctx, "Ann")
+	abdul, _ := svc.CreateDriver(ctx, "Abdul Karim")
 	f.ann, f.abdul = ann.ID, abdul.ID
 	svc.ClockIn(ctx, f.abdul)
 	svc.ClockIn(ctx, f.ann)

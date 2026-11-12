@@ -16,9 +16,6 @@ type Querier interface {
 	// 2.5.0 CANCEL ORDER on a channel (website) order not delivered yet: off any
 	// pool or run (no driver, so it counts on no driver report).
 	CancelChannelOrder(ctx context.Context, arg CancelChannelOrderParams) (int64, error)
-	// A void at the POS (or Close batch): cancelled, out of any pool. A delivered
-	// order stays delivered (its driver collected it).
-	CancelExternalOrder(ctx context.Context, arg CancelExternalOrderParams) (int64, error)
 	// Close-batch: an order nobody accepted is cancelled (never printed, no kitchen number).
 	CancelOrder(ctx context.Context, arg CancelOrderParams) error
 	// 2.4.3 CANCEL on a waiting future order (never accepted, nothing cooked).
@@ -51,8 +48,7 @@ type Querier interface {
 	CountOnDeliveryByDriver(ctx context.Context, driverID sql.NullString) (int64, error)
 	// Pi updates (2.0.6) ----------------------------------------------------------
 	CountOpenBatchOrders(ctx context.Context) (CountOpenBatchOrdersRow, error)
-	// Metrics: floor.orders.open (open batch, by state and online/POS; POS
-	// counter checks with no kitchen item are left out, as on Kitchen).
+	// Metrics: floor.orders.open (open batch, by state and online / channel).
 	CountOpenFloorOrders(ctx context.Context) ([]CountOpenFloorOrdersRow, error)
 	CountParkedFloorEvents(ctx context.Context) (int64, error)
 	CountTerminalDrafts(ctx context.Context, locationID string) (int64, error)
@@ -93,14 +89,10 @@ type Querier interface {
 	FindCustomersByPhonePrefix(ctx context.Context, arg FindCustomersByPhonePrefixParams) ([]Customer, error)
 	// phone_rev in [lo, hi): the typed digits as the number's end ("the last 4").
 	FindCustomersByPhoneSuffix(ctx context.Context, arg FindCustomersByPhoneSuffixParams) ([]Customer, error)
-	// A POS check that was never on Kitchen (board hidden) closed at the POS:
-	// ready and finished at once (no feed event: nothing is called out).
-	FinishHiddenClosed(ctx context.Context, arg FinishHiddenClosedParams) (int64, error)
 	// Close-batch auto-finish: force an order to its terminal state.
 	FinishOrder(ctx context.Context, arg FinishOrderParams) error
 	// 2.4.1: a recalled driver is next in the queue.
 	FrontDriverPosition(ctx context.Context) (int64, error)
-	GetActiveDriverByPosNumber(ctx context.Context, posNumber string) (Driver, error)
 	GetAppRelease(ctx context.Context) (string, error)
 	// Settings -----------------------------------------------------------------
 	GetAutoAccept(ctx context.Context) (bool, error)
@@ -136,8 +128,6 @@ type Querier interface {
 	GetOpenDrawerByStaff(ctx context.Context, staffID string) (DrawerSession, error)
 	GetOpenShift(ctx context.Context, driverID string) (DriverShift, error)
 	GetOrderByClientKey(ctx context.Context, clientKey string) (Order, error)
-	// The newest order for a POS check (a check number is never reused by the POS).
-	GetOrderByExtRef(ctx context.Context, arg GetOrderByExtRefParams) (Order, error)
 	GetOrderByID(ctx context.Context, id string) (Order, error)
 	GetOrderGeo(ctx context.Context, orderID string) (OrderGeo, error)
 	GetOrderPaymentByKey(ctx context.Context, arg GetOrderPaymentByKeyParams) (OrderPayment, error)
@@ -170,9 +160,6 @@ type Querier interface {
 	InsertDrawerMovement(ctx context.Context, arg InsertDrawerMovementParams) error
 	// Cash drawers (00029_drawers_z) ---------------------------------------------
 	InsertDrawerSession(ctx context.Context, arg InsertDrawerSessionParams) error
-	// POS orders from the store hub (2.1.0) ------------------------------------------
-	// A POS check the hub pulled: stored accepted (no kitchen number), local only.
-	InsertExternalOrder(ctx context.Context, arg InsertExternalOrderParams) error
 	// Floor events (sync outbox to main) -------------------------------------------
 	InsertFloorEvent(ctx context.Context, arg InsertFloorEventParams) error
 	// Integration feed (2.1.0) -----------------------------------------------------
@@ -211,7 +198,6 @@ type Querier interface {
 	// Newest first.
 	ListJournal(ctx context.Context, limit int64) ([]Journal, error)
 	ListJournalBetween(ctx context.Context, arg ListJournalBetweenParams) ([]Journal, error)
-	ListLocalOnlyByBatch(ctx context.Context, batchID int64) ([]Order, error)
 	// Delivery orders main located (their address + point), for the customers'
 	// in / out of area check.
 	ListLocatedDeliveries(ctx context.Context) ([]ListLocatedDeliveriesRow, error)
@@ -227,7 +213,7 @@ type Querier interface {
 	ListOrderTimes(ctx context.Context, arg ListOrderTimesParams) ([]OrderTime, error)
 	ListOrdersByBatch(ctx context.Context, arg ListOrdersByBatchParams) ([]Order, error)
 	// Orders whose snapshot holds the text (a phone's last digits, a customer
-	// id), newest first; the caller checks each one. POS checks are left out.
+	// id), newest first; the caller checks each one.
 	ListOrdersMentioning(ctx context.Context, arg ListOrdersMentioningParams) ([]Order, error)
 	ListOrdersPage(ctx context.Context, arg ListOrdersPageParams) ([]Order, error)
 	// Arrived orders older than the cutoff that haven't been alerted since the cutoff.
@@ -236,7 +222,7 @@ type Querier interface {
 	ListParkedFloorEventIDs(ctx context.Context) ([]string, error)
 	ListPendingZReports(ctx context.Context) ([]ZReport, error)
 	// The terminals' Pickup list (contract 2.10i): a batch's pickup / counter orders of
-	// every source but the old POS, oldest first (the service filters states).
+	// every source, oldest first (the service filters states).
 	ListPickupOrders(ctx context.Context, batchID int64) ([]Order, error)
 	ListPoolByDriver(ctx context.Context, poolDriverID sql.NullString) ([]Order, error)
 	// Printer MACs (2.0.6) --------------------------------------------------------
@@ -313,9 +299,6 @@ type Querier interface {
 	ReleaseCameBack(ctx context.Context, id string) (int64, error)
 	RenameDriver(ctx context.Context, arg RenameDriverParams) (int64, error)
 	RenamePairedDevice(ctx context.Context, arg RenamePairedDeviceParams) (int64, error)
-	// A ready POS order the terminal added a kitchen item to: back to cooking,
-	// out of any pool, not finished.
-	ReopenPosOrder(ctx context.Context, arg ReopenPosOrderParams) (int64, error)
 	// Close batch: the next counter order starts again at counter_start.
 	ResetCounterNumber(ctx context.Context) error
 	// Close batch: drivers out on a run are back in the queue (clocked-out stay off).
@@ -351,7 +334,6 @@ type Querier interface {
 	SetDriverOut(ctx context.Context, id string) error
 	// Undo a mistaken return: back out on the run, at its old queue position.
 	SetDriverOutAt(ctx context.Context, arg SetDriverOutAtParams) (int64, error)
-	SetDriverPosNumber(ctx context.Context, arg SetDriverPosNumberParams) (int64, error)
 	SetDriverPosition(ctx context.Context, arg SetDriverPositionParams) error
 	SetDriverPushoverDevice(ctx context.Context, arg SetDriverPushoverDeviceParams) (int64, error)
 	SetDriverResetTime(ctx context.Context, driverResetTime string) error
@@ -363,7 +345,6 @@ type Querier interface {
 	SetDueOverride(ctx context.Context, arg SetDueOverrideParams) (int64, error)
 	// 2.4.0: a future order's early tickets printed (kitchen / receipt).
 	SetEarlyPrinted(ctx context.Context, arg SetEarlyPrintedParams) error
-	SetExtDriverPos(ctx context.Context, arg SetExtDriverPosParams) error
 	SetFloorPrefs(ctx context.Context, arg SetFloorPrefsParams) error
 	SetIntegrationSettings(ctx context.Context, arg SetIntegrationSettingsParams) error
 	SetIntegrationStatus(ctx context.Context, integrationStatus string) error
@@ -385,10 +366,6 @@ type Querier interface {
 	// check ('pos') or an online pickup sat ready for the store's finish time
 	// ('auto'). It stays ready; it no longer counts as open.
 	SetOrderFinished(ctx context.Context, arg SetOrderFinishedParams) (int64, error)
-	SetOrderFlag(ctx context.Context, arg SetOrderFlagParams) error
-	// An online order the hub inserted into the POS was paid there (paid_at as
-	// on a POS check, 2.4.0).
-	SetOrderPaid(ctx context.Context, arg SetOrderPaidParams) error
 	// Driver pools (2.0.9) ----------------------------------------------------------
 	// Puts a delivery order (accepted or ready) into a driver's pool, or back to
 	// unassigned with a NULL driver. 0 rows = not a pool-able order.
@@ -398,9 +375,6 @@ type Querier interface {
 	SetPairedDeviceAppVersion(ctx context.Context, arg SetPairedDeviceAppVersionParams) error
 	// Renumbers one pooled order (0 rows = no longer in that pool, or unchanged).
 	SetPoolSeq(ctx context.Context, arg SetPoolSeqParams) (int64, error)
-	SetPosChange(ctx context.Context, arg SetPosChangeParams) error
-	SetPosCheckNumber(ctx context.Context, arg SetPosCheckNumberParams) error
-	SetPosClosed(ctx context.Context, arg SetPosClosedParams) error
 	// The Pushover part of the link secrets, refreshed from main (2.3.7).
 	SetPushoverSecrets(ctx context.Context, arg SetPushoverSecretsParams) error
 	SetReceiptPrefs(ctx context.Context, receiptPrefs string) error
@@ -416,8 +390,6 @@ type Querier interface {
 	SetUpdateJob(ctx context.Context, updateJob string) error
 	SetUpdateLastSuccess(ctx context.Context, updateLastSuccess string) error
 	SetUpdateNotified(ctx context.Context, updateNotified string) error
-	// A hidden POS check that now qualifies for Kitchen: shown as if new.
-	ShowPosOrder(ctx context.Context, arg ShowPosOrderParams) error
 	SumDrawerCash(ctx context.Context, drawerID string) (SumDrawerCashRow, error)
 	SumDrawerMovements(ctx context.Context, drawerID string) (SumDrawerMovementsRow, error)
 	// The counter sequence: hands out counter_next (or start when it is 0, i.e.
@@ -432,10 +404,6 @@ type Querier interface {
 	// back to cooking, not finished. Pools stay (a cooking order may be pooled).
 	UndoReady(ctx context.Context, arg UndoReadyParams) (int64, error)
 	UnparkFloorEvent(ctx context.Context, id string) (int64, error)
-	// A changed POS check: the new snapshot (items, money, notes, address) and
-	// the paid / cash / tip / hidden figures. No state change. paid_at (2.4.0)
-	// moves when the check goes from a balance due to paid.
-	UpdateExternalOrder(ctx context.Context, arg UpdateExternalOrderParams) error
 	// Orders -------------------------------------------------------------------
 	// Idempotent: SSE redelivery (or a reconnect-backlog replay) for the same
 	// canonical id is a no-op so we don't reset state to 'arrived'. The order joins

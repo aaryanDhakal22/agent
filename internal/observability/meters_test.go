@@ -50,7 +50,7 @@ func TestRegisterLiveAndAcceptHistogram(t *testing.T) {
 	hub := func() (HubLink, bool) { return HubLink{}, false }
 	if _, err := RegisterLive(Live{
 		FloorOpen: func(context.Context) ([]FloorCount, error) {
-			return []FloorCount{{State: "new", Source: "online", N: 2}, {State: "cooking", Source: "pos", N: 3}}, nil
+			return []FloorCount{{State: "new", Source: "online", N: 2}, {State: "cooking", Source: "web", N: 3}}, nil
 		},
 		TabletsConnected: func() int { return 1 },
 		Hub:              func() (HubLink, bool) { return hub() },
@@ -77,7 +77,7 @@ func TestRegisterLiveAndAcceptHistogram(t *testing.T) {
 		switch st + "/" + src {
 		case "new/online":
 			want = 2
-		case "cooking/pos":
+		case "cooking/web":
 			want = 3
 		}
 		if p.Value != want {

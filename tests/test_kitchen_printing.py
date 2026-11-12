@@ -63,8 +63,8 @@ def _snap(store, items: list[dict]) -> dict:
         "customer": {"display_name": "Pytest Kitchen"},
         "fulfillment": {"type": "pickup"},
         "money": {"subtotal_cents": 1500, "total_cents": 1500, "currency": "USD"},
-        # Paid by card: a pickup with cash to collect prints only the receipt
-        # (see test_pickup_cash_prints_only_the_receipt).
+        # Paid by card (a cash pickup follows its own switch: see
+        # test_pickup_cash_follows_its_switch).
         "payments": [{"method": "card", "amount_cents": 1500}],
         "items": items,
     }
@@ -134,16 +134,29 @@ def test_items_on_the_receipt_printer_print_only_on_the_receipt(kitchen, fakes) 
     assert len(fakes["Wings"].jobs) == 0
 
 
-def test_pickup_cash_prints_only_the_receipt(kitchen, fakes) -> None:
-    """A pickup paid in cash is typed into the store's old POS (which prints the
-    kitchen tickets), so the Pi prints only the customer receipt."""
+def test_pickup_cash_follows_its_switch(kitchen, fakes) -> None:
+    """H3: a pickup paid in cash prints its station tickets like any order
+    (nobody keys it into an old POS any more); with the store's
+    online_cash_pickup switch off the Pi prints only the customer receipt."""
     a, ids = kitchen["agent"], kitchen["ids"]
-    snap = _snap(kitchen["main_store"], [
-        _item("Pepperoni Pizza", ids["Pizza"]),
-        _item("Hot Wings", ids["Wings"]),
-    ])
-    snap.pop("payments")  # no payments = the whole total is cash
-    r = _accept(a, snap)
+
+    def cash_pickup() -> dict:
+        snap = _snap(kitchen["main_store"], [
+            _item("Pepperoni Pizza", ids["Pizza"]),
+            _item("Hot Wings", ids["Wings"]),
+        ])
+        snap.pop("payments")  # no payments = the whole total is cash
+        return snap
+
+    r = _accept(a, cash_pickup())
+    assert r.status_code == 200, r.text + a.log_tail()
+    _wait_jobs(fakes["Pizza"], 1)
+    _wait_jobs(fakes["Wings"], 1)
+    _wait_jobs(fakes["Front"], 1)
+    _reset(fakes)
+
+    assert a.http.put(f"{a.base}/api/settings/tickets", json={"online_cash_pickup": False}, timeout=5).status_code == 200
+    r = _accept(a, cash_pickup())
     assert r.status_code == 200, r.text + a.log_tail()
     _wait_jobs(fakes["Front"], 1)
     intentional_sleep(1.5, "absence: nothing else may print")
@@ -252,9 +265,11 @@ def test_resend_to_kitchen_prints_only_the_stations(kitchen, fakes) -> None:
 
 
 def test_resend_to_kitchen_of_pickup_cash_prints_the_stations(kitchen, fakes) -> None:
-    """Accept of a pickup paid in cash prints only the receipt; a deliberate
-    resend to the kitchen prints the station tickets anyway."""
+    """Accept of a pickup paid in cash with its switch off prints only the
+    receipt; a deliberate resend to the kitchen prints the station tickets
+    anyway."""
     a, ids = kitchen["agent"], kitchen["ids"]
+    assert a.http.put(f"{a.base}/api/settings/tickets", json={"online_cash_pickup": False}, timeout=5).status_code == 200
     snap = _snap(kitchen["main_store"], [_item("Pepperoni Pizza", ids["Pizza"]), _item("Hot Wings", ids["Wings"])])
     snap.pop("payments")
     assert _accept(a, snap).status_code == 200

@@ -59,13 +59,13 @@ func TestReceiptPrefs_Format(t *testing.T) {
 }
 
 // 2.4.0: the order type prints over the number on both tickets - COUNTER
-// for a POS dine-in check, DINE IN online, nothing when unknown.
+// for a terminal's dine-in (counter) order, DINE IN online, nothing when unknown.
 func TestOrderTypeLine(t *testing.T) {
 	for _, c := range []struct {
 		typ, source, want string
 	}{
-		{"delivery", "", "DELIVERY"}, {"pickup", "", "PICKUP"}, {"Pickup", order.SourcePOS, "PICKUP"},
-		{"dine_in", order.SourcePOS, "COUNTER"}, {"dine_in", "online", "DINE IN"}, {"", "", ""},
+		{"delivery", "", "DELIVERY"}, {"pickup", "", "PICKUP"}, {"Pickup", order.SourceCounter, "PICKUP"},
+		{"dine_in", order.SourceCounter, "COUNTER"}, {"dine_in", "online", "DINE IN"}, {"", "", ""},
 	} {
 		if got := orderTypeLine(order.Snapshot{Source: c.source, Fulfillment: order.Fulfillment{Type: c.typ}}); got != c.want {
 			t.Errorf("%s/%s = %q, want %q", c.typ, c.source, got, c.want)

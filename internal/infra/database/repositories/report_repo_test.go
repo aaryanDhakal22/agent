@@ -58,9 +58,9 @@ func deliver(t *testing.T, r *OrderRepository, driverID string, orders ...order.
 func TestDriverReports(t *testing.T) {
 	r := newFloorRepo(t)
 	ctx := context.Background()
-	abdul, _ := r.CreateDriver(ctx, "Abdul", "")
-	carlos, _ := r.CreateDriver(ctx, "Carlos", "")
-	deep, _ := r.CreateDriver(ctx, "Deep", "")
+	abdul, _ := r.CreateDriver(ctx, "Abdul")
+	carlos, _ := r.CreateDriver(ctx, "Carlos")
+	deep, _ := r.CreateDriver(ctx, "Deep")
 	clockIn(t, r, abdul.ID, carlos.ID, deep.ID)
 
 	deliver(t, r, abdul.ID,
@@ -120,8 +120,8 @@ func TestDriverReports(t *testing.T) {
 func TestUndoReturn(t *testing.T) {
 	r := newFloorRepo(t)
 	ctx := context.Background()
-	abdul, _ := r.CreateDriver(ctx, "Abdul", "")
-	carlos, _ := r.CreateDriver(ctx, "Carlos", "")
+	abdul, _ := r.CreateDriver(ctx, "Abdul")
+	carlos, _ := r.CreateDriver(ctx, "Carlos")
 	clockIn(t, r, abdul.ID, carlos.ID)
 	deliver(t, r, abdul.ID, arriveDelivery(t, r, "Erik Davis", 200, 2249, true))
 

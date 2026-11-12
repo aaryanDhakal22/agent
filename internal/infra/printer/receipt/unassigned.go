@@ -76,8 +76,6 @@ func BuildUnassignedReport(rep order.UnassignedReport, sc storeconfig.StoreConte
 		num := "----"
 		if l.KitchenNumber != nil {
 			num = fmt.Sprintf("%d", *l.KitchenNumber)
-		} else if l.DisplayNumber != nil {
-			num = fmt.Sprintf("%d", *l.DisplayNumber)
 		}
 		w(itemSize)
 		for _, line := range wordWrap("#"+num+" "+l.Street, itemWidth, "  ") {

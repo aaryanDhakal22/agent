@@ -697,7 +697,7 @@ func orderTypeLine(snap order.Snapshot) string {
 	case "pickup":
 		return "PICKUP"
 	case "dine_in":
-		if snap.Source == order.SourcePOS {
+		if snap.Source == order.SourceCounter {
 			return "COUNTER"
 		}
 		return "DINE IN"

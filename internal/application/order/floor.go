@@ -232,7 +232,6 @@ func (s *Service) CloseBatch(ctx context.Context, force bool) (*order.Batch, []o
 	}
 	s.devEvent(devlog.Info, devlog.KindOrder, "Batch %d closed (%d auto-finished)", closed.ID, len(finished))
 	s.printReportsAfterClose(ctx, closed.ID, s.afterClose)
-	s.forgetPOSDeliveries(ctx, closed.ID)
 	return closed, finished, nil
 }
 
@@ -248,27 +247,6 @@ func (s *Service) OnClosed(fn func(ctx context.Context, closed order.Batch)) { s
 func (s *Service) afterClose(ctx context.Context) {
 	if fn := s.onBatchClosed.Load(); fn != nil && *fn != nil {
 		(*fn)(ctx)
-	}
-}
-
-// forgetPOSDeliveries tells main to drop the points of a closed batch's POS
-// deliveries (it would expire them in 24 h anyway).
-func (s *Service) forgetPOSDeliveries(ctx context.Context, batchID int64) {
-	const page = 500
-	for off := 0; ; off += page {
-		list, err := s.repo.ListByBatch(ctx, batchID, off, page)
-		if err != nil {
-			s.logger.Warn().Ctx(ctx).Err(err).Msg("close batch: list POS deliveries failed")
-			return
-		}
-		for _, so := range list {
-			if so.IsPOS() && so.IsDelivery() {
-				s.geoForget(ctx, so.Order.ID)
-			}
-		}
-		if len(list) < page {
-			return
-		}
 	}
 }
 
@@ -303,66 +281,18 @@ func cleanName(name string) (string, error) {
 	return name, nil
 }
 
-// cleanPosNumber checks a driver number ("" = none): 1-12 letters or digits.
-func cleanPosNumber(v string) (string, error) {
-	v = strings.TrimSpace(v)
-	if len(v) > 12 {
-		return "", fmt.Errorf("%w: driver number must be at most 12 characters", ErrBadRequest)
-	}
-	for _, r := range v {
-		if !(r >= '0' && r <= '9' || r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z') {
-			return "", fmt.Errorf("%w: driver number must be letters and digits only", ErrBadRequest)
-		}
-	}
-	return v, nil
-}
-
-// CreateDriver adds a driver (posNumber "" = no POS number).
-func (s *Service) CreateDriver(ctx context.Context, name, posNumber string) (*order.Driver, error) {
+// CreateDriver adds a driver.
+func (s *Service) CreateDriver(ctx context.Context, name string) (*order.Driver, error) {
 	name, err := cleanName(name)
 	if err != nil {
 		return nil, err
 	}
-	if posNumber, err = cleanPosNumber(posNumber); err != nil {
-		return nil, err
-	}
-	d, err := s.repo.CreateDriver(ctx, name, posNumber)
+	d, err := s.repo.CreateDriver(ctx, name)
 	if err != nil {
 		return nil, err
 	}
 	s.driversChanged(ctx)
 	return d, nil
-}
-
-// UpdateDriver renames a driver and/or sets their POS number ("" clears);
-// nil leaves a field as is.
-func (s *Service) UpdateDriver(ctx context.Context, id string, name, posNumber *string) error {
-	if name == nil && posNumber == nil {
-		return fmt.Errorf("%w: give a name or a pos_number", ErrBadRequest)
-	}
-	var clean string
-	var err error
-	if posNumber != nil {
-		if clean, err = cleanPosNumber(*posNumber); err != nil {
-			return err
-		}
-	}
-	if name != nil {
-		n, err := cleanName(*name)
-		if err != nil {
-			return err
-		}
-		if err := s.repo.RenameDriver(ctx, id, n); err != nil {
-			return err
-		}
-	}
-	if posNumber != nil {
-		if err := s.repo.SetDriverPosNumber(ctx, id, clean); err != nil {
-			return err
-		}
-	}
-	s.driversChanged(ctx)
-	return nil
 }
 
 func (s *Service) RenameDriver(ctx context.Context, id, name string) error {

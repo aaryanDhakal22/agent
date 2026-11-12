@@ -66,18 +66,10 @@ type DeliveryRunEvent struct {
 }
 
 // RunStop is one stop of a sent run with its estimated arrival (nil when the
-// drive times aren't known). A POS stop (2.1.0) carries no order id: an
-// opaque id, source "pos", its times and the route length only.
+// drive times aren't known). (The opaque POS stops went with SoftTouch, H3.)
 type RunStop struct {
-	OrderID     string     `json:"order_id,omitempty"`
-	ETA         *time.Time `json:"eta,omitempty"`
-	OpaqueID    string     `json:"opaque_id,omitempty"`
-	Source      string     `json:"source,omitempty"`
-	PlacedAt    *time.Time `json:"placed_at,omitempty"`
-	SentAt      *time.Time `json:"sent_at,omitempty"`
-	OutAt       *time.Time `json:"out_at,omitempty"`
-	DeliveredAt *time.Time `json:"delivered_at,omitempty"`
-	DistanceM   *int64     `json:"distance_m,omitempty"`
+	OrderID string     `json:"order_id,omitempty"`
+	ETA     *time.Time `json:"eta,omitempty"`
 }
 
 // PoolSkip is an AUTO suggestion that could not be pooled at confirm time.

@@ -250,7 +250,7 @@ func TestCancelOnARunPublishesDrivers(t *testing.T) {
 	if _, err := svc.Accept(ctx, uuid.MustParse(s.ID), &p); err != nil {
 		t.Fatal(err)
 	}
-	d, err := svc.CreateDriver(ctx, "Sam", "")
+	d, err := svc.CreateDriver(ctx, "Sam")
 	if err != nil {
 		t.Fatal(err)
 	}

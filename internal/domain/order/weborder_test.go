@@ -49,18 +49,12 @@ func TestStoredOrder_TippableAndSource(t *testing.T) {
 		"locked":    func(o *StoredOrder) { o.Status.TipLocked = true },
 		"cancelled": func(o *StoredOrder) { o.Status.State = StateCancelled },
 		"online":    func(o *StoredOrder) { o.Order.Source = "online" },
-		"pos":       func(o *StoredOrder) { o.Status.ExtSource = ExtSourceSoftTouch },
 	} {
 		x := so
 		f(&x)
 		if x.Tippable() {
 			t.Errorf("%s: tippable", name)
 		}
-	}
-	pos := so
-	pos.Order.Source, pos.Status.ExtSource = SourcePOS, ExtSourceSoftTouch
-	if pos.SourceLabel() != "pos" {
-		t.Errorf("pos label %s", pos.SourceLabel())
 	}
 	so.Order.Source = "online"
 	if so.SourceLabel() != "online" {

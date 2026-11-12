@@ -123,15 +123,13 @@ func (e *CashDue) Error() string {
 	return fmt.Sprintf("take the payment first: %d.%02d is due", e.BalanceCents/100, e.BalanceCents%100)
 }
 
-// IsPickup: a pickup / counter order (any source but the old POS), not a
-// delivery.
+// IsPickup: a pickup / counter order (any source), not a delivery.
 func IsPickup(so order.StoredOrder) bool {
-	return !so.IsPOS() && !so.IsDelivery()
+	return !so.IsDelivery()
 }
 
 // DueOf is what is still to collect on an order at the counter: a counter
-// order's balance, an online order's cash due (0 once the terminal took it,
-// or the hub's POS marked it paid).
+// order's balance, an online order's cash due (0 once the terminal took it).
 func DueOf(so order.StoredOrder) int64 {
 	if so.Order.Source != order.SourceCounter && so.Status.Paid {
 		return 0

@@ -309,74 +309,28 @@ func recordDeliveryRun(ctx context.Context, q *models.Queries, d models.Driver, 
 			}
 		}
 	}
-	// POS stops reach main anonymous: an opaque id and times, never the
-	// order id, a name or an address.
-	byID := map[string]order.StoredOrder{}
+	// AUTO's suggestions: an id that is no order here is dropped.
+	byID := map[string]bool{}
 	for _, so := range sent {
-		byID[so.Order.ID] = so
+		byID[so.Order.ID] = true
 	}
-	opaque := map[string]string{}
-	for i, st := range ev.Stops {
-		so := byID[st.OrderID]
-		if !so.Status.LocalOnly {
-			continue
-		}
-		stop := order.RunStop{OpaqueID: order.PosOpaqueID(so.Status.BatchID, so.Status.ExtRef), Source: order.SourcePOS,
-			ETA: st.ETA, SentAt: so.Status.SentAt, OutAt: so.Status.OutAt, DeliveredAt: so.Status.DeliveredAt}
-		if !so.Order.PlacedAt.IsZero() {
-			placed := so.Order.PlacedAt.UTC()
-			stop.PlacedAt = &placed
-		}
-		if so.Geo.Located() {
-			dist := so.Geo.DistanceM
-			stop.DistanceM = &dist
-		}
-		opaque[st.OrderID] = stop.OpaqueID
-		ev.Stops[i] = stop
-	}
-	// AUTO's suggestions too: a POS order (sent on this run or not) by its
-	// opaque id, never its local id; an id that is no order here is dropped.
 	for _, id := range meta.SuggestedIDs {
-		if o, ok := opaque[id]; ok {
-			ev.SuggestedIDs = append(ev.SuggestedIDs, o)
+		if byID[id] {
+			ev.SuggestedIDs = append(ev.SuggestedIDs, id)
 			continue
 		}
-		if _, ok := byID[id]; ok {
-			ev.SuggestedIDs = append(ev.SuggestedIDs, id) // an online stop
-			continue
-		}
-		row, err := q.GetOrderByID(ctx, id)
-		switch {
+		switch _, err := q.GetOrderByID(ctx, id); {
 		case errors.Is(err, sql.ErrNoRows):
 			continue
 		case err != nil:
 			return fmt.Errorf("suggested order %s: %w", id, err)
-		case row.LocalOnly:
-			ev.SuggestedIDs = append(ev.SuggestedIDs, order.PosOpaqueID(row.BatchID, row.ExtRef))
-		default:
-			ev.SuggestedIDs = append(ev.SuggestedIDs, id)
 		}
+		ev.SuggestedIDs = append(ev.SuggestedIDs, id)
 	}
 	for _, s := range ev.Stops {
-		if s.OpaqueID != "" {
-			ev.SentIDs = append(ev.SentIDs, s.OpaqueID)
-		} else {
-			ev.SentIDs = append(ev.SentIDs, s.OrderID)
-		}
+		ev.SentIDs = append(ev.SentIDs, s.OrderID)
 	}
-	if err := insertEvent(ctx, q, ev.EventID, "", ev.Type, now, ev); err != nil {
-		return err
-	}
-	// The hub writes the driver back onto the POS checks of this run.
-	rs := order.RunSentData{Driver: order.FeedDriver{ID: d.ID, Name: d.Name}, RunID: ev.EventID, Orders: make([]order.FeedOrderRef, 0, len(sent))}
-	if d.PosNumber != "" {
-		p := d.PosNumber
-		rs.Driver.PosNumber = &p
-	}
-	for _, so := range sent {
-		rs.Orders = append(rs.Orders, order.RefOf(so))
-	}
-	return insertFeed(ctx, q, order.FeedRunSent, now, rs)
+	return insertEvent(ctx, q, ev.EventID, "", ev.Type, now, ev)
 }
 
 // SetPoolSeq — see order.PoolRepository.
@@ -432,8 +386,7 @@ func (r *OrderRepository) UpsertGeo(ctx context.Context, g order.GeoUpdate) (so 
 	now := time.Now()
 	var fresh order.StoredOrder
 	err = r.withTx(ctx, func(q *models.Queries) error {
-		before, err := loadOrder(ctx, q, g.OrderID)
-		if err != nil {
+		if _, err := loadOrder(ctx, q, g.OrderID); err != nil {
 			return err
 		}
 		p := models.UpsertOrderGeoParams{OrderID: g.OrderID, State: g.State, Quality: g.Quality,
@@ -476,44 +429,13 @@ func (r *OrderRepository) UpsertGeo(ctx context.Context, g order.GeoUpdate) (so 
 				}
 			}
 		}
-		if fresh, err = loadOrder(ctx, q, g.OrderID); err != nil {
-			return err
-		}
-		// Staff confirmed the place (main's direct answer to geo.choose or
-		// geo.pin, flagged confirmed — a cache hit that comes back pinned is
-		// not): the hub heals the POS address from it. The same place again
-		// writes no second event.
-		if g.Confirmed && fresh.Geo.Confirmed() && !sameConfirmed(before.Geo, fresh.Geo) {
-			ev := order.AddressConfirmedData{OrderID: fresh.Order.ID, ExtRef: order.RefOf(fresh).ExtRef, How: "pin",
-				Lat: *fresh.Geo.Lat, Lng: *fresh.Geo.Lng}
-			if fresh.Geo.ConfirmedAddress != nil {
-				ev.How, ev.Address = "candidate", fresh.Geo.ConfirmedAddress
-			}
-			return insertFeed(ctx, q, order.FeedAddressConfirmed, now, ev)
-		}
-		return nil
+		fresh, err = loadOrder(ctx, q, g.OrderID)
+		return err
 	})
 	if err != nil {
 		return nil, err
 	}
 	return &fresh, nil
-}
-
-// sameConfirmed reports whether two geos are the same confirmed place.
-func sameConfirmed(a, b *order.OrderGeo) bool {
-	if !a.Confirmed() || !b.Confirmed() {
-		return false
-	}
-	if *a.Lat != *b.Lat || *a.Lng != *b.Lng || a.Quality != b.Quality {
-		return false
-	}
-	switch {
-	case a.ConfirmedAddress == nil && b.ConfirmedAddress == nil:
-		return true
-	case a.ConfirmedAddress == nil || b.ConfirmedAddress == nil:
-		return false
-	}
-	return *a.ConfirmedAddress == *b.ConfirmedAddress
 }
 
 // DriveTimes — see order.PoolRepository.
@@ -660,9 +582,7 @@ func (r *OrderRepository) SetMapFile(ctx context.Context, raw string) error {
 // undelivered orders go back to his pool (ready, in run order), he is
 // available at the front of the queue. Each order's change is an
 // order.status floor event (main's mirror is forward-only and keeps
-// on_delivery until the next run); a POS check in the run also gets the
-// hub's order.not_delivered feed event (action recall), which un-dispatches
-// it in SoftTouch until it is sent out again.
+// on_delivery until the next run).
 func (r *OrderRepository) RecallDriver(ctx context.Context, driverID string) (recalled []order.StoredOrder, err error) {
 	ctx, _, end := dbSpan(ctx, "floor.recall_driver")
 	defer end(&err)
@@ -698,23 +618,12 @@ func (r *OrderRepository) RecallDriver(ctx context.Context, driverID string) (re
 			if n == 0 {
 				return fmt.Errorf("order %s: %w", so.Order.ID, order.ErrInvalidState)
 			}
-			posNum, err := markCameBackPOS(ctx, q, so, d.PosNumber)
-			if err != nil {
-				return err
-			}
 			fresh, err := loadOrder(ctx, q, so.Order.ID)
 			if err != nil {
 				return err
 			}
 			if err := recordOrderStatus(ctx, q, fresh, false, now); err != nil {
 				return err
-			}
-			if fresh.IsPOS() {
-				if err := insertFeed(ctx, q, order.FeedOrderNotDelivered, now, order.OrderNotDeliveredData{
-					FeedOrderRef: order.RefOf(fresh), Action: order.NotDeliveredRecall,
-					DriverID: d.ID, DriverName: d.Name, DriverPosNumber: posNum}); err != nil {
-					return err
-				}
 			}
 			recalled = append(recalled, fresh)
 		}

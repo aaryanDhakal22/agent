@@ -40,7 +40,7 @@ SET state = 'cancelled', cancelled_at = ?1, cancel_reason = ?2,
     ring_at = NULL, came_back = false,
     driver_id = NULL, driver_name = '', out_at = NULL, delivered_at = NULL, run_seq = NULL,
     pool_driver_id = NULL, pooled_at = NULL, pool_seq = NULL, pool_plan_id = NULL
-WHERE id = ?3 AND ext_source = '' AND accept_pending = 0
+WHERE id = ?3 AND accept_pending = 0
   AND state IN ('arrived', 'scheduled', 'accepted', 'ready', 'on_delivery')
 `
 
@@ -54,28 +54,6 @@ type CancelChannelOrderParams struct {
 // pool or run (no driver, so it counts on no driver report).
 func (q *Queries) CancelChannelOrder(ctx context.Context, arg CancelChannelOrderParams) (int64, error) {
 	result, err := q.db.ExecContext(ctx, cancelChannelOrder, arg.CancelledAt, arg.Reason, arg.ID)
-	if err != nil {
-		return 0, err
-	}
-	return result.RowsAffected()
-}
-
-const cancelExternalOrder = `-- name: CancelExternalOrder :execrows
-UPDATE orders
-SET state = 'cancelled', cancelled_at = ?, pool_driver_id = NULL, pooled_at = NULL, pool_seq = NULL,
-    pool_plan_id = NULL, accept_pending = 0, came_back = false
-WHERE id = ? AND state NOT IN ('cancelled', 'delivered')
-`
-
-type CancelExternalOrderParams struct {
-	CancelledAt sql.NullString `json:"cancelled_at"`
-	ID          string         `json:"id"`
-}
-
-// A void at the POS (or Close batch): cancelled, out of any pool. A delivered
-// order stays delivered (its driver collected it).
-func (q *Queries) CancelExternalOrder(ctx context.Context, arg CancelExternalOrderParams) (int64, error) {
-	result, err := q.db.ExecContext(ctx, cancelExternalOrder, arg.CancelledAt, arg.ID)
 	if err != nil {
 		return 0, err
 	}
@@ -448,25 +426,21 @@ func (q *Queries) CountOpenBatchOrders(ctx context.Context) (CountOpenBatchOrder
 
 const countOpenFloorOrders = `-- name: CountOpenFloorOrders :many
 SELECT state,
-       CAST(ext_source <> '' AS INTEGER) AS pos,
        CAST(source NOT IN ('online', 'pos', '') AS INTEGER) AS channel,
        CAST(count(*) AS INTEGER) AS n
 FROM orders
 WHERE batch_id = (SELECT id FROM batches WHERE closed_at IS NULL ORDER BY id DESC LIMIT 1)
   AND state IN ('arrived', 'scheduled', 'accepted', 'ready', 'on_delivery')
-  AND board_hidden = 0
-GROUP BY state, pos, channel
+GROUP BY state, channel
 `
 
 type CountOpenFloorOrdersRow struct {
 	State   string `json:"state"`
-	Pos     int64  `json:"pos"`
 	Channel int64  `json:"channel"`
 	N       int64  `json:"n"`
 }
 
-// Metrics: floor.orders.open (open batch, by state and online/POS; POS
-// counter checks with no kitchen item are left out, as on Kitchen).
+// Metrics: floor.orders.open (open batch, by state and online / channel).
 func (q *Queries) CountOpenFloorOrders(ctx context.Context) ([]CountOpenFloorOrdersRow, error) {
 	rows, err := q.db.QueryContext(ctx, countOpenFloorOrders)
 	if err != nil {
@@ -476,12 +450,7 @@ func (q *Queries) CountOpenFloorOrders(ctx context.Context) ([]CountOpenFloorOrd
 	var items []CountOpenFloorOrdersRow
 	for rows.Next() {
 		var i CountOpenFloorOrdersRow
-		if err := rows.Scan(
-			&i.State,
-			&i.Pos,
-			&i.Channel,
-			&i.N,
-		); err != nil {
+		if err := rows.Scan(&i.State, &i.Channel, &i.N); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
@@ -529,14 +498,13 @@ func (q *Queries) CountUnsyncedFloorEvents(ctx context.Context) (int64, error) {
 }
 
 const createDriver = `-- name: CreateDriver :exec
-INSERT INTO drivers (id, name, position, pos_number, pushover_device) VALUES (?, ?, ?, ?, ?)
+INSERT INTO drivers (id, name, position, pushover_device) VALUES (?, ?, ?, ?)
 `
 
 type CreateDriverParams struct {
 	ID             string `json:"id"`
 	Name           string `json:"name"`
 	Position       int64  `json:"position"`
-	PosNumber      string `json:"pos_number"`
 	PushoverDevice string `json:"pushover_device"`
 }
 
@@ -545,7 +513,6 @@ func (q *Queries) CreateDriver(ctx context.Context, arg CreateDriverParams) erro
 		arg.ID,
 		arg.Name,
 		arg.Position,
-		arg.PosNumber,
 		arg.PushoverDevice,
 	)
 	return err
@@ -909,26 +876,6 @@ func (q *Queries) FindCustomersByPhoneSuffix(ctx context.Context, arg FindCustom
 	return items, nil
 }
 
-const finishHiddenClosed = `-- name: FinishHiddenClosed :execrows
-UPDATE orders SET state = 'ready', ready_at = ?1, finished_at = ?1, finished_by = 'pos'
-WHERE id = ?2 AND state = 'accepted' AND board_hidden
-`
-
-type FinishHiddenClosedParams struct {
-	At sql.NullString `json:"at"`
-	ID string         `json:"id"`
-}
-
-// A POS check that was never on Kitchen (board hidden) closed at the POS:
-// ready and finished at once (no feed event: nothing is called out).
-func (q *Queries) FinishHiddenClosed(ctx context.Context, arg FinishHiddenClosedParams) (int64, error) {
-	result, err := q.db.ExecContext(ctx, finishHiddenClosed, arg.At, arg.ID)
-	if err != nil {
-		return 0, err
-	}
-	return result.RowsAffected()
-}
-
 const finishOrder = `-- name: FinishOrder :exec
 UPDATE orders
 SET state = ?, accepted_at = ?, ready_at = ?, delivered_at = ?, pool_driver_id = NULL, pooled_at = NULL, pool_seq = NULL, pool_plan_id = NULL,
@@ -966,27 +913,6 @@ func (q *Queries) FrontDriverPosition(ctx context.Context) (int64, error) {
 	var front_position int64
 	err := row.Scan(&front_position)
 	return front_position, err
-}
-
-const getActiveDriverByPosNumber = `-- name: GetActiveDriverByPosNumber :one
-SELECT id, name, active, position, status, last_returned_at, created_at, pos_number, pushover_device FROM drivers WHERE pos_number = ? AND pos_number <> '' AND active
-`
-
-func (q *Queries) GetActiveDriverByPosNumber(ctx context.Context, posNumber string) (Driver, error) {
-	row := q.db.QueryRowContext(ctx, getActiveDriverByPosNumber, posNumber)
-	var i Driver
-	err := row.Scan(
-		&i.ID,
-		&i.Name,
-		&i.Active,
-		&i.Position,
-		&i.Status,
-		&i.LastReturnedAt,
-		&i.CreatedAt,
-		&i.PosNumber,
-		&i.PushoverDevice,
-	)
-	return i, err
 }
 
 const getAppRelease = `-- name: GetAppRelease :one
@@ -1224,7 +1150,7 @@ func (q *Queries) GetDrawerSession(ctx context.Context, id string) (DrawerSessio
 }
 
 const getDriver = `-- name: GetDriver :one
-SELECT id, name, active, position, status, last_returned_at, created_at, pos_number, pushover_device FROM drivers WHERE id = ?
+SELECT id, name, active, position, status, last_returned_at, created_at, pushover_device FROM drivers WHERE id = ?
 `
 
 func (q *Queries) GetDriver(ctx context.Context, id string) (Driver, error) {
@@ -1238,7 +1164,6 @@ func (q *Queries) GetDriver(ctx context.Context, id string) (Driver, error) {
 		&i.Status,
 		&i.LastReturnedAt,
 		&i.CreatedAt,
-		&i.PosNumber,
 		&i.PushoverDevice,
 	)
 	return i, err
@@ -1516,7 +1441,7 @@ func (q *Queries) GetOpenShift(ctx context.Context, driverID string) (DriverShif
 }
 
 const getOrderByClientKey = `-- name: GetOrderByClientKey :one
-SELECT id, tenant_id, location_id, source, source_event_id, snapshot, state, arrival_date, printed_date, batch_id, kitchen_number, prep_minutes, estimated_ready_at, accepted_at, ready_at, out_at, delivered_at, driver_id, driver_name, last_alert_at, cancelled_at, accept_pending, pool_driver_id, pooled_at, pool_seq, pool_plan_id, ext_source, ext_ref, ext_hash, ext_driver_pos, display_number, paid, cash_due_cents, tip_cents, board_hidden, sent_at, local_only, flag, pos_check_number, pos_driver_note, scheduled_lead_minutes, ring_at, rerung, auto_accepted, came_back, not_delivered_action, not_delivered_at, not_delivered_driver_id, run_seq, finished_at, finished_by, pos_closed, pos_change, marked_delivered, paid_at, early_kitchen, early_receipt, due_override, made_now, added_tip_cents, tip_locked, cancel_reason, client_key, door_tip_cents FROM orders WHERE client_key = ? AND client_key <> ''
+SELECT id, tenant_id, location_id, source, source_event_id, snapshot, state, arrival_date, printed_date, batch_id, kitchen_number, prep_minutes, estimated_ready_at, accepted_at, ready_at, out_at, delivered_at, driver_id, driver_name, last_alert_at, cancelled_at, accept_pending, pool_driver_id, pooled_at, pool_seq, pool_plan_id, paid, cash_due_cents, tip_cents, sent_at, scheduled_lead_minutes, ring_at, rerung, auto_accepted, came_back, not_delivered_action, not_delivered_at, not_delivered_driver_id, run_seq, finished_at, finished_by, marked_delivered, paid_at, early_kitchen, early_receipt, due_override, made_now, added_tip_cents, tip_locked, cancel_reason, client_key, door_tip_cents FROM orders WHERE client_key = ? AND client_key <> ''
 `
 
 func (q *Queries) GetOrderByClientKey(ctx context.Context, clientKey string) (Order, error) {
@@ -1549,20 +1474,10 @@ func (q *Queries) GetOrderByClientKey(ctx context.Context, clientKey string) (Or
 		&i.PooledAt,
 		&i.PoolSeq,
 		&i.PoolPlanID,
-		&i.ExtSource,
-		&i.ExtRef,
-		&i.ExtHash,
-		&i.ExtDriverPos,
-		&i.DisplayNumber,
 		&i.Paid,
 		&i.CashDueCents,
 		&i.TipCents,
-		&i.BoardHidden,
 		&i.SentAt,
-		&i.LocalOnly,
-		&i.Flag,
-		&i.PosCheckNumber,
-		&i.PosDriverNote,
 		&i.ScheduledLeadMinutes,
 		&i.RingAt,
 		&i.Rerung,
@@ -1574,91 +1489,6 @@ func (q *Queries) GetOrderByClientKey(ctx context.Context, clientKey string) (Or
 		&i.RunSeq,
 		&i.FinishedAt,
 		&i.FinishedBy,
-		&i.PosClosed,
-		&i.PosChange,
-		&i.MarkedDelivered,
-		&i.PaidAt,
-		&i.EarlyKitchen,
-		&i.EarlyReceipt,
-		&i.DueOverride,
-		&i.MadeNow,
-		&i.AddedTipCents,
-		&i.TipLocked,
-		&i.CancelReason,
-		&i.ClientKey,
-		&i.DoorTipCents,
-	)
-	return i, err
-}
-
-const getOrderByExtRef = `-- name: GetOrderByExtRef :one
-SELECT id, tenant_id, location_id, source, source_event_id, snapshot, state, arrival_date, printed_date, batch_id, kitchen_number, prep_minutes, estimated_ready_at, accepted_at, ready_at, out_at, delivered_at, driver_id, driver_name, last_alert_at, cancelled_at, accept_pending, pool_driver_id, pooled_at, pool_seq, pool_plan_id, ext_source, ext_ref, ext_hash, ext_driver_pos, display_number, paid, cash_due_cents, tip_cents, board_hidden, sent_at, local_only, flag, pos_check_number, pos_driver_note, scheduled_lead_minutes, ring_at, rerung, auto_accepted, came_back, not_delivered_action, not_delivered_at, not_delivered_driver_id, run_seq, finished_at, finished_by, pos_closed, pos_change, marked_delivered, paid_at, early_kitchen, early_receipt, due_override, made_now, added_tip_cents, tip_locked, cancel_reason, client_key, door_tip_cents FROM orders WHERE ext_source = ? AND ext_ref = ? AND ext_ref <> ''
-ORDER BY arrival_date DESC LIMIT 1
-`
-
-type GetOrderByExtRefParams struct {
-	ExtSource string `json:"ext_source"`
-	ExtRef    string `json:"ext_ref"`
-}
-
-// The newest order for a POS check (a check number is never reused by the POS).
-func (q *Queries) GetOrderByExtRef(ctx context.Context, arg GetOrderByExtRefParams) (Order, error) {
-	row := q.db.QueryRowContext(ctx, getOrderByExtRef, arg.ExtSource, arg.ExtRef)
-	var i Order
-	err := row.Scan(
-		&i.ID,
-		&i.TenantID,
-		&i.LocationID,
-		&i.Source,
-		&i.SourceEventID,
-		&i.Snapshot,
-		&i.State,
-		&i.ArrivalDate,
-		&i.PrintedDate,
-		&i.BatchID,
-		&i.KitchenNumber,
-		&i.PrepMinutes,
-		&i.EstimatedReadyAt,
-		&i.AcceptedAt,
-		&i.ReadyAt,
-		&i.OutAt,
-		&i.DeliveredAt,
-		&i.DriverID,
-		&i.DriverName,
-		&i.LastAlertAt,
-		&i.CancelledAt,
-		&i.AcceptPending,
-		&i.PoolDriverID,
-		&i.PooledAt,
-		&i.PoolSeq,
-		&i.PoolPlanID,
-		&i.ExtSource,
-		&i.ExtRef,
-		&i.ExtHash,
-		&i.ExtDriverPos,
-		&i.DisplayNumber,
-		&i.Paid,
-		&i.CashDueCents,
-		&i.TipCents,
-		&i.BoardHidden,
-		&i.SentAt,
-		&i.LocalOnly,
-		&i.Flag,
-		&i.PosCheckNumber,
-		&i.PosDriverNote,
-		&i.ScheduledLeadMinutes,
-		&i.RingAt,
-		&i.Rerung,
-		&i.AutoAccepted,
-		&i.CameBack,
-		&i.NotDeliveredAction,
-		&i.NotDeliveredAt,
-		&i.NotDeliveredDriverID,
-		&i.RunSeq,
-		&i.FinishedAt,
-		&i.FinishedBy,
-		&i.PosClosed,
-		&i.PosChange,
 		&i.MarkedDelivered,
 		&i.PaidAt,
 		&i.EarlyKitchen,
@@ -1675,7 +1505,7 @@ func (q *Queries) GetOrderByExtRef(ctx context.Context, arg GetOrderByExtRefPara
 }
 
 const getOrderByID = `-- name: GetOrderByID :one
-SELECT id, tenant_id, location_id, source, source_event_id, snapshot, state, arrival_date, printed_date, batch_id, kitchen_number, prep_minutes, estimated_ready_at, accepted_at, ready_at, out_at, delivered_at, driver_id, driver_name, last_alert_at, cancelled_at, accept_pending, pool_driver_id, pooled_at, pool_seq, pool_plan_id, ext_source, ext_ref, ext_hash, ext_driver_pos, display_number, paid, cash_due_cents, tip_cents, board_hidden, sent_at, local_only, flag, pos_check_number, pos_driver_note, scheduled_lead_minutes, ring_at, rerung, auto_accepted, came_back, not_delivered_action, not_delivered_at, not_delivered_driver_id, run_seq, finished_at, finished_by, pos_closed, pos_change, marked_delivered, paid_at, early_kitchen, early_receipt, due_override, made_now, added_tip_cents, tip_locked, cancel_reason, client_key, door_tip_cents FROM orders WHERE id = ?
+SELECT id, tenant_id, location_id, source, source_event_id, snapshot, state, arrival_date, printed_date, batch_id, kitchen_number, prep_minutes, estimated_ready_at, accepted_at, ready_at, out_at, delivered_at, driver_id, driver_name, last_alert_at, cancelled_at, accept_pending, pool_driver_id, pooled_at, pool_seq, pool_plan_id, paid, cash_due_cents, tip_cents, sent_at, scheduled_lead_minutes, ring_at, rerung, auto_accepted, came_back, not_delivered_action, not_delivered_at, not_delivered_driver_id, run_seq, finished_at, finished_by, marked_delivered, paid_at, early_kitchen, early_receipt, due_override, made_now, added_tip_cents, tip_locked, cancel_reason, client_key, door_tip_cents FROM orders WHERE id = ?
 `
 
 func (q *Queries) GetOrderByID(ctx context.Context, id string) (Order, error) {
@@ -1708,20 +1538,10 @@ func (q *Queries) GetOrderByID(ctx context.Context, id string) (Order, error) {
 		&i.PooledAt,
 		&i.PoolSeq,
 		&i.PoolPlanID,
-		&i.ExtSource,
-		&i.ExtRef,
-		&i.ExtHash,
-		&i.ExtDriverPos,
-		&i.DisplayNumber,
 		&i.Paid,
 		&i.CashDueCents,
 		&i.TipCents,
-		&i.BoardHidden,
 		&i.SentAt,
-		&i.LocalOnly,
-		&i.Flag,
-		&i.PosCheckNumber,
-		&i.PosDriverNote,
 		&i.ScheduledLeadMinutes,
 		&i.RingAt,
 		&i.Rerung,
@@ -1733,8 +1553,6 @@ func (q *Queries) GetOrderByID(ctx context.Context, id string) (Order, error) {
 		&i.RunSeq,
 		&i.FinishedAt,
 		&i.FinishedBy,
-		&i.PosClosed,
-		&i.PosChange,
 		&i.MarkedDelivered,
 		&i.PaidAt,
 		&i.EarlyKitchen,
@@ -2271,72 +2089,6 @@ func (q *Queries) InsertDrawerSession(ctx context.Context, arg InsertDrawerSessi
 	return err
 }
 
-const insertExternalOrder = `-- name: InsertExternalOrder :exec
-
-INSERT INTO orders (id, tenant_id, location_id, source, source_event_id, snapshot, state, arrival_date,
-                    batch_id, prep_minutes, estimated_ready_at, accepted_at,
-                    ext_source, ext_ref, ext_hash, ext_driver_pos, display_number, paid, cash_due_cents,
-                    tip_cents, board_hidden, sent_at, local_only, paid_at)
-VALUES (?1, ?2, ?3, ?4, ?5,
-        ?6, 'accepted', ?7,
-        (SELECT id FROM batches WHERE closed_at IS NULL ORDER BY id DESC LIMIT 1),
-        ?8, ?9, ?10,
-        ?11, ?12, ?13, '', ?14,
-        ?15, ?16, ?17, ?18,
-        ?19, true, ?20)
-`
-
-type InsertExternalOrderParams struct {
-	ID               string         `json:"id"`
-	TenantID         string         `json:"tenant_id"`
-	LocationID       string         `json:"location_id"`
-	Source           string         `json:"source"`
-	SourceEventID    string         `json:"source_event_id"`
-	Snapshot         string         `json:"snapshot"`
-	ArrivalDate      string         `json:"arrival_date"`
-	PrepMinutes      sql.NullInt64  `json:"prep_minutes"`
-	EstimatedReadyAt sql.NullString `json:"estimated_ready_at"`
-	AcceptedAt       sql.NullString `json:"accepted_at"`
-	ExtSource        string         `json:"ext_source"`
-	ExtRef           string         `json:"ext_ref"`
-	ExtHash          string         `json:"ext_hash"`
-	DisplayNumber    sql.NullInt64  `json:"display_number"`
-	Paid             bool           `json:"paid"`
-	CashDueCents     sql.NullInt64  `json:"cash_due_cents"`
-	TipCents         sql.NullInt64  `json:"tip_cents"`
-	BoardHidden      bool           `json:"board_hidden"`
-	SentAt           sql.NullString `json:"sent_at"`
-	PaidAt           sql.NullString `json:"paid_at"`
-}
-
-// POS orders from the store hub (2.1.0) ------------------------------------------
-// A POS check the hub pulled: stored accepted (no kitchen number), local only.
-func (q *Queries) InsertExternalOrder(ctx context.Context, arg InsertExternalOrderParams) error {
-	_, err := q.db.ExecContext(ctx, insertExternalOrder,
-		arg.ID,
-		arg.TenantID,
-		arg.LocationID,
-		arg.Source,
-		arg.SourceEventID,
-		arg.Snapshot,
-		arg.ArrivalDate,
-		arg.PrepMinutes,
-		arg.EstimatedReadyAt,
-		arg.AcceptedAt,
-		arg.ExtSource,
-		arg.ExtRef,
-		arg.ExtHash,
-		arg.DisplayNumber,
-		arg.Paid,
-		arg.CashDueCents,
-		arg.TipCents,
-		arg.BoardHidden,
-		arg.SentAt,
-		arg.PaidAt,
-	)
-	return err
-}
-
 const insertFloorEvent = `-- name: InsertFloorEvent :exec
 
 INSERT INTO floor_events (id, order_id, type, payload, at, subject) VALUES (?, ?, ?, ?, ?, ?)
@@ -2520,7 +2272,7 @@ func (q *Queries) InsertSettingsChange(ctx context.Context, arg InsertSettingsCh
 
 const listActiveDrivers = `-- name: ListActiveDrivers :many
 
-SELECT id, name, active, position, status, last_returned_at, created_at, pos_number, pushover_device FROM drivers WHERE active ORDER BY position ASC, created_at ASC
+SELECT id, name, active, position, status, last_returned_at, created_at, pushover_device FROM drivers WHERE active ORDER BY position ASC, created_at ASC
 `
 
 // Drivers -------------------------------------------------------------------
@@ -2541,7 +2293,6 @@ func (q *Queries) ListActiveDrivers(ctx context.Context) ([]Driver, error) {
 			&i.Status,
 			&i.LastReturnedAt,
 			&i.CreatedAt,
-			&i.PosNumber,
 			&i.PushoverDevice,
 		); err != nil {
 			return nil, err
@@ -2558,7 +2309,7 @@ func (q *Queries) ListActiveDrivers(ctx context.Context) ([]Driver, error) {
 }
 
 const listAllBatchOrders = `-- name: ListAllBatchOrders :many
-SELECT id, tenant_id, location_id, source, source_event_id, snapshot, state, arrival_date, printed_date, batch_id, kitchen_number, prep_minutes, estimated_ready_at, accepted_at, ready_at, out_at, delivered_at, driver_id, driver_name, last_alert_at, cancelled_at, accept_pending, pool_driver_id, pooled_at, pool_seq, pool_plan_id, ext_source, ext_ref, ext_hash, ext_driver_pos, display_number, paid, cash_due_cents, tip_cents, board_hidden, sent_at, local_only, flag, pos_check_number, pos_driver_note, scheduled_lead_minutes, ring_at, rerung, auto_accepted, came_back, not_delivered_action, not_delivered_at, not_delivered_driver_id, run_seq, finished_at, finished_by, pos_closed, pos_change, marked_delivered, paid_at, early_kitchen, early_receipt, due_override, made_now, added_tip_cents, tip_locked, cancel_reason, client_key, door_tip_cents FROM orders WHERE batch_id = ? ORDER BY arrival_date, rowid
+SELECT id, tenant_id, location_id, source, source_event_id, snapshot, state, arrival_date, printed_date, batch_id, kitchen_number, prep_minutes, estimated_ready_at, accepted_at, ready_at, out_at, delivered_at, driver_id, driver_name, last_alert_at, cancelled_at, accept_pending, pool_driver_id, pooled_at, pool_seq, pool_plan_id, paid, cash_due_cents, tip_cents, sent_at, scheduled_lead_minutes, ring_at, rerung, auto_accepted, came_back, not_delivered_action, not_delivered_at, not_delivered_driver_id, run_seq, finished_at, finished_by, marked_delivered, paid_at, early_kitchen, early_receipt, due_override, made_now, added_tip_cents, tip_locked, cancel_reason, client_key, door_tip_cents FROM orders WHERE batch_id = ? ORDER BY arrival_date, rowid
 `
 
 func (q *Queries) ListAllBatchOrders(ctx context.Context, batchID int64) ([]Order, error) {
@@ -2597,20 +2348,10 @@ func (q *Queries) ListAllBatchOrders(ctx context.Context, batchID int64) ([]Orde
 			&i.PooledAt,
 			&i.PoolSeq,
 			&i.PoolPlanID,
-			&i.ExtSource,
-			&i.ExtRef,
-			&i.ExtHash,
-			&i.ExtDriverPos,
-			&i.DisplayNumber,
 			&i.Paid,
 			&i.CashDueCents,
 			&i.TipCents,
-			&i.BoardHidden,
 			&i.SentAt,
-			&i.LocalOnly,
-			&i.Flag,
-			&i.PosCheckNumber,
-			&i.PosDriverNote,
 			&i.ScheduledLeadMinutes,
 			&i.RingAt,
 			&i.Rerung,
@@ -2622,8 +2363,6 @@ func (q *Queries) ListAllBatchOrders(ctx context.Context, batchID int64) ([]Orde
 			&i.RunSeq,
 			&i.FinishedAt,
 			&i.FinishedBy,
-			&i.PosClosed,
-			&i.PosChange,
 			&i.MarkedDelivered,
 			&i.PaidAt,
 			&i.EarlyKitchen,
@@ -2650,7 +2389,7 @@ func (q *Queries) ListAllBatchOrders(ctx context.Context, batchID int64) ([]Orde
 }
 
 const listArrivedOrders = `-- name: ListArrivedOrders :many
-SELECT id, tenant_id, location_id, source, source_event_id, snapshot, state, arrival_date, printed_date, batch_id, kitchen_number, prep_minutes, estimated_ready_at, accepted_at, ready_at, out_at, delivered_at, driver_id, driver_name, last_alert_at, cancelled_at, accept_pending, pool_driver_id, pooled_at, pool_seq, pool_plan_id, ext_source, ext_ref, ext_hash, ext_driver_pos, display_number, paid, cash_due_cents, tip_cents, board_hidden, sent_at, local_only, flag, pos_check_number, pos_driver_note, scheduled_lead_minutes, ring_at, rerung, auto_accepted, came_back, not_delivered_action, not_delivered_at, not_delivered_driver_id, run_seq, finished_at, finished_by, pos_closed, pos_change, marked_delivered, paid_at, early_kitchen, early_receipt, due_override, made_now, added_tip_cents, tip_locked, cancel_reason, client_key, door_tip_cents FROM orders
+SELECT id, tenant_id, location_id, source, source_event_id, snapshot, state, arrival_date, printed_date, batch_id, kitchen_number, prep_minutes, estimated_ready_at, accepted_at, ready_at, out_at, delivered_at, driver_id, driver_name, last_alert_at, cancelled_at, accept_pending, pool_driver_id, pooled_at, pool_seq, pool_plan_id, paid, cash_due_cents, tip_cents, sent_at, scheduled_lead_minutes, ring_at, rerung, auto_accepted, came_back, not_delivered_action, not_delivered_at, not_delivered_driver_id, run_seq, finished_at, finished_by, marked_delivered, paid_at, early_kitchen, early_receipt, due_override, made_now, added_tip_cents, tip_locked, cancel_reason, client_key, door_tip_cents FROM orders
 WHERE state = 'arrived'
 ORDER BY arrival_date ASC
 `
@@ -2691,20 +2430,10 @@ func (q *Queries) ListArrivedOrders(ctx context.Context) ([]Order, error) {
 			&i.PooledAt,
 			&i.PoolSeq,
 			&i.PoolPlanID,
-			&i.ExtSource,
-			&i.ExtRef,
-			&i.ExtHash,
-			&i.ExtDriverPos,
-			&i.DisplayNumber,
 			&i.Paid,
 			&i.CashDueCents,
 			&i.TipCents,
-			&i.BoardHidden,
 			&i.SentAt,
-			&i.LocalOnly,
-			&i.Flag,
-			&i.PosCheckNumber,
-			&i.PosDriverNote,
 			&i.ScheduledLeadMinutes,
 			&i.RingAt,
 			&i.Rerung,
@@ -2716,8 +2445,6 @@ func (q *Queries) ListArrivedOrders(ctx context.Context) ([]Order, error) {
 			&i.RunSeq,
 			&i.FinishedAt,
 			&i.FinishedBy,
-			&i.PosClosed,
-			&i.PosChange,
 			&i.MarkedDelivered,
 			&i.PaidAt,
 			&i.EarlyKitchen,
@@ -2744,7 +2471,7 @@ func (q *Queries) ListArrivedOrders(ctx context.Context) ([]Order, error) {
 }
 
 const listAvailableDrivers = `-- name: ListAvailableDrivers :many
-SELECT id, name, active, position, status, last_returned_at, created_at, pos_number, pushover_device FROM drivers WHERE active AND status = 'available'
+SELECT id, name, active, position, status, last_returned_at, created_at, pushover_device FROM drivers WHERE active AND status = 'available'
 `
 
 func (q *Queries) ListAvailableDrivers(ctx context.Context) ([]Driver, error) {
@@ -2764,7 +2491,6 @@ func (q *Queries) ListAvailableDrivers(ctx context.Context) ([]Driver, error) {
 			&i.Status,
 			&i.LastReturnedAt,
 			&i.CreatedAt,
-			&i.PosNumber,
 			&i.PushoverDevice,
 		); err != nil {
 			return nil, err
@@ -2781,7 +2507,7 @@ func (q *Queries) ListAvailableDrivers(ctx context.Context) ([]Driver, error) {
 }
 
 const listBatchDeliveries = `-- name: ListBatchDeliveries :many
-SELECT id, tenant_id, location_id, source, source_event_id, snapshot, state, arrival_date, printed_date, batch_id, kitchen_number, prep_minutes, estimated_ready_at, accepted_at, ready_at, out_at, delivered_at, driver_id, driver_name, last_alert_at, cancelled_at, accept_pending, pool_driver_id, pooled_at, pool_seq, pool_plan_id, ext_source, ext_ref, ext_hash, ext_driver_pos, display_number, paid, cash_due_cents, tip_cents, board_hidden, sent_at, local_only, flag, pos_check_number, pos_driver_note, scheduled_lead_minutes, ring_at, rerung, auto_accepted, came_back, not_delivered_action, not_delivered_at, not_delivered_driver_id, run_seq, finished_at, finished_by, pos_closed, pos_change, marked_delivered, paid_at, early_kitchen, early_receipt, due_override, made_now, added_tip_cents, tip_locked, cancel_reason, client_key, door_tip_cents FROM orders
+SELECT id, tenant_id, location_id, source, source_event_id, snapshot, state, arrival_date, printed_date, batch_id, kitchen_number, prep_minutes, estimated_ready_at, accepted_at, ready_at, out_at, delivered_at, driver_id, driver_name, last_alert_at, cancelled_at, accept_pending, pool_driver_id, pooled_at, pool_seq, pool_plan_id, paid, cash_due_cents, tip_cents, sent_at, scheduled_lead_minutes, ring_at, rerung, auto_accepted, came_back, not_delivered_action, not_delivered_at, not_delivered_driver_id, run_seq, finished_at, finished_by, marked_delivered, paid_at, early_kitchen, early_receipt, due_override, made_now, added_tip_cents, tip_locked, cancel_reason, client_key, door_tip_cents FROM orders
 WHERE batch_id = ? AND state = 'delivered' AND driver_id IS NOT NULL
 ORDER BY delivered_at ASC, kitchen_number ASC
 `
@@ -2823,20 +2549,10 @@ func (q *Queries) ListBatchDeliveries(ctx context.Context, batchID int64) ([]Ord
 			&i.PooledAt,
 			&i.PoolSeq,
 			&i.PoolPlanID,
-			&i.ExtSource,
-			&i.ExtRef,
-			&i.ExtHash,
-			&i.ExtDriverPos,
-			&i.DisplayNumber,
 			&i.Paid,
 			&i.CashDueCents,
 			&i.TipCents,
-			&i.BoardHidden,
 			&i.SentAt,
-			&i.LocalOnly,
-			&i.Flag,
-			&i.PosCheckNumber,
-			&i.PosDriverNote,
 			&i.ScheduledLeadMinutes,
 			&i.RingAt,
 			&i.Rerung,
@@ -2848,8 +2564,6 @@ func (q *Queries) ListBatchDeliveries(ctx context.Context, batchID int64) ([]Ord
 			&i.RunSeq,
 			&i.FinishedAt,
 			&i.FinishedBy,
-			&i.PosClosed,
-			&i.PosChange,
 			&i.MarkedDelivered,
 			&i.PaidAt,
 			&i.EarlyKitchen,
@@ -2876,7 +2590,7 @@ func (q *Queries) ListBatchDeliveries(ctx context.Context, batchID int64) ([]Ord
 }
 
 const listBatchLeftovers = `-- name: ListBatchLeftovers :many
-SELECT id, tenant_id, location_id, source, source_event_id, snapshot, state, arrival_date, printed_date, batch_id, kitchen_number, prep_minutes, estimated_ready_at, accepted_at, ready_at, out_at, delivered_at, driver_id, driver_name, last_alert_at, cancelled_at, accept_pending, pool_driver_id, pooled_at, pool_seq, pool_plan_id, ext_source, ext_ref, ext_hash, ext_driver_pos, display_number, paid, cash_due_cents, tip_cents, board_hidden, sent_at, local_only, flag, pos_check_number, pos_driver_note, scheduled_lead_minutes, ring_at, rerung, auto_accepted, came_back, not_delivered_action, not_delivered_at, not_delivered_driver_id, run_seq, finished_at, finished_by, pos_closed, pos_change, marked_delivered, paid_at, early_kitchen, early_receipt, due_override, made_now, added_tip_cents, tip_locked, cancel_reason, client_key, door_tip_cents FROM orders
+SELECT id, tenant_id, location_id, source, source_event_id, snapshot, state, arrival_date, printed_date, batch_id, kitchen_number, prep_minutes, estimated_ready_at, accepted_at, ready_at, out_at, delivered_at, driver_id, driver_name, last_alert_at, cancelled_at, accept_pending, pool_driver_id, pooled_at, pool_seq, pool_plan_id, paid, cash_due_cents, tip_cents, sent_at, scheduled_lead_minutes, ring_at, rerung, auto_accepted, came_back, not_delivered_action, not_delivered_at, not_delivered_driver_id, run_seq, finished_at, finished_by, marked_delivered, paid_at, early_kitchen, early_receipt, due_override, made_now, added_tip_cents, tip_locked, cancel_reason, client_key, door_tip_cents FROM orders
 WHERE batch_id = ?
   AND state <> 'scheduled'
   AND NOT (state IN ('delivered', 'cancelled')
@@ -2924,20 +2638,10 @@ func (q *Queries) ListBatchLeftovers(ctx context.Context, batchID int64) ([]Orde
 			&i.PooledAt,
 			&i.PoolSeq,
 			&i.PoolPlanID,
-			&i.ExtSource,
-			&i.ExtRef,
-			&i.ExtHash,
-			&i.ExtDriverPos,
-			&i.DisplayNumber,
 			&i.Paid,
 			&i.CashDueCents,
 			&i.TipCents,
-			&i.BoardHidden,
 			&i.SentAt,
-			&i.LocalOnly,
-			&i.Flag,
-			&i.PosCheckNumber,
-			&i.PosDriverNote,
 			&i.ScheduledLeadMinutes,
 			&i.RingAt,
 			&i.Rerung,
@@ -2949,8 +2653,6 @@ func (q *Queries) ListBatchLeftovers(ctx context.Context, batchID int64) ([]Orde
 			&i.RunSeq,
 			&i.FinishedAt,
 			&i.FinishedBy,
-			&i.PosClosed,
-			&i.PosChange,
 			&i.MarkedDelivered,
 			&i.PaidAt,
 			&i.EarlyKitchen,
@@ -3024,7 +2726,7 @@ func (q *Queries) ListBatchPayments(ctx context.Context, batchID int64) ([]Order
 }
 
 const listBatchUnassigned = `-- name: ListBatchUnassigned :many
-SELECT id, tenant_id, location_id, source, source_event_id, snapshot, state, arrival_date, printed_date, batch_id, kitchen_number, prep_minutes, estimated_ready_at, accepted_at, ready_at, out_at, delivered_at, driver_id, driver_name, last_alert_at, cancelled_at, accept_pending, pool_driver_id, pooled_at, pool_seq, pool_plan_id, ext_source, ext_ref, ext_hash, ext_driver_pos, display_number, paid, cash_due_cents, tip_cents, board_hidden, sent_at, local_only, flag, pos_check_number, pos_driver_note, scheduled_lead_minutes, ring_at, rerung, auto_accepted, came_back, not_delivered_action, not_delivered_at, not_delivered_driver_id, run_seq, finished_at, finished_by, pos_closed, pos_change, marked_delivered, paid_at, early_kitchen, early_receipt, due_override, made_now, added_tip_cents, tip_locked, cancel_reason, client_key, door_tip_cents FROM orders
+SELECT id, tenant_id, location_id, source, source_event_id, snapshot, state, arrival_date, printed_date, batch_id, kitchen_number, prep_minutes, estimated_ready_at, accepted_at, ready_at, out_at, delivered_at, driver_id, driver_name, last_alert_at, cancelled_at, accept_pending, pool_driver_id, pooled_at, pool_seq, pool_plan_id, paid, cash_due_cents, tip_cents, sent_at, scheduled_lead_minutes, ring_at, rerung, auto_accepted, came_back, not_delivered_action, not_delivered_at, not_delivered_driver_id, run_seq, finished_at, finished_by, marked_delivered, paid_at, early_kitchen, early_receipt, due_override, made_now, added_tip_cents, tip_locked, cancel_reason, client_key, door_tip_cents FROM orders
 WHERE batch_id = ? AND state = 'delivered' AND driver_id IS NULL AND marked_delivered <> ''
 ORDER BY delivered_at ASC
 `
@@ -3066,20 +2768,10 @@ func (q *Queries) ListBatchUnassigned(ctx context.Context, batchID int64) ([]Ord
 			&i.PooledAt,
 			&i.PoolSeq,
 			&i.PoolPlanID,
-			&i.ExtSource,
-			&i.ExtRef,
-			&i.ExtHash,
-			&i.ExtDriverPos,
-			&i.DisplayNumber,
 			&i.Paid,
 			&i.CashDueCents,
 			&i.TipCents,
-			&i.BoardHidden,
 			&i.SentAt,
-			&i.LocalOnly,
-			&i.Flag,
-			&i.PosCheckNumber,
-			&i.PosDriverNote,
 			&i.ScheduledLeadMinutes,
 			&i.RingAt,
 			&i.Rerung,
@@ -3091,8 +2783,6 @@ func (q *Queries) ListBatchUnassigned(ctx context.Context, batchID int64) ([]Ord
 			&i.RunSeq,
 			&i.FinishedAt,
 			&i.FinishedBy,
-			&i.PosClosed,
-			&i.PosChange,
 			&i.MarkedDelivered,
 			&i.PaidAt,
 			&i.EarlyKitchen,
@@ -3162,7 +2852,7 @@ func (q *Queries) ListBatches(ctx context.Context, limit int64) ([]ListBatchesRo
 }
 
 const listCounterOrders = `-- name: ListCounterOrders :many
-SELECT id, tenant_id, location_id, source, source_event_id, snapshot, state, arrival_date, printed_date, batch_id, kitchen_number, prep_minutes, estimated_ready_at, accepted_at, ready_at, out_at, delivered_at, driver_id, driver_name, last_alert_at, cancelled_at, accept_pending, pool_driver_id, pooled_at, pool_seq, pool_plan_id, ext_source, ext_ref, ext_hash, ext_driver_pos, display_number, paid, cash_due_cents, tip_cents, board_hidden, sent_at, local_only, flag, pos_check_number, pos_driver_note, scheduled_lead_minutes, ring_at, rerung, auto_accepted, came_back, not_delivered_action, not_delivered_at, not_delivered_driver_id, run_seq, finished_at, finished_by, pos_closed, pos_change, marked_delivered, paid_at, early_kitchen, early_receipt, due_override, made_now, added_tip_cents, tip_locked, cancel_reason, client_key, door_tip_cents FROM orders WHERE source = 'counter' AND batch_id = ? ORDER BY arrival_date, id
+SELECT id, tenant_id, location_id, source, source_event_id, snapshot, state, arrival_date, printed_date, batch_id, kitchen_number, prep_minutes, estimated_ready_at, accepted_at, ready_at, out_at, delivered_at, driver_id, driver_name, last_alert_at, cancelled_at, accept_pending, pool_driver_id, pooled_at, pool_seq, pool_plan_id, paid, cash_due_cents, tip_cents, sent_at, scheduled_lead_minutes, ring_at, rerung, auto_accepted, came_back, not_delivered_action, not_delivered_at, not_delivered_driver_id, run_seq, finished_at, finished_by, marked_delivered, paid_at, early_kitchen, early_receipt, due_override, made_now, added_tip_cents, tip_locked, cancel_reason, client_key, door_tip_cents FROM orders WHERE source = 'counter' AND batch_id = ? ORDER BY arrival_date, id
 `
 
 // Counter orders of a batch (the terminals' Pick Up list filters them).
@@ -3202,20 +2892,10 @@ func (q *Queries) ListCounterOrders(ctx context.Context, batchID int64) ([]Order
 			&i.PooledAt,
 			&i.PoolSeq,
 			&i.PoolPlanID,
-			&i.ExtSource,
-			&i.ExtRef,
-			&i.ExtHash,
-			&i.ExtDriverPos,
-			&i.DisplayNumber,
 			&i.Paid,
 			&i.CashDueCents,
 			&i.TipCents,
-			&i.BoardHidden,
 			&i.SentAt,
-			&i.LocalOnly,
-			&i.Flag,
-			&i.PosCheckNumber,
-			&i.PosDriverNote,
 			&i.ScheduledLeadMinutes,
 			&i.RingAt,
 			&i.Rerung,
@@ -3227,8 +2907,6 @@ func (q *Queries) ListCounterOrders(ctx context.Context, batchID int64) ([]Order
 			&i.RunSeq,
 			&i.FinishedAt,
 			&i.FinishedBy,
-			&i.PosClosed,
-			&i.PosChange,
 			&i.MarkedDelivered,
 			&i.PaidAt,
 			&i.EarlyKitchen,
@@ -3380,7 +3058,7 @@ func (q *Queries) ListDrawersByBatch(ctx context.Context, batchID int64) ([]Draw
 
 const listDueOnlinePickups = `-- name: ListDueOnlinePickups :many
 SELECT id FROM orders
-WHERE state = 'ready' AND finished_at IS NULL AND ext_source = '' AND ready_at IS NOT NULL AND ready_at <= ?1
+WHERE state = 'ready' AND finished_at IS NULL AND ready_at IS NOT NULL AND ready_at <= ?1
   AND COALESCE(json_extract(snapshot, '$.fulfillment.type'), '') <> 'delivery'
 `
 
@@ -3409,7 +3087,7 @@ func (q *Queries) ListDueOnlinePickups(ctx context.Context, cutoff sql.NullStrin
 }
 
 const listDueScheduled = `-- name: ListDueScheduled :many
-SELECT id, tenant_id, location_id, source, source_event_id, snapshot, state, arrival_date, printed_date, batch_id, kitchen_number, prep_minutes, estimated_ready_at, accepted_at, ready_at, out_at, delivered_at, driver_id, driver_name, last_alert_at, cancelled_at, accept_pending, pool_driver_id, pooled_at, pool_seq, pool_plan_id, ext_source, ext_ref, ext_hash, ext_driver_pos, display_number, paid, cash_due_cents, tip_cents, board_hidden, sent_at, local_only, flag, pos_check_number, pos_driver_note, scheduled_lead_minutes, ring_at, rerung, auto_accepted, came_back, not_delivered_action, not_delivered_at, not_delivered_driver_id, run_seq, finished_at, finished_by, pos_closed, pos_change, marked_delivered, paid_at, early_kitchen, early_receipt, due_override, made_now, added_tip_cents, tip_locked, cancel_reason, client_key, door_tip_cents FROM orders WHERE state = 'scheduled' AND ring_at <= ? ORDER BY ring_at ASC
+SELECT id, tenant_id, location_id, source, source_event_id, snapshot, state, arrival_date, printed_date, batch_id, kitchen_number, prep_minutes, estimated_ready_at, accepted_at, ready_at, out_at, delivered_at, driver_id, driver_name, last_alert_at, cancelled_at, accept_pending, pool_driver_id, pooled_at, pool_seq, pool_plan_id, paid, cash_due_cents, tip_cents, sent_at, scheduled_lead_minutes, ring_at, rerung, auto_accepted, came_back, not_delivered_action, not_delivered_at, not_delivered_driver_id, run_seq, finished_at, finished_by, marked_delivered, paid_at, early_kitchen, early_receipt, due_override, made_now, added_tip_cents, tip_locked, cancel_reason, client_key, door_tip_cents FROM orders WHERE state = 'scheduled' AND ring_at <= ? ORDER BY ring_at ASC
 `
 
 func (q *Queries) ListDueScheduled(ctx context.Context, ringAt sql.NullString) ([]Order, error) {
@@ -3448,20 +3126,10 @@ func (q *Queries) ListDueScheduled(ctx context.Context, ringAt sql.NullString) (
 			&i.PooledAt,
 			&i.PoolSeq,
 			&i.PoolPlanID,
-			&i.ExtSource,
-			&i.ExtRef,
-			&i.ExtHash,
-			&i.ExtDriverPos,
-			&i.DisplayNumber,
 			&i.Paid,
 			&i.CashDueCents,
 			&i.TipCents,
-			&i.BoardHidden,
 			&i.SentAt,
-			&i.LocalOnly,
-			&i.Flag,
-			&i.PosCheckNumber,
-			&i.PosDriverNote,
 			&i.ScheduledLeadMinutes,
 			&i.RingAt,
 			&i.Rerung,
@@ -3473,8 +3141,6 @@ func (q *Queries) ListDueScheduled(ctx context.Context, ringAt sql.NullString) (
 			&i.RunSeq,
 			&i.FinishedAt,
 			&i.FinishedBy,
-			&i.PosClosed,
-			&i.PosChange,
 			&i.MarkedDelivered,
 			&i.PaidAt,
 			&i.EarlyKitchen,
@@ -3641,98 +3307,6 @@ func (q *Queries) ListJournalBetween(ctx context.Context, arg ListJournalBetween
 	return items, nil
 }
 
-const listLocalOnlyByBatch = `-- name: ListLocalOnlyByBatch :many
-SELECT id, tenant_id, location_id, source, source_event_id, snapshot, state, arrival_date, printed_date, batch_id, kitchen_number, prep_minutes, estimated_ready_at, accepted_at, ready_at, out_at, delivered_at, driver_id, driver_name, last_alert_at, cancelled_at, accept_pending, pool_driver_id, pooled_at, pool_seq, pool_plan_id, ext_source, ext_ref, ext_hash, ext_driver_pos, display_number, paid, cash_due_cents, tip_cents, board_hidden, sent_at, local_only, flag, pos_check_number, pos_driver_note, scheduled_lead_minutes, ring_at, rerung, auto_accepted, came_back, not_delivered_action, not_delivered_at, not_delivered_driver_id, run_seq, finished_at, finished_by, pos_closed, pos_change, marked_delivered, paid_at, early_kitchen, early_receipt, due_override, made_now, added_tip_cents, tip_locked, cancel_reason, client_key, door_tip_cents FROM orders WHERE batch_id = ? AND local_only ORDER BY arrival_date ASC
-`
-
-func (q *Queries) ListLocalOnlyByBatch(ctx context.Context, batchID int64) ([]Order, error) {
-	rows, err := q.db.QueryContext(ctx, listLocalOnlyByBatch, batchID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var items []Order
-	for rows.Next() {
-		var i Order
-		if err := rows.Scan(
-			&i.ID,
-			&i.TenantID,
-			&i.LocationID,
-			&i.Source,
-			&i.SourceEventID,
-			&i.Snapshot,
-			&i.State,
-			&i.ArrivalDate,
-			&i.PrintedDate,
-			&i.BatchID,
-			&i.KitchenNumber,
-			&i.PrepMinutes,
-			&i.EstimatedReadyAt,
-			&i.AcceptedAt,
-			&i.ReadyAt,
-			&i.OutAt,
-			&i.DeliveredAt,
-			&i.DriverID,
-			&i.DriverName,
-			&i.LastAlertAt,
-			&i.CancelledAt,
-			&i.AcceptPending,
-			&i.PoolDriverID,
-			&i.PooledAt,
-			&i.PoolSeq,
-			&i.PoolPlanID,
-			&i.ExtSource,
-			&i.ExtRef,
-			&i.ExtHash,
-			&i.ExtDriverPos,
-			&i.DisplayNumber,
-			&i.Paid,
-			&i.CashDueCents,
-			&i.TipCents,
-			&i.BoardHidden,
-			&i.SentAt,
-			&i.LocalOnly,
-			&i.Flag,
-			&i.PosCheckNumber,
-			&i.PosDriverNote,
-			&i.ScheduledLeadMinutes,
-			&i.RingAt,
-			&i.Rerung,
-			&i.AutoAccepted,
-			&i.CameBack,
-			&i.NotDeliveredAction,
-			&i.NotDeliveredAt,
-			&i.NotDeliveredDriverID,
-			&i.RunSeq,
-			&i.FinishedAt,
-			&i.FinishedBy,
-			&i.PosClosed,
-			&i.PosChange,
-			&i.MarkedDelivered,
-			&i.PaidAt,
-			&i.EarlyKitchen,
-			&i.EarlyReceipt,
-			&i.DueOverride,
-			&i.MadeNow,
-			&i.AddedTipCents,
-			&i.TipLocked,
-			&i.CancelReason,
-			&i.ClientKey,
-			&i.DoorTipCents,
-		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Close(); err != nil {
-		return nil, err
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
 const listLocatedDeliveries = `-- name: ListLocatedDeliveries :many
 SELECT o.snapshot, g.lat, g.lng FROM orders o JOIN order_geo g ON g.order_id = o.id
 WHERE g.state = 'located' AND g.lat IS NOT NULL AND g.lng IS NOT NULL
@@ -3772,7 +3346,7 @@ func (q *Queries) ListLocatedDeliveries(ctx context.Context) ([]ListLocatedDeliv
 }
 
 const listOnDeliveryByDriver = `-- name: ListOnDeliveryByDriver :many
-SELECT id, tenant_id, location_id, source, source_event_id, snapshot, state, arrival_date, printed_date, batch_id, kitchen_number, prep_minutes, estimated_ready_at, accepted_at, ready_at, out_at, delivered_at, driver_id, driver_name, last_alert_at, cancelled_at, accept_pending, pool_driver_id, pooled_at, pool_seq, pool_plan_id, ext_source, ext_ref, ext_hash, ext_driver_pos, display_number, paid, cash_due_cents, tip_cents, board_hidden, sent_at, local_only, flag, pos_check_number, pos_driver_note, scheduled_lead_minutes, ring_at, rerung, auto_accepted, came_back, not_delivered_action, not_delivered_at, not_delivered_driver_id, run_seq, finished_at, finished_by, pos_closed, pos_change, marked_delivered, paid_at, early_kitchen, early_receipt, due_override, made_now, added_tip_cents, tip_locked, cancel_reason, client_key, door_tip_cents FROM orders
+SELECT id, tenant_id, location_id, source, source_event_id, snapshot, state, arrival_date, printed_date, batch_id, kitchen_number, prep_minutes, estimated_ready_at, accepted_at, ready_at, out_at, delivered_at, driver_id, driver_name, last_alert_at, cancelled_at, accept_pending, pool_driver_id, pooled_at, pool_seq, pool_plan_id, paid, cash_due_cents, tip_cents, sent_at, scheduled_lead_minutes, ring_at, rerung, auto_accepted, came_back, not_delivered_action, not_delivered_at, not_delivered_driver_id, run_seq, finished_at, finished_by, marked_delivered, paid_at, early_kitchen, early_receipt, due_override, made_now, added_tip_cents, tip_locked, cancel_reason, client_key, door_tip_cents FROM orders
 WHERE state = 'on_delivery' AND driver_id = ?
 ORDER BY out_at ASC
 `
@@ -3813,20 +3387,10 @@ func (q *Queries) ListOnDeliveryByDriver(ctx context.Context, driverID sql.NullS
 			&i.PooledAt,
 			&i.PoolSeq,
 			&i.PoolPlanID,
-			&i.ExtSource,
-			&i.ExtRef,
-			&i.ExtHash,
-			&i.ExtDriverPos,
-			&i.DisplayNumber,
 			&i.Paid,
 			&i.CashDueCents,
 			&i.TipCents,
-			&i.BoardHidden,
 			&i.SentAt,
-			&i.LocalOnly,
-			&i.Flag,
-			&i.PosCheckNumber,
-			&i.PosDriverNote,
 			&i.ScheduledLeadMinutes,
 			&i.RingAt,
 			&i.Rerung,
@@ -3838,8 +3402,6 @@ func (q *Queries) ListOnDeliveryByDriver(ctx context.Context, driverID sql.NullS
 			&i.RunSeq,
 			&i.FinishedAt,
 			&i.FinishedBy,
-			&i.PosClosed,
-			&i.PosChange,
 			&i.MarkedDelivered,
 			&i.PaidAt,
 			&i.EarlyKitchen,
@@ -3918,7 +3480,7 @@ func (q *Queries) ListOpenDeadLetters(ctx context.Context, limit int64) ([]ListO
 }
 
 const listOpenDeliveries = `-- name: ListOpenDeliveries :many
-SELECT id, tenant_id, location_id, source, source_event_id, snapshot, state, arrival_date, printed_date, batch_id, kitchen_number, prep_minutes, estimated_ready_at, accepted_at, ready_at, out_at, delivered_at, driver_id, driver_name, last_alert_at, cancelled_at, accept_pending, pool_driver_id, pooled_at, pool_seq, pool_plan_id, ext_source, ext_ref, ext_hash, ext_driver_pos, display_number, paid, cash_due_cents, tip_cents, board_hidden, sent_at, local_only, flag, pos_check_number, pos_driver_note, scheduled_lead_minutes, ring_at, rerung, auto_accepted, came_back, not_delivered_action, not_delivered_at, not_delivered_driver_id, run_seq, finished_at, finished_by, pos_closed, pos_change, marked_delivered, paid_at, early_kitchen, early_receipt, due_override, made_now, added_tip_cents, tip_locked, cancel_reason, client_key, door_tip_cents FROM orders
+SELECT id, tenant_id, location_id, source, source_event_id, snapshot, state, arrival_date, printed_date, batch_id, kitchen_number, prep_minutes, estimated_ready_at, accepted_at, ready_at, out_at, delivered_at, driver_id, driver_name, last_alert_at, cancelled_at, accept_pending, pool_driver_id, pooled_at, pool_seq, pool_plan_id, paid, cash_due_cents, tip_cents, sent_at, scheduled_lead_minutes, ring_at, rerung, auto_accepted, came_back, not_delivered_action, not_delivered_at, not_delivered_driver_id, run_seq, finished_at, finished_by, marked_delivered, paid_at, early_kitchen, early_receipt, due_override, made_now, added_tip_cents, tip_locked, cancel_reason, client_key, door_tip_cents FROM orders
 WHERE batch_id = (SELECT id FROM batches WHERE closed_at IS NULL ORDER BY id DESC LIMIT 1)
   AND state IN ('accepted', 'ready', 'on_delivery')
   AND json_extract(snapshot, '$.fulfillment.type') = 'delivery'
@@ -3962,20 +3524,10 @@ func (q *Queries) ListOpenDeliveries(ctx context.Context) ([]Order, error) {
 			&i.PooledAt,
 			&i.PoolSeq,
 			&i.PoolPlanID,
-			&i.ExtSource,
-			&i.ExtRef,
-			&i.ExtHash,
-			&i.ExtDriverPos,
-			&i.DisplayNumber,
 			&i.Paid,
 			&i.CashDueCents,
 			&i.TipCents,
-			&i.BoardHidden,
 			&i.SentAt,
-			&i.LocalOnly,
-			&i.Flag,
-			&i.PosCheckNumber,
-			&i.PosDriverNote,
 			&i.ScheduledLeadMinutes,
 			&i.RingAt,
 			&i.Rerung,
@@ -3987,8 +3539,6 @@ func (q *Queries) ListOpenDeliveries(ctx context.Context) ([]Order, error) {
 			&i.RunSeq,
 			&i.FinishedAt,
 			&i.FinishedBy,
-			&i.PosClosed,
-			&i.PosChange,
 			&i.MarkedDelivered,
 			&i.PaidAt,
 			&i.EarlyKitchen,
@@ -4248,7 +3798,7 @@ func (q *Queries) ListOrderTimes(ctx context.Context, arg ListOrderTimesParams) 
 }
 
 const listOrdersByBatch = `-- name: ListOrdersByBatch :many
-SELECT id, tenant_id, location_id, source, source_event_id, snapshot, state, arrival_date, printed_date, batch_id, kitchen_number, prep_minutes, estimated_ready_at, accepted_at, ready_at, out_at, delivered_at, driver_id, driver_name, last_alert_at, cancelled_at, accept_pending, pool_driver_id, pooled_at, pool_seq, pool_plan_id, ext_source, ext_ref, ext_hash, ext_driver_pos, display_number, paid, cash_due_cents, tip_cents, board_hidden, sent_at, local_only, flag, pos_check_number, pos_driver_note, scheduled_lead_minutes, ring_at, rerung, auto_accepted, came_back, not_delivered_action, not_delivered_at, not_delivered_driver_id, run_seq, finished_at, finished_by, pos_closed, pos_change, marked_delivered, paid_at, early_kitchen, early_receipt, due_override, made_now, added_tip_cents, tip_locked, cancel_reason, client_key, door_tip_cents FROM orders
+SELECT id, tenant_id, location_id, source, source_event_id, snapshot, state, arrival_date, printed_date, batch_id, kitchen_number, prep_minutes, estimated_ready_at, accepted_at, ready_at, out_at, delivered_at, driver_id, driver_name, last_alert_at, cancelled_at, accept_pending, pool_driver_id, pooled_at, pool_seq, pool_plan_id, paid, cash_due_cents, tip_cents, sent_at, scheduled_lead_minutes, ring_at, rerung, auto_accepted, came_back, not_delivered_action, not_delivered_at, not_delivered_driver_id, run_seq, finished_at, finished_by, marked_delivered, paid_at, early_kitchen, early_receipt, due_override, made_now, added_tip_cents, tip_locked, cancel_reason, client_key, door_tip_cents FROM orders
 WHERE batch_id = ?
 ORDER BY arrival_date DESC
 LIMIT ? OFFSET ?
@@ -4296,20 +3846,10 @@ func (q *Queries) ListOrdersByBatch(ctx context.Context, arg ListOrdersByBatchPa
 			&i.PooledAt,
 			&i.PoolSeq,
 			&i.PoolPlanID,
-			&i.ExtSource,
-			&i.ExtRef,
-			&i.ExtHash,
-			&i.ExtDriverPos,
-			&i.DisplayNumber,
 			&i.Paid,
 			&i.CashDueCents,
 			&i.TipCents,
-			&i.BoardHidden,
 			&i.SentAt,
-			&i.LocalOnly,
-			&i.Flag,
-			&i.PosCheckNumber,
-			&i.PosDriverNote,
 			&i.ScheduledLeadMinutes,
 			&i.RingAt,
 			&i.Rerung,
@@ -4321,8 +3861,6 @@ func (q *Queries) ListOrdersByBatch(ctx context.Context, arg ListOrdersByBatchPa
 			&i.RunSeq,
 			&i.FinishedAt,
 			&i.FinishedBy,
-			&i.PosClosed,
-			&i.PosChange,
 			&i.MarkedDelivered,
 			&i.PaidAt,
 			&i.EarlyKitchen,
@@ -4349,7 +3887,7 @@ func (q *Queries) ListOrdersByBatch(ctx context.Context, arg ListOrdersByBatchPa
 }
 
 const listOrdersMentioning = `-- name: ListOrdersMentioning :many
-SELECT id, tenant_id, location_id, source, source_event_id, snapshot, state, arrival_date, printed_date, batch_id, kitchen_number, prep_minutes, estimated_ready_at, accepted_at, ready_at, out_at, delivered_at, driver_id, driver_name, last_alert_at, cancelled_at, accept_pending, pool_driver_id, pooled_at, pool_seq, pool_plan_id, ext_source, ext_ref, ext_hash, ext_driver_pos, display_number, paid, cash_due_cents, tip_cents, board_hidden, sent_at, local_only, flag, pos_check_number, pos_driver_note, scheduled_lead_minutes, ring_at, rerung, auto_accepted, came_back, not_delivered_action, not_delivered_at, not_delivered_driver_id, run_seq, finished_at, finished_by, pos_closed, pos_change, marked_delivered, paid_at, early_kitchen, early_receipt, due_override, made_now, added_tip_cents, tip_locked, cancel_reason, client_key, door_tip_cents FROM orders WHERE local_only = 0 AND instr(snapshot, ?1) > 0
+SELECT id, tenant_id, location_id, source, source_event_id, snapshot, state, arrival_date, printed_date, batch_id, kitchen_number, prep_minutes, estimated_ready_at, accepted_at, ready_at, out_at, delivered_at, driver_id, driver_name, last_alert_at, cancelled_at, accept_pending, pool_driver_id, pooled_at, pool_seq, pool_plan_id, paid, cash_due_cents, tip_cents, sent_at, scheduled_lead_minutes, ring_at, rerung, auto_accepted, came_back, not_delivered_action, not_delivered_at, not_delivered_driver_id, run_seq, finished_at, finished_by, marked_delivered, paid_at, early_kitchen, early_receipt, due_override, made_now, added_tip_cents, tip_locked, cancel_reason, client_key, door_tip_cents FROM orders WHERE instr(snapshot, ?1) > 0
 ORDER BY arrival_date DESC LIMIT ?2
 `
 
@@ -4359,7 +3897,7 @@ type ListOrdersMentioningParams struct {
 }
 
 // Orders whose snapshot holds the text (a phone's last digits, a customer
-// id), newest first; the caller checks each one. POS checks are left out.
+// id), newest first; the caller checks each one.
 func (q *Queries) ListOrdersMentioning(ctx context.Context, arg ListOrdersMentioningParams) ([]Order, error) {
 	rows, err := q.db.QueryContext(ctx, listOrdersMentioning, arg.Text, arg.MaxRows)
 	if err != nil {
@@ -4396,20 +3934,10 @@ func (q *Queries) ListOrdersMentioning(ctx context.Context, arg ListOrdersMentio
 			&i.PooledAt,
 			&i.PoolSeq,
 			&i.PoolPlanID,
-			&i.ExtSource,
-			&i.ExtRef,
-			&i.ExtHash,
-			&i.ExtDriverPos,
-			&i.DisplayNumber,
 			&i.Paid,
 			&i.CashDueCents,
 			&i.TipCents,
-			&i.BoardHidden,
 			&i.SentAt,
-			&i.LocalOnly,
-			&i.Flag,
-			&i.PosCheckNumber,
-			&i.PosDriverNote,
 			&i.ScheduledLeadMinutes,
 			&i.RingAt,
 			&i.Rerung,
@@ -4421,8 +3949,6 @@ func (q *Queries) ListOrdersMentioning(ctx context.Context, arg ListOrdersMentio
 			&i.RunSeq,
 			&i.FinishedAt,
 			&i.FinishedBy,
-			&i.PosClosed,
-			&i.PosChange,
 			&i.MarkedDelivered,
 			&i.PaidAt,
 			&i.EarlyKitchen,
@@ -4449,7 +3975,7 @@ func (q *Queries) ListOrdersMentioning(ctx context.Context, arg ListOrdersMentio
 }
 
 const listOrdersPage = `-- name: ListOrdersPage :many
-SELECT id, tenant_id, location_id, source, source_event_id, snapshot, state, arrival_date, printed_date, batch_id, kitchen_number, prep_minutes, estimated_ready_at, accepted_at, ready_at, out_at, delivered_at, driver_id, driver_name, last_alert_at, cancelled_at, accept_pending, pool_driver_id, pooled_at, pool_seq, pool_plan_id, ext_source, ext_ref, ext_hash, ext_driver_pos, display_number, paid, cash_due_cents, tip_cents, board_hidden, sent_at, local_only, flag, pos_check_number, pos_driver_note, scheduled_lead_minutes, ring_at, rerung, auto_accepted, came_back, not_delivered_action, not_delivered_at, not_delivered_driver_id, run_seq, finished_at, finished_by, pos_closed, pos_change, marked_delivered, paid_at, early_kitchen, early_receipt, due_override, made_now, added_tip_cents, tip_locked, cancel_reason, client_key, door_tip_cents FROM orders
+SELECT id, tenant_id, location_id, source, source_event_id, snapshot, state, arrival_date, printed_date, batch_id, kitchen_number, prep_minutes, estimated_ready_at, accepted_at, ready_at, out_at, delivered_at, driver_id, driver_name, last_alert_at, cancelled_at, accept_pending, pool_driver_id, pooled_at, pool_seq, pool_plan_id, paid, cash_due_cents, tip_cents, sent_at, scheduled_lead_minutes, ring_at, rerung, auto_accepted, came_back, not_delivered_action, not_delivered_at, not_delivered_driver_id, run_seq, finished_at, finished_by, marked_delivered, paid_at, early_kitchen, early_receipt, due_override, made_now, added_tip_cents, tip_locked, cancel_reason, client_key, door_tip_cents FROM orders
 ORDER BY arrival_date DESC
 LIMIT ? OFFSET ?
 `
@@ -4495,20 +4021,10 @@ func (q *Queries) ListOrdersPage(ctx context.Context, arg ListOrdersPageParams) 
 			&i.PooledAt,
 			&i.PoolSeq,
 			&i.PoolPlanID,
-			&i.ExtSource,
-			&i.ExtRef,
-			&i.ExtHash,
-			&i.ExtDriverPos,
-			&i.DisplayNumber,
 			&i.Paid,
 			&i.CashDueCents,
 			&i.TipCents,
-			&i.BoardHidden,
 			&i.SentAt,
-			&i.LocalOnly,
-			&i.Flag,
-			&i.PosCheckNumber,
-			&i.PosDriverNote,
 			&i.ScheduledLeadMinutes,
 			&i.RingAt,
 			&i.Rerung,
@@ -4520,8 +4036,6 @@ func (q *Queries) ListOrdersPage(ctx context.Context, arg ListOrdersPageParams) 
 			&i.RunSeq,
 			&i.FinishedAt,
 			&i.FinishedBy,
-			&i.PosClosed,
-			&i.PosChange,
 			&i.MarkedDelivered,
 			&i.PaidAt,
 			&i.EarlyKitchen,
@@ -4548,7 +4062,7 @@ func (q *Queries) ListOrdersPage(ctx context.Context, arg ListOrdersPageParams) 
 }
 
 const listOverdueArrived = `-- name: ListOverdueArrived :many
-SELECT id, tenant_id, location_id, source, source_event_id, snapshot, state, arrival_date, printed_date, batch_id, kitchen_number, prep_minutes, estimated_ready_at, accepted_at, ready_at, out_at, delivered_at, driver_id, driver_name, last_alert_at, cancelled_at, accept_pending, pool_driver_id, pooled_at, pool_seq, pool_plan_id, ext_source, ext_ref, ext_hash, ext_driver_pos, display_number, paid, cash_due_cents, tip_cents, board_hidden, sent_at, local_only, flag, pos_check_number, pos_driver_note, scheduled_lead_minutes, ring_at, rerung, auto_accepted, came_back, not_delivered_action, not_delivered_at, not_delivered_driver_id, run_seq, finished_at, finished_by, pos_closed, pos_change, marked_delivered, paid_at, early_kitchen, early_receipt, due_override, made_now, added_tip_cents, tip_locked, cancel_reason, client_key, door_tip_cents FROM orders
+SELECT id, tenant_id, location_id, source, source_event_id, snapshot, state, arrival_date, printed_date, batch_id, kitchen_number, prep_minutes, estimated_ready_at, accepted_at, ready_at, out_at, delivered_at, driver_id, driver_name, last_alert_at, cancelled_at, accept_pending, pool_driver_id, pooled_at, pool_seq, pool_plan_id, paid, cash_due_cents, tip_cents, sent_at, scheduled_lead_minutes, ring_at, rerung, auto_accepted, came_back, not_delivered_action, not_delivered_at, not_delivered_driver_id, run_seq, finished_at, finished_by, marked_delivered, paid_at, early_kitchen, early_receipt, due_override, made_now, added_tip_cents, tip_locked, cancel_reason, client_key, door_tip_cents FROM orders
 WHERE state = 'arrived'
   AND arrival_date <= ?1
   AND (last_alert_at IS NULL OR last_alert_at <= ?1)
@@ -4592,20 +4106,10 @@ func (q *Queries) ListOverdueArrived(ctx context.Context, cutoff string) ([]Orde
 			&i.PooledAt,
 			&i.PoolSeq,
 			&i.PoolPlanID,
-			&i.ExtSource,
-			&i.ExtRef,
-			&i.ExtHash,
-			&i.ExtDriverPos,
-			&i.DisplayNumber,
 			&i.Paid,
 			&i.CashDueCents,
 			&i.TipCents,
-			&i.BoardHidden,
 			&i.SentAt,
-			&i.LocalOnly,
-			&i.Flag,
-			&i.PosCheckNumber,
-			&i.PosDriverNote,
 			&i.ScheduledLeadMinutes,
 			&i.RingAt,
 			&i.Rerung,
@@ -4617,8 +4121,6 @@ func (q *Queries) ListOverdueArrived(ctx context.Context, cutoff string) ([]Orde
 			&i.RunSeq,
 			&i.FinishedAt,
 			&i.FinishedBy,
-			&i.PosClosed,
-			&i.PosChange,
 			&i.MarkedDelivered,
 			&i.PaidAt,
 			&i.EarlyKitchen,
@@ -4746,14 +4248,14 @@ func (q *Queries) ListPendingZReports(ctx context.Context) ([]ZReport, error) {
 }
 
 const listPickupOrders = `-- name: ListPickupOrders :many
-SELECT id, tenant_id, location_id, source, source_event_id, snapshot, state, arrival_date, printed_date, batch_id, kitchen_number, prep_minutes, estimated_ready_at, accepted_at, ready_at, out_at, delivered_at, driver_id, driver_name, last_alert_at, cancelled_at, accept_pending, pool_driver_id, pooled_at, pool_seq, pool_plan_id, ext_source, ext_ref, ext_hash, ext_driver_pos, display_number, paid, cash_due_cents, tip_cents, board_hidden, sent_at, local_only, flag, pos_check_number, pos_driver_note, scheduled_lead_minutes, ring_at, rerung, auto_accepted, came_back, not_delivered_action, not_delivered_at, not_delivered_driver_id, run_seq, finished_at, finished_by, pos_closed, pos_change, marked_delivered, paid_at, early_kitchen, early_receipt, due_override, made_now, added_tip_cents, tip_locked, cancel_reason, client_key, door_tip_cents FROM orders
-WHERE batch_id = ? AND ext_source = ''
+SELECT id, tenant_id, location_id, source, source_event_id, snapshot, state, arrival_date, printed_date, batch_id, kitchen_number, prep_minutes, estimated_ready_at, accepted_at, ready_at, out_at, delivered_at, driver_id, driver_name, last_alert_at, cancelled_at, accept_pending, pool_driver_id, pooled_at, pool_seq, pool_plan_id, paid, cash_due_cents, tip_cents, sent_at, scheduled_lead_minutes, ring_at, rerung, auto_accepted, came_back, not_delivered_action, not_delivered_at, not_delivered_driver_id, run_seq, finished_at, finished_by, marked_delivered, paid_at, early_kitchen, early_receipt, due_override, made_now, added_tip_cents, tip_locked, cancel_reason, client_key, door_tip_cents FROM orders
+WHERE batch_id = ?
   AND COALESCE(json_extract(snapshot, '$.fulfillment.type'), '') <> 'delivery'
 ORDER BY arrival_date, id
 `
 
 // The terminals' Pickup list (contract 2.10i): a batch's pickup / counter orders of
-// every source but the old POS, oldest first (the service filters states).
+// every source, oldest first (the service filters states).
 func (q *Queries) ListPickupOrders(ctx context.Context, batchID int64) ([]Order, error) {
 	rows, err := q.db.QueryContext(ctx, listPickupOrders, batchID)
 	if err != nil {
@@ -4790,20 +4292,10 @@ func (q *Queries) ListPickupOrders(ctx context.Context, batchID int64) ([]Order,
 			&i.PooledAt,
 			&i.PoolSeq,
 			&i.PoolPlanID,
-			&i.ExtSource,
-			&i.ExtRef,
-			&i.ExtHash,
-			&i.ExtDriverPos,
-			&i.DisplayNumber,
 			&i.Paid,
 			&i.CashDueCents,
 			&i.TipCents,
-			&i.BoardHidden,
 			&i.SentAt,
-			&i.LocalOnly,
-			&i.Flag,
-			&i.PosCheckNumber,
-			&i.PosDriverNote,
 			&i.ScheduledLeadMinutes,
 			&i.RingAt,
 			&i.Rerung,
@@ -4815,8 +4307,6 @@ func (q *Queries) ListPickupOrders(ctx context.Context, batchID int64) ([]Order,
 			&i.RunSeq,
 			&i.FinishedAt,
 			&i.FinishedBy,
-			&i.PosClosed,
-			&i.PosChange,
 			&i.MarkedDelivered,
 			&i.PaidAt,
 			&i.EarlyKitchen,
@@ -4843,7 +4333,7 @@ func (q *Queries) ListPickupOrders(ctx context.Context, batchID int64) ([]Order,
 }
 
 const listPoolByDriver = `-- name: ListPoolByDriver :many
-SELECT id, tenant_id, location_id, source, source_event_id, snapshot, state, arrival_date, printed_date, batch_id, kitchen_number, prep_minutes, estimated_ready_at, accepted_at, ready_at, out_at, delivered_at, driver_id, driver_name, last_alert_at, cancelled_at, accept_pending, pool_driver_id, pooled_at, pool_seq, pool_plan_id, ext_source, ext_ref, ext_hash, ext_driver_pos, display_number, paid, cash_due_cents, tip_cents, board_hidden, sent_at, local_only, flag, pos_check_number, pos_driver_note, scheduled_lead_minutes, ring_at, rerung, auto_accepted, came_back, not_delivered_action, not_delivered_at, not_delivered_driver_id, run_seq, finished_at, finished_by, pos_closed, pos_change, marked_delivered, paid_at, early_kitchen, early_receipt, due_override, made_now, added_tip_cents, tip_locked, cancel_reason, client_key, door_tip_cents FROM orders WHERE pool_driver_id = ?
+SELECT id, tenant_id, location_id, source, source_event_id, snapshot, state, arrival_date, printed_date, batch_id, kitchen_number, prep_minutes, estimated_ready_at, accepted_at, ready_at, out_at, delivered_at, driver_id, driver_name, last_alert_at, cancelled_at, accept_pending, pool_driver_id, pooled_at, pool_seq, pool_plan_id, paid, cash_due_cents, tip_cents, sent_at, scheduled_lead_minutes, ring_at, rerung, auto_accepted, came_back, not_delivered_action, not_delivered_at, not_delivered_driver_id, run_seq, finished_at, finished_by, marked_delivered, paid_at, early_kitchen, early_receipt, due_override, made_now, added_tip_cents, tip_locked, cancel_reason, client_key, door_tip_cents FROM orders WHERE pool_driver_id = ?
 ORDER BY pool_seq IS NULL, pool_seq ASC, pooled_at ASC, arrival_date ASC
 `
 
@@ -4883,20 +4373,10 @@ func (q *Queries) ListPoolByDriver(ctx context.Context, poolDriverID sql.NullStr
 			&i.PooledAt,
 			&i.PoolSeq,
 			&i.PoolPlanID,
-			&i.ExtSource,
-			&i.ExtRef,
-			&i.ExtHash,
-			&i.ExtDriverPos,
-			&i.DisplayNumber,
 			&i.Paid,
 			&i.CashDueCents,
 			&i.TipCents,
-			&i.BoardHidden,
 			&i.SentAt,
-			&i.LocalOnly,
-			&i.Flag,
-			&i.PosCheckNumber,
-			&i.PosDriverNote,
 			&i.ScheduledLeadMinutes,
 			&i.RingAt,
 			&i.Rerung,
@@ -4908,8 +4388,6 @@ func (q *Queries) ListPoolByDriver(ctx context.Context, poolDriverID sql.NullStr
 			&i.RunSeq,
 			&i.FinishedAt,
 			&i.FinishedBy,
-			&i.PosClosed,
-			&i.PosChange,
 			&i.MarkedDelivered,
 			&i.PaidAt,
 			&i.EarlyKitchen,
@@ -5282,7 +4760,7 @@ func (q *Queries) ListZReports(ctx context.Context, limit int64) ([]ZReport, err
 }
 
 const lockBatchTips = `-- name: LockBatchTips :exec
-UPDATE orders SET tip_locked = true WHERE batch_id = ? AND ext_source = '' AND NOT tip_locked
+UPDATE orders SET tip_locked = true WHERE batch_id = ? AND NOT tip_locked
 `
 
 // 2.5.0 Close batch: main charges everything left, every tip is final.
@@ -5293,7 +4771,7 @@ func (q *Queries) LockBatchTips(ctx context.Context, batchID int64) error {
 
 const lockShiftTips = `-- name: LockShiftTips :many
 UPDATE orders SET tip_locked = true
-WHERE driver_id = ?1 AND ext_source = '' AND NOT tip_locked
+WHERE driver_id = ?1 AND NOT tip_locked
   AND state IN ('on_delivery', 'delivered')
   AND COALESCE(out_at, delivered_at, ?2) >= ?2
   AND batch_id = ?3
@@ -5862,28 +5340,6 @@ func (q *Queries) RenamePairedDevice(ctx context.Context, arg RenamePairedDevice
 	return result.RowsAffected()
 }
 
-const reopenPosOrder = `-- name: ReopenPosOrder :execrows
-UPDATE orders
-SET state = 'accepted', ready_at = NULL, finished_at = NULL, finished_by = '', estimated_ready_at = ?1,
-    pool_driver_id = NULL, pooled_at = NULL, pool_seq = NULL, pool_plan_id = NULL
-WHERE id = ?2 AND state = 'ready' AND NOT came_back
-`
-
-type ReopenPosOrderParams struct {
-	EstimatedReadyAt sql.NullString `json:"estimated_ready_at"`
-	ID               string         `json:"id"`
-}
-
-// A ready POS order the terminal added a kitchen item to: back to cooking,
-// out of any pool, not finished.
-func (q *Queries) ReopenPosOrder(ctx context.Context, arg ReopenPosOrderParams) (int64, error) {
-	result, err := q.db.ExecContext(ctx, reopenPosOrder, arg.EstimatedReadyAt, arg.ID)
-	if err != nil {
-		return 0, err
-	}
-	return result.RowsAffected()
-}
-
 const resetCounterNumber = `-- name: ResetCounterNumber :exec
 UPDATE settings SET counter_next = 0 WHERE id = 1
 `
@@ -5914,7 +5370,7 @@ func (q *Queries) ResetKitchenNumber(ctx context.Context) error {
 }
 
 const restoreDriver = `-- name: RestoreDriver :exec
-INSERT INTO drivers (id, name, active, position, status, last_returned_at, pos_number) VALUES (?, ?, true, ?, ?, ?, ?)
+INSERT INTO drivers (id, name, active, position, status, last_returned_at) VALUES (?, ?, true, ?, ?, ?)
 `
 
 type RestoreDriverParams struct {
@@ -5923,7 +5379,6 @@ type RestoreDriverParams struct {
 	Position       int64          `json:"position"`
 	Status         string         `json:"status"`
 	LastReturnedAt sql.NullString `json:"last_returned_at"`
-	PosNumber      string         `json:"pos_number"`
 }
 
 func (q *Queries) RestoreDriver(ctx context.Context, arg RestoreDriverParams) error {
@@ -5933,7 +5388,6 @@ func (q *Queries) RestoreDriver(ctx context.Context, arg RestoreDriverParams) er
 		arg.Position,
 		arg.Status,
 		arg.LastReturnedAt,
-		arg.PosNumber,
 	)
 	return err
 }
@@ -6145,7 +5599,7 @@ func (q *Queries) ScheduleOrder(ctx context.Context, arg ScheduleOrderParams) (i
 
 const setAddedTip = `-- name: SetAddedTip :execrows
 UPDATE orders SET added_tip_cents = ?1
-WHERE id = ?2 AND ext_source = '' AND NOT tip_locked AND state <> 'cancelled'
+WHERE id = ?2 AND NOT tip_locked AND state <> 'cancelled'
   AND batch_id = ?3
 `
 
@@ -6287,7 +5741,7 @@ func (q *Queries) SetDeliveryPrefs(ctx context.Context, arg SetDeliveryPrefsPara
 
 const setDoorTip = `-- name: SetDoorTip :execrows
 UPDATE orders SET door_tip_cents = ?1
-WHERE id = ?2 AND ext_source = '' AND state IN ('on_delivery', 'delivered')
+WHERE id = ?2 AND state IN ('on_delivery', 'delivered')
   AND batch_id = ?3
 `
 
@@ -6328,23 +5782,6 @@ type SetDriverOutAtParams struct {
 // Undo a mistaken return: back out on the run, at its old queue position.
 func (q *Queries) SetDriverOutAt(ctx context.Context, arg SetDriverOutAtParams) (int64, error) {
 	result, err := q.db.ExecContext(ctx, setDriverOutAt, arg.Position, arg.ID)
-	if err != nil {
-		return 0, err
-	}
-	return result.RowsAffected()
-}
-
-const setDriverPosNumber = `-- name: SetDriverPosNumber :execrows
-UPDATE drivers SET pos_number = ? WHERE id = ? AND active
-`
-
-type SetDriverPosNumberParams struct {
-	PosNumber string `json:"pos_number"`
-	ID        string `json:"id"`
-}
-
-func (q *Queries) SetDriverPosNumber(ctx context.Context, arg SetDriverPosNumberParams) (int64, error) {
-	result, err := q.db.ExecContext(ctx, setDriverPosNumber, arg.PosNumber, arg.ID)
 	if err != nil {
 		return 0, err
 	}
@@ -6470,21 +5907,6 @@ type SetEarlyPrintedParams struct {
 // 2.4.0: a future order's early tickets printed (kitchen / receipt).
 func (q *Queries) SetEarlyPrinted(ctx context.Context, arg SetEarlyPrintedParams) error {
 	_, err := q.db.ExecContext(ctx, setEarlyPrinted, arg.Kitchen, arg.Receipt, arg.ID)
-	return err
-}
-
-const setExtDriverPos = `-- name: SetExtDriverPos :exec
-UPDATE orders SET ext_driver_pos = ?, pos_driver_note = ? WHERE id = ?
-`
-
-type SetExtDriverPosParams struct {
-	ExtDriverPos  string `json:"ext_driver_pos"`
-	PosDriverNote string `json:"pos_driver_note"`
-	ID            string `json:"id"`
-}
-
-func (q *Queries) SetExtDriverPos(ctx context.Context, arg SetExtDriverPosParams) error {
-	_, err := q.db.ExecContext(ctx, setExtDriverPos, arg.ExtDriverPos, arg.PosDriverNote, arg.ID)
 	return err
 }
 
@@ -6710,39 +6132,6 @@ func (q *Queries) SetOrderFinished(ctx context.Context, arg SetOrderFinishedPara
 	return result.RowsAffected()
 }
 
-const setOrderFlag = `-- name: SetOrderFlag :exec
-UPDATE orders SET flag = ? WHERE id = ?
-`
-
-type SetOrderFlagParams struct {
-	Flag string `json:"flag"`
-	ID   string `json:"id"`
-}
-
-func (q *Queries) SetOrderFlag(ctx context.Context, arg SetOrderFlagParams) error {
-	_, err := q.db.ExecContext(ctx, setOrderFlag, arg.Flag, arg.ID)
-	return err
-}
-
-const setOrderPaid = `-- name: SetOrderPaid :exec
-UPDATE orders
-SET paid = ?1, paid_at = CASE WHEN ?1 AND NOT paid THEN ?2 ELSE paid_at END
-WHERE id = ?3
-`
-
-type SetOrderPaidParams struct {
-	Paid bool           `json:"paid"`
-	Now  sql.NullString `json:"now"`
-	ID   string         `json:"id"`
-}
-
-// An online order the hub inserted into the POS was paid there (paid_at as
-// on a POS check, 2.4.0).
-func (q *Queries) SetOrderPaid(ctx context.Context, arg SetOrderPaidParams) error {
-	_, err := q.db.ExecContext(ctx, setOrderPaid, arg.Paid, arg.Now, arg.ID)
-	return err
-}
-
 const setOrderPool = `-- name: SetOrderPool :execrows
 
 UPDATE orders SET pool_driver_id = ?1, pooled_at = ?2, pool_seq = NULL,
@@ -6823,48 +6212,6 @@ func (q *Queries) SetPoolSeq(ctx context.Context, arg SetPoolSeqParams) (int64, 
 		return 0, err
 	}
 	return result.RowsAffected()
-}
-
-const setPosChange = `-- name: SetPosChange :exec
-UPDATE orders SET pos_change = ? WHERE id = ?
-`
-
-type SetPosChangeParams struct {
-	PosChange string `json:"pos_change"`
-	ID        string `json:"id"`
-}
-
-func (q *Queries) SetPosChange(ctx context.Context, arg SetPosChangeParams) error {
-	_, err := q.db.ExecContext(ctx, setPosChange, arg.PosChange, arg.ID)
-	return err
-}
-
-const setPosCheckNumber = `-- name: SetPosCheckNumber :exec
-UPDATE orders SET pos_check_number = ? WHERE id = ?
-`
-
-type SetPosCheckNumberParams struct {
-	PosCheckNumber sql.NullInt64 `json:"pos_check_number"`
-	ID             string        `json:"id"`
-}
-
-func (q *Queries) SetPosCheckNumber(ctx context.Context, arg SetPosCheckNumberParams) error {
-	_, err := q.db.ExecContext(ctx, setPosCheckNumber, arg.PosCheckNumber, arg.ID)
-	return err
-}
-
-const setPosClosed = `-- name: SetPosClosed :exec
-UPDATE orders SET pos_closed = ? WHERE id = ?
-`
-
-type SetPosClosedParams struct {
-	PosClosed bool   `json:"pos_closed"`
-	ID        string `json:"id"`
-}
-
-func (q *Queries) SetPosClosed(ctx context.Context, arg SetPosClosedParams) error {
-	_, err := q.db.ExecContext(ctx, setPosClosed, arg.PosClosed, arg.ID)
-	return err
 }
 
 const setPushoverSecrets = `-- name: SetPushoverSecrets :exec
@@ -7032,23 +6379,6 @@ func (q *Queries) SetUpdateNotified(ctx context.Context, updateNotified string) 
 	return err
 }
 
-const showPosOrder = `-- name: ShowPosOrder :exec
-UPDATE orders SET board_hidden = false, accepted_at = ?1, estimated_ready_at = ?2
-WHERE id = ?3
-`
-
-type ShowPosOrderParams struct {
-	At               sql.NullString `json:"at"`
-	EstimatedReadyAt sql.NullString `json:"estimated_ready_at"`
-	ID               string         `json:"id"`
-}
-
-// A hidden POS check that now qualifies for Kitchen: shown as if new.
-func (q *Queries) ShowPosOrder(ctx context.Context, arg ShowPosOrderParams) error {
-	_, err := q.db.ExecContext(ctx, showPosOrder, arg.At, arg.EstimatedReadyAt, arg.ID)
-	return err
-}
-
 const sumDrawerCash = `-- name: SumDrawerCash :one
 SELECT CAST(COALESCE(SUM(CASE WHEN refund THEN 0 ELSE amount_cents END), 0) AS INTEGER) AS sales_cents,
        CAST(COALESCE(SUM(CASE WHEN refund THEN 0 ELSE tip_cents END), 0) AS INTEGER) AS tips_cents,
@@ -7192,45 +6522,6 @@ func (q *Queries) UnparkFloorEvent(ctx context.Context, id string) (int64, error
 		return 0, err
 	}
 	return result.RowsAffected()
-}
-
-const updateExternalOrder = `-- name: UpdateExternalOrder :exec
-UPDATE orders
-SET snapshot = ?1, ext_hash = ?2, display_number = ?3,
-    paid = ?4, cash_due_cents = ?5, tip_cents = ?6,
-    board_hidden = ?7,
-    paid_at = CASE WHEN ?4 AND NOT paid THEN ?8 ELSE paid_at END
-WHERE id = ?9
-`
-
-type UpdateExternalOrderParams struct {
-	Snapshot      string         `json:"snapshot"`
-	ExtHash       string         `json:"ext_hash"`
-	DisplayNumber sql.NullInt64  `json:"display_number"`
-	Paid          bool           `json:"paid"`
-	CashDueCents  sql.NullInt64  `json:"cash_due_cents"`
-	TipCents      sql.NullInt64  `json:"tip_cents"`
-	BoardHidden   bool           `json:"board_hidden"`
-	Now           sql.NullString `json:"now"`
-	ID            string         `json:"id"`
-}
-
-// A changed POS check: the new snapshot (items, money, notes, address) and
-// the paid / cash / tip / hidden figures. No state change. paid_at (2.4.0)
-// moves when the check goes from a balance due to paid.
-func (q *Queries) UpdateExternalOrder(ctx context.Context, arg UpdateExternalOrderParams) error {
-	_, err := q.db.ExecContext(ctx, updateExternalOrder,
-		arg.Snapshot,
-		arg.ExtHash,
-		arg.DisplayNumber,
-		arg.Paid,
-		arg.CashDueCents,
-		arg.TipCents,
-		arg.BoardHidden,
-		arg.Now,
-		arg.ID,
-	)
-	return err
 }
 
 const upsertArrivedOrder = `-- name: UpsertArrivedOrder :execrows

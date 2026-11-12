@@ -261,8 +261,8 @@ func TestParkedSubjectHoldsItsLaterEvents(t *testing.T) {
 	ans.mu.Unlock()
 	s := New(r, ans.post, zerolog.Nop(), m)
 	s.Flush(ctx)
-	save(custA, "A2") // about A: waits behind A1
-	save(custB, "B1") // about B: goes
+	save(custA, "A2")  // about A: waits behind A1
+	save(custB, "B1")  // about B: goes
 	journalEvent(t, r) // no subject: goes
 	if err := s.Flush(ctx); err != nil {
 		t.Fatal(err)

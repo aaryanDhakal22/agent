@@ -92,13 +92,11 @@ func BuildDriverReport(rep order.DriverReport, sc storeconfig.StoreContext, size
 	}
 	// Each delivery, no customer name: "<ticket #> <street>", then the tip
 	// at the far left and the total at the far right (card: total + tip;
-	// cash: the total), then a POS note if any.
+	// cash: the total).
 	line := func(l order.DriverReportLine) {
 		num := "----"
 		if l.KitchenNumber != nil {
 			num = fmt.Sprintf("%d", *l.KitchenNumber)
-		} else if l.DisplayNumber != nil {
-			num = fmt.Sprintf("%d", *l.DisplayNumber) // a POS check
 		}
 		w(itemSize)
 		bold(truncRunes(strings.TrimSpace(num+" "+l.Street), itemWidth))
@@ -108,10 +106,6 @@ func BuildDriverReport(rep order.DriverReport, sc storeconfig.StoreContext, size
 		}
 		w(leftRight(tip, "Total: "+dollars(l.SlipTotalCents), itemWidth))
 		nl()
-		if l.Note != "" { // how it matched the POS
-			w("  * " + truncRunes(l.Note, itemWidth-4))
-			nl()
-		}
 		w(cmdBaseSz)
 	}
 	if len(cash) > 0 {
@@ -138,17 +132,6 @@ func BuildDriverReport(rep order.DriverReport, sc storeconfig.StoreContext, size
 		w(leftRight(tips, dollars(tipSum), lineWidth))
 		nl()
 	}
-	if len(rep.Notes) > 0 {
-		w(separator())
-		nl()
-	}
-	for _, n := range rep.Notes {
-		for _, l := range wordWrap("* "+n, lineWidth, "  ") {
-			w(l)
-			nl()
-		}
-	}
-
 	// --- Totals -----------------------------------------------------------
 	w(separator())
 	nl()
@@ -186,22 +169,6 @@ func BuildDriverReport(rep order.DriverReport, sc storeconfig.StoreContext, size
 		nl()
 	}
 	nl()
-	if p := rep.POS; p != nil { // was it checked against the POS?
-		if p.Checked {
-			pos := "POS checked"
-			if p.AsOf != nil {
-				pos += " " + p.AsOf.In(loc).Format("3:04 PM")
-			}
-			w(pos)
-			nl()
-		} else {
-			bold("POS NOT CHECKED")
-			if p.Note != "" {
-				w(truncRunes(p.Note, lineWidth))
-				nl()
-			}
-		}
-	}
 	w("Printed " + printedAt.In(loc).Format("Jan 2 3:04 PM"))
 	nl()
 

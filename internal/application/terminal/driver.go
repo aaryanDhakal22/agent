@@ -41,7 +41,7 @@ const MaxClaim = 20
 // Floor is what the driver view needs from the floor (orderApp.Service).
 type Floor interface {
 	ListDrivers(ctx context.Context) ([]order.Driver, error)
-	CreateDriver(ctx context.Context, name, posNumber string) (*order.Driver, error)
+	CreateDriver(ctx context.Context, name string) (*order.Driver, error)
 	OpenDeliveries(ctx context.Context) ([]order.StoredOrder, error)
 	UnassignedDelivered(ctx context.Context) ([]order.StoredOrder, error)
 	ListByBatch(ctx context.Context, batchID int64, offset, limit int) ([]order.StoredOrder, error)
@@ -160,7 +160,7 @@ func (s *Service) ensureDriver(ctx context.Context, a Actor, st terminal.Staff) 
 	}
 	created := false
 	if pick == nil {
-		d, err := f.CreateDriver(ctx, rosterName(st), "")
+		d, err := f.CreateDriver(ctx, rosterName(st))
 		if err != nil {
 			return nil, err
 		}

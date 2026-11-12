@@ -91,19 +91,17 @@ func (r *PrinterNetRepository) SaveMAC(ctx context.Context, m printer.NetAddress
 	})
 }
 
-// OpenFloorCount is one (state, online|POS) bucket of the open batch's
+// OpenFloorCount is one (state, online|channel) bucket of the open batch's
 // in-play orders (the floor.orders.open gauge).
 type OpenFloorCount struct {
 	State order.State
-	POS   bool
 	// Channel (2.5.0): a website / channel order (source not online / pos).
 	Channel bool
 	N       int64
 }
 
 // CountOpenFloor counts the open batch's orders still in play (arrived,
-// scheduled, accepted, ready, on_delivery) by state and online/web/POS. POS
-// counter checks hidden from Kitchen are left out. No span: the metric
+// scheduled, accepted, ready, on_delivery) by state and online/web. No span: the metric
 // reader calls it every export (15 s), which would be a root trace each time.
 func (r *OrderRepository) CountOpenFloor(ctx context.Context) ([]OpenFloorCount, error) {
 	rows, err := models.New(r.db).CountOpenFloorOrders(ctx)
@@ -112,7 +110,7 @@ func (r *OrderRepository) CountOpenFloor(ctx context.Context) ([]OpenFloorCount,
 	}
 	out := make([]OpenFloorCount, 0, len(rows))
 	for _, row := range rows {
-		out = append(out, OpenFloorCount{State: order.State(row.State), POS: row.Pos != 0, Channel: row.Pos == 0 && row.Channel != 0, N: row.N})
+		out = append(out, OpenFloorCount{State: order.State(row.State), Channel: row.Channel != 0, N: row.N})
 	}
 	return out, nil
 }

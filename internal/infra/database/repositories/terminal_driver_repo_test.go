@@ -37,7 +37,7 @@ func TestClaimDeliveredLateUnassignedOnly(t *testing.T) {
 		t.Fatal(err)
 	}
 	ready(t, r, os[4])
-	off, _ := r.CreateDriver(ctx, "Cal", "") // never clocked in
+	off, _ := r.CreateDriver(ctx, "Cal") // never clocked in
 	if _, _, err := r.SendOut(ctx, b.ID, ids(os[4]), false, order.RunMeta{}); err != nil {
 		t.Fatal(err)
 	}
@@ -165,7 +165,7 @@ func TestDeliverOneReturnsTheDriverOnHisLastStop(t *testing.T) {
 func TestDoorTipOnHisReport(t *testing.T) {
 	ctx := context.Background()
 	r := newFloorRepo(t)
-	d, _ := r.CreateDriver(ctx, "Dan", "")
+	d, _ := r.CreateDriver(ctx, "Dan")
 	clockIn(t, r, d.ID)
 	cash := arriveDelivery(t, r, "Erik Davis", 0, 2000, true)
 	accept(t, r, cash)

@@ -57,14 +57,8 @@ func (s *Server) floorErr(w http.ResponseWriter, r *http.Request, err error) {
 		s.writeJSON(w, http.StatusConflict, errCodeMap("came_back", "came_back"))
 	case errors.Is(err, orderApp.ErrNoDrivers):
 		s.writeJSON(w, http.StatusConflict, errCodeMap(err.Error(), "no_drivers"))
-	case errors.Is(err, orderApp.ErrPosPullOff):
-		s.writeJSON(w, http.StatusConflict, errCodeMap(err.Error(), "pos_pull_off"))
-	case errors.Is(err, orderApp.ErrNoChange):
-		s.writeJSON(w, http.StatusConflict, errCodeMap(err.Error(), "no_change"))
 	case errors.Is(err, orderApp.ErrNotFuture):
 		s.writeJSON(w, http.StatusConflict, errCodeMap(err.Error(), "not_future"))
-	case errors.Is(err, order.ErrPosNumberTaken):
-		s.writeJSON(w, http.StatusConflict, errCodeMap(err.Error(), "pos_number_taken"))
 	case errors.Is(err, orderApp.ErrBadQuery):
 		s.writeJSON(w, http.StatusBadRequest, errCodeMap("bad_query", "bad_query"))
 	case errors.Is(err, orderApp.ErrTooSoon):
@@ -345,11 +339,10 @@ func (s *Server) handleListDrivers(w http.ResponseWriter, r *http.Request) {
 	s.writeJSON(w, http.StatusOK, ds)
 }
 
-// POST /api/drivers {name, pos_number?}
+// POST /api/drivers {name, pushover_device?}
 func (s *Server) handleCreateDriver(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Name           string `json:"name"`
-		PosNumber      string `json:"pos_number"`
 		PushoverDevice string `json:"pushover_device"`
 	}
 	if err := decodeBody(r, &req); err != nil {
@@ -360,7 +353,7 @@ func (s *Server) handleCreateDriver(w http.ResponseWriter, r *http.Request) {
 		s.floorErr(w, r, err)
 		return
 	}
-	d, err := s.service.CreateDriver(r.Context(), req.Name, req.PosNumber)
+	d, err := s.service.CreateDriver(r.Context(), req.Name)
 	if err != nil {
 		s.floorErr(w, r, err)
 		return
@@ -375,12 +368,10 @@ func (s *Server) handleCreateDriver(w http.ResponseWriter, r *http.Request) {
 	s.writeJSON(w, http.StatusCreated, d)
 }
 
-// PATCH /api/drivers/{id} {name?, pos_number?, pushover_device?} ("" clears
-// the number / device)
+// PATCH /api/drivers/{id} {name?, pushover_device?} ("" clears the device)
 func (s *Server) handleRenameDriver(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Name           *string `json:"name"`
-		PosNumber      *string `json:"pos_number"`
 		PushoverDevice *string `json:"pushover_device"`
 	}
 	if err := decodeBody(r, &req); err != nil {
@@ -394,8 +385,12 @@ func (s *Server) handleRenameDriver(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if req.Name != nil || req.PosNumber != nil || req.PushoverDevice == nil {
-		if err := s.service.UpdateDriver(r.Context(), id, req.Name, req.PosNumber); err != nil {
+	if req.Name == nil && req.PushoverDevice == nil {
+		s.writeJSON(w, http.StatusBadRequest, errCodeMap("give a name or a pushover_device", "bad_request"))
+		return
+	}
+	if req.Name != nil {
+		if err := s.service.RenameDriver(r.Context(), id, *req.Name); err != nil {
 			s.floorErr(w, r, err)
 			return
 		}

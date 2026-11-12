@@ -3,8 +3,7 @@
   * MARK DELIVERED -> Unassigned (who, from the paired tablet), Back to
     deliveries, moving it to a driver and back, and Close batch printing the
     UNASSIGNED slip after the driver reports;
-  * READY held on the tablet (callout false) rides the hub feed; a POS
-    delivery moved between drivers writes order.driver_changed;
+  * READY held on the tablet (callout false) rides the hub feed;
   * a future order's early tickets (the two switches): the MAKE AT / READY
     band on the stations, FUTURE on the receipt, and the CONFIRM without the receipt;
   * kitchen tickets list no receipt-only items under "other printers", and
@@ -21,8 +20,8 @@ import requests
 from conftest import wait_until
 from test_driver_reports import deliver_order, driver
 from test_floor import floor, post  # noqa: F401  (fixture re-export)
-from test_integration import _feed, _hub, _order, _pos, _put
-from test_kitchen_printing import _item, _snap, kitchen  # noqa: F401  (kitchen is a fixture)
+from test_integration import _feed, _hub
+from test_kitchen_printing import _accept, _item, _snap, kitchen  # noqa: F401  (kitchen is a fixture)
 from test_v220 import pair
 
 
@@ -83,29 +82,24 @@ def _texts(jobs) -> list[str]:
     return [j.decode("latin-1") if isinstance(j, bytes) else j for j in jobs]
 
 
-def test_ready_held_and_driver_moves_on_the_feed(kitchen) -> None:  # noqa: F811
+def _order(a, oid: str) -> dict:
+    return a.http.get(f"{a.base}/api/orders/{oid}", timeout=5).json()
+
+
+def test_ready_held_on_the_feed(kitchen) -> None:  # noqa: F811
     a, ids = kitchen["agent"], kitchen["ids"]
     hub = _hub(kitchen)
-    counter = _put(a, hub, "8101", _pos(ids, "dine_in")).json()["order_id"]
-    r = a.http.post(f"{a.base}/api/orders/{counter}/ready", json={"callout": False}, timeout=10)
+    counter = _snap(kitchen["main_store"], [_item("Pepperoni", ids["Pizza"])])
+    assert _accept(a, counter).status_code == 200
+    r = a.http.post(f"{a.base}/api/orders/{counter['id']}/ready", json={"callout": False}, timeout=10)
     assert r.status_code == 200, r.text
     ready = [e for e in _feed(a, hub)["events"] if e["type"] == "order.ready"]
-    assert ready[-1]["data"]["callout"] is False
+    assert ready[-1]["data"]["callout"] is False and ready[-1]["data"]["order_id"] == counter["id"]
     # A tap (no body) leaves callout out: the hub calls it out as before.
-    other = _put(a, hub, "8102", _pos(ids, "dine_in", hash_="h2")).json()["order_id"]
-    assert a.http.post(f"{a.base}/api/orders/{other}/ready", timeout=10).status_code == 200
+    other = _snap(kitchen["main_store"], [_item("Pepperoni", ids["Pizza"])])
+    assert _accept(a, other).status_code == 200
+    assert a.http.post(f"{a.base}/api/orders/{other['id']}/ready", timeout=10).status_code == 200
     assert "callout" not in [e for e in _feed(a, hub)["events"] if e["type"] == "order.ready"][-1]["data"]
-
-    # A POS delivery marked delivered, then given to a driver: the hub hears it.
-    d = a.http.post(f"{a.base}/api/drivers", json={"name": "Mike", "pos_number": "14"}, timeout=5).json()
-    assert a.http.post(f"{a.base}/api/drivers/{d['id']}/clock-in", timeout=5).status_code == 200
-    dl = _put(a, hub, "8103", _pos(ids, "delivery", hash_="h3")).json()["order_id"]
-    assert a.http.post(f"{a.base}/api/orders/{dl}/delivered", timeout=5).status_code == 200
-    r = a.http.post(f"{a.base}/api/deliveries/reassign", json={"order_ids": [dl], "driver_id": d["id"]}, timeout=5)
-    assert r.status_code == 200, r.text
-    moved = [e for e in _feed(a, hub)["events"] if e["type"] == "order.driver_changed"]
-    assert moved and moved[-1]["data"]["ext_ref"] == "8103" and moved[-1]["data"]["from"] is None
-    assert moved[-1]["data"]["to"]["pos_number"] == "14"
 
 
 def test_future_early_tickets(kitchen, fakes) -> None:  # noqa: F811

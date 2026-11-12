@@ -9,10 +9,10 @@ import (
 	"quiccpos/agent/internal/domain/order"
 )
 
-// Driver reports any time + the POS driver ledger (2.3.0).
+// Driver reports any time (2.3.0).
 
 // POST /api/drivers/{id}/report/print — print it on the receipt printer
-// (a fresh POS ledger first, ≤ 5 s) → 200 {driver_id, driver_name,
+// → 200 {driver_id, driver_name,
 // printed_on, rerouted_from?, report} · 502 nothing_printed · 503
 // printing_unavailable · 404 driver_not_found.
 func (s *Server) handlePrintDriverReport(w http.ResponseWriter, r *http.Request) {
@@ -38,19 +38,4 @@ func (s *Server) handlePrintDriverReport(w http.ResponseWriter, r *http.Request)
 type clockOutAnswer struct {
 	*order.Driver
 	ReportPrinting bool `json:"report_printing,omitempty"`
-}
-
-// PUT /api/integration/driver-ledger — the hub's POS delivery checks of the
-// day (kept in memory) → 204 · 400.
-func (s *Server) handleIntegrationDriverLedger(w http.ResponseWriter, r *http.Request) {
-	var l order.DriverLedger
-	if err := decodeBody(r, &l); err != nil {
-		s.floorErr(w, r, err)
-		return
-	}
-	if err := s.service.SetDriverLedger(r.Context(), l); err != nil {
-		s.floorErr(w, r, err)
-		return
-	}
-	w.WriteHeader(http.StatusNoContent)
 }

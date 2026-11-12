@@ -18,8 +18,8 @@ import (
 )
 
 // TestForcedUpdateRunsInALull (00019): mid-shift the open batch keeps ready
-// pickups and POS checks. Once the online pickup is finished (N minutes
-// after ready) and the POS closed its check, the gate's open count is 0 and
+// pickups and deliveries. Once the online pickup is finished (N minutes
+// after ready) and the delivery is delivered, the gate's open count is 0 and
 // a forced update is handed to the updater - no hand-written request.
 func TestForcedUpdateRunsInALull(t *testing.T) {
 	ctx := context.Background()
@@ -44,22 +44,25 @@ func TestForcedUpdateRunsInALull(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := repo.RecordAccepted(ctx, *got, false); err != nil {
+	if err := repo.RecordAccepted(ctx, *got); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := repo.MarkReady(ctx, snap.ID, true); err != nil {
 		t.Fatal(err)
 	}
-	// A terminal takeout, ready, still open at the POS.
-	sent := time.Now().UTC()
-	check := order.ExternalOrder{Source: order.ExtSourceSoftTouch, Hash: "h1", DisplayNumber: 102, CheckType: "pickup", SentAt: &sent,
-		Items: []order.ExternalItem{{Ref: "1", Name: "Cheese Steak", Quantity: 1, UnitPriceCents: 999, LineTotalCents: 999, Kitchen: true}}}
-	meta := order.ExternalMeta{OrderID: uuid.Must(uuid.NewV7()).String(), TenantID: uuid.NewString(), LocationID: uuid.NewString(), PrepMinutes: 15, Now: time.Now()}
-	res, err := repo.UpsertExternal(ctx, "1277001", check, meta)
-	if err != nil {
+	// A delivery, ready, still waiting for a driver.
+	dlv := order.Snapshot{ID: uuid.NewString(), TenantID: uuid.NewString(), LocationID: uuid.NewString(), Source: "test",
+		SourceEventID: "o2", PlacedAt: time.Now().UTC(), Fulfillment: order.Fulfillment{Type: "delivery"}}
+	if _, err := repo.UpsertArrived(ctx, dlv); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := repo.MarkReady(ctx, res.Order.Order.ID, true); err != nil {
+	if got, err = repo.ClaimAccept(ctx, uuid.MustParse(dlv.ID), 20, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.RecordAccepted(ctx, *got); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.MarkReady(ctx, dlv.ID, true); err != nil {
 		t.Fatal(err)
 	}
 
@@ -72,18 +75,16 @@ func TestForcedUpdateRunsInALull(t *testing.T) {
 		t.Fatalf("forced request = %+v, want waiting (two ready orders open)", rep)
 	}
 
-	// 30 minutes on: the online pickup finishes; the POS closes the check.
+	// 30 minutes on: the online pickup finishes; the delivery goes.
 	if _, err := repo.FinishDueOnlinePickups(ctx, time.Now().Add(time.Second), time.Now()); err != nil {
 		t.Fatal(err)
 	}
 	g.now = g.now.Add(31 * time.Second)
 	r.Tick(ctx)
 	if _, err := os.Stat(filepath.Join(g.dir, RequestFile)); err == nil {
-		t.Fatal("request written while the terminal takeout is still open")
+		t.Fatal("request written while the delivery is still open")
 	}
-	check.Hash, check.Closed, check.Paid = "h2", true, true
-	meta.OrderID = uuid.Must(uuid.NewV7()).String()
-	if _, err := repo.UpsertExternal(ctx, "1277001", check, meta); err != nil {
+	if _, err := repo.MarkDeliveredNoDriver(ctx, dlv.ID, order.MarkedBy{Kind: order.ByTablet, Name: "Counter"}); err != nil {
 		t.Fatal(err)
 	}
 	g.now = g.now.Add(31 * time.Second)

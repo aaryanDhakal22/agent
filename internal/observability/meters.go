@@ -239,7 +239,7 @@ type FloorCount struct {
 // combination is reported (0 when empty) so dashboards never see "no data".
 var (
 	FloorStates  = []string{"new", "cooking", "ready", "out", "scheduled"}
-	FloorSources = []string{"online", "web", "pos"}
+	FloorSources = []string{"online", "web"}
 )
 
 // HubLink is the store hub's last report as the gauges see it.

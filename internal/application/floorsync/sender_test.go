@@ -42,7 +42,7 @@ func setup(t *testing.T) (*repositories.OrderRepository, observability.Meters) {
 // seed produces n floor events (driver roster changes).
 func seed(t *testing.T, r *repositories.OrderRepository, n int) {
 	for i := 0; i < n; i++ {
-		if _, err := r.CreateDriver(context.Background(), "D"+uuid.NewString()[:4], ""); err != nil {
+		if _, err := r.CreateDriver(context.Background(), "D"+uuid.NewString()[:4]); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -237,7 +237,9 @@ func (m *memFloor) RefuseEvent(_ context.Context, id, _ string, at time.Time) (o
 	m.failed[id]++
 	return order.Refusal{EventID: id, Refusals: int64(m.failed[id]), FirstAt: at}, nil
 }
-func (m *memFloor) ParkEvent(context.Context, order.Refusal, string, time.Time) (bool, error) { return false, nil }
+func (m *memFloor) ParkEvent(context.Context, order.Refusal, string, time.Time) (bool, error) {
+	return false, nil
+}
 func (m *memFloor) SyncParkSettings(context.Context) (order.SyncPark, error) {
 	return order.SyncPark{Refusals: 1000, Hours: 1000}, nil
 }

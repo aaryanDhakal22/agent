@@ -27,26 +27,21 @@ func (f *fakePub) Publish(typ string, v any) {
 	}
 }
 
-func so(id, source string, state order.State, ready time.Time, pos bool) order.StoredOrder {
+func so(id, source string, state order.State, ready time.Time) order.StoredOrder {
 	n := int64(1101)
-	s := order.StoredOrder{Order: order.Snapshot{ID: id, Source: source},
+	return order.StoredOrder{Order: order.Snapshot{ID: id, Source: source},
 		Status: order.Status{State: state, EstimatedReadyAt: &ready, KitchenNumber: &n}}
-	if pos {
-		s.Status.ExtSource = "softtouch"
-	}
-	return s
 }
 
 func TestLateOnce(t *testing.T) {
 	now := time.Date(2026, 11, 11, 18, 0, 0, 0, time.UTC)
 	past, future := now.Add(-7*time.Minute), now.Add(5*time.Minute)
 	list := &fakeList{orders: []order.StoredOrder{
-		so("web-late", "web", order.StateAccepted, past, false),
-		so("vendor-late", "online", order.StateAccepted, past, false),
-		so("web-early", "web", order.StateAccepted, future, false),
-		so("web-ready", "web", order.StateReady, past, false),      // already ready
-		so("counter", "counter", order.StateAccepted, past, false), // the terminal's own
-		so("pos", "", order.StateAccepted, past, true),             // a POS check
+		so("web-late", "web", order.StateAccepted, past),
+		so("vendor-late", "online", order.StateAccepted, past),
+		so("web-early", "web", order.StateAccepted, future),
+		so("web-ready", "web", order.StateReady, past),      // already ready
+		so("counter", "counter", order.StateAccepted, past), // the terminal's own
 	}}
 	pub := &fakePub{}
 	w := New(list, pub, zerolog.Nop())

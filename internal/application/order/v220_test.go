@@ -36,7 +36,7 @@ func newNearbyFloor(t *testing.T) *nearbyFloor {
 	svc, _, _ := newPoolService(t)
 	svc.SetGeo(GeoDeps{Floor: func() (*FloorStore, *FloorMap) { return &FloorStore{Lat: 40.0, Lng: -74.0}, nil }})
 	f := &nearbyFloor{svc: svc}
-	drv, err := svc.CreateDriver(ctx, "Juma Ali", "")
+	drv, err := svc.CreateDriver(ctx, "Juma Ali")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -143,7 +143,7 @@ func TestNextCheckEmptyCases(t *testing.T) {
 	f.rule(t, DeliveryPatch{NearbyRule: ptr(order.NearbyDetour)})
 
 	// Empty pool: a second driver, next only after Juma — asked by id.
-	d2, _ := f.svc.CreateDriver(ctx, "Sam", "")
+	d2, _ := f.svc.CreateDriver(ctx, "Sam")
 	f.svc.ClockIn(ctx, d2.ID)
 	if got, _ := f.svc.NextCheck(ctx, d2.ID); len(got.NearbyOrderIDs) != 0 || got.DriverID == nil || *got.DriverID != d2.ID {
 		t.Fatalf("empty pool: %+v", got)
@@ -351,7 +351,7 @@ func TestDevEventsNoPII(t *testing.T) {
 	if _, err := svc.Ready(ctx, s.ID); err != nil {
 		t.Fatal(err)
 	}
-	drv, _ := svc.CreateDriver(ctx, "Juma", "")
+	drv, _ := svc.CreateDriver(ctx, "Juma")
 	svc.ClockIn(ctx, drv.ID)
 	if _, err := svc.AssignDriver(ctx, drv.ID, []string{s.ID}); err != nil {
 		t.Fatal(err)

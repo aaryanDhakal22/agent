@@ -66,9 +66,6 @@ type Driver struct {
 	Deliveries     int64      `json:"deliveries"`
 	// ClockedInAt is the start of the driver's open shift (nil when off).
 	ClockedInAt *time.Time `json:"clocked_in_at,omitempty"`
-	// PosNumber is the driver's login number on the store's POS (2.1.0) —
-	// how the hub matches drivers, never by name.
-	PosNumber string `json:"pos_number,omitempty"`
 	// PushoverDevice (2.3.7) is the driver's phone in Pushover: Send Out
 	// pushes them the route ("" = none).
 	PushoverDevice string `json:"pushover_device,omitempty"`
@@ -242,8 +239,6 @@ var (
 	// ErrDriverNotOut: recall needs a driver out on a run (2.4.1).
 	ErrDriverNotOut = fmt.Errorf("driver is not out on a run")
 	ErrNoOrders     = fmt.Errorf("no orders given")
-	// ErrPosNumberTaken: another active driver has that POS number.
-	ErrPosNumberTaken = fmt.Errorf("another driver has that driver number")
 )
 
 // FloorSettings are the floor counters shown to staff.
@@ -301,19 +296,12 @@ type DriverReport struct {
 	// split of the store's delivery fee: store share + driver share). Shown
 	// on the report; OwedCents doesn't count it (the store pays it out).
 	DriverShareCents int64 `json:"driver_share_cents"`
-	// 2.3.0: the driver's Driver # (also on a POS driver Quibase doesn't
-	// know: DriverID ""), whether the report was checked against the POS
-	// ledger (nil = the store has no POS hub) and notes for the slip.
-	DriverPosNumber string     `json:"driver_pos_number,omitempty"`
-	POS             *ReportPOS `json:"pos,omitempty"`
-	Notes           []string   `json:"notes,omitempty"`
 }
 
 // DriverReportLine is one delivery on a driver report.
 type DriverReportLine struct {
 	OrderID       string     `json:"order_id"`
 	KitchenNumber *int64     `json:"kitchen_number,omitempty"`
-	DisplayNumber *int64     `json:"display_number,omitempty"` // a POS order's check number
 	Source        string     `json:"source,omitempty"`
 	Customer      string     `json:"customer"` // "Erik D."
 	Address       string     `json:"address"`
@@ -322,13 +310,8 @@ type DriverReportLine struct {
 	CashCents     int64      `json:"cash_cents"` // collected in cash less its tip (0 for card)
 	TotalCents    int64      `json:"total_cents"`
 	DeliveredAt   *time.Time `json:"delivered_at,omitempty"`
-	// 2.3.0: the POS check (POS orders), when it went out, how it matched
-	// the POS ledger (MatchBoth / MatchPOSOnly / MatchQuibaseOnly; "" =
-	// online, or not checked) and a short note for the slip.
-	ExtRef string     `json:"ext_ref,omitempty"`
-	OutAt  *time.Time `json:"out_at,omitempty"`
-	Match  string     `json:"match,omitempty"`
-	Note   string     `json:"note,omitempty"`
+	// OutAt (2.3.0): when it went out.
+	OutAt *time.Time `json:"out_at,omitempty"`
 	// What the slip prints (no customer name on it): Street = house number
 	// + street only (no apt, city, notes); OrderTipCents = the tip on the
 	// order, cash or card; SlipTotalCents = card: the total + the tip, cash:
@@ -346,7 +329,7 @@ type DriverReportLine struct {
 	// in TipCents: the driver already holds it, the store owes him nothing.
 	DoorTipCents int64 `json:"door_tip_cents,omitempty"`
 	// DriverShareCents: the driver's share of the order's delivery fee (0 =
-	// none, or no split known: a POS check, a vendor order).
+	// none, or no split known: a vendor order).
 	DriverShareCents int64 `json:"driver_share_cents,omitempty"`
 }
 
@@ -389,24 +372,20 @@ func StreetOnly(line1 string) string {
 }
 
 // NewDriverReportLine builds a report line from a delivered order. Card-paid
-// (online: no cash due; POS: paid with no cash due) → the tip counts, no
-// cash. Cash → cash due less the tip (online: CashDue - tip, floored at 0;
-// POS: the hub's cash_due_cents, already net of a cash tip) and no tip.
+// (no cash due) → the tip counts, no cash. Cash → cash due less the tip
+// (CashDue - tip, floored at 0) and no tip.
 func NewDriverReportLine(so StoredOrder) DriverReportLine {
 	snap := so.Order
 	l := DriverReportLine{
 		OrderID:       snap.ID,
 		KitchenNumber: so.Status.KitchenNumber,
-		DisplayNumber: so.Status.DisplayNumber,
 		Source:        snap.Source,
 		Customer:      ShortCustomerName(snap.Customer.DisplayName),
 		TotalCents:    snap.Money.Total,
 		DeliveredAt:   so.Status.DeliveredAt,
-		ExtRef:        so.Status.ExtRef,
 		OutAt:         so.Status.OutAt,
-	}
-	if !so.IsPOS() {
-		l.DriverShareCents = snap.Money.DeliveryDriverCents()
+		// The driver's share of the delivery fee.
+		DriverShareCents: snap.Money.DeliveryDriverCents(),
 	}
 	if a := snap.Fulfillment.Address; a != nil {
 		l.Street = StreetOnly(a.Line1)
@@ -414,11 +393,6 @@ func NewDriverReportLine(so StoredOrder) DriverReportLine {
 		if l2 := strings.TrimSpace(a.Line2); l2 != "" {
 			l.Address += ", " + l2
 		}
-	}
-	if so.IsPOS() { // the POS's total has no tip in it
-		l.Cash, l.CashCents, l.TipCents = posMoney(so.Status.Paid, so.Status.CashDueCents, so.Status.TipCents)
-		l.setSlipMoney(snap.Money.Total, so.Status.TipCents)
-		return l
 	}
 	if due := snap.CashDue(); due > 0 {
 		l.Cash, l.CashCents = true, max(due-snap.Money.Tip, 0)
@@ -508,11 +482,9 @@ type FloorRepository interface {
 	FloorSettings(ctx context.Context) (FloorSettings, error)
 
 	ListDrivers(ctx context.Context) ([]Driver, error)
-	// CreateDriver adds a driver (posNumber "" = none; ErrPosNumberTaken).
-	CreateDriver(ctx context.Context, name, posNumber string) (*Driver, error)
+	// CreateDriver adds a driver.
+	CreateDriver(ctx context.Context, name string) (*Driver, error)
 	RenameDriver(ctx context.Context, id, name string) error
-	// SetDriverPosNumber sets ("" clears) a driver's POS number.
-	SetDriverPosNumber(ctx context.Context, id, posNumber string) error
 	// SetDriverPushoverDevice sets ("" clears) a driver's Pushover device.
 	SetDriverPushoverDevice(ctx context.Context, id, device string) error
 	// RemoveDriver also returns the orders its pool held (back to unassigned).
@@ -594,7 +566,7 @@ type FloorRepository interface {
 	// RecordAccepted writes the order.status=accepted floor event (after the
 	// tickets printed — a reverted claim never reaches main) and, for an
 	// online order, the hub's order.accepted with insertExpected.
-	RecordAccepted(ctx context.Context, so StoredOrder, insertExpected bool) error
+	RecordAccepted(ctx context.Context, so StoredOrder) error
 	// ListInterruptedAccepts: orders claimed for accept whose accept was never
 	// recorded (the agent stopped mid-accept).
 	ListInterruptedAccepts(ctx context.Context) ([]string, error)

@@ -202,30 +202,18 @@ function addrLine(snap) {
   const a = (snap.fulfillment || {}).address || {}, j = (xs, sep) => xs.map(x => String(x || '').trim()).filter(Boolean).join(sep);
   return j([j([a.line1, a.line2], ', '), j([j([a.city, a.state], ', '), a.postal_code], ' ')], ', ');
 }
-// The number staff call: a POS order's check number (2.1.0), else the
-// kitchen number, else the vendor's order number.
+// The number staff call: the kitchen number, else the vendor's order number.
 function displayNumber(so) {
-  if (so.status.display_number != null) return '#' + so.status.display_number;
   const k = so.status.kitchen_number != null ? so.status.kitchen_number : so.order.kitchen_order_number;
   return k != null ? '#' + k : '#' + (so.order.source_event_id || String(so.order.id || '').slice(0, 8));
 }
-function isPOS(so) { return !!(so && so.status && so.status.ext_source); }
 // 2.1.0 switches (Settings › Orders / Kitchen tickets), in display order.
 const FEATURES = [
-  ['pos_pull', 'POS orders pull-in', 'Phone and counter orders from the old POS show on the tablet. Off: the store hub stops pulling them.'],
-  ['order_insert', 'Online order insert into the POS', 'The store hub keys accepted online cash pickups into the old POS. Off: staff key them by hand.'],
-  ['driver_writeback', 'Driver write-back', 'Drivers sent out on the tablet are written onto their POS checks.'],
-  ['address_heal', 'Address heal', 'An address staff confirm on the tablet is corrected in the POS customer record.'],
   ['future_orders', 'Future orders', 'Orders for later are confirmed once, wait in a Later strip and ring again when it is time. Off: they ring like any order.'],
   ['paid_wave', 'Paid-not-ready wave', 'Paid pickups that are not ready yet get a slow wave on the tablet’s Kitchen screen.'],
 ];
-const TICKETS_POS = [
-  ['pos_delivery', 'POS deliveries', 'Phone deliveries from the POS. The POS normally prints these itself.'],
-  ['pos_takeout', 'POS takeout', 'Takeout orders from the POS.'],
-  ['pos_counter', 'POS counter', 'Counter / dine-in orders from the POS.'],
-];
 const TICKETS_ONLINE = [
-  ['online_cash_pickup', 'Online cash pickups', 'Only while the store hub keys them into the POS live — otherwise only the receipt prints, and staff key them by hand.'],
+  ['online_cash_pickup', 'Online cash pickups', 'Off: only the customer receipt prints.'],
   ['online_cash_delivery', 'Online cash deliveries', 'Off: only the customer receipt prints.'],
   ['online_card', 'Online card orders', 'Paid online. Off: only the customer receipt prints.'],
 ];
@@ -276,7 +264,7 @@ function agentApp() {
     piReachable: true, soundOff: true, histStatuses: HIST_STATUSES,
     nav: NAV, settingsTabs: SETTINGS_TABS,
     numSizes: NUM_SIZES, itemSizes: ITEM_SIZES, footSizes: FOOT_SIZES, footModes: FOOT_MODES, maxFooter: MAX_FOOTER,
-    featureList: FEATURES, ticketsPOS: TICKETS_POS, ticketsOnline: TICKETS_ONLINE,
+    featureList: FEATURES, ticketsOnline: TICKETS_ONLINE,
 
     // --- provisioning / login ---
     link: { user: '', pass: '', busy: false, err: '' }, showToken: false,
@@ -292,7 +280,7 @@ function agentApp() {
     diag: null, diagErr: false, devices: [], devicesLoaded: false, appLatest: null, batches: [], reportBatch: 'current', reports: [], reportsErr: '',
 
     // --- drivers ---
-    newDriver: '', newDriverNum: '', newDriverDev: '', names: {}, origNames: {}, nums: {}, origNums: {}, devs: {}, origDevs: {}, reset: { time: '', last_run: null, form: '' },
+    newDriver: '', newDriverDev: '', names: {}, origNames: {}, devs: {}, origDevs: {}, reset: { time: '', last_run: null, form: '' },
 
     // --- history ---
     hist: { q: '', status: '', sort: 'desc', from: '', to: '', offset: 0, rows: [], more: false, loading: false, err: '', errRaw: '', loaded: false },
@@ -622,12 +610,8 @@ function agentApp() {
       // (Re)connected: reload — events sent while the stream was down are lost.
       es.onopen = reload;
       ['order.arrived', 'order.escalated'].forEach(t => es.addEventListener(t, () => { beep(); reload(); }));
-      // POS orders (order.added) never ring.
-      ['order.updated', 'order.added', 'drivers.updated', 'batch.closed', 'floor.updated', 'settings.updated', 'integration.status'].forEach(t => es.addEventListener(t, reload));
+      ['order.updated', 'drivers.updated', 'batch.closed', 'floor.updated', 'settings.updated', 'integration.status'].forEach(t => es.addEventListener(t, reload));
       es.addEventListener('sync.parked', () => this.loadParked());
-      es.addEventListener('integration.toast', e => {
-        try { const d = JSON.parse(e.data); this.toast(d.text, d.severity === 'serious'); } catch { /* malformed frame */ }
-      });
       es.addEventListener('drivers.dispatched', e => {
         try {
           const d = JSON.parse(e.data);
@@ -684,9 +668,6 @@ function agentApp() {
       for (const d of this.drivers) {
         if (this.names[d.id] === undefined || this.names[d.id] === this.origNames[d.id]) this.names[d.id] = d.name;
         this.origNames[d.id] = d.name;
-        const n = d.pos_number || '';
-        if (this.nums[d.id] === undefined || this.nums[d.id] === this.origNums[d.id]) this.nums[d.id] = n;
-        this.origNums[d.id] = n;
         const dev = d.pushover_device || '';
         if (this.devs[d.id] === undefined || this.devs[d.id] === this.origDevs[d.id]) this.devs[d.id] = dev;
         this.origDevs[d.id] = dev;
@@ -755,7 +736,7 @@ function agentApp() {
     get batchOpenHours() { return this.floor && this.floor.batch ? (this.now - ts(this.floor.batch.opened_at)) / 3600000 : 0; },
 
     // Display helpers used by the markup.
-    money, clock, dateTime, moneyLabel, custName, displayNumber, itemLines, itemCount, mins, dur, addrLine, isPOS,
+    money, clock, dateTime, moneyLabel, custName, displayNumber, itemLines, itemCount, mins, dur, addrLine,
     stateLabel(st) { return { delivered: 'Delivered', cancelled: 'Cancelled', ready: 'Ready for pickup', on_delivery: 'Out', accepted: 'Cooking', arrived: 'Waiting', scheduled: 'Later' }[st] || st; },
     // Future orders confirmed once (they ring again at ring_at), soonest first.
     get laterOrders() { return this.orders.filter(so => so.status.state === 'scheduled').sort(byTime(so => ts(so.status.ring_at))); },
@@ -1004,24 +985,23 @@ function agentApp() {
         Object.assign({ k: 'Main' }, this.mainCard), Object.assign({ k: 'Printers' }, this.printersCard),
         Object.assign({ k: 'Tablet' }, this.tabletCard), Object.assign({ k: 'Pi' }, this.piCard),
       ];
-      if (this.hasPOS) cards.push(Object.assign({ k: 'POS link' }, this.posCard));
+      if (this.hasHub) cards.push(Object.assign({ k: 'Store hub' }, this.hubCard));
       return cards;
     },
     get integ() { return (this.floor && this.floor.integration) || null; },
     get settingsAll() { return (this.floor && this.floor.settings) || null; },
-    // The store has a POS link: location.config.pos_integration, a paired
-    // integration device, or a hub that ever reported.
-    get hasPOS() {
+    // The store has a hub (the callout box): location.config.pos_integration,
+    // a paired integration device, or a hub that ever reported.
+    get hasHub() {
       const cfg = this.storeCfg && this.storeCfg.location && this.storeCfg.location.config;
       return !!((cfg && cfg.pos_integration) || this.devices.some(d => d.kind === 'integration' && !d.revoked_at) || (this.integ && this.integ.last_seen_at));
     },
-    get posCard() {
+    get hubCard() {
       const v = this.integ;
       if (!v || !v.last_seen_at) return { tone: 'mute', t: 'Not reporting yet', s: 'The store hub has not checked in' };
       const probs = v.problems || [], serious = probs.some(p => p.severity === 'serious');
-      const mode = v.insert_live ? 'online insert LIVE' : 'online insert ' + (v.insert_mode || 'off');
-      if (!v.connected) return { tone: 'bad', t: 'POS link down', s: 'last seen ' + agoText(ts(v.last_seen_at), this.now) };
-      return { tone: serious ? 'bad' : (probs.length || !v.ok) ? 'warn' : 'ok', t: probs.length ? probs[0].text : 'Connected', s: mode + ' · seen ' + agoText(ts(v.last_seen_at), this.now) };
+      if (!v.connected) return { tone: 'bad', t: 'Hub link down', s: 'last seen ' + agoText(ts(v.last_seen_at), this.now) };
+      return { tone: serious ? 'bad' : (probs.length || !v.ok) ? 'warn' : 'ok', t: probs.length ? probs[0].text : 'Connected', s: (v.version ? 'hub ' + v.version + ' · ' : '') + 'seen ' + agoText(ts(v.last_seen_at), this.now) };
     },
     get systemProblems() { return this.attention.filter(a => a.k[0] !== 'w').length; },
     get mainCard() {
@@ -1072,7 +1052,7 @@ function agentApp() {
       if (this.diagErr) out.push({ k: 'diag', tone: 'warn', text: "Couldn't check the printers and the Pi — retrying.", go: '' });
       for (const p of (this.diag && this.diag.problems) || []) out.push({ k: 'p' + p, tone: p === 'main_down' || p === 'printer_down' || p === 'sd_errors' || p === 'rootfs_ro' ? 'bad' : 'warn', text: PROBLEM_TEXT[p] || p, go: p === 'printer_down' ? 'printers' : '' });
       if (this.integ && this.integ.last_seen_at) {
-        for (const p of this.integ.problems || []) out.push({ k: 'pos' + (p.code || p.text), tone: p.severity === 'serious' ? 'bad' : 'warn', text: 'POS link: ' + p.text, go: '' });
+        for (const p of this.integ.problems || []) out.push({ k: 'pos' + (p.code || p.text), tone: p.severity === 'serious' ? 'bad' : 'warn', text: 'Store hub: ' + p.text, go: '' });
       }
       const backlog = (this.diag && this.diag.floor_backlog) || (this.floor && this.floor.unsynced_events) || 0;
       if (backlog > 0) out.push({ k: 'sync', tone: 'warn', text: backlog + ' floor change' + (backlog === 1 ? '' : 's') + ' waiting to sync to main', go: '' });
@@ -1152,12 +1132,12 @@ function agentApp() {
       try { const r = await this.call('/api/settings/driver-reset'); this.reset = { time: r.time, last_run: r.last_run || null, form: r.time }; } catch { /* keep */ }
     },
     async addDriver() {
-      const name = this.newDriver.trim(), num = this.newDriverNum.trim(), dev = this.newDriverDev.trim(); if (!name) return;
+      const name = this.newDriver.trim(), dev = this.newDriverDev.trim(); if (!name) return;
       if (dev && !DEVICE_RE.test(dev)) { this.toast(DEVICE_HELP, true); return; }
       try {
-        await this.call('/api/drivers', { method: 'POST', body: { name, pos_number: num, pushover_device: dev } });
-        this.newDriver = ''; this.newDriverNum = ''; this.newDriverDev = ''; this.toast('Added ' + name);
-      } catch (e) { this.toast(e.code === 'pos_number_taken' ? 'Another driver already has Driver # ' + num + '.' : e.message, true); } finally { this.loadFloor(); }
+        await this.call('/api/drivers', { method: 'POST', body: { name, pushover_device: dev } });
+        this.newDriver = ''; this.newDriverDev = ''; this.toast('Added ' + name);
+      } catch (e) { this.toast(e.message, true); } finally { this.loadFloor(); }
     },
     // Phone = the driver's Pushover device name: Send Out pushes them the route.
     async saveDriverDevice(d) {
@@ -1174,14 +1154,6 @@ function agentApp() {
         await this.call('/api/drivers/' + d.id + '/route/test', { method: 'POST' });
         this.toast('Test route sent to ' + d.name);
       } catch (e) { this.toast(e.message, true); } finally { this.busy['rt' + d.id] = false; }
-    },
-    // Driver # = the driver's login number on the store's POS (the hub matches by it).
-    async saveDriverNum(d) {
-      const num = (this.nums[d.id] || '').trim(); if (num === (d.pos_number || '')) return;
-      try {
-        await this.call('/api/drivers/' + d.id, { method: 'PATCH', body: { pos_number: num } });
-        this.origNums[d.id] = num; this.toast(num ? d.name + ' is Driver # ' + num : 'Driver # cleared');
-      } catch (e) { this.toast(e.code === 'pos_number_taken' ? 'Another driver already has Driver # ' + num + '.' : e.message, true); } finally { this.loadFloor(); }
     },
     async renameDriver(d) {
       const name = (this.names[d.id] || '').trim(); if (!name || name === d.name) return;

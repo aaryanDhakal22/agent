@@ -66,30 +66,14 @@ type Status struct {
 	// pooled by hand); a plain Send Out logs the run against it.
 	PoolPlanID string `json:"pool_plan_id,omitempty"`
 
-	// POS orders (2.1.0): pulled from the store's old POS by the store hub.
-	// ExtSource "softtouch", ExtRef its check number, DisplayNumber the check
-	// number staff call (shown in place of the kitchen number).
-	ExtSource     string `json:"ext_source,omitempty"`
-	ExtRef        string `json:"ext_ref,omitempty"`
-	DisplayNumber *int64 `json:"display_number,omitempty"`
-	// Paid: settled at the POS terminal (a POS order, or an online cash pickup
-	// the hub inserted). CashDueCents: what is collected in cash (POS: the
-	// hub's balance less a cash tip; online: Snapshot.CashDue). TipCents: the
-	// tip on a POS check.
-	Paid         bool  `json:"paid,omitempty"`
-	CashDueCents int64 `json:"cash_due_cents,omitempty"`
-	TipCents     int64 `json:"tip_cents,omitempty"`
-	// BoardHidden: a POS counter check with no kitchen item (not on Kitchen).
-	BoardHidden bool `json:"board_hidden,omitempty"`
-	// SentAt: when the cashier pressed Send (prep + the AUTO clock count from it).
-	SentAt *time.Time `json:"sent_at,omitempty"`
-	// LocalOnly: never synced to main (every POS order).
-	LocalOnly bool  `json:"local_only,omitempty"`
-	Flag      *Flag `json:"flag,omitempty"`
-	// PosCheckNumber: the POS check number of an online order the hub inserted.
-	PosCheckNumber *int64 `json:"pos_check_number,omitempty"`
-	// PosDriverNote: a driver the POS set that couldn't be mirrored.
-	PosDriverNote string `json:"pos_driver_note,omitempty"`
+	// The money a terminal took (contract §2.10i; 00014's columns): Paid =
+	// nothing left to collect, CashDueCents = what is still collected in
+	// cash, TipCents = the tip taken with it. SentAt: when the order went to
+	// the kitchen at a terminal (SEND).
+	Paid         bool       `json:"paid,omitempty"`
+	CashDueCents int64      `json:"cash_due_cents,omitempty"`
+	TipCents     int64      `json:"tip_cents,omitempty"`
+	SentAt       *time.Time `json:"sent_at,omitempty"`
 
 	// Future orders (2.1.0). Future is computed on read (features.future_orders
 	// on and promised_at after now + the default time); a scheduled order
@@ -115,23 +99,18 @@ type Status struct {
 	RunSeq *int64 `json:"run_seq,omitempty"`
 
 	// Finishing (00019): a ready pickup / counter order that is done with
-	// (picked up). FinishedBy "pos" = the POS closed the check, "auto" = an
-	// online pickup sat ready for the store's finish time. A finished order
-	// no longer counts as open (a forced Pi update can run). PosClosed: the
-	// POS closed the check (one still cooking finishes when marked ready).
+	// (picked up). FinishedBy "terminal" = handed over at a terminal, "auto" =
+	// an online pickup sat ready for the store's finish time. A finished order
+	// no longer counts as open (a forced Pi update can run).
 	FinishedAt *time.Time `json:"finished_at,omitempty"`
 	FinishedBy string     `json:"finished_by,omitempty"`
-	PosClosed  bool       `json:"pos_closed,omitempty"`
-	// PosChange: the terminal changed a check already on the tablet and
-	// nobody pressed OK yet (the tablet rings until they do).
-	PosChange *PosChange `json:"pos_change,omitempty"`
 
 	// MarkedDelivered (2.4.0): the delivery was marked delivered with no
 	// driver (MARK DELIVERED on the tablet) or moved to Unassigned on the
 	// Drivers tab. It stays once a driver is assigned (how it got there);
 	// IsUnassigned tells whether it is still without a driver.
 	MarkedDelivered *MarkedDelivered `json:"marked_delivered,omitempty"`
-	// PaidAt (2.4.0): when a POS check last went from a balance due to paid
+	// PaidAt (2.4.0): when the order last went from a balance due to paid
 	// ($0) - a paid takeout's customer has been waiting since then.
 	PaidAt *time.Time `json:"paid_at,omitempty"`
 	// EarlyKitchen / EarlyReceipt (2.4.0): a future order's kitchen
@@ -168,12 +147,11 @@ type MarkedBy struct {
 	DeviceID string `json:"device_id,omitempty"`
 }
 
-// Who did it (MarkedBy.Kind): a tablet, the Pi web page, or the POS (a
-// driver a cashier set at the terminal, mirrored by the hub).
+// Who did it (MarkedBy.Kind): a tablet or the Pi web page (a terminal
+// writes "terminal").
 const (
 	ByTablet = "tablet"
 	ByWeb    = "web"
-	ByPOS    = "pos"
 )
 
 // MarkedDelivered records a delivery that went to Unassigned: when, who,
@@ -188,9 +166,9 @@ type MarkedDelivered struct {
 	Available  []string  `json:"available"`
 }
 
-// Finished-by values (Status.FinishedBy).
+// Finished-by values (Status.FinishedBy; a terminal's pickup writes
+// "terminal").
 const (
-	FinishedByPOS  = "pos"
 	FinishedByAuto = "auto"
 )
 
@@ -198,10 +176,6 @@ const (
 const (
 	NotDeliveredRetry  = "retry"
 	NotDeliveredCancel = "cancel"
-	// NotDeliveredRecall is only a hub feed action (2.4.1): a POS check in
-	// a recalled run is un-dispatched in SoftTouch (the hub ignores the
-	// action); main hears no order.not_delivered for a recall.
-	NotDeliveredRecall = "recall"
 )
 
 // NotDelivered records a delivery that came back: the action staff chose,
@@ -210,12 +184,6 @@ type NotDelivered struct {
 	Action   string    `json:"action"` // retry | cancel
 	At       time.Time `json:"at"`
 	DriverID string    `json:"driver_id"`
-}
-
-// Flag is a note the hub puts on an order ("Settle manually: unmapped item X").
-type Flag struct {
-	Text     string `json:"text"`
-	Severity string `json:"severity"` // info | warn | serious
 }
 
 // StoredOrder is the repository's view of an order: the canonical Snapshot
@@ -262,20 +230,14 @@ var ErrInvalidState = fmt.Errorf("order is not in a state that allows this")
 // delivered without a driver (any more).
 var ErrNotUnassigned = fmt.Errorf("order is not delivered without a driver")
 
-// IsPOS reports whether the order was pulled from the store's POS.
-func (so StoredOrder) IsPOS() bool { return so.Status.ExtSource != "" }
-
 // IsChannel (2.5.0): an order from one of the store's own channels (the
 // website "web", later "operator" / "counter") - see Snapshot.IsChannel.
-func (so StoredOrder) IsChannel() bool { return !so.IsPOS() && so.Order.IsChannel() }
+func (so StoredOrder) IsChannel() bool { return so.Order.IsChannel() }
 
-// SourceLabel is the order's source as metrics label it: pos, web (every
+// SourceLabel is the order's source as metrics label it: web (every
 // channel order) or online.
 func (so StoredOrder) SourceLabel() string {
-	switch {
-	case so.IsPOS():
-		return SourcePOS
-	case so.IsChannel():
+	if so.IsChannel() {
 		return SourceWeb
 	}
 	return SourceOnline
@@ -288,14 +250,9 @@ func (so StoredOrder) Tippable() bool {
 	return so.IsChannel() && so.Order.CashDue() == 0 && so.Status.State != StateCancelled && !so.Status.TipLocked
 }
 
-// Number is the number staff call: the POS check number, else the kitchen
-// number (nil before accept).
-func (so StoredOrder) Number() *int64 {
-	if so.Status.DisplayNumber != nil {
-		return so.Status.DisplayNumber
-	}
-	return so.Status.KitchenNumber
-}
+// Number is the number staff call: the kitchen number (a counter order's
+// is its counter number; nil before accept).
+func (so StoredOrder) Number() *int64 { return so.Status.KitchenNumber }
 
 // IsDelivery reports whether the order is a delivery (driver flow applies).
 func (so StoredOrder) IsDelivery() bool { return so.Order.Fulfillment.Type == "delivery" }

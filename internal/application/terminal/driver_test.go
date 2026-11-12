@@ -81,7 +81,7 @@ func (r *driverRig) delivery(t *testing.T, key string, paid, isReady bool) strin
 func TestDriverLinkAtLogin(t *testing.T) {
 	r := newDriverRig(t)
 	// A roster driver with his name exists: he is linked to it.
-	existing, err := r.floor.CreateDriver(r.ctx, "Ali Khan", "")
+	existing, err := r.floor.CreateDriver(r.ctx, "Ali Khan")
 	if err != nil {
 		t.Fatal(err)
 	}

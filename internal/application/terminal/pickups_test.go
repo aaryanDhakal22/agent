@@ -35,7 +35,7 @@ func online(t *testing.T, r *rig, fulfillment string, card bool) order.StoredOrd
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := r.repo.RecordAccepted(r.ctx, *got, false); err != nil {
+	if err := r.repo.RecordAccepted(r.ctx, *got); err != nil {
 		t.Fatal(err)
 	}
 	return *got
