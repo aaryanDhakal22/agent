@@ -98,6 +98,9 @@ type Service struct {
 	// accept inline).
 	acceptQ  atomic.Pointer[chan acceptJob]
 	acceptWG sync.WaitGroup
+	// stamp: stamps an arriving order's lines before it is stored (the
+	// terminal store's show_on_driver_ticket flags; SetArrivalStamp).
+	stamp atomic.Pointer[func(*order.Snapshot)]
 }
 
 func NewService(
@@ -135,6 +138,9 @@ func (s *Service) floorChanged() {
 // OnArrival is called by the SSE listener when a new order lands from main/.
 func (s *Service) OnArrival(ctx context.Context, snap order.Snapshot) error {
 	id := snap.MustParseID()
+	if fn := s.stamp.Load(); fn != nil && *fn != nil {
+		(*fn)(&snap)
+	}
 
 	ctx, span := s.tracer.Start(ctx, "order.on_arrival",
 		trace.WithAttributes(
@@ -655,6 +661,11 @@ func (s *Service) storeArrived(ctx context.Context, snap order.Snapshot) (bool, 
 func (s *Service) OnCustomerOrder(fn func(ctx context.Context, phone string, at time.Time)) {
 	s.onCustomerOrder = fn
 }
+
+// SetArrivalStamp registers the hook that stamps an order from main before
+// it is stored (cmd/main.go: the counter menu's show_on_driver_ticket
+// flags, terminal.Store.StampDriverTicket).
+func (s *Service) SetArrivalStamp(fn func(*order.Snapshot)) { s.stamp.Store(&fn) }
 
 // OnStored registers the hook run after an order is safely stored (new or
 // already held) — cmd/main.go wires the acker.

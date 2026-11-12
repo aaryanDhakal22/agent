@@ -248,8 +248,12 @@ func buildFull(snap order.Snapshot, sc storeconfig.StoreContext, reroutedFrom st
 	nl()
 
 	sp := prefs.Spacing
+	delivery := isDelivery(snap)
+	if delivery { // the driver's copy: $0 choices main keeps off it
+		snap.Items = driverItems(snap.Items)
+	}
 	if prefs.Format == order.FormatCondensed {
-		writeCondensedItems(w, nl, snap.Items, sp)
+		writeCondensedItems(w, nl, snap.Items, sp, delivery)
 	}
 	for i, item := range snap.Items {
 		if prefs.Format == order.FormatCondensed {
@@ -648,7 +652,12 @@ func truncRunes(s string, n int) string {
 // lines add up to the subtotal), then only its first modifier (vendors and
 // the POS list the main choice first - the soda flavour, the pizza's
 // topping) without a price, then its note.
-func writeCondensedItems(w func(string), nl func(), items []order.LineItem, sp order.LineSpacing) {
+//
+// On a delivery (driver) the hidden children are already gone
+// (driverItems), so the first modifier is the first one the driver may see,
+// and every child stamped show_on_driver_ticket follows it: the driver must
+// see the drinks.
+func writeCondensedItems(w func(string), nl func(), items []order.LineItem, sp order.LineSpacing, driver bool) {
 	for i, item := range items {
 		if i > 0 {
 			w(feedDots(sp.ItemItem))
@@ -671,14 +680,18 @@ func writeCondensedItems(w func(string), nl func(), items []order.LineItem, sp o
 			}
 		} else if len(item.Children) > 0 {
 			w(feedDots(sp.ItemMod))
-			mod := item.Children[0]
-			label := mod.Name
-			if mod.Quantity > 1 {
-				label = fmt.Sprintf("(x%d) %s", mod.Quantity, label)
+			for k, mod := range item.Children {
+				if k > 0 && !(driver && mod.ShownOnDriverTicket()) {
+					continue
+				}
+				label := mod.Name
+				if mod.Quantity > 1 {
+					label = fmt.Sprintf("(x%d) %s", mod.Quantity, label)
+				}
+				w(cmdLeft)
+				w("    - " + truncRunes(label, lineWidth-6))
+				nl()
 			}
-			w(cmdLeft)
-			w("    - " + truncRunes(label, lineWidth-6))
-			nl()
 		}
 		if strings.TrimSpace(item.Notes) != "" {
 			w("    Note: " + item.Notes)
@@ -717,4 +730,34 @@ func formatPhone(p string) string {
 		return fmt.Sprintf("%s-%s-%s", digits[:3], digits[3:6], digits[6:])
 	}
 	return p
+}
+
+// isDelivery: the receipt is the delivery ticket (the driver's copy).
+func isDelivery(snap order.Snapshot) bool {
+	return strings.EqualFold(strings.TrimSpace(snap.Fulfillment.Type), "delivery")
+}
+
+// driverItems are a delivery's lines without the modifier children the
+// driver doesn't need: a $0 choice stamped show_on_driver_ticket false
+// (order.LineItem.HiddenOnDriverTicket). Unstamped children (vendor and
+// older orders) stay, so those print exactly as before. A copy.
+func driverItems(items []order.LineItem) []order.LineItem {
+	out := make([]order.LineItem, len(items))
+	for i, it := range items {
+		hidden := false
+		for _, c := range it.Children {
+			hidden = hidden || c.HiddenOnDriverTicket()
+		}
+		if hidden {
+			kids := make([]order.LineItem, 0, len(it.Children))
+			for _, c := range it.Children {
+				if !c.HiddenOnDriverTicket() {
+					kids = append(kids, c)
+				}
+			}
+			it.Children = kids
+		}
+		out[i] = it
+	}
+	return out
 }

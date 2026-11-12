@@ -219,6 +219,7 @@ func buildItems(menu *terminal.CounterMenu, p priced) (items []order.LineItem, o
 		route string
 	}
 	var lines []built
+	drivers := driverIndexFor(menu) // show_on_driver_ticket stamps (driverticket.go)
 	lineOf := func(r pricing.Resolved, qty int, note string, pos int) built {
 		route := r.BankItem
 		if route == "" {
@@ -237,6 +238,7 @@ func buildItems(menu *terminal.CounterMenu, p priced) (items []order.LineItem, o
 			if o.Included {
 				child.UnitPrice = 0
 			}
+			child.ShowOnDriverTicket = drivers.optionShow(route, o)
 			child.LineTotal = child.UnitPrice * int64(child.Quantity)
 			total += child.LineTotal
 			li.Children = append(li.Children, child)

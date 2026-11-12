@@ -436,6 +436,7 @@ func main() {
 	// M-11: counter orders a restart cut off between commit and print.
 	safego.Go("terminal.kitchen_pending", func() { termSvc.ResumeKitchenPrints(ctx) })
 	termStore.Load(ctx)
+	orderService.SetArrivalStamp(termStore.StampDriverTicket) // show_on_driver_ticket on channel orders
 	registry.Register(terminalApp.MsgMenuChanged, termStore.HandleMenuChanged)
 	registry.Register(terminalApp.MsgTerminalChanged, termStore.HandleTerminalChanged)
 	termStore.Run(ctx, 5*time.Minute, sseCtrl.Configured)

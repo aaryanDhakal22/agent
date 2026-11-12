@@ -139,6 +139,14 @@ type LineItem struct {
 	Portion string `json:"portion,omitempty"`
 	Mode    string `json:"mode,omitempty"`
 
+	// ShowOnDriverTicket (modifier children; the Pi stamps it when it stores
+	// a counter or channel order, from the counter menu's option flag
+	// show_on_driver_ticket): true = a drink / dessert / side the driver must
+	// see, false = a choice the delivery receipt leaves off when it is $0
+	// ("Well Done", a NO). nil = not known (vendor and older orders, no
+	// counter menu): printed as before. HiddenOnDriverTicket reads it.
+	ShowOnDriverTicket *bool `json:"show_on_driver_ticket,omitempty"`
+
 	// Kitchen routing stamped by main at ingest (top-level items only):
 	// the station printer this line prints on, and how it was matched.
 	MenuItemID string `json:"menu_item_id,omitempty"`
@@ -166,6 +174,18 @@ func (it LineItem) HasHalves() bool {
 		}
 	}
 	return false
+}
+
+// HiddenOnDriverTicket says a modifier child stays off a delivery order's
+// receipt (the driver's copy): a $0 choice stamped show_on_driver_ticket
+// false. Unset or a priced child always prints.
+func (it LineItem) HiddenOnDriverTicket() bool {
+	return it.UnitPrice == 0 && it.ShowOnDriverTicket != nil && !*it.ShowOnDriverTicket
+}
+
+// ShownOnDriverTicket says a child is stamped show_on_driver_ticket true.
+func (it LineItem) ShownOnDriverTicket() bool {
+	return it.ShowOnDriverTicket != nil && *it.ShowOnDriverTicket
 }
 
 // SKUCustom marks a custom line (the counter terminal's Quicc Add: a free
