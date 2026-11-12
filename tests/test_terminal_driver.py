@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import threading
 import uuid
+from datetime import datetime
 
 import pytest
 import requests
@@ -114,7 +115,9 @@ def test_claim_mine_tip_close_report(drig):
     assert [a["order_id"] for a in avail] == [cash, paid]
     assert cooking not in [a["order_id"] for a in avail]
     assert avail[0]["payment"] == "cash_due" and avail[0]["cash_due_cents"] > 0 and avail[0]["street"] == "12 Main St"
-    assert avail[1]["payment"] == "paid" and avail[1]["cash_due_cents"] == 0 and avail[0]["ready_at"] <= avail[1]["ready_at"]
+    # times compared as times: the agent trims trailing zeros ("…07.3Z" vs "…07.345Z" sorts wrong as text)
+    assert avail[1]["payment"] == "paid" and avail[1]["cash_due_cents"] == 0 and \
+        datetime.fromisoformat(avail[0]["ready_at"]) <= datetime.fromisoformat(avail[1]["ready_at"])
     # A cooking order in a claim: 409 taken, nothing changes.
     r = ali.post(f"{base}/api/terminal/driver/claim", json={"order_ids": [cash, cooking]}, timeout=10)
     assert r.status_code == 409 and r.json()["code"] == "taken" and r.json()["order_ids"] == [cooking], r.text
