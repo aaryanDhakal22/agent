@@ -62,7 +62,7 @@ def test_integration_key_guarding(kitchen) -> None:  # noqa: F811
         r = requests.request(method, f"{a.base}{path}", json={}, headers=hub, timeout=5)
         assert r.status_code == 403 and r.json()["code"] == "integration_only", path
     devs = a.http.get(f"{a.base}/api/devices", timeout=5).json()
-    assert {d["name"]: d["kind"] for d in devs} == {"Store hub": "integration", "Counter": "tablet"}
+    assert {d["name"]: d["kind"] for d in devs} == {"Store hub": "integration", "Counter": "tablet", "Call center": "callcenter"}
 
 
 def test_feed_long_poll(kitchen) -> None:  # noqa: F811

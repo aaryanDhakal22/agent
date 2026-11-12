@@ -276,7 +276,7 @@ def place(rig, key: str | None = None, **extra) -> requests.Response:
 def test_device_kinds_and_gates(rig, admin):
     agent, term = rig["agent"], rig["term"]
     devices = agent.http.get(f"{agent.base}/api/devices", timeout=5).json()
-    assert [d["kind"] for d in devices] == ["terminal"]
+    assert [d["kind"] for d in devices] == ["terminal", "callcenter"]  # the store's call-center device is always last (2.10ab)
     # A terminal key: no floor routes besides events / floor.
     assert term.get(f"{agent.base}/api/drivers", timeout=5).json()["code"] == "terminal_only"
     floor = term.get(f"{agent.base}/api/floor", timeout=5)

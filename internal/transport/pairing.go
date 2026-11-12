@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"math/big"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -550,6 +551,9 @@ func (s *Server) handleListDevices(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, r, http.StatusInternalServerError, err)
 		return
 	}
+	// The store's call-center device (contract 2.10ab) goes last: the paired
+	// devices keep their newest-first order.
+	sort.SliceStable(ds, func(i, j int) bool { return ds[i].Kind != device.KindCallcenter && ds[j].Kind == device.KindCallcenter })
 	setups := s.deviceSetups(r.Context()) // + each device's last setup (2.10y)
 	out := make([]deviceView, len(ds))
 	for i, d := range ds {

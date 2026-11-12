@@ -1,0 +1,518 @@
+package transport
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	orderApp "quiccpos/agent/internal/application/order"
+	"quiccpos/agent/internal/application/squareterm"
+	terminalApp "quiccpos/agent/internal/application/terminal"
+	"quiccpos/agent/internal/domain/device"
+	"quiccpos/agent/internal/domain/order"
+	"quiccpos/agent/internal/domain/terminal"
+	"quiccpos/agent/internal/infra/database/repositories"
+
+	"github.com/rs/zerolog"
+	"golang.org/x/crypto/bcrypt"
+)
+
+// The call center's relay (contract §2.10ab): RPC terminal.relay runs a
+// call through the same /api/terminal/* handlers as a call-center seat.
+
+const (
+	ccAgent   = "cc-1"
+	ccCashier = "cash-1"
+	ccCheese  = "00000000-0000-0000-0000-0000000000a1"
+	ccXL      = "00000000-0000-0000-0000-0000000000b2"
+)
+
+// ccFloor is the terminal service's floor in these tests: nothing prints.
+type ccFloor struct {
+	mu       sync.Mutex
+	receipts []string
+	reprints []string
+	reprint  error
+}
+
+func (f *ccFloor) PrintCounterTickets(context.Context, order.StoredOrder) {}
+func (f *ccFloor) PrintCounterTicketsThen(ctx context.Context, _ order.StoredOrder, done func(context.Context)) {
+	if done != nil {
+		done(ctx)
+	}
+}
+func (f *ccFloor) PrintVoidSlip(context.Context, order.StoredOrder) {}
+func (f *ccFloor) PrintChange(context.Context, order.StoredOrder, []order.LineItem, []order.LineItem) {
+}
+func (f *ccFloor) CounterOrderChanged(context.Context, order.StoredOrder, *order.StoredOrder, bool) {
+}
+func (f *ccFloor) JournalWritten()               {}
+func (f *ccFloor) PrepMinutesFor(string) int64   { return 15 }
+func (f *ccFloor) StoreIDs() (string, string)    { return "tenant", "location" }
+func (f *ccFloor) StoreLocation() *time.Location { return time.UTC }
+func (f *ccFloor) DevEvent(string)               {}
+func (f *ccFloor) PrintOrderReceipt(_ context.Context, so order.StoredOrder) {
+	f.mu.Lock()
+	f.receipts = append(f.receipts, so.Order.ID)
+	f.mu.Unlock()
+}
+func (f *ccFloor) ReprintOn(_ context.Context, id string) (*order.StoredOrder, string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.reprint != nil {
+		return nil, "", f.reprint
+	}
+	f.reprints = append(f.reprints, id)
+	n := int64(301)
+	return &order.StoredOrder{Order: order.Snapshot{ID: id}, Status: order.Status{KitchenNumber: &n}}, "Front", nil
+}
+
+type ccPub struct{}
+
+func (ccPub) Publish(string, any) {}
+
+type ccRig struct {
+	s       *Server
+	h       http.Handler
+	termKey string
+	floor   *ccFloor
+	fetches atomic.Int64
+	config  atomic.Value // []byte: main's terminal-config
+}
+
+func ccConfig(t *testing.T, version int, staff ...map[string]any) []byte {
+	t.Helper()
+	pin, err := bcrypt.GenerateFromPassword([]byte("1234"), bcrypt.MinCost)
+	if err != nil {
+		t.Fatal(err)
+	}
+	all := append([]map[string]any{{"id": ccCashier, "first_name": "Cara", "last_name": "Smith", "role": "cashier", "pin_hash": string(pin)}}, staff...)
+	b, _ := json.Marshal(map[string]any{"version": version, "staff": all, "settings": map[string]any{"counter_start": 300}})
+	return b
+}
+
+// ccAgentStaff is a call-center agent as main sends them: no PIN hash (main
+// checks that PIN, the Pi never does).
+func ccAgentStaff() map[string]any {
+	return map[string]any{"id": ccAgent, "first_name": "Elena", "last_name": "Vega", "role": "callcenter", "pin_hash": ""}
+}
+
+func newCCRig(t *testing.T) *ccRig {
+	t.Helper()
+	s, h, _, db := diagServerDB(t)
+	ctx := context.Background()
+	if err := s.settings.SetStoreAPIKey(ctx, "qagt-store-key"); err != nil {
+		t.Fatal(err)
+	}
+	r := &ccRig{s: s, h: h, floor: &ccFloor{}}
+	r.termKey, _ = newDeviceKey()
+	if err := s.devices.Create(ctx, "term-1", "Counter 1", device.KindTerminal, hashDeviceKey(r.termKey), r.termKey[:11]); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile("../domain/pricing/testdata/cases/33_one_specialty_on_a_half.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var c struct {
+		Context json.RawMessage `json:"context"`
+	}
+	if err := json.Unmarshal(raw, &c); err != nil {
+		t.Fatal(err)
+	}
+	menu, _ := json.Marshal(map[string]any{"menu_version": 12, "build": map[string]any{"view": map[string]any{"kind": "counter"}}, "pricing": c.Context})
+	r.config.Store(ccConfig(t, 1, ccAgentStaff()))
+	repo := repositories.NewOrderRepository(db, zerolog.Nop())
+	store := terminalApp.NewStore(repo, func(_ context.Context, path string) (int, []byte, error) {
+		if path == terminalApp.PathCounterMenu {
+			return 200, menu, nil
+		}
+		r.fetches.Add(1)
+		return 200, r.config.Load().([]byte), nil
+	}, ccPub{}, zerolog.Nop())
+	svc := terminalApp.NewService(store, repo, r.floor, ccPub{}, zerolog.Nop())
+	for _, k := range []string{terminal.KindCounterMenu, terminal.KindTerminalConfig} {
+		if _, err := store.Refresh(ctx, k); err != nil {
+			t.Fatal(err)
+		}
+	}
+	s.SetTerminal(svc)
+	return r
+}
+
+type relayed struct {
+	Status  int               `json:"status"`
+	Headers map[string]string `json:"headers"`
+	Body    json.RawMessage   `json:"body"`
+}
+
+func (r relayed) code() string {
+	var b struct {
+		Code string `json:"code"`
+		What string `json:"what"`
+	}
+	_ = json.Unmarshal(r.Body, &b)
+	if b.What != "" {
+		return b.Code + ":" + b.What
+	}
+	return b.Code
+}
+
+// relay sends one terminal.relay command the way main does (the reply goes
+// through JSON, as it does on the wire).
+func (r *ccRig) relay(t *testing.T, staff, method, path string, body any, extra ...func(map[string]any)) relayed {
+	t.Helper()
+	p := map[string]any{"device": "desk-2", "device_name": "Elevate desk 2", "staff_id": staff, "method": method, "path": path,
+		"query": "", "headers": map[string]string{}, "body": body}
+	for _, fn := range extra {
+		fn(p)
+	}
+	raw, _ := json.Marshal(p)
+	out, err := r.s.HandleTerminalRelay(context.Background(), raw)
+	if err != nil {
+		t.Fatalf("relay %s %s: %v", method, path, err)
+	}
+	wire, err := json.Marshal(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got relayed
+	if err := json.Unmarshal(wire, &got); err != nil {
+		t.Fatalf("reply %s: %v", wire, err)
+	}
+	if got.Headers == nil {
+		t.Fatalf("the reply always carries headers (an object): %s", wire)
+	}
+	return got
+}
+
+func ccOrder(key string) map[string]any {
+	return map[string]any{"client_key": key, "type": "pickup", "customer": map[string]any{"name": "Ada Test", "phone": "4105550101"},
+		"cart": map[string]any{"lines": []map[string]any{{"item_id": ccCheese, "size_id": ccXL, "qty": 1}}}}
+}
+
+func TestRelayRunsTheTerminalHandlers(t *testing.T) {
+	r := newCCRig(t)
+	// The menu with its ETag; If-None-Match -> 304, no body.
+	menu := r.relay(t, ccAgent, "GET", "menu", nil)
+	etag := menu.Headers["ETag"]
+	if menu.Status != 200 || etag == "" || !strings.HasPrefix(string(menu.Body), `{`) || !strings.Contains(string(menu.Body), `"counter_menu"`) {
+		t.Fatalf("menu: %d %v %.80s", menu.Status, menu.Headers, menu.Body)
+	}
+	again := r.relay(t, ccAgent, "GET", "menu", nil, func(p map[string]any) { p["headers"] = map[string]string{"if-none-match": etag} })
+	if again.Status != http.StatusNotModified || string(again.Body) != "null" || again.Headers["ETag"] != etag {
+		t.Fatalf("If-None-Match: %d %s %v", again.Status, again.Body, again.Headers)
+	}
+	// The agent's session on the Pi: role callcenter, limits 0 / 0.
+	sess := r.relay(t, ccAgent, "get", "/session", nil) // method case and a leading slash don't matter
+	var sv struct {
+		Staff  struct{ ID, Name string }
+		Role   string
+		Limits struct {
+			RefundCents int64 `json:"refund_cents"`
+			DiscountPct int   `json:"discount_pct"`
+			Unlimited   bool  `json:"unlimited"`
+		}
+	}
+	if err := json.Unmarshal(sess.Body, &sv); err != nil || sess.Status != 200 || sv.Staff.ID != ccAgent || sv.Staff.Name != "Elena V." ||
+		sv.Role != "callcenter" || sv.Limits.RefundCents != 0 || sv.Limits.DiscountPct != 0 || sv.Limits.Unlimited {
+		t.Fatalf("session: %d %s", sess.Status, sess.Body)
+	}
+	// Place: 201 with the Pi's own body; the same key again: 200 duplicate.
+	placed := r.relay(t, ccAgent, "POST", "orders", ccOrder("cc-key-000001"))
+	var pv struct {
+		Order struct {
+			Order struct {
+				ID         string `json:"id"`
+				TakenBy    string `json:"taken_by"`
+				DeviceKind string `json:"device_kind"`
+			} `json:"order"`
+			Status struct {
+				State string `json:"state"`
+			} `json:"status"`
+		} `json:"order"`
+		Number    int64 `json:"number"`
+		Duplicate bool  `json:"duplicate"`
+	}
+	if err := json.Unmarshal(placed.Body, &pv); err != nil || placed.Status != http.StatusCreated || pv.Order.Order.TakenBy != "Call center - Elena V." ||
+		pv.Order.Order.DeviceKind != "callcenter" || pv.Order.Status.State != "accepted" || pv.Number != 300 {
+		t.Fatalf("place: %d %s", placed.Status, placed.Body)
+	}
+	id := pv.Order.Order.ID
+	if len(r.floor.receipts) != 1 || r.floor.receipts[0] != id {
+		t.Fatalf("the Pi prints the receipt of a call-center order: %v", r.floor.receipts)
+	}
+	dup := r.relay(t, ccAgent, "POST", "orders", ccOrder("cc-key-000001"))
+	if dup.Status != http.StatusOK || !strings.Contains(string(dup.Body), `"duplicate":true`) {
+		t.Fatalf("the same key: %d %.120s", dup.Status, dup.Body)
+	}
+	// The query string rides along; a path value too.
+	open := r.relay(t, ccAgent, "GET", "orders", nil, func(p map[string]any) { p["query"] = "open=1" })
+	if open.Status != 200 || !strings.Contains(string(open.Body), id) {
+		t.Fatalf("orders?open=1: %d %.120s", open.Status, open.Body)
+	}
+	one := r.relay(t, ccAgent, "GET", "orders/"+id, nil)
+	if one.Status != 200 || !strings.Contains(string(one.Body), `"payments":[]`) {
+		t.Fatalf("orders/{id}: %d %.120s", one.Status, one.Body)
+	}
+	if nf := r.relay(t, ccAgent, "GET", "orders/0199c0de-0000-7000-8000-00000000dead", nil); nf.Status != http.StatusNotFound || nf.code() != "not_found" {
+		t.Fatalf("an unknown order: %d %s", nf.Status, nf.Body)
+	}
+	// The handlers' own errors come back as they are.
+	if bad := r.relay(t, ccAgent, "POST", "orders/"+id+"/void", map[string]any{}); bad.Status != http.StatusBadRequest || bad.code() != "bad_request" {
+		t.Fatalf("a void without a reason: %d %s", bad.Status, bad.Body)
+	}
+	if bad := r.relay(t, ccAgent, "POST", "orders", map[string]any{"type": "pickup"}); bad.Status != http.StatusBadRequest || bad.code() != "client_key_required" {
+		t.Fatalf("no client_key: %d %s", bad.Status, bad.Body)
+	}
+	// The call center's own guards (403 + what), the paid lock (409 + lines).
+	disc := ccOrder("cc-key-000002")
+	disc["cart"].(map[string]any)["discount"] = map[string]any{"pct": 5, "reason": "regular"}
+	if no := r.relay(t, ccAgent, "POST", "orders", disc); no.Status != http.StatusForbidden || no.code() != "not_allowed_for_callcenter:discount" {
+		t.Fatalf("a discount: %d %s", no.Status, no.Body)
+	}
+	if pay := r.relay(t, ccAgent, "POST", "orders/"+id+"/payments", map[string]any{"client_key": "cc-pay-000001", "tender": "manual_card", "amount_cents": 500, "last4": "1881"}); pay.Status != 200 {
+		t.Fatalf("a typed card: %d %s", pay.Status, pay.Body)
+	}
+	if cash := r.relay(t, ccAgent, "POST", "orders/"+id+"/payments", map[string]any{"client_key": "cc-pay-000002", "tender": "cash", "amount_cents": 100}); cash.Status != http.StatusForbidden || cash.code() != "not_allowed_for_callcenter:tender" {
+		t.Fatalf("cash: %d %s", cash.Status, cash.Body)
+	}
+	locked := r.relay(t, ccAgent, "PUT", "orders/"+id+"/cart", map[string]any{"client_key": "cc-chg-000001",
+		"cart": map[string]any{"lines": []map[string]any{{"item_id": ccCheese, "qty": 1}}}}) // another size: the paid line changed
+	var lv struct {
+		Code  string   `json:"code"`
+		Lines []string `json:"lines"`
+	}
+	if err := json.Unmarshal(locked.Body, &lv); err != nil || locked.Status != http.StatusConflict || lv.Code != "paid_locked" || len(lv.Lines) != 1 {
+		t.Fatalf("a paid line changed: %d %s", locked.Status, locked.Body)
+	}
+	// Reprint, the floor, the lists.
+	if rp := r.relay(t, ccAgent, "POST", "orders/"+id+"/reprint", nil); rp.Status != 200 || string(rp.Body) != `{"ok":true,"printed_on":"Front"}` {
+		t.Fatalf("reprint: %d %s", rp.Status, rp.Body)
+	}
+	for _, path := range []string{"floor", "pickups", "drafts", "status"} {
+		if got := r.relay(t, ccAgent, "GET", path, nil); got.Status != 200 || !json.Valid(got.Body) || string(got.Body) == "null" {
+			t.Errorf("GET %s: %d %.120s", path, got.Status, got.Body)
+		}
+	}
+	// The store's device list shows the one call-center device (made by itself), last.
+	var devs []struct{ ID, Name, Kind string }
+	if rec := webCall(r.s, r.h, "GET", "/api/devices", ""); json.Unmarshal(rec.Body.Bytes(), &devs) != nil || len(devs) != 3 ||
+		devs[2].ID != "callcenter" || devs[2].Kind != "callcenter" || devs[2].Name != "Call center" {
+		t.Fatalf("devices: %s", rec.Body)
+	}
+	if rec := webCall(r.s, r.h, "POST", "/api/devices/callcenter/revoke", ""); rec.Code != http.StatusConflict || code(rec) != "callcenter_device" {
+		t.Fatalf("revoking the call-center device: %d %s", rec.Code, rec.Body)
+	}
+}
+
+func TestRelayAllowlistSessionAndManager(t *testing.T) {
+	r := newCCRig(t)
+	for _, rt := range [][2]string{{"POST", "login"}, {"POST", "manager-check"}, {"POST", "refunds"}, {"GET", "drawer"}, {"POST", "drawer/pay-out"},
+		{"POST", "close"}, {"GET", "z"}, {"GET", "reports/till"}, {"GET", "journal"}, {"POST", "print"}, {"GET", "square/session"},
+		{"POST", "orders/x/waste"}, {"POST", "orders/x/picked-up"}, {"POST", "deliveries/send-out"}, {"DELETE", "orders/x"},
+		{"GET", "../devices"}, {"GET", "orders/../../devices"}, {"GET", ""}, {"POST", "floor"}} {
+		got := r.relay(t, ccAgent, rt[0], rt[1], map[string]any{"pin": "1234"})
+		if got.Status != http.StatusForbidden || got.code() != "not_allowed_for_callcenter:route" {
+			t.Errorf("%s %q: %d %s", rt[0], rt[1], got.Status, got.Body)
+		}
+	}
+	// A manager's PIN or an approval in any body: refused before the handler.
+	for name, body := range map[string]map[string]any{
+		"manager_pin": {"type": "pickup", "manager_pin": "9876", "cart": map[string]any{"lines": []any{}}},
+		"approvals":   {"type": "pickup", "approvals": []string{"ap-1"}, "cart": map[string]any{"lines": []any{}}},
+	} {
+		if got := r.relay(t, ccAgent, "POST", "quote", body); got.Status != http.StatusForbidden || got.code() != "not_allowed_for_callcenter:manager" {
+			t.Errorf("%s: %d %s", name, got.Status, got.Body)
+		}
+	}
+	empty := ccOrder("")
+	delete(empty, "client_key")
+	empty["manager_pin"], empty["approvals"] = "", []string{}
+	if got := r.relay(t, ccAgent, "POST", "quote", empty); got.Status != 200 {
+		t.Fatalf("an empty manager_pin / approvals is no manager: %d %s", got.Status, got.Body)
+	}
+	// Who the relay says is on the seat: an active call-center agent of the snapshot, else login_required.
+	for _, staff := range []string{"", ccCashier, "nobody"} {
+		if got := r.relay(t, staff, "GET", "menu", nil); got.Status != http.StatusUnauthorized || got.code() != "login_required" {
+			t.Errorf("staff %q: %d %s", staff, got.Status, got.Body)
+		}
+	}
+	// A bad seat id never reaches a handler.
+	if got := r.relay(t, ccAgent, "GET", "menu", nil, func(p map[string]any) { p["device"] = "a b/../c" }); got.Status != http.StatusBadRequest {
+		t.Fatalf("a bad device: %d %s", got.Status, got.Body)
+	}
+	if got := r.relay(t, ccAgent, "POST", "quote", map[string]any{"pad": strings.Repeat("x", relayMaxBody)}); got.Status != http.StatusRequestEntityTooLarge {
+		t.Fatalf("a body over 256 KB: %d", got.Status)
+	}
+	out, err := r.s.HandleTerminalRelay(context.Background(), json.RawMessage(`not json`))
+	if rr, _ := out.(RelayReply); err != nil || rr.Status != http.StatusBadRequest {
+		t.Fatalf("a bad payload: %+v %v", out, err)
+	}
+}
+
+// A person made in main a minute ago: the Pi pulls the config once for an
+// id it doesn't know, then the call runs.
+func TestRelayPullsTheSnapshotForAnUnknownAgent(t *testing.T) {
+	r := newCCRig(t)
+	before := r.fetches.Load()
+	if got := r.relay(t, "cc-new", "GET", "session", nil); got.Status != http.StatusUnauthorized || r.fetches.Load() != before+1 {
+		t.Fatalf("unknown to main too: %d, config pulls %d", got.Status, r.fetches.Load()-before)
+	}
+	r.config.Store(ccConfig(t, 2, ccAgentStaff(), map[string]any{"id": "cc-new", "first_name": "Noor", "role": "callcenter", "pin_hash": ""}))
+	// Within the pause nothing is pulled again (a wrong id can't hammer main).
+	if got := r.relay(t, "cc-new", "GET", "session", nil); got.Status != http.StatusUnauthorized || r.fetches.Load() != before+1 {
+		t.Fatalf("no second pull at once: %d, pulls %d", got.Status, r.fetches.Load()-before)
+	}
+}
+
+// The seat is a context value: nothing a caller sends over plain HTTP makes
+// a request the call center's.
+func TestCallcenterIsNeverReachableOverHTTP(t *testing.T) {
+	r := newCCRig(t)
+	spoof := func(key string) *http.Request {
+		req := httptest.NewRequest("GET", "/api/terminal/session", nil)
+		for k, v := range map[string]string{"X-Callcenter": "1", "X-Callcenter-Seat": "callcenter:desk-2", "X-Callcenter-Staff": ccAgent,
+			"X-Staff-Id": ccAgent, "X-Device-Kind": "callcenter", "X-Agent-Device-Id": "callcenter", "X-Forwarded-For": "callcenter"} {
+			req.Header.Set(k, v)
+		}
+		if key != "" {
+			req.Header.Set(deviceKeyHeader, key)
+		}
+		req.RemoteAddr = "callcenter"
+		return req
+	}
+	for _, key := range []string{"", "callcenter", "qagt_callcenter", hashDeviceKey("callcenter")} {
+		rec := httptest.NewRecorder()
+		r.h.ServeHTTP(rec, spoof(key))
+		if rec.Code != http.StatusUnauthorized || code(rec) != "device_required" {
+			t.Errorf("key %q: %d %s", key, rec.Code, rec.Body)
+		}
+	}
+	// With a real terminal key the request is that terminal's: nobody is logged in on it.
+	rec := httptest.NewRecorder()
+	r.h.ServeHTTP(rec, spoof(r.termKey))
+	if rec.Code != 200 || !strings.Contains(rec.Body.String(), `"staff":null`) {
+		t.Fatalf("a terminal with call-center headers: %d %s", rec.Code, rec.Body)
+	}
+	// The relay itself is not a route.
+	for _, path := range []string{"/api/terminal/relay", "/api/relay", "/api/callcenter", "/api/terminal/orders/x/relay"} {
+		if rec := call(r.h, "POST", path, r.termKey, `{}`); rec.Code != http.StatusNotFound && rec.Code != http.StatusMethodNotAllowed {
+			t.Errorf("POST %s: %d", path, rec.Code)
+		}
+	}
+	// A call-center agent's PIN on a store terminal: wrong_pin (their hash, when main sends one, is never matched).
+	pin, _ := bcrypt.GenerateFromPassword([]byte("4321"), bcrypt.MinCost)
+	st := ccAgentStaff()
+	st["pin_hash"] = string(pin)
+	r.config.Store(ccConfig(t, 3, st))
+	if _, err := r.s.terminalSvc.Store().Refresh(context.Background(), terminal.KindTerminalConfig); err != nil {
+		t.Fatal(err)
+	}
+	if rec := call(r.h, "POST", "/api/terminal/login", r.termKey, `{"pin":"4321"}`); rec.Code != http.StatusUnauthorized || code(rec) != "wrong_pin" {
+		t.Fatalf("a call-center PIN on a terminal: %d %s", rec.Code, rec.Body)
+	}
+	if rec := call(r.h, "POST", "/api/terminal/login", r.termKey, `{"pin":"1234"}`); rec.Code != 200 {
+		t.Fatalf("the cashier logs in: %d %s", rec.Code, rec.Body)
+	}
+	if rec := call(r.h, "POST", "/api/terminal/manager-check", r.termKey, `{"pin":"4321"}`); rec.Code != http.StatusUnauthorized || code(rec) != "wrong_pin" {
+		t.Fatalf("a call-center PIN as a manager: %d %s", rec.Code, rec.Body)
+	}
+}
+
+// POST /api/terminal/orders/{id}/reprint, from a store terminal.
+func TestTerminalReprintRoute(t *testing.T) {
+	r := newCCRig(t)
+	id := "0199c0de-0000-7000-8000-000000000001"
+	if rec := call(r.h, "POST", "/api/terminal/orders/"+id+"/reprint", r.termKey, ""); rec.Code != http.StatusUnauthorized || code(rec) != "login_required" {
+		t.Fatalf("nobody logged in: %d %s", rec.Code, rec.Body)
+	}
+	if rec := call(r.h, "POST", "/api/terminal/login", r.termKey, `{"pin":"1234"}`); rec.Code != 200 {
+		t.Fatal(rec.Body.String())
+	}
+	if rec := call(r.h, "POST", "/api/terminal/orders/"+id+"/reprint", r.termKey, ""); rec.Code != 200 || strings.TrimSpace(rec.Body.String()) != `{"ok":true,"printed_on":"Front"}` {
+		t.Fatalf("reprint: %d %s", rec.Code, rec.Body)
+	}
+	for want, err := range map[string]error{
+		"404 not_found":            order.ErrNotFound,
+		"503 printing_unavailable": orderApp.ErrPrintingUnavailable,
+		"502 nothing_printed":      fmt.Errorf("%w: every printer is down", orderApp.ErrKitchenNotPrinted),
+	} {
+		r.floor.mu.Lock()
+		r.floor.reprint = err
+		r.floor.mu.Unlock()
+		rec := call(r.h, "POST", "/api/terminal/orders/"+id+"/reprint", r.termKey, "")
+		if got := fmt.Sprintf("%d %s", rec.Code, code(rec)); got != want {
+			t.Errorf("%v: %s, want %s", err, got, want)
+		}
+	}
+	if len(r.floor.reprints) != 1 {
+		t.Fatalf("printed once: %v", r.floor.reprints)
+	}
+}
+
+// keyedMain answers square.keyed_payment like main (after wait).
+type keyedMain struct{ wait time.Duration }
+
+func (m keyedMain) Send(ctx context.Context, typ string, _ any) (int, json.RawMessage, error) {
+	if typ != squareterm.MsgKeyed {
+		return 202, nil, nil
+	}
+	select {
+	case <-time.After(m.wait):
+	case <-ctx.Done():
+		return 0, nil, ctx.Err()
+	}
+	raw, _ := json.Marshal(map[string]any{"ok": true, "payment": map[string]any{"id": "pay_1", "status": "COMPLETED", "brand": "VISA", "last4": "1111", "entry": "keyed"}})
+	return 200, raw, nil
+}
+
+// A typed card's charge runs for the call center too (a terminal key is not
+// needed on the relay), under the keyed deadline.
+func TestRelayKeyedPayment(t *testing.T) {
+	r := newCCRig(t)
+	r.s.square = squareterm.New(func() squareterm.Sender { return keyedMain{} }, zerolog.Nop())
+	body := map[string]any{"nonce": "cnon:ok", "amount_cents": 1777, "tip_cents": 300, "idempotency_key": "sq-cc-0001", "reference_id": "ck-1"}
+	got := r.relay(t, ccAgent, "POST", "square/keyed-payments", body)
+	if got.Status != 200 || !strings.Contains(string(got.Body), `"id":"pay_1"`) {
+		t.Fatalf("keyed payment: %d %s", got.Status, got.Body)
+	}
+	if got := r.relay(t, ccCashier, "POST", "square/keyed-payments", body); got.Status != http.StatusUnauthorized {
+		t.Fatalf("a cashier's id on the relay: %d %s", got.Status, got.Body)
+	}
+	var journal []terminal.Entry
+	journal, err := r.s.terminalSvc.Journal(context.Background(), 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, e := range journal {
+		if e.Action == terminal.ActionSquareKeyed {
+			found = e.DeviceID == "callcenter:desk-2" && strings.Contains(string(e.Detail), `"staff_id":"cc-1"`)
+		}
+	}
+	if !found {
+		t.Fatalf("journal square.keyed with the seat + the agent: %+v", journal)
+	}
+	// The deadline: 10 s, 30 s for the card charge (under main's 12 s / 35 s).
+	if relayDeadline != 10*time.Second || relayDeadlineKeyed != 30*time.Second {
+		t.Fatalf("deadlines %s / %s", relayDeadline, relayDeadlineKeyed)
+	}
+	// Past it the reply is 503 timeout (the same idempotency key again is safe).
+	old := relayDeadlineKeyed
+	relayDeadlineKeyed = 40 * time.Millisecond
+	defer func() { relayDeadlineKeyed = old }()
+	r.s.square = squareterm.New(func() squareterm.Sender { return keyedMain{wait: 5 * time.Second} }, zerolog.Nop())
+	start := time.Now()
+	late := r.relay(t, ccAgent, "POST", "square/keyed-payments", body)
+	if late.Status != http.StatusServiceUnavailable || late.code() != "timeout" || time.Since(start) > 3*time.Second {
+		t.Fatalf("past the deadline: %d %s after %s", late.Status, late.Body, time.Since(start))
+	}
+}

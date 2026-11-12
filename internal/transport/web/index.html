@@ -871,9 +871,9 @@
               <template x-for="d in devices" :key="d.id">
                 <div class="li">
                   <div class="main"><b x-text="d.name"></b>
-                    <div class="small muted"><span x-text="({tablet: 'Tablet', integration: 'Store hub', terminal: 'POS terminal'})[d.kind] || d.kind"></span> · <span class="mono" x-text="d.key_prefix + '…'"></span> · <span x-text="d.revoked_at ? 'revoked ' + dateTime(d.revoked_at) : (d.last_seen_at ? 'seen ' + ago(d.last_seen_at) : 'never used')"></span><template x-if="d.app_version"><span> · <span class="mono" x-text="(d.kind === 'terminal' ? 'Centurion ' : 'Quibase ') + d.app_version"></span></span></template><template x-if="d.setup"><span> · <span :style="d.setup.outcome === 'ok' ? '' : 'color:var(--warn)'" x-text="setupLine(d.setup)"></span></span></template></div>
+                    <div class="small muted"><span x-text="({tablet: 'Tablet', integration: 'Store hub', terminal: 'POS terminal', phone: 'Cashier phone', callcenter: 'Call center (through the server, no key)'})[d.kind] || d.kind"></span> · <span class="mono" x-show="d.kind !== 'callcenter'" x-text="d.key_prefix + '… · '"></span><span x-text="d.revoked_at ? 'revoked ' + dateTime(d.revoked_at) : (d.last_seen_at ? 'seen ' + ago(d.last_seen_at) : 'never used')"></span><template x-if="d.app_version"><span> · <span class="mono" x-text="(d.kind === 'terminal' ? 'Centurion ' : 'Quibase ') + d.app_version"></span></span></template><template x-if="d.setup"><span> · <span :style="d.setup.outcome === 'ok' ? '' : 'color:var(--warn)'" x-text="setupLine(d.setup)"></span></span></template></div>
                   </div>
-                  <button type="button" class="btn" x-show="!d.revoked_at" @click="revokeDevice(d)">Revoke</button>
+                  <button type="button" class="btn" x-show="!d.revoked_at && d.kind !== 'callcenter'" @click="revokeDevice(d)">Revoke</button>
                 </div>
               </template>
               <p class="muted" x-show="devicesLoaded && !devices.length">No tablets or terminals paired yet.</p>

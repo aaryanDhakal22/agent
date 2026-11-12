@@ -8,7 +8,8 @@
     "Money: cents, positive; a payment's refund: true marks a refund (main's wire makes it negative with its tip folded in). by = who took / gave it (a key of people); approved = a manager's PIN / approval rode it.",
     "people: what main stores (role + their own limits) and the effective limits main computes and sends to the Pi (effective_limits; null = unlimited). A manager is always unlimited (their own limits are ignored, the Pi's rule). 'uma' is a cashier main sends effective_limits null for ('anyone main made unlimited', agent 2.10): Store > Staff can't make one today (main_makes false), the rule is kept so the three agree if it ever does.",
     "2026-11-12 (the owner, 'online orders = called-in orders'): a refund on an earlier day's order (not carried) is allowed with a manager (R24, R25, R33-R36: a cashier gets {manager: refund_earlier_day}; the refund lands in today's batch, drawer and Z); a tip is card only (section tips: a tip on a cash or comp payment is refused for anyone: tip_card_only when the payment is taken, not_tippable when set afterwards; main flags cash_tip if one arrives). The over-comp refusal (R14) and 'managers have no limits' stay.",
-    "tips: each case is one payment taken with its tip (payment.tip), or with tip_after true a tip set afterwards on that payment (payment = the payment tipped, tip = the tip set); pi / main as in the other sections."
+    "tips: each case is one payment taken with its tip (payment.tip), or with tip_after true a tip set afterwards on that payment (payment = the payment tipped, tip = the tip set); pi / main as in the other sections.",
+    "callcenter (CALLCENTER-PLAN.md, agent contract 2.10ab; 2026-11-12): the role `callcenter` (person 'cece': effective 0 / 0, never unlimited, their own limits ignored) works only through main's relay to the Pi, never on a store terminal. Each row is one thing the call-center app could send: action = what (the Pi's runner TestMoneyRulesCallcenter places a real order and tries it), pi = 'allow' | {refused: not_allowed_for_callcenter, what} (the Pi's 403, before any money or print) | {refused: paid_locked} (the Pi's 409). main never stores a refused one (no main flags); the terminal app never logs this role in (its runner skips the section)."
   ],
   "version": 1,
   "settings": {"cashier_refund_cents": 2000, "cashier_discount_pct": 20, "cashier_price_drop_pct": 20, "employee_meal_pct": 20},
@@ -20,6 +21,7 @@
     "mia":  {"role": "manager", "effective": null},
     "max":  {"role": "manager", "limits": {"refund_cents": 500, "discount_pct": 5}, "effective": null},
     "uma":  {"role": "cashier", "effective": null, "main_makes": false},
+    "cece": {"role": "callcenter", "limits": {"refund_cents": 9000, "discount_pct": 90}, "effective": {"refund_cents": 0, "discount_pct": 0}},
     "gone": {"role": "", "absent": true}
   },
   "effective": [
@@ -192,5 +194,26 @@
     {"id": "P08", "by": "uma", "from": 1000, "to": 100, "pi": "allow"},
     {"id": "P09", "note": "the store's X", "by": "cara", "settings": {"cashier_price_drop_pct": 50}, "from": 1000, "to": 500, "pi": "allow"},
     {"id": "P10", "by": "lena", "from": 1000, "to": 800, "pi": "allow", "note": "the price drop % is the store's, not a person's"}
+  ],
+  "callcenter": [
+    {"id": "K01", "note": "a refund on an order", "by": "cece", "action": "refund", "pi": {"refused": "not_allowed_for_callcenter", "what": "refund"}},
+    {"id": "K02", "note": "a general refund (cash back with no order): not a call-center route", "by": "cece", "action": "general_refund", "pi": {"refused": "not_allowed_for_callcenter", "what": "route"}},
+    {"id": "K03", "note": "a comp tender", "by": "cece", "action": "comp", "pi": {"refused": "not_allowed_for_callcenter", "what": "comp"}},
+    {"id": "K04", "note": "a $0 comp line", "by": "cece", "action": "comp_line", "pi": {"refused": "not_allowed_for_callcenter", "what": "comp"}},
+    {"id": "K05", "note": "a typed discount, however small", "by": "cece", "action": "discount", "pi": {"refused": "not_allowed_for_callcenter", "what": "discount"}},
+    {"id": "K06", "note": "the Employee meal is a discount too", "by": "cece", "action": "employee_meal", "pi": {"refused": "not_allowed_for_callcenter", "what": "discount"}},
+    {"id": "K07", "note": "a price drop", "by": "cece", "action": "price_drop", "pi": {"refused": "not_allowed_for_callcenter", "what": "price_change"}},
+    {"id": "K08", "note": "raising a price is a price change too", "by": "cece", "action": "price_raise", "pi": {"refused": "not_allowed_for_callcenter", "what": "price_change"}},
+    {"id": "K09", "note": "a custom line (Quicc Add / open price)", "by": "cece", "action": "open_price", "pi": {"refused": "not_allowed_for_callcenter", "what": "open_price"}},
+    {"id": "K10", "note": "a pay-out from a drawer: not a call-center route", "by": "cece", "action": "pay_out", "pi": {"refused": "not_allowed_for_callcenter", "what": "route"}},
+    {"id": "K11", "note": "the day's close: not a call-center route", "by": "cece", "action": "close", "pi": {"refused": "not_allowed_for_callcenter", "what": "route"}},
+    {"id": "K12", "note": "cash: the call center takes a typed card only", "by": "cece", "action": "cash_payment", "pi": {"refused": "not_allowed_for_callcenter", "what": "tender"}},
+    {"id": "K13", "note": "a typed card (after square/keyed-payments)", "by": "cece", "action": "typed_card_payment", "pi": "allow"},
+    {"id": "K14", "note": "a counter order: pickup and delivery only", "by": "cece", "action": "counter_order", "pi": {"refused": "not_allowed_for_callcenter", "what": "type"}},
+    {"id": "K15", "note": "a manager's PIN in the body: never", "by": "cece", "action": "manager_pin", "pi": {"refused": "not_allowed_for_callcenter", "what": "manager"}},
+    {"id": "K16", "note": "cancel an unpaid order (with a reason)", "by": "cece", "action": "void_unpaid", "pi": "allow"},
+    {"id": "K17", "note": "add a line to a paid order", "by": "cece", "action": "add_to_paid", "pi": "allow"},
+    {"id": "K18", "note": "remove a line of a paid order", "by": "cece", "action": "remove_paid_line", "pi": {"refused": "paid_locked"}},
+    {"id": "K19", "note": "remove a line of an unpaid order: cashier rules", "by": "cece", "action": "remove_unpaid_line", "pi": "allow"}
   ]
 }

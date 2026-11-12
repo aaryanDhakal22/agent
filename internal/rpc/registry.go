@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"quiccpos/agent/internal/observability"
@@ -64,12 +65,27 @@ func (r *Registry) Register(msgType string, h CommandHandler) {
 	r.mu.Unlock()
 }
 
+// AsyncOptions bound a command type that runs off the SSE reader.
+type AsyncOptions struct {
+	// Max: handlers running at once (at least 1).
+	Max int
+	// Wait: how long a command over Max waits for a slot (in its own
+	// goroutine) before it is answered Busy; 0 = answered at once.
+	Wait time.Duration
+	// MaxWaiting: commands waiting for a slot at once; one over that is
+	// answered Busy at once.
+	MaxWaiting int
+	// Busy: the reply of a command that got no slot.
+	Busy any
+}
+
 // asyncHandler is a command type that runs off the SSE reader (RegisterAsync).
 type asyncHandler struct {
-	sem  chan struct{} // in-flight bound
-	busy any           // the reply when sem is full
-	mu   sync.Mutex
-	seen map[string]time.Time // envelope ids already taken (dedupe)
+	opts    AsyncOptions
+	sem     chan struct{} // in-flight bound
+	waiting atomic.Int64  // goroutines waiting for a slot
+	mu      sync.Mutex
+	seen    map[string]time.Time // envelope ids already taken (dedupe)
 }
 
 // Async command dedupe: an envelope id is remembered this long, at most
@@ -83,20 +99,22 @@ const (
 // (terminal.relay: a relayed card payment): it runs in its own goroutine
 // and posts its reply from there, so the SSE reader goes on with the next
 // frame (orders, store_config, other commands) and the idle watchdog never
-// trips. At most max run at once; a command over that is answered busy at
-// once (never queued on the reader). An envelope id seen in the last 2 min
-// is dropped. The handler's context is not the frame's: it outlives a
-// dropped stream (the handler sets its own deadline).
-func (r *Registry) RegisterAsync(msgType string, h CommandHandler, max int, busy any) {
-	if max < 1 {
-		max = 1
+// trips. At most opts.Max run at once; a command over that waits for a slot
+// up to opts.Wait in its own goroutine (never on the reader; at most
+// opts.MaxWaiting wait) and is answered opts.Busy when it gets none. An
+// envelope id seen in the last 2 min is dropped. The handler's context is
+// not the frame's: it outlives a dropped stream (the handler sets its own
+// deadline).
+func (r *Registry) RegisterAsync(msgType string, h CommandHandler, opts AsyncOptions) {
+	if opts.Max < 1 {
+		opts.Max = 1
 	}
 	r.mu.Lock()
 	r.handlers[msgType] = h
 	if r.async == nil {
 		r.async = map[string]*asyncHandler{}
 	}
-	r.async[msgType] = &asyncHandler{sem: make(chan struct{}, max), busy: busy, seen: map[string]time.Time{}}
+	r.async[msgType] = &asyncHandler{opts: opts, sem: make(chan struct{}, opts.Max), seen: map[string]time.Time{}}
 	r.mu.Unlock()
 }
 
@@ -158,19 +176,42 @@ func (r *Registry) Handle(ctx context.Context, raw []byte) {
 		return
 	}
 	actx := context.WithoutCancel(ctx) // keeps the trace, not the frame's life
+	busy := func(why string) {
+		r.meters.RPCCommandsReceived.Add(actx, 1, metric.WithAttributes(typeAttr, attribute.String("result", "busy")))
+		r.logger.Warn().Ctx(actx).Str("type", env.Type).Int("in_flight", cap(async.sem)).Int64("waiting", async.waiting.Load()).
+			Str("why", why).Msg("too many commands in flight: answered busy")
+		r.run(actx, env, func(context.Context, json.RawMessage) (any, error) { return async.opts.Busy, nil })
+	}
 	select {
-	case async.sem <- struct{}{}:
+	case async.sem <- struct{}{}: // a free slot: nothing waits
 		safego.Go("rpc."+env.Type, func() {
 			defer func() { <-async.sem }()
 			r.run(actx, env, h)
 		})
+		return
 	default:
-		r.meters.RPCCommandsReceived.Add(ctx, 1, metric.WithAttributes(typeAttr, attribute.String("result", "busy")))
-		r.logger.Warn().Ctx(ctx).Str("type", env.Type).Int("in_flight", cap(async.sem)).Msg("too many commands in flight: answered busy")
-		safego.Go("rpc."+env.Type+".busy", func() {
-			r.run(actx, env, func(context.Context, json.RawMessage) (any, error) { return async.busy, nil })
-		})
 	}
+	if async.opts.Wait <= 0 || async.waiting.Add(1) > int64(async.opts.MaxWaiting) {
+		if async.opts.Wait > 0 {
+			async.waiting.Add(-1)
+		}
+		safego.Go("rpc."+env.Type+".busy", func() { busy("no_room_to_wait") })
+		return
+	}
+	// The wait for a slot happens here, in the command's own goroutine.
+	safego.Go("rpc."+env.Type, func() {
+		t := time.NewTimer(async.opts.Wait)
+		defer t.Stop()
+		select {
+		case async.sem <- struct{}{}:
+			async.waiting.Add(-1)
+			defer func() { <-async.sem }()
+			r.run(actx, env, h)
+		case <-t.C:
+			async.waiting.Add(-1)
+			busy("no_slot_in_time")
+		}
+	})
 }
 
 // run runs one command's handler and POSTs its reply.

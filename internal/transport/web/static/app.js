@@ -1039,7 +1039,7 @@ function agentApp() {
       return { tone: up === ps.length ? 'ok' : 'bad', t: up + ' / ' + ps.length + ' ready', s: checked ? 'checked ' + agoText(checked, this.now) : 'not checked yet' };
     },
     get tabletCard() {
-      const live = this.devices.filter(d => !d.revoked_at).sort((a, b) => ts(b.last_seen_at) - ts(a.last_seen_at));
+      const live = this.devices.filter(d => !d.revoked_at && d.kind !== 'callcenter').sort((a, b) => ts(b.last_seen_at) - ts(a.last_seen_at));
       const app = this.appLatest ? 'Quibase ' + this.appLatest.version_name + ' cached' : '';
       if (!live.length) return { tone: 'mute', t: this.devicesLoaded ? 'No tablet paired' : '—', s: app || 'Pair one in Settings → Tablets' };
       const seen = ts(live[0].last_seen_at), fresh = seen && this.now - seen < 5 * 60000;

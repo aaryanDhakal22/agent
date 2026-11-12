@@ -2,6 +2,7 @@ package terminal
 
 import (
 	"context"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -196,7 +197,7 @@ func callcenterCartGuard(a Actor, ctx pricing.Context, in Cart, stored *Cart) er
 	held := map[string]int{}
 	if stored != nil {
 		for _, l := range stored.Lines {
-			held[lineKey(l)]++
+			held[heldKey(l)]++
 		}
 	}
 	priced := func(sel pricing.Selection) string {
@@ -217,7 +218,7 @@ func callcenterCartGuard(a Actor, ctx pricing.Context, in Cart, stored *Cart) er
 		return terminal.NotAllowedPriceChange
 	}
 	for _, l := range in.Lines {
-		if k := lineKey(l); held[k] > 0 {
+		if k := heldKey(l); held[k] > 0 {
 			held[k]--
 			continue
 		}
@@ -237,6 +238,47 @@ func callcenterCartGuard(a Actor, ctx pricing.Context, in Cart, stored *Cart) er
 		}
 	}
 	return nil
+}
+
+// heldKey tells whether a cart line is one the stored order holds: a custom
+// line by its name and price, any other by what it is and what it is priced
+// at (item, choice, size, options, halves, deal picks, every price on it).
+// Quantity and note are left out, and how the sender wrote an empty list.
+func heldKey(l pricing.Line) string {
+	cents := func(p *int64) string {
+		if p == nil {
+			return "-"
+		}
+		return strconv.FormatInt(*p, 10)
+	}
+	if l.Custom {
+		name := strings.TrimSpace(l.Name)
+		if name == "" {
+			name = pricing.CustomLineName
+		}
+		return "custom\x1f" + name + "\x1f" + cents(l.PriceCents)
+	}
+	var b strings.Builder
+	sel := func(s pricing.Selection) {
+		b.WriteString(s.ItemID + "\x1f" + s.ChoiceID + "\x1f" + s.SizeID + "\x1f" + cents(s.PriceCents))
+		for _, o := range s.Options {
+			b.WriteString("\x1eo" + o.GroupID + "\x1f" + o.OptionID + "\x1f" + o.Portion + "\x1f" + o.Mode + "\x1f" + cents(o.PriceCents))
+		}
+		for _, h := range s.Halves {
+			b.WriteString("\x1eh" + h.ItemID + "\x1f" + strconv.Itoa(h.Half))
+		}
+	}
+	b.WriteString("line\x1f" + l.DealID + "\x1f")
+	if l.KeepPrice {
+		b.WriteString("keep")
+	}
+	b.WriteString("\x1f")
+	sel(l.Selection)
+	for _, pk := range l.Picks {
+		b.WriteString("\x1dp")
+		sel(pk)
+	}
+	return b.String()
 }
 
 // callcenterPlaceGuard: a new call-center order is a pickup or a delivery,

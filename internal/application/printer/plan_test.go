@@ -482,3 +482,28 @@ func TestPlanPlaced_StationsAndDeliveryCopies(t *testing.T) {
 		t.Fatalf("placed pickup: %v", kinds(tk))
 	}
 }
+
+// ModeOrderReceipt (contract 2.10ab: a call-center order has no terminal
+// printer): a delivery's Merchant + Customer Copy, anything else's customer
+// receipt, on the receipt printer; never a station ticket.
+func TestPlan_OrderReceipt(t *testing.T) {
+	roster := []RosterEntry{front, pizza, wings}
+	snap := order.Snapshot{Fulfillment: order.Fulfillment{Type: "pickup"}, Items: []order.LineItem{
+		item("Pepperoni", order.RoutingMatched, pizza.ID), item("Ranch", order.RoutingMatched, wings.ID)}}
+	tk, un := PlanFor(snap, roster, printer.ModeOrderReceipt)
+	if un != nil || len(tk) != 1 || tk[0].Kind != printer.TicketReceipt || tk[0].TargetID != front.ID {
+		t.Fatalf("a pickup: the customer receipt on the receipt printer: %+v %v", tk, un)
+	}
+	snap.Fulfillment.Type = "delivery"
+	tk, _ = PlanFor(snap, roster, printer.ModeOrderReceipt)
+	if len(tk) != 1 || tk[0].Kind != printer.TicketDeliveryCopies || tk[0].TargetID != front.ID {
+		t.Fatalf("a delivery: the delivery ticket: %+v", tk)
+	}
+	legacy := order.Snapshot{Fulfillment: order.Fulfillment{Type: "pickup"}, Items: []order.LineItem{item("Pepperoni", "", "")}}
+	if tk, _ = PlanFor(legacy, roster, printer.ModeOrderReceipt); len(tk) != 1 || tk[0].Kind != printer.TicketFull {
+		t.Fatalf("an unrouted order: the full receipt: %+v", tk)
+	}
+	if tk, _ = PlanFor(snap, nil, printer.ModeOrderReceipt); len(tk) != 0 {
+		t.Fatalf("no printers: nothing: %+v", tk)
+	}
+}

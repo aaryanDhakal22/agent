@@ -36,14 +36,22 @@ func callcenterActor(r *http.Request) (terminalApp.Actor, bool) {
 	return a, ok
 }
 
+// A relayed call's handler deadline (under main's 12 s / 35 s wait); vars
+// for the tests.
+var (
+	relayDeadline      = 10 * time.Second
+	relayDeadlineKeyed = 30 * time.Second // square/keyed-payments (Square answers slowly)
+)
+
 // Relay limits.
 const (
-	relayDeadline      = 10 * time.Second // a relayed call's handler
-	relayDeadlineKeyed = 30 * time.Second // square/keyed-payments (Square answers slowly)
-	relayMaxBody       = 256 << 10
-	// RelayMaxInFlight: relayed calls running at once (main gets `busy`
-	// over that; cmd/main.go registers the command with it).
-	RelayMaxInFlight = 8
+	relayMaxBody = 256 << 10
+	// Relayed calls running at once (cmd/main.go registers the command with
+	// these): one over RelayMaxInFlight waits for a slot up to RelayQueueWait
+	// (at most RelayMaxWaiting wait), then main gets `busy` (nothing ran).
+	RelayMaxInFlight = 16
+	RelayQueueWait   = 2 * time.Second
+	RelayMaxWaiting  = 64
 )
 
 const relayKeyedPath = "square/keyed-payments"
@@ -77,8 +85,8 @@ func relayAnswer(status int, body any) RelayReply {
 	return RelayReply{Status: status, Headers: map[string]string{}, Body: raw}
 }
 
-// RelayBusy is the reply when RelayMaxInFlight calls are running (main
-// answers the browser 503 store_offline: nothing ran).
+// RelayBusy is the reply of a call that got no slot (main answers the
+// browser 503 store_busy + Retry-After: nothing ran).
 func RelayBusy() RelayReply {
 	return relayAnswer(http.StatusServiceUnavailable, errCodeMap("The store's Pi is busy: try again.", "busy"))
 }
@@ -120,8 +128,8 @@ func (s *Server) relayHandler() http.Handler {
 	return s.relayMux
 }
 
-// relayOwn is the relay's own refusal of a call, journaled nowhere (main
-// audits callcenter.refused).
+// relayRefused is the relay's own refusal of a call (main audits
+// callcenter.refused).
 func relayRefused(what string) RelayReply {
 	e := &terminal.NotAllowedForCallcenter{What: what}
 	return relayAnswer(http.StatusForbidden, map[string]any{"error": e.Error(), "code": "not_allowed_for_callcenter", "what": what})
@@ -164,6 +172,7 @@ func (s *Server) HandleTerminalRelay(ctx context.Context, payload json.RawMessag
 		return relayAnswer(http.StatusUnauthorized, errCodeMap(terminal.ErrLoginRequired.Error(), "login_required")), nil
 	}
 	s.ensureCallcenterDevice(ctx)
+	s.touchDevice(device.CallcenterID) // last seen: the Pi page's device list
 
 	deadline := relayDeadline
 	if path == relayKeyedPath {
@@ -219,30 +228,38 @@ func (s *Server) HandleTerminalRelay(ctx context.Context, payload json.RawMessag
 	return out, nil
 }
 
-// relayCarriesManager: the body names a manager (manager_pin / approvals):
-// the call center never uses one.
+// relayCarriesManager: the body names a manager (a manager_pin that isn't
+// empty, approvals that aren't an empty list): the call center never uses
+// one.
 func relayCarriesManager(body []byte) bool {
-	if len(body) == 0 {
+	var top map[string]json.RawMessage
+	if len(body) == 0 || json.Unmarshal(body, &top) != nil {
+		return false // no body, or not an object: the handler answers
+	}
+	given := func(key string, empty ...string) bool {
+		raw, ok := top[key]
+		if !ok {
+			return false
+		}
+		v := string(bytes.TrimSpace(raw))
+		if v == "null" {
+			return false
+		}
+		for _, e := range empty {
+			if v == e {
+				return false
+			}
+		}
+		return true
+	}
+	if given("approvals", "[]") {
+		return true
+	}
+	if !given("manager_pin", `""`) {
 		return false
 	}
-	var top map[string]json.RawMessage
-	if json.Unmarshal(body, &top) != nil {
-		return false // not an object: the handler answers 400
-	}
-	if raw, ok := top["manager_pin"]; ok {
-		var pin string
-		if json.Unmarshal(raw, &pin) != nil || strings.TrimSpace(pin) != "" {
-			return string(bytes.TrimSpace(raw)) != "null"
-		}
-	}
-	if raw, ok := top["approvals"]; ok {
-		var list []json.RawMessage
-		if json.Unmarshal(raw, &list) != nil {
-			return string(bytes.TrimSpace(raw)) != "null"
-		}
-		return len(list) > 0
-	}
-	return false
+	var pin string
+	return json.Unmarshal(top["manager_pin"], &pin) != nil || strings.TrimSpace(pin) != ""
 }
 
 // --- the device ----------------------------------------------------------------------

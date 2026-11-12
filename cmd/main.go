@@ -819,7 +819,8 @@ func main() {
 	// The call center's remote terminal (contract 2.10ab): main relays the
 	// web app's calls as terminal.relay (run off the SSE reader: a relayed
 	// card payment takes seconds), and asks for the terminals' events.
-	registry.RegisterAsync(agentrpc.MsgTerminalRelay, httpServer.HandleTerminalRelay, transport.RelayMaxInFlight, transport.RelayBusy())
+	registry.RegisterAsync(agentrpc.MsgTerminalRelay, httpServer.HandleTerminalRelay, agentrpc.AsyncOptions{Max: transport.RelayMaxInFlight,
+		Wait: transport.RelayQueueWait, MaxWaiting: transport.RelayMaxWaiting, Busy: transport.RelayBusy()})
 	ccEvents := terminalApp.NewEventForwarder(func() (<-chan terminalApp.RelayEvent, func()) { return tapEvents(broker) }, registry.Report, logger)
 	registry.Register(agentrpc.MsgTerminalEventsWant, ccEvents.HandleWant)
 	httpServer.EnsureCallcenterDevice(ctx) // the store's call-center device, on a linked Pi
