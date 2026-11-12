@@ -109,7 +109,27 @@ type Settings struct {
 	// CashierPriceDropPct: a cashier lowers a rung item's price by up to
 	// this % alone; more needs a manager's PIN (missing = DefaultPriceDropPct).
 	CashierPriceDropPct *int `json:"cashier_price_drop_pct"`
+	// EmployeeMealPct: the Employee meal discount anyone logged in may give
+	// without a manager (missing = DefaultEmployeeMealPct).
+	EmployeeMealPct *int `json:"employee_meal_pct"`
 }
+
+// DefaultEmployeeMealPct is the Employee meal's percent when main's settings
+// don't say (main's own default, TERMINAL-PLAN "Preset discounts").
+const DefaultEmployeeMealPct = 50
+
+// EmployeeMealPct is how far (percent) an Employee meal goes without a
+// manager.
+func (c *Config) EmployeeMealPct() int {
+	if c != nil && c.parsed.EmployeeMealPct != nil {
+		return min(max(*c.parsed.EmployeeMealPct, 0), 100)
+	}
+	return DefaultEmployeeMealPct
+}
+
+// MayComp: a comp (tender or line) needs a manager - logged in, or anyone
+// main made unlimited; anyone else needs a manager's PIN.
+func (c *Config) MayComp(s Staff) bool { return c.LimitsOf(s).Unlimited }
 
 // DefaultPriceDropPct is the cashier's price-drop limit when main's settings
 // don't say (main's own default, TERMINAL-PLAN "Item price change").
@@ -148,6 +168,9 @@ type PriceChange struct {
 	// Approved: the same change was on the order already (a kitchen change
 	// keeps it without asking again).
 	Approved bool `json:"-"`
+	// Comp: rung at $0 on an item that costs something - a comp line, which
+	// always needs a manager (TERMINAL-PLAN "Discounts": comp items).
+	Comp bool `json:"comp,omitempty"`
 }
 
 // Key identifies a change across a placed cart and its later edits.
@@ -426,6 +449,15 @@ const (
 	ActionPriceChange = "price_change"
 	// ActionManagerCheck: POST /api/terminal/manager-check {for, ok, manager_id?}.
 	ActionManagerCheck = "manager_check"
+	// ActionEmployeeMeal: the Employee meal discount {cents, pct, reason, approved_by?}.
+	ActionEmployeeMeal = "employee_meal"
+	// ActionComp: a line rung at $0 {line, item_id, item, size_id?, from_cents, approved_by?}.
+	ActionComp = "comp"
+	// ActionPickedUp: a pickup handed over at the counter {number, source, state}.
+	ActionPickedUp = "order.picked_up"
+	// ActionDraftTakeOver: TAKE OVER of a draft open on another terminal
+	// {draft_id, from_device_id, from_staff_id}.
+	ActionDraftTakeOver = "draft.take_over"
 	// The driver view (contract §2.10b).
 	ActionDriverLinked = "driver.linked"
 	ActionDriverClaim  = "driver.claim"
@@ -436,8 +468,9 @@ const (
 
 var reserved = map[string]bool{ActionLogin: true, ActionLoginFailed: true, ActionLogout: true, ActionOrderPlaced: true,
 	ActionDiscount: true, ActionPayment: true, ActionRefund: true, ActionVoid: true, ActionOverride: true,
-	ActionPriceChange: true, ActionManagerCheck: true,
-	ActionDriverLinked: true, ActionDriverClaim: true, ActionDriverTip: true, ActionDriverClose: true, ActionDriverReport: true}
+	ActionPriceChange: true, ActionManagerCheck: true, ActionEmployeeMeal: true, ActionComp: true, ActionPickedUp: true,
+	ActionDraftTakeOver: true,
+	ActionDriverLinked:  true, ActionDriverClaim: true, ActionDriverTip: true, ActionDriverClose: true, ActionDriverReport: true}
 
 var actionRe = regexp.MustCompile(`^[a-z][a-z0-9_.]{1,39}$`)
 
@@ -494,7 +527,7 @@ var (
 // ManagerRequired: the action is over the staff member's limit and needs a
 // manager's PIN in the same request (manager_pin).
 type ManagerRequired struct {
-	Action    string // discount | refund | void | price_change
+	Action    string // discount | employee_meal | refund | void | price_change | comp
 	Limit     int64  // cents (refund, void) or percent (discount, price_change)
 	Requested int64
 }

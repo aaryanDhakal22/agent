@@ -300,6 +300,12 @@ func (r *OrderRepository) CloseBatch(ctx context.Context, force bool) (closed *o
 	ctx, _, end := dbSpan(ctx, "floor.close_batch")
 	defer end(&err)
 	now := time.Now()
+	var clearedDrafts []string
+	defer func() {
+		if err == nil && closed != nil {
+			closed.ClearedDrafts = clearedDrafts
+		}
+	}()
 	err = r.withTx(ctx, func(q *models.Queries) error {
 		b, err := q.GetOpenBatch(ctx)
 		if err != nil {
@@ -456,6 +462,12 @@ func (r *OrderRepository) CloseBatch(ctx context.Context, force bool) (closed *o
 		if err := q.ResetCounterNumber(ctx); err != nil { // terminal stage 0d: counter orders start again too
 			return err
 		}
+		// The terminals' shared drafts never outlive the batch (contract 2.10i).
+		cleared, err := q.ClearTerminalDrafts(ctx)
+		if err != nil {
+			return err
+		}
+		clearedDrafts = cleared
 		outDrivers, err := q.ListActiveDrivers(ctx)
 		if err != nil {
 			return err

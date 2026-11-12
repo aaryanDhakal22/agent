@@ -20,23 +20,44 @@ type Cart struct {
 	Discount *Discount `json:"discount,omitempty"`
 }
 
-// Discount is a manual discount on the food: a percent OR an amount, with a
-// reason. Over the staff member's discount_pct it needs a manager's PIN.
+// Discount is a discount on the food: a percent OR an amount, with a
+// reason. Kind "manual" (or none) is a typed discount: over the staff
+// member's discount_pct it needs a manager's PIN. Kind "employee_meal" is the
+// store's Employee meal: up to main's employee_meal_pct (default 50) without
+// a manager, whoever is logged in (contract §2.10i).
 type Discount struct {
 	Pct         int    `json:"pct,omitempty"`
 	AmountCents int64  `json:"amount_cents,omitempty"`
 	Reason      string `json:"reason"`
+	Kind        string `json:"kind,omitempty"`
 }
+
+// Discount kinds.
+const (
+	KindManual       = "manual"
+	KindEmployeeMeal = "employee_meal"
+)
+
+// employeeMeal: the Employee meal preset.
+func (d *Discount) employeeMeal() bool { return d != nil && d.Kind == KindEmployeeMeal }
 
 func (d *Discount) check() error {
 	if d == nil {
 		return nil
+	}
+	switch d.Kind {
+	case "", KindManual, KindEmployeeMeal:
+	default:
+		return fmt.Errorf("discount kind is manual or employee_meal")
 	}
 	switch {
 	case (d.Pct > 0) == (d.AmountCents > 0):
 		return fmt.Errorf("a discount is a pct (1-100) or an amount_cents, not both")
 	case d.Pct < 0 || d.Pct > 100 || d.AmountCents < 0:
 		return fmt.Errorf("discount pct is 1-100, amount_cents above 0")
+	}
+	if d.employeeMeal() && strings.TrimSpace(d.Reason) == "" {
+		d.Reason = "Employee meal"
 	}
 	r := strings.TrimSpace(d.Reason)
 	if r == "" || utf8.RuneCountInString(r) > 140 {
@@ -45,7 +66,8 @@ func (d *Discount) check() error {
 	return nil
 }
 
-// DiscountManual is Discount.type of the manual discount on a quote / order.
+// DiscountManual is Discount.type of the manual discount (and the Employee
+// meal, told apart by its label) on a quote / order.
 const DiscountManual = "manual"
 
 // priced is a quote with the manual discount applied.
@@ -103,7 +125,12 @@ func priceCart(menu *terminal.CounterMenu, tz *time.Location, typ string, c Cart
 				cut = (q.TaxCents*amt + food/2) / food
 			}
 			label := fmt.Sprintf("Discount: %s", strings.TrimSpace(d.Reason))
-			if d.Pct > 0 {
+			switch {
+			case d.employeeMeal() && d.Pct > 0:
+				label = fmt.Sprintf("Employee meal %d%%", d.Pct)
+			case d.employeeMeal():
+				label = "Employee meal"
+			case d.Pct > 0:
 				label = fmt.Sprintf("Discount %d%%: %s", d.Pct, strings.TrimSpace(d.Reason))
 			}
 			q.Discounts = append(q.Discounts, pricing.Discount{Type: DiscountManual, Label: label, AmountCents: amt})
@@ -130,7 +157,7 @@ func priceChanges(c pricing.Cart, q pricing.Quote) []terminal.PriceChange {
 		}
 		from, to := *q.Lines[i].ListCents, *l.PriceCents
 		out = append(out, terminal.PriceChange{Line: i, ItemID: l.ItemID, SizeID: l.SizeID, ChoiceID: l.ChoiceID, Name: q.Lines[i].Name,
-			FromCents: from, ToCents: to, DropPct: terminal.DropPctOf(from, to)})
+			FromCents: from, ToCents: to, DropPct: terminal.DropPctOf(from, to), Comp: to == 0 && from > 0})
 	}
 	return out
 }

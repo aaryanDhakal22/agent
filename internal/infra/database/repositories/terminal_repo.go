@@ -207,8 +207,12 @@ func (r *OrderRepository) CounterOrders(ctx context.Context) (out []order.Stored
 }
 
 // applyPayments appends payments to a counter order's snapshot (money
-// columns too) and stores them.
+// columns too) and stores them. An online pickup's snapshot stays main's:
+// only its money columns move (applyOnlinePayments).
 func applyPayments(ctx context.Context, q *models.Queries, so order.StoredOrder, pays []terminal.Payment, now time.Time) (order.Snapshot, error) {
+	if so.Order.Source != order.SourceCounter {
+		return so.Order, applyOnlinePayments(ctx, q, so, pays, now)
+	}
 	snap := so.Order
 	for _, p := range pays {
 		if err := insertPayment(ctx, q, p); err != nil {
@@ -232,6 +236,36 @@ func applyPayments(ctx context.Context, q *models.Queries, so order.StoredOrder,
 	err = q.SetCounterMoney(ctx, models.SetCounterMoneyParams{Snapshot: string(raw), Paid: due == 0,
 		CashDueCents: sql.NullInt64{Int64: due, Valid: true}, TipCents: sql.NullInt64{Int64: tipsOf(ctx, q, so.Order.ID), Valid: true}, PaidAt: paidAt, ID: so.Order.ID})
 	return snap, err
+}
+
+// applyOnlinePayments stores payments a terminal took on an online pickup:
+// the balance is the snapshot's cash due (the one cash rule) less what the
+// terminals took; the snapshot itself is never rewritten.
+func applyOnlinePayments(ctx context.Context, q *models.Queries, so order.StoredOrder, pays []terminal.Payment, now time.Time) error {
+	for _, p := range pays {
+		if err := insertPayment(ctx, q, p); err != nil {
+			return err
+		}
+	}
+	all, err := listPayments(ctx, q, so.Order.ID)
+	if err != nil {
+		return err
+	}
+	var net, tips int64
+	for _, p := range all {
+		a, t := p.Signed()
+		net, tips = net+a, tips+t
+	}
+	due := max(so.Order.CashDue()-net, 0)
+	paidAt := sql.NullString{}
+	switch {
+	case due == 0 && so.Status.PaidAt != nil:
+		paidAt = nullTS(*so.Status.PaidAt)
+	case due == 0:
+		paidAt = nullTS(now)
+	}
+	return q.SetTerminalPaidMoney(ctx, models.SetTerminalPaidMoneyParams{Paid: due == 0,
+		CashDueCents: sql.NullInt64{Int64: due, Valid: true}, TipCents: sql.NullInt64{Int64: tips, Valid: true}, PaidAt: paidAt, ID: so.Order.ID})
 }
 
 // tipsOf is the net tip taken with a counter order's payments.
@@ -260,7 +294,9 @@ func (r *OrderRepository) AddCounterPayment(ctx context.Context, orderID, client
 		if err != nil {
 			return err
 		}
-		if cur.Order.Source != order.SourceCounter {
+		// A counter order, or (contract 2.10i) an online / website pickup
+		// with cash to collect at the counter.
+		if cur.Order.Source != order.SourceCounter && !terminal.IsPickup(cur) {
 			return terminal.ErrNotCounterOrder
 		}
 		if clientKey != "" {
@@ -279,6 +315,9 @@ func (r *OrderRepository) AddCounterPayment(ctx context.Context, orderID, client
 		}
 		if cur.Status.BatchID != b.ID || cur.Status.State == order.StateCancelled {
 			return terminal.ErrNotPayable
+		}
+		if cur.Order.Source != order.SourceCounter && !terminal.OnPickupStates(cur) {
+			return terminal.ErrNotPayable // an online order still ringing, picked up, ...
 		}
 		paid, err := listPayments(ctx, q, orderID)
 		if err != nil {

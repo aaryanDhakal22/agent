@@ -137,16 +137,11 @@ func (s *Service) ChangeCart(ctx context.Context, a Actor, id string, in ChangeI
 	if len(p.cart.Lines) == 0 {
 		return nil, badRequest("an order keeps at least one line (void it instead)")
 	}
-	var need *terminal.ManagerRequired
-	if p.manualCents > 0 {
-		if lim := cfg.LimitsOf(st); !withinDiscount(lim, p.manualPct) {
-			need = &terminal.ManagerRequired{Action: terminal.ActionDiscount, Limit: int64(lim.DiscountPct), Requested: int64(p.manualPct)}
-		}
-	}
-	// A price change the order had already (same item, size and price) was
-	// approved then: only new ones are checked and journaled.
-	priceNeed := checkPrices(cfg, st, p.changes, keptPrices(cur.Order.Order))
-	approver, overrides, err := s.approve(a, st, cfg, in.ManagerPIN, id, need, priceNeed)
+	need := discountNeed(cfg, st, in.Cart.Discount, p)
+	// A price change (or comp line) the order had already (same item, size
+	// and price) was approved then: only new ones are checked and journaled.
+	priceNeed, compNeed := checkPrices(cfg, st, p.changes, keptPrices(cur.Order.Order))
+	approver, overrides, err := s.approve(a, st, cfg, in.ManagerPIN, id, need, priceNeed, compNeed)
 	if err != nil {
 		return nil, err
 	}

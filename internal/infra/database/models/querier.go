@@ -31,6 +31,8 @@ type Querier interface {
 	// Unlink / definitive revoke: drop the store key AND the local password + hint
 	// in one statement, back to the blank "paste a token" state.
 	ClearProvisioning(ctx context.Context) error
+	// Close batch: every shared draft goes (their ids are announced).
+	ClearTerminalDrafts(ctx context.Context) ([]string, error)
 	ClockOutDriver(ctx context.Context, id string) (int64, error)
 	CloseBatch(ctx context.Context, arg CloseBatchParams) error
 	CloseShift(ctx context.Context, arg CloseShiftParams) error
@@ -44,6 +46,7 @@ type Querier interface {
 	// Metrics: floor.orders.open (open batch, by state and online/POS; POS
 	// counter checks with no kitchen item are left out, as on Kitchen).
 	CountOpenFloorOrders(ctx context.Context) ([]CountOpenFloorOrdersRow, error)
+	CountTerminalDrafts(ctx context.Context, locationID string) (int64, error)
 	CountUnsyncedFloorEvents(ctx context.Context) (int64, error)
 	CreateDriver(ctx context.Context, arg CreateDriverParams) error
 	// Paired devices (counter tablets) -------------------------------------------
@@ -61,6 +64,7 @@ type Querier interface {
 	// Retention: the payments of trimmed counter orders.
 	DeleteOrphanOrderPayments(ctx context.Context) error
 	DeleteOrphanOrderTimes(ctx context.Context) error
+	DeleteTerminalDraft(ctx context.Context, id string) (int64, error)
 	// A driver is linked to one staff member at a time.
 	DeleteTerminalDriverLinkOfDriver(ctx context.Context, arg DeleteTerminalDriverLinkOfDriverParams) error
 	// A POS check that was never on Kitchen (board hidden) closed at the POS:
@@ -109,6 +113,8 @@ type Querier interface {
 	GetStoreAPIKey(ctx context.Context) (string, error)
 	// Store config (starter pack from main/'s SSE handshake) --------------------
 	GetStoreConfig(ctx context.Context) (GetStoreConfigRow, error)
+	// The terminals' shared drafts (00027, contract 2.10i) -------------------------
+	GetTerminalDraft(ctx context.Context, id string) (TerminalDraft, error)
 	// Terminal driver view + batch auto-close (00026_terminal_driver) ----------------
 	GetTerminalDriverLink(ctx context.Context, staffID string) (string, error)
 	// ===== 00025 terminal (stage 0d): the Pi serves the store's POS terminals =====
@@ -169,6 +175,9 @@ type Querier interface {
 	// Arrived orders older than the cutoff that haven't been alerted since the cutoff.
 	ListOverdueArrived(ctx context.Context, cutoff string) ([]Order, error)
 	ListPairedDevices(ctx context.Context) ([]PairedDevice, error)
+	// The terminals' Pickup list (contract 2.10i): a batch's pickup / counter orders of
+	// every source but the old POS, oldest first (the service filters states).
+	ListPickupOrders(ctx context.Context, batchID int64) ([]Order, error)
 	ListPoolByDriver(ctx context.Context, poolDriverID sql.NullString) ([]Order, error)
 	// Printer MACs (2.0.6) --------------------------------------------------------
 	ListPrinterMACs(ctx context.Context) ([]PrinterMac, error)
@@ -179,6 +188,7 @@ type Querier interface {
 	// Driver report: shifts that overlap a batch window (opened_at .. closed_at).
 	ListShiftsOverlapping(ctx context.Context, arg ListShiftsOverlappingParams) ([]DriverShift, error)
 	ListShiftsSince(ctx context.Context, clockIn string) ([]DriverShift, error)
+	ListTerminalDrafts(ctx context.Context, locationID string) ([]TerminalDraft, error)
 	ListTerminalDriverLinks(ctx context.Context) ([]ListTerminalDriverLinksRow, error)
 	ListUnsyncedFloorEvents(ctx context.Context, limit int64) ([]FloorEvent, error)
 	// 2.5.0 Close batch: main charges everything left, every tip is final.
@@ -328,6 +338,9 @@ type Querier interface {
 	SetRunSeq(ctx context.Context, arg SetRunSeqParams) error
 	SetSessionSecret(ctx context.Context, sessionSecret string) error
 	SetStoreAPIKey(ctx context.Context, storeApiKey string) error
+	// A payment taken at a terminal on an online pickup (contract 2.10i): the
+	// money columns only; the snapshot stays main's.
+	SetTerminalPaidMoney(ctx context.Context, arg SetTerminalPaidMoneyParams) error
 	SetUIPassword(ctx context.Context, arg SetUIPasswordParams) error
 	SetUpdateJob(ctx context.Context, updateJob string) error
 	SetUpdateLastSuccess(ctx context.Context, updateLastSuccess string) error
@@ -358,6 +371,7 @@ type Querier interface {
 	UpsertOrderTime(ctx context.Context, arg UpsertOrderTimeParams) error
 	UpsertPrinterMAC(ctx context.Context, arg UpsertPrinterMACParams) error
 	UpsertStoreConfig(ctx context.Context, argContext string) error
+	UpsertTerminalDraft(ctx context.Context, arg UpsertTerminalDraftParams) error
 	UpsertTerminalDriverLink(ctx context.Context, arg UpsertTerminalDriverLinkParams) error
 }
 

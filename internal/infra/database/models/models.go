@@ -269,6 +269,24 @@ type StoreConfig struct {
 	UpdatedAt string `json:"updated_at"`
 }
 
+type TerminalDraft struct {
+	ID               string `json:"id"`
+	LocationID       string `json:"location_id"`
+	Type             string `json:"type"`
+	Name             string `json:"name"`
+	Held             bool   `json:"held"`
+	HolderDeviceID   string `json:"holder_device_id"`
+	HolderDeviceName string `json:"holder_device_name"`
+	HolderStaffID    string `json:"holder_staff_id"`
+	HolderStaffName  string `json:"holder_staff_name"`
+	StaffID          string `json:"staff_id"`
+	StaffName        string `json:"staff_name"`
+	OrderID          string `json:"order_id"`
+	Draft            string `json:"draft"`
+	CreatedAt        string `json:"created_at"`
+	UpdatedAt        string `json:"updated_at"`
+}
+
 type TerminalDriverLink struct {
 	StaffID  string `json:"staff_id"`
 	DriverID string `json:"driver_id"`

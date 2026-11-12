@@ -48,7 +48,17 @@ func (s *Server) terminalError(w http.ResponseWriter, r *http.Request, err error
 	var mgr *terminal.ManagerRequired
 	var thr *terminal.Throttled
 	var cart *terminal.CartInvalid
+	var oe *terminal.OpenElsewhere
+	var due *terminal.CashDue
 	switch {
+	case errors.As(err, &oe):
+		s.writeJSON(w, http.StatusConflict, map[string]any{"error": err.Error(), "code": "open_elsewhere", "holder": oe.Holder})
+	case errors.As(err, &due):
+		s.writeJSON(w, http.StatusConflict, map[string]any{"error": err.Error(), "code": "cash_due", "balance_cents": due.BalanceCents})
+	case errors.Is(err, terminal.ErrNotPickable):
+		s.writeJSON(w, http.StatusConflict, errCodeMap(err.Error(), "not_pickable"))
+	case errors.Is(err, terminal.ErrTooManyDrafts):
+		s.writeJSON(w, http.StatusConflict, errCodeMap(err.Error(), "too_many_drafts"))
 	case errors.As(err, &mgr):
 		s.writeJSON(w, http.StatusForbidden, map[string]any{"error": err.Error(), "code": "manager_required",
 			"action": mgr.Action, "limit": mgr.Limit, "requested": mgr.Requested})
@@ -313,4 +323,72 @@ func (s *Server) handleTerminalJournal(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.writeJSON(w, http.StatusOK, list)
+}
+
+// GET /api/terminal/pickups - the Pickup list, every source (§2.10i).
+func (s *Server) handleTerminalPickups(w http.ResponseWriter, r *http.Request) {
+	if !s.terminalReady(w) {
+		return
+	}
+	v, err := s.terminalSvc.Pickups(r.Context())
+	if err != nil {
+		s.terminalError(w, r, err)
+		return
+	}
+	s.writeJSON(w, http.StatusOK, v)
+}
+
+// POST /api/terminal/orders/{id}/picked-up
+func (s *Server) handleTerminalPickedUp(w http.ResponseWriter, r *http.Request) {
+	if !s.terminalReady(w) {
+		return
+	}
+	v, err := s.terminalSvc.PickedUp(r.Context(), actor(r), r.PathValue("id"))
+	if err != nil {
+		s.terminalError(w, r, err)
+		return
+	}
+	s.writeJSON(w, http.StatusOK, v)
+}
+
+// GET /api/terminal/drafts
+func (s *Server) handleTerminalDrafts(w http.ResponseWriter, r *http.Request) {
+	if !s.terminalReady(w) {
+		return
+	}
+	v, err := s.terminalSvc.Drafts(r.Context())
+	if err != nil {
+		s.terminalError(w, r, err)
+		return
+	}
+	s.writeJSON(w, http.StatusOK, v)
+}
+
+// PUT /api/terminal/drafts/{id}
+func (s *Server) handleTerminalPutDraft(w http.ResponseWriter, r *http.Request) {
+	if !s.terminalReady(w) {
+		return
+	}
+	var in terminalApp.DraftIn
+	if !s.decodeTerminal(w, r, &in) {
+		return
+	}
+	v, err := s.terminalSvc.PutDraft(r.Context(), actor(r), r.PathValue("id"), in)
+	if err != nil {
+		s.terminalError(w, r, err)
+		return
+	}
+	s.writeJSON(w, http.StatusOK, v)
+}
+
+// DELETE /api/terminal/drafts/{id}
+func (s *Server) handleTerminalDeleteDraft(w http.ResponseWriter, r *http.Request) {
+	if !s.terminalReady(w) {
+		return
+	}
+	if err := s.terminalSvc.DeleteDraft(r.Context(), actor(r), r.PathValue("id")); err != nil {
+		s.terminalError(w, r, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }

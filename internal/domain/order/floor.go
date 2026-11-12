@@ -15,6 +15,9 @@ type Batch struct {
 	OpenedAt   time.Time  `json:"opened_at"`
 	ClosedAt   *time.Time `json:"closed_at,omitempty"`
 	OrderCount int64      `json:"order_count"`
+	// ClearedDrafts: the terminals' shared drafts Close batch deleted (their
+	// removal is announced; never on the wire).
+	ClearedDrafts []string `json:"-"`
 }
 
 // Driver statuses: off = clocked out (not in the queue), available = clocked

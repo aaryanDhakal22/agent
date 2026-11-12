@@ -192,6 +192,34 @@ func (q *Queries) ClearProvisioning(ctx context.Context) error {
 	return err
 }
 
+const clearTerminalDrafts = `-- name: ClearTerminalDrafts :many
+DELETE FROM terminal_drafts RETURNING id
+`
+
+// Close batch: every shared draft goes (their ids are announced).
+func (q *Queries) ClearTerminalDrafts(ctx context.Context) ([]string, error) {
+	rows, err := q.db.QueryContext(ctx, clearTerminalDrafts)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const clockOutDriver = `-- name: ClockOutDriver :execrows
 UPDATE drivers SET status = 'off' WHERE id = ? AND status = 'available'
 `
@@ -384,6 +412,17 @@ func (q *Queries) CountOpenFloorOrders(ctx context.Context) ([]CountOpenFloorOrd
 	return items, nil
 }
 
+const countTerminalDrafts = `-- name: CountTerminalDrafts :one
+SELECT CAST(count(*) AS INTEGER) FROM terminal_drafts WHERE location_id = ?
+`
+
+func (q *Queries) CountTerminalDrafts(ctx context.Context, locationID string) (int64, error) {
+	row := q.db.QueryRowContext(ctx, countTerminalDrafts, locationID)
+	var column_1 int64
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
 const countUnsyncedFloorEvents = `-- name: CountUnsyncedFloorEvents :one
 SELECT count(*) FROM floor_events WHERE synced_at IS NULL
 `
@@ -560,6 +599,18 @@ WHERE a NOT IN (SELECT id FROM orders) OR b NOT IN (SELECT id FROM orders)
 func (q *Queries) DeleteOrphanOrderTimes(ctx context.Context) error {
 	_, err := q.db.ExecContext(ctx, deleteOrphanOrderTimes)
 	return err
+}
+
+const deleteTerminalDraft = `-- name: DeleteTerminalDraft :execrows
+DELETE FROM terminal_drafts WHERE id = ?
+`
+
+func (q *Queries) DeleteTerminalDraft(ctx context.Context, id string) (int64, error) {
+	result, err := q.db.ExecContext(ctx, deleteTerminalDraft, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
 
 const deleteTerminalDriverLinkOfDriver = `-- name: DeleteTerminalDriverLinkOfDriver :exec
@@ -1371,6 +1422,35 @@ func (q *Queries) GetStoreConfig(ctx context.Context) (GetStoreConfigRow, error)
 	row := q.db.QueryRowContext(ctx, getStoreConfig)
 	var i GetStoreConfigRow
 	err := row.Scan(&i.Context, &i.UpdatedAt)
+	return i, err
+}
+
+const getTerminalDraft = `-- name: GetTerminalDraft :one
+
+SELECT id, location_id, type, name, held, holder_device_id, holder_device_name, holder_staff_id, holder_staff_name, staff_id, staff_name, order_id, draft, created_at, updated_at FROM terminal_drafts WHERE id = ?
+`
+
+// The terminals' shared drafts (00027, contract 2.10i) -------------------------
+func (q *Queries) GetTerminalDraft(ctx context.Context, id string) (TerminalDraft, error) {
+	row := q.db.QueryRowContext(ctx, getTerminalDraft, id)
+	var i TerminalDraft
+	err := row.Scan(
+		&i.ID,
+		&i.LocationID,
+		&i.Type,
+		&i.Name,
+		&i.Held,
+		&i.HolderDeviceID,
+		&i.HolderDeviceName,
+		&i.HolderStaffID,
+		&i.HolderStaffName,
+		&i.StaffID,
+		&i.StaffName,
+		&i.OrderID,
+		&i.Draft,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
 	return i, err
 }
 
@@ -3371,6 +3451,103 @@ func (q *Queries) ListPairedDevices(ctx context.Context) ([]PairedDevice, error)
 	return items, nil
 }
 
+const listPickupOrders = `-- name: ListPickupOrders :many
+SELECT id, tenant_id, location_id, source, source_event_id, snapshot, state, arrival_date, printed_date, batch_id, kitchen_number, prep_minutes, estimated_ready_at, accepted_at, ready_at, out_at, delivered_at, driver_id, driver_name, last_alert_at, cancelled_at, accept_pending, pool_driver_id, pooled_at, pool_seq, pool_plan_id, ext_source, ext_ref, ext_hash, ext_driver_pos, display_number, paid, cash_due_cents, tip_cents, board_hidden, sent_at, local_only, flag, pos_check_number, pos_driver_note, scheduled_lead_minutes, ring_at, rerung, auto_accepted, came_back, not_delivered_action, not_delivered_at, not_delivered_driver_id, run_seq, finished_at, finished_by, pos_closed, pos_change, marked_delivered, paid_at, early_kitchen, early_receipt, due_override, made_now, added_tip_cents, tip_locked, cancel_reason, client_key, door_tip_cents FROM orders
+WHERE batch_id = ? AND ext_source = ''
+  AND COALESCE(json_extract(snapshot, '$.fulfillment.type'), '') <> 'delivery'
+ORDER BY arrival_date, id
+`
+
+// The terminals' Pickup list (contract 2.10i): a batch's pickup / counter orders of
+// every source but the old POS, oldest first (the service filters states).
+func (q *Queries) ListPickupOrders(ctx context.Context, batchID int64) ([]Order, error) {
+	rows, err := q.db.QueryContext(ctx, listPickupOrders, batchID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Order
+	for rows.Next() {
+		var i Order
+		if err := rows.Scan(
+			&i.ID,
+			&i.TenantID,
+			&i.LocationID,
+			&i.Source,
+			&i.SourceEventID,
+			&i.Snapshot,
+			&i.State,
+			&i.ArrivalDate,
+			&i.PrintedDate,
+			&i.BatchID,
+			&i.KitchenNumber,
+			&i.PrepMinutes,
+			&i.EstimatedReadyAt,
+			&i.AcceptedAt,
+			&i.ReadyAt,
+			&i.OutAt,
+			&i.DeliveredAt,
+			&i.DriverID,
+			&i.DriverName,
+			&i.LastAlertAt,
+			&i.CancelledAt,
+			&i.AcceptPending,
+			&i.PoolDriverID,
+			&i.PooledAt,
+			&i.PoolSeq,
+			&i.PoolPlanID,
+			&i.ExtSource,
+			&i.ExtRef,
+			&i.ExtHash,
+			&i.ExtDriverPos,
+			&i.DisplayNumber,
+			&i.Paid,
+			&i.CashDueCents,
+			&i.TipCents,
+			&i.BoardHidden,
+			&i.SentAt,
+			&i.LocalOnly,
+			&i.Flag,
+			&i.PosCheckNumber,
+			&i.PosDriverNote,
+			&i.ScheduledLeadMinutes,
+			&i.RingAt,
+			&i.Rerung,
+			&i.AutoAccepted,
+			&i.CameBack,
+			&i.NotDeliveredAction,
+			&i.NotDeliveredAt,
+			&i.NotDeliveredDriverID,
+			&i.RunSeq,
+			&i.FinishedAt,
+			&i.FinishedBy,
+			&i.PosClosed,
+			&i.PosChange,
+			&i.MarkedDelivered,
+			&i.PaidAt,
+			&i.EarlyKitchen,
+			&i.EarlyReceipt,
+			&i.DueOverride,
+			&i.MadeNow,
+			&i.AddedTipCents,
+			&i.TipLocked,
+			&i.CancelReason,
+			&i.ClientKey,
+			&i.DoorTipCents,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listPoolByDriver = `-- name: ListPoolByDriver :many
 SELECT id, tenant_id, location_id, source, source_event_id, snapshot, state, arrival_date, printed_date, batch_id, kitchen_number, prep_minutes, estimated_ready_at, accepted_at, ready_at, out_at, delivered_at, driver_id, driver_name, last_alert_at, cancelled_at, accept_pending, pool_driver_id, pooled_at, pool_seq, pool_plan_id, ext_source, ext_ref, ext_hash, ext_driver_pos, display_number, paid, cash_due_cents, tip_cents, board_hidden, sent_at, local_only, flag, pos_check_number, pos_driver_note, scheduled_lead_minutes, ring_at, rerung, auto_accepted, came_back, not_delivered_action, not_delivered_at, not_delivered_driver_id, run_seq, finished_at, finished_by, pos_closed, pos_change, marked_delivered, paid_at, early_kitchen, early_receipt, due_override, made_now, added_tip_cents, tip_locked, cancel_reason, client_key, door_tip_cents FROM orders WHERE pool_driver_id = ?
 ORDER BY pool_seq IS NULL, pool_seq ASC, pooled_at ASC, arrival_date ASC
@@ -3638,6 +3815,49 @@ func (q *Queries) ListShiftsSince(ctx context.Context, clockIn string) ([]Driver
 			&i.ClockIn,
 			&i.ClockOut,
 			&i.AutoOut,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listTerminalDrafts = `-- name: ListTerminalDrafts :many
+SELECT id, location_id, type, name, held, holder_device_id, holder_device_name, holder_staff_id, holder_staff_name, staff_id, staff_name, order_id, draft, created_at, updated_at FROM terminal_drafts WHERE location_id = ? ORDER BY created_at, id
+`
+
+func (q *Queries) ListTerminalDrafts(ctx context.Context, locationID string) ([]TerminalDraft, error) {
+	rows, err := q.db.QueryContext(ctx, listTerminalDrafts, locationID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []TerminalDraft
+	for rows.Next() {
+		var i TerminalDraft
+		if err := rows.Scan(
+			&i.ID,
+			&i.LocationID,
+			&i.Type,
+			&i.Name,
+			&i.Held,
+			&i.HolderDeviceID,
+			&i.HolderDeviceName,
+			&i.HolderStaffID,
+			&i.HolderStaffName,
+			&i.StaffID,
+			&i.StaffName,
+			&i.OrderID,
+			&i.Draft,
+			&i.CreatedAt,
+			&i.UpdatedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -5268,6 +5488,33 @@ func (q *Queries) SetStoreAPIKey(ctx context.Context, storeApiKey string) error 
 	return err
 }
 
+const setTerminalPaidMoney = `-- name: SetTerminalPaidMoney :exec
+UPDATE orders SET paid = ?1, cash_due_cents = ?2, tip_cents = ?3,
+    paid_at = ?4
+WHERE id = ?5
+`
+
+type SetTerminalPaidMoneyParams struct {
+	Paid         bool           `json:"paid"`
+	CashDueCents sql.NullInt64  `json:"cash_due_cents"`
+	TipCents     sql.NullInt64  `json:"tip_cents"`
+	PaidAt       sql.NullString `json:"paid_at"`
+	ID           string         `json:"id"`
+}
+
+// A payment taken at a terminal on an online pickup (contract 2.10i): the
+// money columns only; the snapshot stays main's.
+func (q *Queries) SetTerminalPaidMoney(ctx context.Context, arg SetTerminalPaidMoneyParams) error {
+	_, err := q.db.ExecContext(ctx, setTerminalPaidMoney,
+		arg.Paid,
+		arg.CashDueCents,
+		arg.TipCents,
+		arg.PaidAt,
+		arg.ID,
+	)
+	return err
+}
+
 const setUIPassword = `-- name: SetUIPassword :exec
 UPDATE settings
 SET ui_password_hash = ?, ui_password_hint = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
@@ -5579,6 +5826,58 @@ ON CONFLICT (id) DO UPDATE SET
 
 func (q *Queries) UpsertStoreConfig(ctx context.Context, argContext string) error {
 	_, err := q.db.ExecContext(ctx, upsertStoreConfig, argContext)
+	return err
+}
+
+const upsertTerminalDraft = `-- name: UpsertTerminalDraft :exec
+INSERT INTO terminal_drafts (id, location_id, type, name, held, holder_device_id, holder_device_name, holder_staff_id,
+                             holder_staff_name, staff_id, staff_name, order_id, draft, created_at, updated_at)
+VALUES (?1, ?2, ?3, ?4, ?5, ?6,
+        ?7, ?8, ?9, ?10,
+        ?11, ?12, ?13, ?14, ?15)
+ON CONFLICT (id) DO UPDATE SET
+    type = excluded.type, name = excluded.name, held = excluded.held, holder_device_id = excluded.holder_device_id,
+    holder_device_name = excluded.holder_device_name, holder_staff_id = excluded.holder_staff_id,
+    holder_staff_name = excluded.holder_staff_name, staff_id = excluded.staff_id, staff_name = excluded.staff_name,
+    order_id = excluded.order_id, draft = excluded.draft, updated_at = excluded.updated_at
+`
+
+type UpsertTerminalDraftParams struct {
+	ID               string `json:"id"`
+	LocationID       string `json:"location_id"`
+	Type             string `json:"type"`
+	Name             string `json:"name"`
+	Held             bool   `json:"held"`
+	HolderDeviceID   string `json:"holder_device_id"`
+	HolderDeviceName string `json:"holder_device_name"`
+	HolderStaffID    string `json:"holder_staff_id"`
+	HolderStaffName  string `json:"holder_staff_name"`
+	StaffID          string `json:"staff_id"`
+	StaffName        string `json:"staff_name"`
+	OrderID          string `json:"order_id"`
+	Draft            string `json:"draft"`
+	CreatedAt        string `json:"created_at"`
+	UpdatedAt        string `json:"updated_at"`
+}
+
+func (q *Queries) UpsertTerminalDraft(ctx context.Context, arg UpsertTerminalDraftParams) error {
+	_, err := q.db.ExecContext(ctx, upsertTerminalDraft,
+		arg.ID,
+		arg.LocationID,
+		arg.Type,
+		arg.Name,
+		arg.Held,
+		arg.HolderDeviceID,
+		arg.HolderDeviceName,
+		arg.HolderStaffID,
+		arg.HolderStaffName,
+		arg.StaffID,
+		arg.StaffName,
+		arg.OrderID,
+		arg.Draft,
+		arg.CreatedAt,
+		arg.UpdatedAt,
+	)
 	return err
 }
 

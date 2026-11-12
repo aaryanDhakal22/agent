@@ -257,6 +257,10 @@ func toStored(row models.Order) (order.StoredOrder, error) {
 		st.CashDueCents = s.CashDue() // the one cash rule
 		if row.Source == order.SourceCounter {
 			st.TipCents = row.TipCents.Int64 // tips taken at the terminal
+		} else if row.CashDueCents.Valid {
+			// An online pickup a terminal took money on (contract 2.10i): the
+			// balance left after those payments (the snapshot stays main's).
+			st.CashDueCents, st.TipCents = row.CashDueCents.Int64, row.TipCents.Int64
 		}
 	}
 	if row.Flag != "" {

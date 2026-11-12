@@ -1056,3 +1056,48 @@ SELECT auto_close_last FROM settings WHERE id = 1;
 
 -- name: SetAutoCloseLast :exec
 UPDATE settings SET auto_close_last = ? WHERE id = 1;
+
+-- The terminals' shared drafts (00027, contract 2.10i) -------------------------
+
+-- name: GetTerminalDraft :one
+SELECT * FROM terminal_drafts WHERE id = ?;
+
+-- name: ListTerminalDrafts :many
+SELECT * FROM terminal_drafts WHERE location_id = ? ORDER BY created_at, id;
+
+-- name: CountTerminalDrafts :one
+SELECT CAST(count(*) AS INTEGER) FROM terminal_drafts WHERE location_id = ?;
+
+-- name: UpsertTerminalDraft :exec
+INSERT INTO terminal_drafts (id, location_id, type, name, held, holder_device_id, holder_device_name, holder_staff_id,
+                             holder_staff_name, staff_id, staff_name, order_id, draft, created_at, updated_at)
+VALUES (sqlc.arg(id), sqlc.arg(location_id), sqlc.arg(type), sqlc.arg(name), sqlc.arg(held), sqlc.arg(holder_device_id),
+        sqlc.arg(holder_device_name), sqlc.arg(holder_staff_id), sqlc.arg(holder_staff_name), sqlc.arg(staff_id),
+        sqlc.arg(staff_name), sqlc.arg(order_id), sqlc.arg(draft), sqlc.arg(created_at), sqlc.arg(updated_at))
+ON CONFLICT (id) DO UPDATE SET
+    type = excluded.type, name = excluded.name, held = excluded.held, holder_device_id = excluded.holder_device_id,
+    holder_device_name = excluded.holder_device_name, holder_staff_id = excluded.holder_staff_id,
+    holder_staff_name = excluded.holder_staff_name, staff_id = excluded.staff_id, staff_name = excluded.staff_name,
+    order_id = excluded.order_id, draft = excluded.draft, updated_at = excluded.updated_at;
+
+-- name: DeleteTerminalDraft :execrows
+DELETE FROM terminal_drafts WHERE id = ?;
+
+-- name: ClearTerminalDrafts :many
+-- Close batch: every shared draft goes (their ids are announced).
+DELETE FROM terminal_drafts RETURNING id;
+
+-- name: ListPickupOrders :many
+-- The terminals' Pickup list (contract 2.10i): a batch's pickup / counter orders of
+-- every source but the old POS, oldest first (the service filters states).
+SELECT * FROM orders
+WHERE batch_id = ? AND ext_source = ''
+  AND COALESCE(json_extract(snapshot, '$.fulfillment.type'), '') <> 'delivery'
+ORDER BY arrival_date, id;
+
+-- name: SetTerminalPaidMoney :exec
+-- A payment taken at a terminal on an online pickup (contract 2.10i): the
+-- money columns only; the snapshot stays main's.
+UPDATE orders SET paid = sqlc.arg(paid), cash_due_cents = sqlc.arg(cash_due_cents), tip_cents = sqlc.arg(tip_cents),
+    paid_at = sqlc.narg(paid_at)
+WHERE id = sqlc.arg(id);

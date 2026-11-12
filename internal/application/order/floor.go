@@ -10,6 +10,7 @@ import (
 	"unicode/utf8"
 
 	"quiccpos/agent/internal/domain/order"
+	"quiccpos/agent/internal/domain/terminal"
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
@@ -220,6 +221,11 @@ func (s *Service) CloseBatch(ctx context.Context, force bool) (*order.Batch, []o
 		}
 	}
 	s.publishDrivers(ctx)
+	if s.broker != nil {
+		for _, id := range closed.ClearedDrafts { // the terminals' held / open drafts (contract 2.10i)
+			s.broker.Publish(terminal.EventDraftRemoved, map[string]any{"id": id})
+		}
+	}
 	s.devEvent(devlog.Info, devlog.KindOrder, "Batch %d closed (%d auto-finished)", closed.ID, len(finished))
 	s.printReportsAfterClose(ctx, closed.ID, s.afterClose)
 	s.forgetPOSDeliveries(ctx, closed.ID)

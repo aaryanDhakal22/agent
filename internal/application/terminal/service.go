@@ -20,6 +20,8 @@ import (
 // Repo is the terminal flow's storage (repositories.OrderRepository).
 type Repo interface {
 	SnapshotRepo
+	PickupRepo
+	DraftRepo
 	CounterOrderByKey(ctx context.Context, key string) (*order.StoredOrder, error)
 	PlaceCounterOrder(ctx context.Context, in terminal.NewCounterOrder) (order.StoredOrder, bool, error)
 	AddCounterPayment(ctx context.Context, orderID, clientKey string, check terminal.MoneyCheck) (order.StoredOrder, terminal.Payment, bool, error)
@@ -370,14 +372,14 @@ func (s *Service) Quote(_ context.Context, a Actor, in QuoteIn) (*QuoteView, err
 	if p.manualCents > 0 || len(p.changes) > 0 {
 		st, cfg, err := s.staffOf(a)
 		if p.manualCents > 0 {
-			v.NeedsManager = err != nil || !withinDiscount(cfg.LimitsOf(st), p.manualPct)
+			v.NeedsManager = err != nil || discountNeed(cfg, st, in.Cart.Discount, p) != nil
 		}
 		if err != nil { // nobody logged in: any drop would need a manager
 			for i := range v.PriceChanges {
 				v.PriceChanges[i].NeedsManager = v.PriceChanges[i].DropPct > 0
 				v.NeedsManager = v.NeedsManager || v.PriceChanges[i].NeedsManager
 			}
-		} else if checkPrices(cfg, st, v.PriceChanges, nil) != nil {
+		} else if price, comp := checkPrices(cfg, st, v.PriceChanges, nil); price != nil || comp != nil {
 			v.NeedsManager = true
 		}
 	}
@@ -386,19 +388,65 @@ func (s *Service) Quote(_ context.Context, a Actor, in QuoteIn) (*QuoteView, err
 
 func withinDiscount(l terminal.Limits, pct int) bool { return l.Unlimited || pct <= l.DiscountPct }
 
+// discountNeed is what a manager's PIN must cover for the cart's discount
+// (nil = nothing): a typed discount over the staff member's discount_pct, or
+// an Employee meal over main's employee_meal_pct (anyone logged in gives one
+// up to it; a manager or anyone unlimited has no limit).
+func discountNeed(cfg *terminal.Config, st terminal.Staff, d *Discount, p priced) *terminal.ManagerRequired {
+	if p.manualCents <= 0 {
+		return nil
+	}
+	lim := cfg.LimitsOf(st)
+	if d.employeeMeal() {
+		if meal := cfg.EmployeeMealPct(); !lim.Unlimited && p.manualPct > meal {
+			return &terminal.ManagerRequired{Action: terminal.ActionEmployeeMeal, Limit: int64(meal), Requested: int64(p.manualPct)}
+		}
+		return nil
+	}
+	if !withinDiscount(lim, p.manualPct) {
+		return &terminal.ManagerRequired{Action: terminal.ActionDiscount, Limit: int64(lim.DiscountPct), Requested: int64(p.manualPct)}
+	}
+	return nil
+}
+
+// discountEntry journals the cart's discount: employee_meal or discount.
+func discountEntry(a Actor, st terminal.Staff, d *Discount, p priced, need *terminal.ManagerRequired, approver *terminal.Staff, orderID string) terminal.Entry {
+	det := map[string]any{"cents": p.manualCents, "pct": p.manualPct, "reason": strings.TrimSpace(d.Reason)}
+	if approver != nil && need != nil {
+		det["approved_by"] = approver.ID
+	}
+	action := terminal.ActionDiscount
+	if d.employeeMeal() {
+		action = terminal.ActionEmployeeMeal
+	}
+	return terminal.Entry{StaffID: st.ID, DeviceID: a.DeviceID, Action: action, OrderID: orderID, Detail: detail(det)}
+}
+
 // checkPrices marks each price change that lowers a price past the staff
 // member's limit (TERMINAL-PLAN "Item price change": raising is free, a
 // cashier lowers by up to cashier_price_drop_pct, a manager is unlimited)
-// and answers what a manager's PIN must cover (nil = nothing). A change in
-// `kept` (Key → count: the order's earlier cart) was approved already.
-func checkPrices(cfg *terminal.Config, st terminal.Staff, changes []terminal.PriceChange, kept map[string]int) *terminal.ManagerRequired {
+// and answers what a manager's PIN must cover (nil = nothing): the price
+// drops, and the comp lines (rung at $0: a manager always, contract
+// §2.10i). A change in `kept` (Key → count: the order's earlier cart) was
+// approved already.
+func checkPrices(cfg *terminal.Config, st terminal.Staff, changes []terminal.PriceChange, kept map[string]int) (need, comp *terminal.ManagerRequired) {
 	pct, unlimited := cfg.PriceDropOf(st)
-	var need *terminal.ManagerRequired
 	for i := range changes {
 		c := &changes[i]
 		if k := c.Key(); kept[k] > 0 {
 			kept[k]--
 			c.Approved = true
+			continue
+		}
+		if c.Comp {
+			if unlimited || cfg.MayComp(st) {
+				continue
+			}
+			c.NeedsManager = true
+			if comp == nil {
+				comp = &terminal.ManagerRequired{Action: terminal.ActionComp}
+			}
+			comp.Requested += c.FromCents
 			continue
 		}
 		if unlimited || terminal.DropAllowed(c.FromCents, c.ToCents, pct) {
@@ -410,7 +458,7 @@ func checkPrices(cfg *terminal.Config, st terminal.Staff, changes []terminal.Pri
 		}
 		need.Requested = max(need.Requested, int64(c.DropPct))
 	}
-	return need
+	return need, comp
 }
 
 // priceEntries journals every new price change (who, from → to, approver).
@@ -428,7 +476,11 @@ func priceEntries(a Actor, st terminal.Staff, changes []terminal.PriceChange, ap
 		if c.NeedsManager && approver != nil {
 			d["approved_by"] = approver.ID
 		}
-		out = append(out, terminal.Entry{StaffID: st.ID, DeviceID: a.DeviceID, Action: terminal.ActionPriceChange, OrderID: orderID, Detail: detail(d)})
+		action := terminal.ActionPriceChange
+		if c.Comp {
+			action = terminal.ActionComp
+		}
+		out = append(out, terminal.Entry{StaffID: st.ID, DeviceID: a.DeviceID, Action: action, OrderID: orderID, Detail: detail(d)})
 	}
 	return out
 }
@@ -595,14 +647,18 @@ func (s *Service) PlaceOrder(ctx context.Context, a Actor, in OrderIn) (*PlaceRe
 	if len(p.quote.Errors) > 0 {
 		return nil, &terminal.CartInvalid{Issues: p.quote.Errors}
 	}
-	var discountNeed *terminal.ManagerRequired
-	if p.manualCents > 0 {
-		if lim := cfg.LimitsOf(st); !withinDiscount(lim, p.manualPct) {
-			discountNeed = &terminal.ManagerRequired{Action: terminal.ActionDiscount, Limit: int64(lim.DiscountPct), Requested: int64(p.manualPct)}
+	dNeed := discountNeed(cfg, st, in.Cart.Discount, p)
+	priceNeed, compNeed := checkPrices(cfg, st, p.changes, nil)
+	// A comp tender needs a manager too (contract §2.10i).
+	for _, pi := range in.Payments {
+		if pi.Tender == terminal.TenderComp && !pi.Refund && !cfg.MayComp(st) {
+			if compNeed == nil {
+				compNeed = &terminal.ManagerRequired{Action: terminal.ActionComp}
+			}
+			compNeed.Requested += pi.AmountCents
 		}
 	}
-	priceNeed := checkPrices(cfg, st, p.changes, nil)
-	approver, journal, err := s.approve(a, st, cfg, in.ManagerPIN, "", discountNeed, priceNeed)
+	approver, journal, err := s.approve(a, st, cfg, in.ManagerPIN, "", dNeed, priceNeed, compNeed)
 	if err != nil {
 		return nil, err
 	}
@@ -626,7 +682,10 @@ func (s *Service) PlaceOrder(ctx context.Context, a Actor, in OrderIn) (*PlaceRe
 		if err != nil {
 			return nil, err
 		}
-		pay.ClientKey = ""           // the order's own key covers them
+		pay.ClientKey = "" // the order's own key covers them
+		if pay.Tender == terminal.TenderComp && compNeed != nil && approver != nil {
+			pay.ApprovedBy = approver.ID
+		}
 		paidCents += pay.AmountCents // a tip taken with it stays on the payment (main's rule)
 		change += pay.ChangeCents
 		pays = append(pays, pay)
@@ -656,15 +715,14 @@ func (s *Service) PlaceOrder(ctx context.Context, a Actor, in OrderIn) (*PlaceRe
 		Detail: detail(map[string]any{"type": typ, "total_cents": money.Total, "paid_cents": paidCents, "lines": len(items), "client_key": in.ClientKey})})
 	journal = append(journal, priceEntries(a, st, p.changes, approver, id)...)
 	if p.manualCents > 0 {
-		d := map[string]any{"cents": p.manualCents, "pct": p.manualPct, "reason": strings.TrimSpace(in.Cart.Discount.Reason)}
-		if approver != nil && discountNeed != nil {
-			d["approved_by"] = approver.ID
-		}
-		journal = append(journal, terminal.Entry{StaffID: st.ID, DeviceID: a.DeviceID, Action: terminal.ActionDiscount, OrderID: id, Detail: detail(d)})
+		journal = append(journal, discountEntry(a, st, in.Cart.Discount, p, dNeed, approver, id))
 	}
 	for _, pay := range pays {
-		journal = append(journal, terminal.Entry{StaffID: st.ID, DeviceID: a.DeviceID, Action: terminal.ActionPayment, OrderID: id,
-			Detail: detail(map[string]any{"payment_id": pay.ID, "tender": pay.Tender, "amount_cents": pay.AmountCents, "tip_cents": pay.TipCents, "change_cents": pay.ChangeCents})})
+		d := map[string]any{"payment_id": pay.ID, "tender": pay.Tender, "amount_cents": pay.AmountCents, "tip_cents": pay.TipCents, "change_cents": pay.ChangeCents}
+		if pay.Tender == terminal.TenderComp && compNeed != nil && approver != nil {
+			d["approved_by"] = approver.ID
+		}
+		journal = append(journal, terminal.Entry{StaffID: st.ID, DeviceID: a.DeviceID, Action: terminal.ActionPayment, OrderID: id, Detail: detail(d)})
 	}
 	so, created, err := s.repo.PlaceCounterOrder(ctx, terminal.NewCounterOrder{Snapshot: snap, ClientKey: in.ClientKey,
 		CounterStart: cfg.CounterStart(), PrepMinutes: s.orders.PrepMinutesFor(ful.Type), Payments: pays, Journal: journal,
@@ -690,25 +748,34 @@ type OrderView struct {
 	Payments []terminal.Payment `json:"payments"`
 }
 
-// Order is one counter order with its payments (404 for another source).
+// Order is one counter order with its payments, or (contract §2.10i) an
+// online / website pickup of the open batch with the payments the terminals
+// took on it (404 for anything else).
 func (s *Service) Order(ctx context.Context, id string) (*OrderView, error) {
 	all, err := s.repo.CounterOrders(ctx)
 	if err != nil {
 		return nil, err
 	}
+	var found *order.StoredOrder
 	for _, so := range all {
 		if so.Order.ID == id {
-			pays, err := s.repo.OrderPayments(ctx, id)
-			if err != nil {
-				return nil, err
-			}
-			if pays == nil {
-				pays = []terminal.Payment{}
-			}
-			return &OrderView{Order: so, Payments: pays}, nil
+			found = &so
+			break
 		}
 	}
-	return nil, order.ErrNotFound
+	if found == nil {
+		if found, err = s.pickupOrder(ctx, id); err != nil {
+			return nil, err
+		}
+	}
+	pays, err := s.repo.OrderPayments(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if pays == nil {
+		pays = []terminal.Payment{}
+	}
+	return &OrderView{Order: *found, Payments: pays}, nil
 }
 
 // IsOpen: a counter order for the Pick Up list - not voided, and still owing
@@ -778,8 +845,14 @@ func (s *Service) AddPayment(ctx context.Context, a Actor, orderID string, in Pa
 	var approver *terminal.Staff
 	var need *terminal.ManagerRequired
 	lim := cfg.LimitsOf(st)
-	if pay.Refund && !lim.Unlimited && pay.AmountCents+pay.TipCents > lim.RefundCents {
+	switch {
+	case pay.Refund && !lim.Unlimited && pay.AmountCents+pay.TipCents > lim.RefundCents:
 		need = &terminal.ManagerRequired{Action: terminal.ActionRefund, Limit: lim.RefundCents, Requested: pay.AmountCents + pay.TipCents}
+	case !pay.Refund && pay.Tender == terminal.TenderComp && !cfg.MayComp(st):
+		// A comp needs a manager on the Pi too (contract §2.10i).
+		need = &terminal.ManagerRequired{Action: terminal.ActionComp, Requested: pay.AmountCents}
+	}
+	if need != nil {
 		if approver, err = s.manager(a, cfg, in.ManagerPIN, need); err != nil {
 			return nil, err
 		}
@@ -791,8 +864,8 @@ func (s *Service) AddPayment(ctx context.Context, a Actor, orderID string, in Pa
 			if pay.AmountCents > amount || pay.TipCents > tip {
 				return nil, nil, fmt.Errorf("%w: %d paid", terminal.ErrRefundTooBig, amount)
 			}
-		} else if pay.AmountCents > cur.Order.CashDue() {
-			return nil, nil, fmt.Errorf("%w: the balance is %d", terminal.ErrOverBalance, cur.Order.CashDue())
+		} else if due := terminal.DueOf(cur); pay.AmountCents > due {
+			return nil, nil, fmt.Errorf("%w: the balance is %d", terminal.ErrOverBalance, due)
 		}
 		action := terminal.ActionPayment
 		if pay.Refund {
