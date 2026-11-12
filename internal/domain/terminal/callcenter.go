@@ -1,6 +1,8 @@
 package terminal
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 )
@@ -77,12 +79,70 @@ func (e *PaidLocked) Error() string {
 	return fmt.Sprintf("this order is paid: the call center can add to it, not remove or change what is on it (%s)", strings.Join(e.Lines, "; "))
 }
 
+// OutOfArea: a call-center delivery to an address outside the store's area
+// (past the radius + the warn-only margin) without the agent's
+// acknowledgement (409 out_of_area {area, radius_mi, margin_mi}); with
+// out_of_area_ack: true it is placed and marked.
+type OutOfArea struct {
+	Area     Area
+	RadiusMi float64
+	MarginMi float64
+}
+
+func (e *OutOfArea) Error() string {
+	if e.Area.DistanceMi != nil {
+		return fmt.Sprintf("this address is %.1f miles away, outside the store's delivery area (%.1f miles)", *e.Area.DistanceMi, e.RadiusMi)
+	}
+	return "this address is outside the store's delivery area"
+}
+
+// AreaCheck is the call center's area check of a delivery address, carried
+// on the call's context to where the order is stored: Out = outside the
+// area and acknowledged (the order is marked + journaled), else the address
+// is in / near / unknown (a changed address takes an old mark off).
+type AreaCheck struct {
+	Area Area
+	Out  bool
+}
+
+type areaCheckKey struct{}
+
+// WithAreaCheck puts the relay's area check on ctx.
+func WithAreaCheck(ctx context.Context, c AreaCheck) context.Context {
+	return context.WithValue(ctx, areaCheckKey{}, c)
+}
+
+// AreaCheckOf is the area check on ctx (nil = none: not a call-center
+// delivery with an address to check).
+func AreaCheckOf(ctx context.Context) *AreaCheck {
+	if c, ok := ctx.Value(areaCheckKey{}).(AreaCheck); ok {
+		return &c
+	}
+	return nil
+}
+
+// OutOfAreaEntry journals an acknowledged out-of-area delivery under the
+// agent who took it.
+func OutOfAreaEntry(c AreaCheck, staffID, deviceID, orderID string) Entry {
+	d := map[string]any{"acked": true}
+	if c.Area.DistanceMi != nil {
+		d["distance_mi"] = *c.Area.DistanceMi
+	}
+	raw, _ := json.Marshal(d)
+	return Entry{StaffID: staffID, DeviceID: deviceID, Action: ActionOutOfArea, OrderID: orderID, Detail: raw}
+}
+
 // ActionDraftTakeOverRefused journals a call-center take-over of a draft a
 // store terminal holds (refused: the store wins). ActionReprint: the
 // customer receipt printed again from a terminal.
 const (
 	ActionDraftTakeOverRefused = "draft.take_over_refused"
 	ActionReprint              = "reprint"
+	// ActionOutOfArea: a call-center delivery outside the store's area,
+	// acknowledged by the agent {distance_mi, acked: true}.
+	ActionOutOfArea = "delivery.out_of_area"
 )
 
-func init() { reserved[ActionDraftTakeOverRefused], reserved[ActionReprint] = true, true }
+func init() {
+	reserved[ActionDraftTakeOverRefused], reserved[ActionReprint], reserved[ActionOutOfArea] = true, true, true
+}

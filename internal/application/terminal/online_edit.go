@@ -253,6 +253,7 @@ func (s *Service) changeOnline(ctx context.Context, a Actor, st terminal.Staff, 
 		tm["type"], tm["cart"], tm["edits"], tm["menu_version"] = typ, in.Cart, hist, ms.Version
 		snap.SourceMeta = snap.WithPiMeta(map[string]any{"online": op.base, "refund_owed_cents": owed})
 		snap.SourceMeta["terminal"] = tm
+		area := areaMark(ctx, &snap, cur.Order, st.ID, a.DeviceID) // §2.10ab
 		d := map[string]any{"added": rec.Added, "removed": rec.Removed, "total_before_cents": cur.Order.Money.Total,
 			"total_after_cents": op.money.Total, "number": numberOf(cur), "source": cur.Order.Source, "client_key": in.ClientKey,
 			"refund_owed_cents": owed}
@@ -278,6 +279,7 @@ func (s *Service) changeOnline(ctx context.Context, a Actor, st terminal.Staff, 
 					"source": cur.Order.Source, "number": due.Number})})
 		}
 		entries = append(entries, overrides...)
+		entries = append(entries, area...)
 		if op.added != nil {
 			entries = append(entries, priceEntries(a, st, op.added.changes, approver, id)...)
 			entries = append(entries, customEntries(a, st, *op.added, id, keptCustom(cur.Order))...)

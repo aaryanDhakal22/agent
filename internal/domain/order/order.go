@@ -50,6 +50,11 @@ type Snapshot struct {
 	// and "callcenter" (main's per-agent report). Empty on every other order.
 	TakenBy    string `json:"taken_by,omitempty"`
 	DeviceKind string `json:"device_kind,omitempty"`
+	// OutOfArea (contract §2.10ab): a call-center delivery to an address
+	// outside the store's area, placed after the agent acknowledged the
+	// warning (the store sees it on the order, the checks list and the
+	// delivery ticket). Absent on every other order.
+	OutOfArea bool `json:"out_of_area,omitempty"`
 
 	// RemovedItems (terminal orders): lines removed at a terminal after SEND
 	// (§2.10d) - struck through, red, REMOVED on Kitchen and in History.

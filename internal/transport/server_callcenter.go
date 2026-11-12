@@ -187,11 +187,18 @@ func (s *Server) HandleTerminalRelay(ctx context.Context, payload json.RawMessag
 		}
 	}
 
+	// A delivery address outside the store's area: refused until the agent
+	// acknowledges the warning, then placed and marked (no manager's PIN).
+	hctx, area, refused := s.relayArea(ctx, method, path, body)
+	if refused != nil {
+		return *refused, nil
+	}
+
 	deadline := relayDeadline
 	if path == relayKeyedPath {
 		deadline = relayDeadlineKeyed
 	}
-	rctx, cancel := context.WithTimeout(context.WithValue(ctx, callcenterCtxKey{}, actor), deadline)
+	rctx, cancel := context.WithTimeout(context.WithValue(hctx, callcenterCtxKey{}, actor), deadline)
 	defer cancel()
 	target := "/api/terminal/" + path
 	if path == "floor" {
@@ -238,7 +245,87 @@ func (s *Server) HandleTerminalRelay(ctx context.Context, payload json.RawMessag
 			out.Body, _ = json.Marshal(string(b))
 		}
 	}
+	if area != nil && method == http.MethodPost && path == "quote" && rec.status == http.StatusOK {
+		out.Body = withArea(out.Body, *area) // the call center's quote says where the address is
+	}
 	return out, nil
+}
+
+// relayArea runs the call center's delivery-area rule on a call that names
+// a delivery address: POST orders (type delivery), PUT orders/{id}/cart
+// (a delivery's new address, or a pickup made a delivery) and POST quote
+// (never refused: its answer gains `area`). It answers the context the
+// handler runs on (the check rides on it to where the order is stored),
+// the address's area (nil = nothing to check) and, for an address outside
+// the area without out_of_area_ack, the 409 to send.
+func (s *Server) relayArea(ctx context.Context, method, path string, body []byte) (context.Context, *terminal.Area, *RelayReply) {
+	segs := strings.Split(path, "/")
+	place := method == http.MethodPost && path == "orders"
+	change := method == http.MethodPut && len(segs) == 3 && segs[0] == "orders" && segs[2] == "cart"
+	quote := method == http.MethodPost && path == "quote"
+	if len(body) == 0 || (!place && !change && !quote) {
+		return ctx, nil, nil
+	}
+	var b struct {
+		Type     string                `json:"type"`
+		Customer *terminalApp.Customer `json:"customer"`
+		Ack      bool                  `json:"out_of_area_ack"`
+	}
+	if json.Unmarshal(body, &b) != nil || b.Customer == nil || b.Customer.Address == nil ||
+		strings.TrimSpace(b.Customer.Address.Line1) == "" || strings.TrimSpace(b.Customer.Address.City) == "" {
+		return ctx, nil, nil
+	}
+	delivery := strings.TrimSpace(b.Type) == terminal.TypeDelivery
+	if change {
+		cur, err := s.terminalSvc.Order(ctx, segs[1])
+		if err != nil {
+			return ctx, nil, nil // the handler answers (404)
+		}
+		was := cur.Order.Order.Fulfillment
+		isDelivery := strings.EqualFold(was.Type, terminal.TypeDelivery)
+		if !delivery && !(isDelivery && strings.TrimSpace(b.Type) == "") {
+			return ctx, nil, nil // no delivery after this change
+		}
+		ad := b.Customer.Address
+		if isDelivery && was.Address != nil && strings.TrimSpace(ad.Line1) == was.Address.Line1 && strings.TrimSpace(ad.Line2) == was.Address.Line2 &&
+			strings.TrimSpace(ad.City) == was.Address.City && strings.TrimSpace(ad.State) == was.Address.State && strings.TrimSpace(ad.Zip) == was.Address.PostalCode {
+			return ctx, nil, nil // the address stays: its mark too
+		}
+	} else if !delivery {
+		return ctx, nil, nil
+	}
+	check, ok, err := s.terminalSvc.CallcenterAreaCheck(ctx, b.Customer, b.Ack || quote)
+	var out *terminal.OutOfArea
+	if errors.As(err, &out) {
+		reply := relayAnswer(http.StatusConflict, map[string]any{"error": out.Error(), "code": "out_of_area", "area": out.Area,
+			"radius_mi": out.RadiusMi, "margin_mi": out.MarginMi})
+		return ctx, nil, &reply
+	}
+	if !ok {
+		return ctx, nil, nil
+	}
+	if quote {
+		return ctx, &check.Area, nil
+	}
+	return terminal.WithAreaCheck(ctx, check), &check.Area, nil
+}
+
+// withArea adds `area` to a quote's answer.
+func withArea(body json.RawMessage, area terminal.Area) json.RawMessage {
+	var m map[string]json.RawMessage
+	if json.Unmarshal(body, &m) != nil || m == nil {
+		return body
+	}
+	raw, err := json.Marshal(area)
+	if err != nil {
+		return body
+	}
+	m["area"] = raw
+	out, err := json.Marshal(m)
+	if err != nil {
+		return body
+	}
+	return out
 }
 
 // relayLockedOrder: the calls that change a sent order (its id): refused
@@ -313,6 +400,16 @@ func relayBody(body []byte) (manager, bad bool) {
 	}
 	var pin string
 	var approvals []string
+	if !is(top, "out_of_area_ack", &flag) {
+		return false, true
+	}
+	if cust, ok := object(top, "customer"); !ok {
+		return false, true
+	} else if cust != nil {
+		if _, ok := object(cust, "address"); !ok || !is(cust, "id", &str) {
+			return false, true
+		}
+	}
 	if !is(top, "manager_pin", &pin) || !is(top, "approvals", &approvals) || !is(top, "type", &str) || !is(top, "client_key", &str) ||
 		!is(top, "reason", &str) || !is(top, "draft_id", &str) || !is(top, "order_id", &str) || !is(top, "take_over", &flag) || !payment(top) {
 		return false, true

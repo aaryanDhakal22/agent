@@ -15,6 +15,7 @@ import (
 	"quiccpos/agent/internal/domain/pricing"
 	"quiccpos/agent/internal/domain/terminal"
 
+	"github.com/google/uuid"
 	"github.com/rs/zerolog"
 )
 
@@ -718,9 +719,12 @@ func TestMoneyRulesCallcenter(t *testing.T) {
 	answer := func(err error) string {
 		var no *terminal.NotAllowedForCallcenter
 		var pl *terminal.PaidLocked
+		var ooa *terminal.OutOfArea
 		switch {
 		case err == nil:
 			return `"allow"`
+		case errors.As(err, &ooa):
+			return `{"refused":"out_of_area"}`
 		case errors.As(err, &no):
 			return `{"refused":"not_allowed_for_callcenter","what":"` + no.What + `"}`
 		case errors.As(err, &pl):
@@ -787,6 +791,13 @@ func TestMoneyRulesCallcenter(t *testing.T) {
 				cart = cartOf(pizzaLine())
 			}
 			_, err = r.svc.ChangeCart(r.ctx, seat, res.Order.Order.ID, ChangeIn{ClientKey: tk(), Cart: cart})
+		case "delivery_out_of_area", "delivery_out_of_area_acked":
+			ar := newAreaRig(t)
+			in := OrderIn{ClientKey: tk(), Type: "delivery", Cart: cartOf(pizzaLine()), Customer: ar.customer("9 Far Rd")}
+			var check terminal.AreaCheck
+			if check, _, err = ar.svc.CallcenterAreaCheck(ar.ctx, in.Customer, c.Action == "delivery_out_of_area_acked"); err == nil {
+				_, err = ar.svc.PlaceOrder(terminal.WithAreaCheck(ar.ctx, check), ar.seat, in)
+			}
 		case "remove_unpaid_line":
 			res := ccPlace(t, r, seat, "pickup", nil, pizzaLine(), sodaLine(1))
 			_, err = r.svc.ChangeCart(r.ctx, seat, res.Order.Order.ID, ChangeIn{ClientKey: tk(), Cart: cartOf(pizzaLine())})
@@ -1225,5 +1236,162 @@ func TestCallcenterRungIsNeverAPrice(t *testing.T) {
 	gone.Rungs = []Rung{{}, {Cents: &old, Name: lines[1].Name}}
 	if _, err := place(gone); whatOf(err) != terminal.NotAllowedPriceChange {
 		t.Fatalf("a gone item at the seat's rung: %v", err)
+	}
+}
+
+// areaRig is a call-center rig whose store has a pin and a 3-mile radius
+// (1 mile of warn-only margin) and one customer with four addresses: in the
+// area (2 mi), near (3.5 mi), out (5 mi) and one with no point yet.
+type areaRig struct {
+	*custRig
+	seat   Actor
+	custID string
+}
+
+func newAreaRig(t *testing.T) *areaRig {
+	t.Helper()
+	r := &areaRig{custRig: newCustRig(t), custID: uuid.NewString()}
+	r.main.set(PathTerminalConfig, staffConfig(t, 2, ccStaff(t)))
+	if _, err := r.svc.store.Refresh(r.ctx, terminal.KindTerminalConfig); err != nil {
+		t.Fatal(err)
+	}
+	r.seat = CallcenterActor("desk-2", "Elevate desk 2", agentID)
+	in, near, out := uuid.NewString(), uuid.NewString(), uuid.NewString()
+	r.feed.pages = []any{page("c1", false, nil, feedCust(r.custID, "4105550101", "Ada", time.Now().UTC().Add(-time.Hour),
+		map[string]any{"id": in, "line1": "1 Test St", "city": "Towson", "zip": "21204"},
+		map[string]any{"id": near, "line1": "7 Near Ln", "city": "Towson", "zip": "21204"},
+		map[string]any{"id": out, "line1": "9 Far Rd", "city": "Elsewhere", "zip": "21093"},
+		map[string]any{"id": uuid.NewString(), "line1": "5 New Rd", "city": "Towson", "zip": "21204"}))}
+	if err := r.book.Pull(r.ctx); err != nil {
+		t.Fatal(err)
+	}
+	lat, lng := 39.4, -76.6
+	r.lat, r.lng, r.rad = &lat, &lng, 4828 // 3 mi
+	for id, mi := range map[string]float64{in: 2, near: 3.5, out: 5} {
+		if err := r.repo.SetCustomerAddressPoint(r.ctx, id, lat+mi/69.0, lng); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return r
+}
+
+func (r *areaRig) customer(line1 string) *Customer {
+	city, zip := "Towson", "21204"
+	if line1 == "9 Far Rd" {
+		city, zip = "Elsewhere", "21093"
+	}
+	return &Customer{ID: r.custID, Name: "Ada Test", Phone: "4105550101", Address: &Address{Line1: line1, City: city, Zip: zip}}
+}
+
+// A call-center delivery outside the store's area: refused until the agent
+// acknowledges the warning, then placed, marked and journaled (no manager).
+func TestCallcenterOutOfArea(t *testing.T) {
+	r := newAreaRig(t)
+	r.svc.SetReports(fakeReports{r.rig})
+	states := map[string]string{}
+	for _, line1 := range []string{"1 Test St", "7 Near Ln", "9 Far Rd", "5 New Rd"} {
+		area, info := r.svc.AddressArea(r.ctx, r.customer(line1))
+		if area == nil || info == nil || info.RadiusMi != 3 || info.MarginMi != 1 {
+			t.Fatalf("%s: %+v %+v", line1, area, info)
+		}
+		states[line1] = area.State
+	}
+	if states["1 Test St"] != terminal.AreaIn || states["7 Near Ln"] != terminal.AreaNear || states["9 Far Rd"] != terminal.AreaOut || states["5 New Rd"] != terminal.AreaUnknown {
+		t.Fatalf("areas: %v", states)
+	}
+	// An address typed for a caller the Pi doesn't know: no point yet.
+	if area, _ := r.svc.AddressArea(r.ctx, &Customer{Name: "New", Address: &Address{Line1: "9 Far Rd", City: "Elsewhere"}}); area == nil || area.State != terminal.AreaUnknown {
+		t.Fatalf("an unknown caller's address: %+v", area)
+	}
+	// The rule: out without the ack is refused with the numbers the warning shows.
+	_, _, err := r.svc.CallcenterAreaCheck(r.ctx, r.customer("9 Far Rd"), false)
+	var out *terminal.OutOfArea
+	if !errors.As(err, &out) || out.Area.State != terminal.AreaOut || out.Area.DistanceMi == nil || *out.Area.DistanceMi != 5 || out.RadiusMi != 3 || out.MarginMi != 1 {
+		t.Fatalf("out without the ack: %+v %v", out, err)
+	}
+	for _, line1 := range []string{"1 Test St", "7 Near Ln", "5 New Rd"} {
+		if c, ok, err := r.svc.CallcenterAreaCheck(r.ctx, r.customer(line1), false); err != nil || !ok || c.Out {
+			t.Fatalf("%s needs no ack: %+v %v %v", line1, c, ok, err)
+		}
+	}
+	check, ok, err := r.svc.CallcenterAreaCheck(r.ctx, r.customer("9 Far Rd"), true)
+	if err != nil || !ok || !check.Out {
+		t.Fatalf("out with the ack: %+v %v %v", check, ok, err)
+	}
+	// Placed with the acknowledged check: marked on the order, to main, on the checks row; journaled under the agent.
+	place := func(ctx context.Context, a Actor, line1 string) order.StoredOrder {
+		t.Helper()
+		res, err := r.svc.PlaceOrder(ctx, a, OrderIn{ClientKey: tk(), Type: "delivery", Cart: cartOf(pizzaLine()), Customer: r.customer(line1)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return res.Order
+	}
+	far := place(terminal.WithAreaCheck(r.ctx, check), r.seat, "9 Far Rd")
+	if !far.Order.OutOfArea {
+		t.Fatal("the order is marked out_of_area")
+	}
+	raw, _ := json.Marshal(far.Order)
+	if !strings.Contains(string(raw), `"out_of_area":true`) {
+		t.Fatalf("on the order's JSON: %s", raw)
+	}
+	j := journalActions(t, r.rig)[terminal.ActionOutOfArea]
+	if len(j) != 1 || j[0].StaffID != agentID || j[0].DeviceID != r.seat.DeviceID || j[0].OrderID != far.Order.ID ||
+		!strings.Contains(string(j[0].Detail), `"acked":true`) || !strings.Contains(string(j[0].Detail), `"distance_mi":5`) {
+		t.Fatalf("journal delivery.out_of_area {distance_mi, acked}: %+v", j)
+	}
+	events, _ := r.repo.ListUnsyncedEvents(r.ctx, 50)
+	found := false
+	for _, e := range events {
+		if e.Type == terminal.EventOrderPlaced && e.OrderID == far.Order.ID {
+			found = strings.Contains(string(e.Payload), `"out_of_area":true`)
+		}
+	}
+	if !found {
+		t.Fatal("order.placed's snapshot carries out_of_area")
+	}
+	// An address in the area: no mark (and none without a check at all: a store terminal's order).
+	near := place(terminal.WithAreaCheck(r.ctx, terminal.AreaCheck{Area: terminal.Area{State: terminal.AreaNear}}), r.seat, "7 Near Ln")
+	r.login(t, till, "1234")
+	store := place(r.ctx, till, "9 Far Rd")
+	if near.Order.OutOfArea || store.Order.OutOfArea {
+		t.Fatal("only an acknowledged out-of-area call-center delivery is marked")
+	}
+	rows, err := r.svc.Checks(r.ctx, till, ChecksQuery{Batch: "current", Limit: 50})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range rows.Checks {
+		if c.OutOfArea != (c.OrderID == far.Order.ID) {
+			t.Fatalf("checks row %s: out_of_area %v", c.OrderID, c.OutOfArea)
+		}
+	}
+	// A change of address: to an out one (acknowledged) marks it; back to one in the area takes the mark off;
+	// a change that keeps the address keeps the mark.
+	id := near.Order.ID
+	move := func(ctx context.Context, line1 string, lines ...pricing.Line) *ChangeResult {
+		t.Helper()
+		ch, err := r.svc.ChangeCart(ctx, r.seat, id, ChangeIn{ClientKey: tk(), Cart: cartOf(lines...), Customer: r.customer(line1)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return ch
+	}
+	if ch := move(terminal.WithAreaCheck(r.ctx, check), "9 Far Rd", pizzaLine()); !ch.Changed || !ch.Order.Order.OutOfArea {
+		t.Fatalf("moved out of the area: %+v", ch.Order.Order.Fulfillment.Address)
+	}
+	if n := len(journalActions(t, r.rig)[terminal.ActionOutOfArea]); n != 2 {
+		t.Fatalf("journaled again for the changed address: %d", n)
+	}
+	if ch := move(r.ctx, "9 Far Rd", pizzaLine(), sodaLine(1)); !ch.Order.Order.OutOfArea {
+		t.Fatal("a cart change that keeps the address keeps the mark")
+	}
+	if ch := move(terminal.WithAreaCheck(r.ctx, terminal.AreaCheck{Area: terminal.Area{State: terminal.AreaIn}}), "1 Test St", pizzaLine(), sodaLine(1)); ch.Order.Order.OutOfArea {
+		t.Fatal("back inside the area: the mark comes off")
+	}
+	// No store pin / radius: nothing to check.
+	r.rad = 0
+	if c, ok, err := r.svc.CallcenterAreaCheck(r.ctx, r.customer("9 Far Rd"), false); err != nil || ok || c.Out {
+		t.Fatalf("no area: %+v %v %v", c, ok, err)
 	}
 }

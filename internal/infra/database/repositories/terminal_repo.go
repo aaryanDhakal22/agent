@@ -78,6 +78,13 @@ func (r *OrderRepository) PlaceCounterOrder(ctx context.Context, in terminal.New
 		n := after - 1
 		snap := in.Snapshot
 		snap.KitchenNumber = &n
+		// A call-center delivery outside the store's area, acknowledged
+		// (contract 2.10ab; the relay's check rides on ctx): marked + journaled.
+		journal := in.Journal
+		if c := terminal.AreaCheckOf(ctx); c != nil && c.Out && snap.Fulfillment.Address != nil {
+			snap.OutOfArea = true
+			journal = append(journal[:len(journal):len(journal)], terminal.OutOfAreaEntry(*c, in.StaffID, in.DeviceID, snap.ID))
+		}
 		raw, err := json.Marshal(snap)
 		if err != nil {
 			return err
@@ -123,7 +130,7 @@ func (r *OrderRepository) PlaceCounterOrder(ctx context.Context, in terminal.New
 		if err := claimDraft(ctx, q, in.DeviceID); err != nil { // the draft it came from (contract 2.10s §9; TAB-16)
 			return err
 		}
-		return insertJournal(ctx, q, now, in.Journal)
+		return insertJournal(ctx, q, now, journal)
 	})
 	return so, created, err
 }

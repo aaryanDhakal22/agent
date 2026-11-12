@@ -42,8 +42,10 @@ type Check struct {
 	DeviceID      string        `json:"device_id"`
 	DeviceName    string        `json:"device_name"`
 	// TakenBy: "Call center - <Name>" on an order the call center placed
-	// (contract §2.10ab); "" on every other one.
-	TakenBy string `json:"taken_by"`
+	// (contract §2.10ab); "" on every other one. OutOfArea: its address is
+	// outside the store's area (the agent acknowledged the warning).
+	TakenBy   string `json:"taken_by"`
+	OutOfArea bool   `json:"out_of_area"`
 	// The Dispatch / Pickup bars (2026-11-12): the delivery's full address
 	// (null for a pickup / counter check), its driver (the run's, else the
 	// pool's; "" = none), how many payments (refunds and added tips
@@ -378,6 +380,7 @@ func (s *Service) checksOf(ctx context.Context, batchID int64, staffNames map[st
 			}
 		}
 		c.StaffName, c.DeviceName = staffNames[c.StaffID], devName[c.DeviceID]
+		c.OutOfArea = snap.OutOfArea && c.Type == terminal.TypeDelivery
 		if snap.DeviceKind == terminal.DeviceKindCallcenter { // ?device_id=callcenter finds every seat's
 			c.TakenBy = snap.TakenBy
 			c.devices[device.CallcenterID] = true

@@ -287,6 +287,11 @@ func deliveryTicket(p *escw, snap order.Snapshot, st deliveryStore, at time.Time
 	if by := strings.TrimSpace(snap.TakenBy); by != "" { // a call-center order (contract §2.10ab)
 		p.wrapped(by, "")
 	}
+	if snap.OutOfArea { // outside the store's area, taken after the warning (contract §2.10ab)
+		p.bold(true)
+		p.line("OUT OF AREA")
+		p.bold(false)
+	}
 	if due := snap.Fulfillment.PromisedAt; due != nil && !due.IsZero() {
 		p.bold(true)
 		p.wrapped("FUTURE: for "+shortDate(*due)+" "+shortTime(*due), "")

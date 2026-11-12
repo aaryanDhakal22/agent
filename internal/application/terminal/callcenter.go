@@ -378,6 +378,79 @@ func (s *Service) StoreHolds(ctx context.Context, a Actor, orderID string) error
 	return s.storeHolds(ctx, a, orderID)
 }
 
+// --- out of the delivery area ----------------------------------------------------------
+
+// AddressArea places a delivery address against the store's area the way
+// the customers lookup does: the customer's own saved address (its point,
+// else one learned from a located delivery to the same place), else a
+// located delivery to that place. nil = no area check (the store has no
+// pin or radius, or the customers aren't running); unknown = no point yet.
+func (s *Service) AddressArea(ctx context.Context, cust *Customer) (*terminal.Area, *AreaInfo) {
+	info := s.areaInfo()
+	if info == nil || cust == nil || cust.Address == nil || strings.TrimSpace(cust.Address.Line1) == "" {
+		return nil, nil
+	}
+	ad := cust.Address
+	if id := strings.TrimSpace(cust.ID); id != "" {
+		if c, err := s.cust.repo.Customer(ctx, id); err == nil {
+			cs := []terminal.Customer{c}
+			s.placeAll(ctx, cs)
+			for _, a := range cs[0].Addresses {
+				if terminal.SameAddress(a.Line1, a.Zip, ad.Line1, ad.Zip) && a.Area != nil && a.Area.State != terminal.AreaUnknown {
+					return a.Area, info
+				}
+			}
+		}
+	}
+	lat, lng, radius := s.cust.area()
+	if p, ok := s.cust.located(ctx, ad.Line1, ad.Zip); ok {
+		ar := terminal.AreaOf(terminal.DistanceM(*lat, *lng, p.Lat, p.Lng), radius, info.MarginMi)
+		return &ar, info
+	}
+	return &terminal.Area{State: terminal.AreaUnknown}, info
+}
+
+// CallcenterAreaCheck is the call center's rule for a delivery address
+// (the owner, 2026-11-12: allowed with a warning, no manager's PIN): out of
+// the area without ack → *terminal.OutOfArea (409); with it → the check to
+// mark the order with; in / near / unknown → as today. ok false = nothing
+// to check.
+func (s *Service) CallcenterAreaCheck(ctx context.Context, cust *Customer, ack bool) (check terminal.AreaCheck, ok bool, err error) {
+	area, info := s.AddressArea(ctx, cust)
+	if area == nil {
+		return terminal.AreaCheck{}, false, nil
+	}
+	if area.State != terminal.AreaOut {
+		return terminal.AreaCheck{Area: *area}, true, nil
+	}
+	if !ack {
+		return terminal.AreaCheck{}, false, &terminal.OutOfArea{Area: *area, RadiusMi: info.RadiusMi, MarginMi: info.MarginMi}
+	}
+	return terminal.AreaCheck{Area: *area, Out: true}, true, nil
+}
+
+// areaMark applies the relay's area check to a changed order (inside the
+// change's transaction): a delivery whose address changed takes the mark
+// of its new address (out + acknowledged: marked and journaled; else the
+// old mark comes off); an order that is no delivery any more loses it.
+func areaMark(ctx context.Context, snap *order.Snapshot, before order.Snapshot, staffID, deviceID string) []terminal.Entry {
+	if snap.Fulfillment.Address == nil || !strings.EqualFold(snap.Fulfillment.Type, terminal.TypeDelivery) {
+		snap.OutOfArea = false
+		return nil
+	}
+	old := before.Fulfillment.Address
+	if old != nil && *old == *snap.Fulfillment.Address && strings.EqualFold(before.Fulfillment.Type, terminal.TypeDelivery) {
+		return nil // the address stays: so does its mark
+	}
+	c := terminal.AreaCheckOf(ctx)
+	if c == nil || !c.Out { // a new address nobody acknowledged as out of the area (a store terminal's change too)
+		snap.OutOfArea = false
+		return nil
+	}
+	snap.OutOfArea = true
+	return []terminal.Entry{terminal.OutOfAreaEntry(*c, staffID, deviceID, snap.ID)}
+}
+
 // --- taken by ------------------------------------------------------------------------
 
 // takenBy stamps an order the call center places: who took it and the

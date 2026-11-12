@@ -141,6 +141,11 @@ func newCCRig(t *testing.T) *ccRig {
 		return 200, r.config.Load().([]byte), nil
 	}, ccPub{}, zerolog.Nop())
 	svc := terminalApp.NewService(store, repo, r.floor, ccPub{}, zerolog.Nop())
+	svc.SetReports(s.service) // the checks list
+	// The store's customers (no feed from main here) and its delivery area: a pin + a 3-mile radius.
+	lat, lng := 39.4, -76.6
+	svc.SetCustomers(terminalApp.NewCustomerBook(repo, func(context.Context, string, string) (int, []byte, error) { return 404, nil, nil }, ccPub{},
+		func() string { return "location" }, func() (*float64, *float64, int64) { return &lat, &lng, 4828 }, zerolog.Nop()))
 	for _, k := range []string{terminal.KindCounterMenu, terminal.KindTerminalConfig} {
 		if _, err := store.Refresh(ctx, k); err != nil {
 			t.Fatal(err)
@@ -836,5 +841,191 @@ func TestRelayRungIsNeverAPrice(t *testing.T) {
 	}
 	if got := r.relay(t, ccAgent, "GET", "orders", nil); strings.Count(string(got.Body), `"taken_by"`) != 1 {
 		t.Fatalf("one order placed: %.200s", got.Body)
+	}
+}
+
+// addressAt saves an address for a new customer through the relay and puts
+// its point mi miles from the store (as a located delivery would).
+func (r *ccRig) addressAt(t *testing.T, phone, line1 string, mi float64) map[string]any {
+	t.Helper()
+	ad := map[string]any{"line1": line1, "city": "Towson", "zip": "21204"}
+	got := r.relay(t, ccAgent, "POST", "customers", map[string]any{"phone": phone, "first_name": "Ada", "last_name": "Test", "address": ad})
+	var cv struct {
+		Customer struct {
+			ID string `json:"id"`
+		} `json:"customer"`
+		AddressID string `json:"address_id"`
+	}
+	if err := json.Unmarshal(got.Body, &cv); err != nil || got.Status != http.StatusCreated || cv.AddressID == "" {
+		t.Fatalf("add a customer: %d %s", got.Status, got.Body)
+	}
+	if mi > 0 {
+		if err := r.repo.SetCustomerAddressPoint(context.Background(), cv.AddressID, 39.4+mi/69.0, -76.6); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return map[string]any{"id": cv.Customer.ID, "name": "Ada Test", "phone": phone, "address": ad}
+}
+
+// A call-center delivery outside the store's area (the owner, 2026-11-12):
+// allowed with a warning, no manager's PIN - 409 out_of_area until the body
+// says out_of_area_ack: true, then placed, marked and journaled.
+func TestRelayOutOfArea(t *testing.T) {
+	r := newCCRig(t)
+	far := r.addressAt(t, "4105550101", "9 Far Rd", 5)
+	near := r.addressAt(t, "4105550102", "7 Near Ln", 3.5)
+	in := r.addressAt(t, "4105550103", "1 Test St", 2)
+	fresh := r.addressAt(t, "4105550104", "5 New Rd", 0) // no point yet
+	delivery := func(cust map[string]any, extra map[string]any) map[string]any {
+		b := map[string]any{"client_key": ccKey(), "type": "delivery", "customer": cust,
+			"cart": map[string]any{"lines": []map[string]any{{"item_id": ccCheese, "size_id": ccXL, "qty": 1}}}}
+		for k, v := range extra {
+			b[k] = v
+		}
+		return b
+	}
+	type placedOrder struct {
+		Order struct {
+			Order struct {
+				ID        string `json:"id"`
+				OutOfArea bool   `json:"out_of_area"`
+			} `json:"order"`
+		} `json:"order"`
+	}
+	idOf := func(got relayed) (string, bool) {
+		var v placedOrder
+		_ = json.Unmarshal(got.Body, &v)
+		return v.Order.Order.ID, v.Order.Order.OutOfArea
+	}
+	// The lookup tells the app where each address is (what the warning is built from).
+	if got := r.relay(t, ccAgent, "GET", "customers", nil, func(p map[string]any) { p["query"] = "phone=4105550101" }); !strings.Contains(string(got.Body), `"area":{"state":"out","distance_mi":5}`) {
+		t.Fatalf("the lookup's area: %s", got.Body)
+	}
+	// The quote of a delivery says where the address is, and is never refused.
+	q := r.relay(t, ccAgent, "POST", "quote", map[string]any{"type": "delivery", "customer": far, "cart": map[string]any{"lines": []map[string]any{{"item_id": ccCheese, "size_id": ccXL, "qty": 1}}}})
+	if q.Status != 200 || !strings.Contains(string(q.Body), `"area":{"distance_mi":5,"state":"out"}`) && !strings.Contains(string(q.Body), `"area":{"state":"out","distance_mi":5}`) ||
+		!strings.Contains(string(q.Body), `"quote":{`) {
+		t.Fatalf("quote with the address: %d %s", q.Status, q.Body)
+	}
+	if q := r.relay(t, ccAgent, "POST", "quote", map[string]any{"type": "delivery", "cart": map[string]any{"lines": []any{}}}); strings.Contains(string(q.Body), `"area"`) {
+		t.Fatalf("a quote without an address has no area: %s", q.Body)
+	}
+	// Out of the area without the ack: 409 with the numbers; nothing placed.
+	for name, extra := range map[string]map[string]any{"no ack": nil, "ack false": {"out_of_area_ack": false}} {
+		got := r.relay(t, ccAgent, "POST", "orders", delivery(far, extra))
+		var ov struct {
+			Code string `json:"code"`
+			Area struct {
+				State      string  `json:"state"`
+				DistanceMi float64 `json:"distance_mi"`
+			} `json:"area"`
+			RadiusMi float64 `json:"radius_mi"`
+			MarginMi float64 `json:"margin_mi"`
+		}
+		if err := json.Unmarshal(got.Body, &ov); err != nil || got.Status != http.StatusConflict || ov.Code != "out_of_area" || ov.Area.State != "out" ||
+			ov.Area.DistanceMi != 5 || ov.RadiusMi != 3 || ov.MarginMi != 1 {
+			t.Fatalf("%s: %d %s", name, got.Status, got.Body)
+		}
+	}
+	if got := r.relay(t, ccAgent, "POST", "orders", delivery(far, map[string]any{"out_of_area_ack": "yes"})); got.Status != http.StatusBadRequest {
+		t.Fatalf("an ack that isn't a boolean: %d %s", got.Status, got.Body)
+	}
+	if got := r.relay(t, ccAgent, "GET", "orders", nil); string(got.Body) != "[]" || len(r.floor.receipts) != 0 {
+		t.Fatalf("nothing placed: %s", got.Body)
+	}
+	// With the ack: placed, marked, journaled under the agent, on the checks row.
+	acked := r.relay(t, ccAgent, "POST", "orders", delivery(far, map[string]any{"out_of_area_ack": true}))
+	farID, marked := idOf(acked)
+	if acked.Status != http.StatusCreated || !marked {
+		t.Fatalf("with the ack: %d %s", acked.Status, acked.Body)
+	}
+	journal, _ := r.s.terminalSvc.Journal(context.Background(), 50)
+	var entry *terminal.Entry
+	for i := range journal {
+		if journal[i].Action == terminal.ActionOutOfArea {
+			entry = &journal[i]
+		}
+	}
+	if entry == nil || entry.StaffID != ccAgent || entry.DeviceID != "callcenter:desk-2" || entry.OrderID != farID ||
+		!strings.Contains(string(entry.Detail), `"acked":true`) || !strings.Contains(string(entry.Detail), `"distance_mi":5`) {
+		t.Fatalf("journal delivery.out_of_area: %+v", entry)
+	}
+	// In the area, near it (warn only) and with no point yet: placed as today, no ack, no mark.
+	ids := map[string]string{}
+	for name, cust := range map[string]map[string]any{"in": in, "near": near, "unknown": fresh} {
+		got := r.relay(t, ccAgent, "POST", "orders", delivery(cust, nil))
+		id, marked := idOf(got)
+		if got.Status != http.StatusCreated || marked {
+			t.Fatalf("%s: %d %s", name, got.Status, got.Body)
+		}
+		ids[name] = id
+	}
+	// A pickup needs no check, whatever address rides with the customer.
+	if got := r.relay(t, ccAgent, "POST", "orders", map[string]any{"client_key": ccKey(), "type": "pickup", "customer": far,
+		"cart": map[string]any{"lines": []map[string]any{{"item_id": ccCheese, "size_id": ccXL, "qty": 1}}}}); got.Status != http.StatusCreated {
+		t.Fatalf("a pickup: %d %s", got.Status, got.Body)
+	}
+	// A change of address to one out of the area: 409 without the ack (nothing changes), marked with it;
+	// back to an address in the area the mark comes off; the same address again asks nothing.
+	change := func(id string, cust map[string]any, extra map[string]any) relayed {
+		b := delivery(cust, extra)
+		delete(b, "type")
+		return r.relay(t, ccAgent, "PUT", "orders/"+id+"/cart", b)
+	}
+	if got := change(ids["in"], far, nil); got.Status != http.StatusConflict || got.code() != "out_of_area" {
+		t.Fatalf("a new address out of the area, no ack: %d %s", got.Status, got.Body)
+	}
+	if got := r.relay(t, ccAgent, "GET", "orders/"+ids["in"], nil); !strings.Contains(string(got.Body), `"line1":"1 Test St"`) || strings.Contains(string(got.Body), `"out_of_area":true`) {
+		t.Fatalf("the refused change changed nothing: %.300s", got.Body)
+	}
+	moved := change(ids["in"], far, map[string]any{"out_of_area_ack": true})
+	if _, marked := idOf(moved); moved.Status != 200 || !marked || !strings.Contains(string(moved.Body), `"line1":"9 Far Rd"`) {
+		t.Fatalf("the address changed with the ack: %d %s", moved.Status, moved.Body)
+	}
+	if same := change(ids["in"], far, nil); same.Status != 200 {
+		t.Fatalf("the same out-of-area address again needs no new ack: %d %s", same.Status, same.Body)
+	}
+	back := change(ids["in"], in, nil)
+	if _, marked := idOf(back); back.Status != 200 || marked {
+		t.Fatalf("back inside the area: %d %s", back.Status, back.Body)
+	}
+	// A pickup made a delivery to an out-of-area address: the same rule.
+	pick := r.relay(t, ccAgent, "POST", "orders", ccOrder(ccKey()))
+	pid, _ := idOf(pick)
+	toDelivery := delivery(far, nil)
+	if got := r.relay(t, ccAgent, "PUT", "orders/"+pid+"/cart", toDelivery); got.Status != http.StatusConflict || got.code() != "out_of_area" {
+		t.Fatalf("pickup -> delivery out of the area: %d %s", got.Status, got.Body)
+	}
+	toDelivery["out_of_area_ack"], toDelivery["client_key"] = true, ccKey()
+	if got := r.relay(t, ccAgent, "PUT", "orders/"+pid+"/cart", toDelivery); got.Status != 200 || !strings.Contains(string(got.Body), `"out_of_area":true`) {
+		t.Fatalf("pickup -> delivery with the ack: %d %s", got.Status, got.Body)
+	}
+	// The checks rows: the two out-of-area deliveries are marked for the store.
+	checks := r.relay(t, ccAgent, "GET", "checks", nil, func(p map[string]any) { p["query"] = "batch=current&limit=50" })
+	var cl struct {
+		Checks []struct {
+			OrderID   string `json:"order_id"`
+			OutOfArea bool   `json:"out_of_area"`
+		} `json:"checks"`
+	}
+	if err := json.Unmarshal(checks.Body, &cl); err != nil || checks.Status != 200 {
+		t.Fatalf("checks: %d %s", checks.Status, checks.Body)
+	}
+	for _, c := range cl.Checks {
+		if want := c.OrderID == farID || c.OrderID == pid; c.OutOfArea != want {
+			t.Errorf("check %s: out_of_area %v, want %v", c.OrderID, c.OutOfArea, want)
+		}
+	}
+	// A store terminal's rule stays its own (a manager's PIN in the app): the Pi neither refuses nor marks, whatever out_of_area_ack says.
+	if rec := call(r.h, "POST", "/api/terminal/login", r.termKey, `{"pin":"1234"}`); rec.Code != 200 {
+		t.Fatal(rec.Body.String())
+	}
+	for _, ack := range []bool{false, true} {
+		b := delivery(far, map[string]any{"out_of_area_ack": ack})
+		raw, _ := json.Marshal(b)
+		rec := call(r.h, "POST", "/api/terminal/orders", r.termKey, string(raw))
+		if rec.Code != http.StatusCreated || strings.Contains(rec.Body.String(), `"out_of_area":true`) {
+			t.Fatalf("a store terminal, ack %v: %d %s", ack, rec.Code, rec.Body)
+		}
 	}
 }

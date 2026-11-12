@@ -49,3 +49,21 @@ func TestTakenByPrints(t *testing.T) {
 		}
 	}
 }
+
+// A call-center delivery outside the store's area (acknowledged) says so on
+// both delivery copies; nothing else prints the line.
+func TestOutOfAreaPrintsOnTheDeliveryCopies(t *testing.T) {
+	sc, prefs := deliveryStoreCtx(), order.DefaultReceiptPrefs()
+	d := deliverySnap(true)
+	copies := printer.Ticket{Kind: printer.TicketDeliveryCopies, Station: "Front"}
+	if text := textOf(Build(d, sc, copies, prefs)); strings.Contains(text, "OUT OF AREA") {
+		t.Fatal("an order in the area prints no OUT OF AREA")
+	}
+	d.OutOfArea, d.TakenBy = true, "Call center - Elena V."
+	for _, cols := range []int{0, 42, 32} {
+		copies.Cols = cols
+		if text := textOf(Build(d, sc, copies, prefs)); strings.Count(text, "OUT OF AREA") != 2 {
+			t.Errorf("%d columns: OUT OF AREA printed %d times, want on both copies\n%s", cols, strings.Count(text, "OUT OF AREA"), text)
+		}
+	}
+}

@@ -341,6 +341,7 @@ func (s *Service) changeCart(ctx context.Context, a Actor, id string, in ChangeI
 		if to != "" {
 			retype(&snap, to, in.Customer)
 		}
+		area := areaMark(ctx, &snap, cur.Order, st.ID, a.DeviceID) // §2.10ab: a call-center address out of the area
 		meta := make(map[string]any, len(snap.SourceMeta)+1)
 		for k, v := range snap.SourceMeta {
 			meta[k] = v
@@ -383,6 +384,7 @@ func (s *Service) changeCart(ctx context.Context, a Actor, id string, in ChangeI
 		entries = append(entries, customEntries(a, st, p, id, keptCustom(cur.Order))...)
 		entries = append(entries, rungEntries(a, st, p, id, keptCustom(cur.Order))...)
 		entries = append(entries, couponEntries(a, st, p, id, cartCoupons(cur.Order))...)
+		entries = append(entries, area...)
 		entries[0].Detail = detail(d)
 		return &snap, entries, nil
 	})
