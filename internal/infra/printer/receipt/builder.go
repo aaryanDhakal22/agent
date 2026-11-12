@@ -379,6 +379,7 @@ func buildFull(snap order.Snapshot, sc storeconfig.StoreContext, reroutedFrom st
 		w(cmdBoldOff)
 		w(cmdBaseSz)
 	}
+	buf.WriteString(poweredByFooter())
 	if prefs.ExtraPaper {
 		// v1's ending: cut, feed well past it, cut again.
 		w(cmdCut)

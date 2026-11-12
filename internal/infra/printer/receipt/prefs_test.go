@@ -189,8 +189,8 @@ func TestBuild_NoExtraPaper(t *testing.T) {
 	if n := bytes.Count(got, []byte(cmdCut)); n != 1 {
 		t.Fatalf("one cut without extra paper, got %d", n)
 	}
-	if !bytes.HasSuffix(got, []byte("ONLINE ORDER"+cmdBoldOff+cmdBaseSz+"\n\n\n"+cmdCut)) {
-		t.Errorf("footer, 3 line feeds, one cut: %q", got[len(got)-40:])
+	if !bytes.HasSuffix(got, []byte("ONLINE ORDER"+cmdBoldOff+cmdBaseSz+poweredByFooter()+"\n\n\n"+cmdCut)) {
+		t.Errorf("footer, powered by, 3 line feeds, one cut: %q", got[len(got)-40:])
 	}
 	def := Build(previewDelivery(), previewStore(), receiptTicket(), order.DefaultReceiptPrefs())
 	if !bytes.HasSuffix(def, []byte(cmdCut+"\n\n\n\n\n"+cmdCut)) {
