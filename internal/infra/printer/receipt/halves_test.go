@@ -111,7 +111,7 @@ func TestHalves_Receipt(t *testing.T) {
 	f := halfCases[5].item
 	snap := halfSnap(f, order.LineItem{Name: "Soda", Quantity: 1, UnitPrice: 199, Routing: order.RoutingMatched, PrinterID: "p-pizza"})
 	sc := previewStore()
-	got := Build(snap, sc, printer.Ticket{Kind: printer.TicketReceipt}, order.DefaultReceiptPrefs())
+	got := Build(snap, sc, printer.Ticket{Kind: printer.TicketFull}, order.DefaultReceiptPrefs())
 	want := []string{defaultLayout.modifierLine("NO Oregano", 0), defaultLayout.modifierLine("1st: Pepperoni", 225), defaultLayout.modifierLine("2nd: Hawaiian", 0), defaultLayout.modifierLine("2nd: Onion", 175)}
 	at := -1
 	for _, w := range want {
@@ -128,7 +128,7 @@ func TestHalves_Receipt(t *testing.T) {
 
 	prefs := order.DefaultReceiptPrefs()
 	prefs.Format = order.FormatCondensed
-	got = Build(snap, sc, printer.Ticket{Kind: printer.TicketReceipt}, prefs)
+	got = Build(snap, sc, printer.Ticket{Kind: printer.TicketFull}, prefs)
 	if !bytes.Contains(got, []byte("    - \xab CHEESE PIZZA + PEPPERONI |")) {
 		t.Errorf("condensed receipt lacks the summary\n%q", got)
 	}

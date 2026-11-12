@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strings"
 	"time"
 
 	"quiccpos/agent/internal/application/devlog"
@@ -142,36 +141,7 @@ func (s *Service) PrintChange(ctx context.Context, so order.StoredOrder, added, 
 		}
 		s.printEvents(label(so)+" change (counter)", out)
 	})
-	s.PrintDeliveryUpdate(ctx, so) // the driver's copies, now (a delivery only)
-}
-
-// PrintDeliveryUpdate prints a sent delivery's Merchant + Customer Copy again,
-// marked UPDATED / ACTUALIZADO, on the receipt printer (background) after its
-// items or payments changed (a store terminal or the call center, 2026-11-12):
-// the copies printed at placement are the driver's and would be stale. Called
-// once per real change (never on a duplicate or a no-op); nothing for a
-// pickup, a cancelled or a delivered order.
-func (s *Service) PrintDeliveryUpdate(ctx context.Context, so order.StoredOrder) {
-	if !strings.EqualFold(so.Order.Fulfillment.Type, "delivery") {
-		return
-	}
-	switch so.Status.State {
-	case order.StateCancelled, order.StateDelivered:
-		return
-	}
-	snap := printable(so)
-	s.background(ctx, func(ctx context.Context) {
-		out, err := s.print(ctx, snap, printer.ModeDeliveryUpdate)
-		if errors.Is(err, printer.ErrNoTickets) {
-			return
-		}
-		s.alertPrintIssues(ctx, so, out, false)
-		if err != nil {
-			s.logger.Warn().Ctx(ctx).Err(err).Str("order_id", so.Order.ID).Msg("Updated delivery copies not printed")
-			return
-		}
-		s.printEvents(label(so)+" delivery copies (updated)", out)
-	})
+	s.deferDeliveryUpdate(ctx, so) // the driver's copies: one UPDATED pair, after the charge (delivery_update.go)
 }
 
 // CounterOrderChanged tells main (floor sync) and the tablets about a counter

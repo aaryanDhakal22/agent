@@ -54,7 +54,14 @@ func Build(snap order.Snapshot, sc storeconfig.StoreContext, t printer.Ticket, p
 	if t.Kind == printer.TicketStation {
 		return buildStation(snap, t, prefs)
 	}
-	out := buildFull(snap, sc, t.ReroutedFrom, prefs, layoutFor(t.Cols))
+	var out []byte
+	if t.Kind == printer.TicketReceipt && snap.Voided == "" {
+		// The customer receipt = SoftTouch's slip (the owner, 2026-11-12; softtouch.go);
+		// a voided one keeps buildFull's struck-through lines.
+		out = BuildCustomerReceipt(snap, sc, prefs, printer.Paper{Cols: t.Cols, ReroutedFrom: t.ReroutedFrom})
+	} else {
+		out = buildFull(snap, sc, t.ReroutedFrom, prefs, layoutFor(t.Cols))
+	}
 	if t.Reprint { // the band goes right after the printer's init, above the store's header
 		out = reprintTop(out, layoutFor(t.Cols))
 	}
@@ -545,20 +552,22 @@ func writeVoided(w func(string), nl func(), label string, l layout) {
 func reprintTop(out []byte, l layout) []byte {
 	band := cmdCenter + cmdBoldOn + cmdDoubleSz + cmdInvertOn + pad("REPRINT", min(12, l.big())) + cmdInvertOff + cmdFeed +
 		cmdInvertOn + pad("REIMPRESION", min(12, l.big())) + cmdInvertOff + cmdBaseSz + cmdBoldOff + cmdFeed + cmdFeed
-	head := cmdInit + cmdBaseSz
-	if !bytes.HasPrefix(out, []byte(head)) {
-		return append([]byte(band), out...)
+	for _, head := range []string{cmdInit + cmdBaseSz, cmdInit + cmdNormalSz} {
+		if bytes.HasPrefix(out, []byte(head)) {
+			return append(append([]byte(head), band...), out[len(head):]...)
+		}
 	}
-	return append(append([]byte(head), band...), out[len(head):]...)
+	return append([]byte(band), out...)
 }
 
 func futureReceiptTop(out []byte, l layout) []byte {
 	bar := cmdCenter + cmdBoldOn + cmdDoubleSz + cmdInvertOn + pad("FUTURE", min(12, l.big())) + cmdInvertOff + cmdBaseSz + cmdBoldOff + cmdFeed + cmdFeed
-	head := cmdInit + cmdBaseSz
-	if !bytes.HasPrefix(out, []byte(head)) {
-		return append([]byte(bar), out...)
+	for _, head := range []string{cmdInit + cmdBaseSz, cmdInit + cmdNormalSz} {
+		if bytes.HasPrefix(out, []byte(head)) {
+			return append(append([]byte(head), bar...), out[len(head):]...)
+		}
 	}
-	return append(append([]byte(head), bar...), out[len(head):]...)
+	return append([]byte(bar), out...)
 }
 
 // textSize maps a receipt-settings size onto its ESC/POS size command:

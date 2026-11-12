@@ -248,6 +248,30 @@ type PaymentSummary struct {
 	Tender   string `json:"tender,omitempty"`
 	Entry    string `json:"entry,omitempty"`
 	Ref      string `json:"ref,omitempty"`
+	// The payment's id on the Pi ("Payment #"), when it was taken and the
+	// card's brand (visa | mastercard | amex | discover | other), for the
+	// printed copies (SoftTouch's payment block, 2026-11-12).
+	ID    string     `json:"id,omitempty"`
+	At    *time.Time `json:"at,omitempty"`
+	Brand string     `json:"brand,omitempty"`
+}
+
+// BrandName is the card's brand as the printed copies name it ("Visa"), else "Card".
+func (p PaymentSummary) BrandName() string {
+	switch strings.ToLower(strings.TrimSpace(p.Brand)) {
+	case "visa":
+		return "Visa"
+	case "mastercard", "master_card":
+		return "Mastercard"
+	case "amex", "american_express":
+		return "Amex"
+	case "discover", "discover_diners":
+		return "Discover"
+	case "", "other":
+		return "Card"
+	}
+	b := strings.TrimSpace(p.Brand)
+	return strings.ToUpper(b[:1]) + strings.ToLower(b[1:])
 }
 
 // PaymentTips is the tips taken with the payments of one of the store's own

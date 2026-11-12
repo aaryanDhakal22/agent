@@ -124,10 +124,12 @@ def test_print_sample(store, fakes) -> None:
     intentional_sleep(0.5, "absence: the sample prints only on the chosen printer")
     assert len(front.jobs) == 1 and not pizza.jobs, "the sample prints only on the chosen printer"
     job = front.jobs[0]
-    assert job.count(b"CUSTOMER, SAMPLE") == 3, "two receipt copies + the kitchen ticket"
+    # The receipt is SoftTouch's slip (2026-11-12): "LAST , FIRST", one cut a copy.
+    assert job.count(b"CUSTOMER , SAMPLE") == 2, "two receipt copies"
+    assert job.count(b"CUSTOMER, SAMPLE") == 1, "the kitchen ticket"
     assert job.count(b"THANK YOU") == 2
-    assert job.count(CUT) == 5, "2 copies x (cut, feed, cut) + the kitchen ticket's cut"
-    for want in (b"#1234", b"   - extra ranch please", b"SAMPLE - not a real order", b"PAID - CARD"):
+    assert job.count(CUT) == 3, "2 copies x 1 cut + the kitchen ticket's cut"
+    for want in (b"Order #: 1234", b"   - extra ranch please", b"SAMPLE - not a real order", b"XXXXXXXXXXXX4242 Card"):
         assert want in job, want
 
     # A chosen printer; the settings in force are the saved ones.

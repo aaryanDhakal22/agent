@@ -22,6 +22,7 @@ var printedAt = time.Date(2026, 11, 11, 18, 31, 0, 0, time.UTC)
 
 func TestMain(m *testing.M) {
 	clock = func() time.Time { return printedAt }
+	deliveryNow = func() time.Time { return printedAt } // the slips' Date / Time (softtouch.go)
 	os.Exit(m.Run())
 }
 

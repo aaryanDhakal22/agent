@@ -671,8 +671,13 @@ func (p Payment) Summary() order.PaymentSummary {
 	if ref == "" {
 		ref = strings.TrimSpace(p.Ref)
 	}
-	return order.PaymentSummary{Method: MethodOf(p.Tender), AmountCents: amt, Last4: p.Last4, AuthCode: p.AuthCode,
-		TipCents: tip, Tender: p.Tender, Entry: p.Entry, Ref: ref}
+	s := order.PaymentSummary{Method: MethodOf(p.Tender), AmountCents: amt, Last4: p.Last4, AuthCode: p.AuthCode,
+		TipCents: tip, Tender: p.Tender, Entry: p.Entry, Ref: ref, ID: p.ID, Brand: p.Brand}
+	if !p.At.IsZero() {
+		at := p.At.UTC()
+		s.At = &at
+	}
+	return s
 }
 
 func (p Payment) Signed() (amount, tip int64) {

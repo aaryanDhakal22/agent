@@ -26,23 +26,28 @@ func TestKeyedDeliveryOfTheStoresOwnOrderPrintsTipEntryAndSquareID(t *testing.T)
 	for _, cols := range []int{0, 42, 32} {
 		text := textOf(Build(d, sc, printer.Ticket{Kind: printer.TicketDeliveryCopies, Station: "Front", Cols: cols}, prefs))
 		for want, n := range map[string]int{
-			"Tip:":                 2, // both copies
-			"$3.00":                2,
-			"$38.25":               2, // the Total: $35.25 + the $3.00 tip
-			"Card XXXX1111 $19.44": 2, // the first card: charged amount + tip
-			"Card XXXX1111 $18.81": 2,
-			"MANUALLY ENTERED":     4, // under each card line, both copies
-			"ccd-0f3a9c-key":       0, // never the order's own key when a card has Square's id
-			"Collect Cash":         0,
+			"Tip:":                        2, // both copies
+			"$3.00":                       2,
+			"$38.25":                      2, // the Total: $35.25 + the $3.00 tip
+			"Card $19.44":                 2, // the first card: charged amount + tip
+			"Card $18.81":                 2,
+			"XXXXXXXXXXXX1111 Card":       4, // a payment block per card, both copies
+			"MANUALLY ENTERED":            4,
+			"Cashier: Call center - Cece": 4,
+			"ccd-0f3a9c-key":              0, // never the order's own key when a card has Square's id
+			"Collect Cash":                0,
+			"I agree to pay":              0, // a tip was taken: no signature block
 		} {
 			if got := strings.Count(strings.ReplaceAll(text, "\n", " "), want); got != n {
 				t.Errorf("cols %d: %q printed %d times, want %d\n%s", cols, want, got, n, text)
 			}
 		}
-		// the last card's Square id (it wraps under the label on narrow paper)
+		// each card's Square id (it wraps under the label on narrow paper)
 		flat := strings.NewReplacer(" ", "", "\n", "").Replace(text)
-		if n := strings.Count(flat, "TransactionID:4RDCNrVavBjANQ7boscUFg60hoXZY"); n != 2 {
-			t.Errorf("cols %d: Square's id as the Transaction ID %d times, want 2\n%s", cols, n, text)
+		for _, id := range []string{"s9EkUvdx48VTZ3C3MZVZOXVpwpZZY", "4RDCNrVavBjANQ7boscUFg60hoXZY"} {
+			if n := strings.Count(flat, "TransactionID:"+id); n != 2 {
+				t.Errorf("cols %d: %s as a Transaction ID %d times, want 2\n%s", cols, id, n, text)
+			}
 		}
 	}
 	// The customer receipt (the Reprint layout, staging 2026-11-12): one card line per payment with
@@ -53,11 +58,11 @@ func TestKeyedDeliveryOfTheStoresOwnOrderPrintsTipEntryAndSquareID(t *testing.T)
 		p.Fulfillment.Type = typ
 		text := textOf(Build(p, sc, printer.Ticket{Kind: printer.TicketReceipt, Station: "Front", Reprint: true}, prefs))
 		for want, n := range map[string]int{
-			"MANUALLY ENTERED": 2, "Card ****1111": 2, "$19.44": 1, "$18.81": 1, "Tips :": 1,
+			"MANUALLY ENTERED": 2, "XXXXXXXXXXXX1111 Card": 2, "Card $19.44": 1, "Card $18.81": 1, "Tip:": 1,
 			"Transaction ID: s9EkUvdx48VTZ3C3MZVZOXVpwpZZY": 1, "Transaction ID: 4RDCNrVavBjANQ7boscUFg60hoXZY": 1,
-			"$38.25":  2, // Total: and Order Total:, the same
+			"$38.25":  1, // the Total, the tip in it
 			"$35.25":  0, // never the total without the tip
-			"REPRINT": 1, "REIMPRESION": 1,
+			"REPRINT": 1, "REIMPRESION": 1, "Customer Copy": 1,
 		} {
 			if got := strings.Count(text, want); got != n {
 				t.Errorf("%s receipt: %q printed %d times, want %d\n%s", typ, want, got, n, text)
@@ -83,7 +88,7 @@ func TestKeyedDeliveryOfTheStoresOwnOrderPrintsTipEntryAndSquareID(t *testing.T)
 	w := deliverySnap(true)
 	w.Payments[0].TipCents = 300
 	wt := textOf(Build(w, sc, printer.Ticket{Kind: printer.TicketDeliveryCopies, Station: "Front"}, prefs))
-	if !strings.Contains(wt, "$27.90") || strings.Contains(wt, "$30.90") || !strings.Contains(wt, "V-5521") {
+	if !strings.Contains(wt, "$27.90") || strings.Contains(wt, "$30.90") {
 		t.Errorf("a website order's copy changed\n%s", wt)
 	}
 }

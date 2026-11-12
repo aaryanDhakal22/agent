@@ -177,3 +177,28 @@ func (c *Client) doWithType(hc *http.Client, ctx context.Context, method, key, p
 	}
 	return resp.StatusCode, respBody, nil
 }
+
+// DownloadIfNoneMatch GETs a binary file with If-None-Match (the receipt
+// logo): 304 = the copy we have is current; the answer's ETag comes back too.
+func (c *Client) DownloadIfNoneMatch(ctx context.Context, key, path, etag string) (int, []byte, string, error) {
+	ctx, cancel := context.WithTimeout(ctx, downloadTimeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+path, nil)
+	if err != nil {
+		return 0, nil, "", err
+	}
+	req.Header.Set(storeAPIKeyHeader, key)
+	if etag != "" {
+		req.Header.Set("If-None-Match", etag)
+	}
+	resp, err := (&http.Client{Transport: c.http.Transport}).Do(req)
+	if err != nil {
+		return 0, nil, "", fmt.Errorf("GET %s: %w", path, err)
+	}
+	defer resp.Body.Close()
+	b, err := io.ReadAll(io.LimitReader(resp.Body, 16<<20))
+	if err != nil {
+		return resp.StatusCode, nil, "", fmt.Errorf("read response: %w", err)
+	}
+	return resp.StatusCode, b, resp.Header.Get("ETag"), nil
+}

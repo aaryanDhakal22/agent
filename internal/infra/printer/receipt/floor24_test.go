@@ -133,7 +133,7 @@ func TestFutureEarlyTickets(t *testing.T) {
 	}
 	rc := string(BuildFutureSample(previewStore(), order.DefaultReceiptPrefs(), at, false, 0))
 	fut, store := strings.Index(rc, "FUTURE"), strings.Index(rc, "Lombardi")
-	if fut < 0 || store < 0 || fut > store || !strings.HasPrefix(rc, cmdInit+cmdBaseSz+cmdCenter) {
+	if fut < 0 || store < 0 || fut > store || !(strings.HasPrefix(rc, cmdInit+cmdBaseSz+cmdCenter) || strings.HasPrefix(rc, cmdInit+cmdNormalSz+cmdCenter)) {
 		t.Fatalf("receipt: %q", rc)
 	}
 	// A pickup a day later shows the day.

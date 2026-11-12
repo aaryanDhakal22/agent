@@ -82,6 +82,8 @@ type Service struct {
 	integ    integrationState
 	storeIDs atomic.Pointer[func() (string, string)]
 	bg       sync.WaitGroup
+	// upd: the updated delivery copies waiting after a change (delivery_update.go).
+	upd deliveryUpdates
 	// dev: the developer-mode event ring (SetDevLog; nil = off).
 	dev atomic.Pointer[devlog.Ring]
 	// onBatchClosed runs after a Close batch (OnBatchClosed).
