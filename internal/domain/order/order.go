@@ -54,6 +54,10 @@ type Snapshot struct {
 	// future order - its re-ring time, else promised_at less its lead or
 	// prep minutes. The kitchen ticket's band says MAKE AT / READY.
 	MakeAt *time.Time `json:"-"`
+	// TypeChangedFrom (printing only, never on the wire): a terminal order
+	// moved takeout <-> delivery after SEND (contract §2.10d `type`): its
+	// change ticket says the new type and this old one.
+	TypeChangedFrom string `json:"-"`
 }
 
 type Money struct {

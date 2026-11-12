@@ -94,6 +94,8 @@ func (s *Server) terminalError(w http.ResponseWriter, r *http.Request, err error
 		s.writeJSON(w, http.StatusConflict, errCodeMap(err.Error(), "not_editable"))
 	case errors.Is(err, terminal.ErrRefundFirst):
 		s.writeJSON(w, http.StatusConflict, errCodeMap(err.Error(), "refund_first"))
+	case errors.Is(err, terminal.ErrTypeLocked):
+		s.writeJSON(w, http.StatusConflict, errCodeMap(err.Error(), "type_locked"))
 	case errors.Is(err, terminal.ErrCustomerNotFound):
 		s.writeJSON(w, http.StatusNotFound, errCodeMap(err.Error(), "customer_not_found"))
 	case errors.Is(err, terminal.ErrTooManyAddresses):

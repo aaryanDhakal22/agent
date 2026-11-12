@@ -27,6 +27,9 @@ var (
 	// ErrRefundFirst: the new total is below what was paid - give the
 	// difference back first.
 	ErrRefundFirst = errors.New("the new total is below what was paid: refund the difference first")
+	// ErrTypeLocked: a delivery with a driver (in a pool or out) can't
+	// become a pickup until it is taken off the run.
+	ErrTypeLocked = errors.New("this delivery is with a driver: take it off the run first")
 )
 
 // MaxEditKeys is how many change client_keys an order remembers.

@@ -41,6 +41,8 @@ type fakeOrders struct {
 	voids   []order.StoredOrder
 	addOns  [][]order.LineItem
 	voidLns [][]order.LineItem
+	// typeFrom: each change ticket's TypeChangedFrom ("" = the type stayed).
+	typeFrom []string
 	changed int
 	journal int
 }
@@ -55,8 +57,9 @@ func (f *fakeOrders) PrintVoidSlip(_ context.Context, so order.StoredOrder) {
 	f.voids = append(f.voids, so)
 	f.mu.Unlock()
 }
-func (f *fakeOrders) PrintChange(_ context.Context, _ order.StoredOrder, added, removed []order.LineItem) {
+func (f *fakeOrders) PrintChange(_ context.Context, so order.StoredOrder, added, removed []order.LineItem) {
 	f.mu.Lock()
+	f.typeFrom = append(f.typeFrom, so.Order.TypeChangedFrom)
 	if len(added) > 0 {
 		f.addOns = append(f.addOns, added)
 	}

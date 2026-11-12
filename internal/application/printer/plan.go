@@ -149,7 +149,17 @@ func PlanWith(snap order.Snapshot, roster []RosterEntry, mode printer.Mode, rule
 		}
 		return tickets, unrouted
 	case printer.ModeChange:
-		return changeTickets(snap, roster, receipt)
+		tickets, unrouted = changeTickets(snap, roster, receipt)
+		for i := range tickets {
+			tickets[i].WasType = snap.TypeChangedFrom
+		}
+		return tickets, unrouted
+	case printer.ModeTypeChange:
+		tickets, unrouted = stationTickets(snap, roster, receipt)
+		for i := range tickets {
+			tickets[i].Change, tickets[i].TypeOnly, tickets[i].WasType, tickets[i].Others = true, true, snap.TypeChangedFrom, nil
+		}
+		return tickets, unrouted
 	}
 
 	if isPOS(snap) {

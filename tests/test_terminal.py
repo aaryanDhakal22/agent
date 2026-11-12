@@ -249,7 +249,10 @@ def test_device_kinds_and_gates(rig, admin):
     assert [d["kind"] for d in devices] == ["terminal"]
     # A terminal key: no floor routes besides events / floor.
     assert term.get(f"{agent.base}/api/drivers", timeout=5).json()["code"] == "terminal_only"
-    assert term.get(f"{agent.base}/api/floor", timeout=5).status_code == 200
+    floor = term.get(f"{agent.base}/api/floor", timeout=5)
+    assert floor.status_code == 200
+    # The store's colours (2.4.3): the terminal tints its running list with the same ones Quibase uses.
+    assert set(floor.json()["settings"]["look"]["tickets"]) == {"delivery", "pickup", "counter"}
     # A tablet key: no terminal routes.
     code = agent.http.post(f"{agent.base}/api/pairing/code", timeout=5).json()["code"]
     tab = requests.post(f"{agent.base}/api/pair", json={"code": code, "name": "Kitchen"}, timeout=5).json()["key"]
@@ -440,6 +443,49 @@ def test_kitchen_change_after_send(rig):
     assert r.status_code == 409 and r.json()["code"] == "not_editable"
     actions = [e["action"] for e in term.get(f"{base}/api/terminal/journal", timeout=5).json()]
     assert actions.count("order.changed") == 2
+
+
+def test_takeout_delivery_after_send(rig):
+    """§2.10d `type` (terminal owner pass 2026-11-12): a sent pickup moves to a delivery (it needs the
+    address) and back: re-quoted (the delivery fee comes and goes), the kitchen gets a change ticket
+    saying NOW DELIVERY (WAS PICKUP), the floor and main see the new type, journaled; a counter order
+    never moves."""
+    agent, term, fm, fakes = rig["agent"], rig["term"], rig["fm"], rig["fakes"]
+    base = agent.base
+    placed = place(rig, type="pickup", customer={"name": "Ada Test", "phone": "4105550101"}).json()["order"]
+    oid = placed["order"]["id"]
+    wait_until(lambda: fakes["Pizza"].jobs, what="first station ticket")
+    jobs = len(fakes["Pizza"].jobs)
+    cart = {"lines": [pizza_line()]}
+    # No address: refused, nothing printed.
+    r = term.put(f"{base}/api/terminal/orders/{oid}/cart", json={"cart": cart, "type": "delivery"}, timeout=10)
+    assert r.status_code == 400, r.text
+    addr = {"line1": "1 Test Street", "city": "Towson", "zip": "21286"}
+    body = {"client_key": "chg-type-00001", "cart": cart, "type": "delivery",
+            "customer": {"name": "Ada Test", "phone": "4105550101", "address": addr}}
+    r = term.put(f"{base}/api/terminal/orders/{oid}/cart", json=body, timeout=10)
+    assert r.status_code == 200, r.text
+    res = r.json()
+    so = res["order"]["order"]
+    assert res["changed"] and res["type_changed"] and res["added"] == [] and res["removed"] == []
+    assert so["fulfillment"]["type"] == "delivery" and so["fulfillment"]["address"]["line1"] == "1 Test Street"
+    assert so["source_metadata"]["terminal"]["type"] == "delivery"
+    assert so["money"]["total_cents"] >= placed["order"]["money"]["total_cents"]
+    wait_until(lambda: any("NOW DELIVERY" in j.decode("latin-1") and "(WAS PICKUP)" in j.decode("latin-1")
+                           for j in fakes["Pizza"].jobs[jobs:]), what="type change ticket")
+    floor = agent.http.get(f"{base}/api/orders?batch=current", timeout=5).json()
+    assert [o["order"]["fulfillment"]["type"] for o in floor if o["order"]["id"] == oid] == ["delivery"]
+    wait_until(lambda: any(e["snapshot"]["fulfillment"]["type"] == "delivery" for e in fm.of_type("order.changed")),
+               what="order.changed with the new type")
+    entries = [e for e in term.get(f"{base}/api/terminal/journal", timeout=5).json() if e["action"] == "order.changed"]
+    assert any(e["detail"].get("type_from") == "pickup" and e["detail"].get("type_to") == "delivery" for e in entries)
+    # Back to a pickup: no address.
+    r = term.put(f"{base}/api/terminal/orders/{oid}/cart", json={"cart": cart, "type": "pickup"}, timeout=10).json()
+    assert r["type_changed"] and r["order"]["order"]["fulfillment"]["type"] == "pickup" and not r["order"]["order"]["fulfillment"].get("address")
+    # A counter order never changes type.
+    c = place(rig).json()["order"]["order"]["id"]
+    r = term.put(f"{base}/api/terminal/orders/{c}/cart", json={"cart": cart, "type": "pickup"}, timeout=10)
+    assert r.status_code == 400, r.text
 
 
 def test_price_change_and_manager_check(rig):

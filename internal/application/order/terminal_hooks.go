@@ -48,15 +48,24 @@ func (s *Service) PrintVoidSlip(ctx context.Context, so order.StoredOrder) {
 // there under ADD / AGREGAR and the lines removed there under REMOVE /
 // QUITAR (struck through). so is the order now; added / removed are the
 // changed lines with their stations.
+//
+// A type change (so.Order.TypeChangedFrom, terminal §2.10d `type`) puts the
+// NOW / WAS band on the change tickets; with no line changed, every station
+// with lines of the order gets a type-change ticket (ModeTypeChange).
 func (s *Service) PrintChange(ctx context.Context, so order.StoredOrder, added, removed []order.LineItem) {
-	if len(added) == 0 && len(removed) == 0 {
+	typeOnly := len(added) == 0 && len(removed) == 0
+	if typeOnly && so.Order.TypeChangedFrom == "" {
 		return
 	}
 	snap := printable(so)
-	snap.Items = append([]order.LineItem(nil), added...)
-	snap.RemovedItems = append([]order.LineItem(nil), removed...)
+	mode := printer.ModeTypeChange
+	if !typeOnly {
+		mode = printer.ModeChange
+		snap.Items = append([]order.LineItem(nil), added...)
+		snap.RemovedItems = append([]order.LineItem(nil), removed...)
+	}
 	s.background(ctx, func(ctx context.Context) {
-		out, err := s.print(ctx, snap, printer.ModeChange)
+		out, err := s.print(ctx, snap, mode)
 		if errors.Is(err, printer.ErrNoTickets) {
 			return
 		}

@@ -58,6 +58,11 @@ const (
 	// (under ADD / AGREGAR), its RemovedItems the removed ones (under
 	// REMOVE / QUITAR, struck through). No "also on this order", no receipt.
 	ModeChange Mode = "change"
+	// ModeTypeChange (terminal §2.10d `type`): a counter order moved takeout
+	// <-> delivery after SEND with no line changed: one ticket per station
+	// with lines on it, its new type on top, a NOW <TYPE> / WAS <TYPE> band
+	// and the station's lines (to find the bag). No receipt.
+	ModeTypeChange Mode = "type_change"
 )
 
 // Ticket is one thing to print for an order. A planned order is a set of
@@ -84,6 +89,12 @@ type Ticket struct {
 	// removed (a Void ticket prints its Mine as removed the same way).
 	Change  bool
 	Removed []order.LineItem
+	// WasType (a change ticket, terminal §2.10d `type`): the order's type
+	// before it moved takeout <-> delivery: a NOW <TYPE> / WAS <TYPE> band.
+	WasType string
+	// TypeOnly (ModeTypeChange): only the type changed; Mine are the
+	// station's lines, printed plain under the band.
+	TypeOnly bool
 	// Future (ModeFutureEarly): printed early for a future order - a
 	// kitchen ticket says DO NOT MAKE and when it is due, a receipt has a
 	// FUTURE bar on top.

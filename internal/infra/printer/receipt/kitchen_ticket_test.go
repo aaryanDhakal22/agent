@@ -252,3 +252,25 @@ func TestKitchenTicket_OnlineOrderSameFormat(t *testing.T) {
 		t.Fatalf("online delivery:\n%q", got)
 	}
 }
+
+// A pickup moved to a delivery after SEND (terminal §2.10d `type`): the new type on top, a NOW
+// DELIVERY band and "(WAS PICKUP)"; with no line changed, the station's lines plain under it.
+func TestKitchenTicket_TypeChange(t *testing.T) {
+	snap := kitchenSnap("delivery", order.SourceCounter, "Ada", 14, kitchenLine(1, "Cheese Pizza", "Large", "p-pizza"))
+	tk := printer.Ticket{Kind: printer.TicketStation, TargetID: "p-pizza", Change: true, TypeOnly: true, WasType: "pickup", Mine: snap.Items}
+	got := string(BuildStation(snap, tk))
+	band := cmdDoubleSz + cmdInvertOn + pad("NOW DELIVERY", bigLineWidth) + cmdInvertOff
+	top, b, was, item := strings.Index(got, "DELIVERY\n"), strings.Index(got, band), strings.Index(got, "(WAS PICKUP)"), strings.Index(got, "1  CHEESE PIZZA (LARGE)\n")
+	if top < 0 || !(top < b && b < was && was < item) {
+		t.Fatalf("top %d < band %d < was %d < item %d:\n%q", top, b, was, item, got)
+	}
+	if strings.Contains(got, "ADD / AGREGAR") || strings.Contains(got, "Also on this order") {
+		t.Errorf("a type-only ticket has no ADD band and no other items:\n%q", got)
+	}
+	// With lines added too: the band first, then ADD.
+	tk = printer.Ticket{Kind: printer.TicketStation, TargetID: "p-pizza", Change: true, WasType: "pickup", Mine: snap.Items}
+	got = string(BuildStation(snap, tk))
+	if b, a := strings.Index(got, band), strings.Index(got, "ADD / AGREGAR"); b < 0 || a < b {
+		t.Errorf("band %d before ADD %d:\n%q", b, a, got)
+	}
+}

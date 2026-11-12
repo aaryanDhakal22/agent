@@ -111,6 +111,21 @@ func buildStation(snap order.Snapshot, t printer.Ticket, prefs order.ReceiptPref
 	w(strings.Repeat(ruleChar, stationWidth))
 	nl()
 
+	if change && t.WasType != "" {
+		// Moved takeout <-> delivery after SEND: the new type (also on top) and the old one.
+		writeBand(w, nl, "NOW "+stationType(snap))
+		w(cmdCenter)
+		w(cmdBoldOn)
+		w("(WAS " + typeWord(t.WasType) + ")")
+		w(cmdBoldOff)
+		nl()
+		w(cmdLeft)
+		if t.TypeOnly {
+			nl()
+			writeKitchenItems(w, nl, added, t, prefs)
+			added = nil
+		}
+	}
 	if change {
 		if len(added) > 0 {
 			writeBand(w, nl, "ADD / AGREGAR")
@@ -166,6 +181,19 @@ func stationType(snap order.Snapshot) string {
 		return "DINE IN"
 	}
 	return "ORDER"
+}
+
+// typeWord is a terminal order type as the ticket's top line words it.
+func typeWord(t string) string {
+	switch strings.ToLower(strings.TrimSpace(t)) {
+	case "delivery":
+		return "DELIVERY"
+	case "pickup", "takeout":
+		return "PICKUP"
+	case "counter", "dine_in":
+		return "COUNTER"
+	}
+	return strings.ToUpper(t)
 }
 
 // stationNumber is the ticket number staff call (the kitchen / counter

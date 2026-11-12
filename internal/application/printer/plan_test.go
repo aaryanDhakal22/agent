@@ -400,3 +400,24 @@ func TestPlanChange(t *testing.T) {
 		t.Fatalf("nothing changed: %+v", tk)
 	}
 }
+
+// A type change with no line changed: every station with lines of the order, the station's lines,
+// TypeOnly + WasType; a change with lines carries WasType too.
+func TestPlanTypeChange(t *testing.T) {
+	snap := order.Snapshot{Source: order.SourceCounter, Fulfillment: order.Fulfillment{Type: "delivery"}, TypeChangedFrom: "pickup",
+		Items: []order.LineItem{item("Cheese Pizza", order.RoutingMatched, "p-pizza"), item("Hot Wings", order.RoutingMatched, "p-wings")}}
+	tickets, _ := PlanWith(snap, []RosterEntry{front, pizza, wings}, printer.ModeTypeChange, DefaultRules())
+	if len(tickets) != 2 {
+		t.Fatalf("tickets = %+v", tickets)
+	}
+	for _, tk := range tickets {
+		if !tk.Change || !tk.TypeOnly || tk.WasType != "pickup" || len(tk.Mine) != 1 || len(tk.Others) != 0 || tk.Kind != printer.TicketStation {
+			t.Fatalf("ticket: %+v", tk)
+		}
+	}
+	snap.RemovedItems = []order.LineItem{item("Garlic Knots", order.RoutingMatched, "p-pizza")}
+	tickets, _ = PlanWith(snap, []RosterEntry{front, pizza, wings}, printer.ModeChange, DefaultRules())
+	if len(tickets) == 0 || tickets[0].WasType != "pickup" || tickets[0].TypeOnly {
+		t.Fatalf("change with lines: %+v", tickets)
+	}
+}
