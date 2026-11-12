@@ -349,9 +349,6 @@ type Querier interface {
 	SetCustomerAddressPoint(ctx context.Context, arg SetCustomerAddressPointParams) error
 	SetDeliveryPrefs(ctx context.Context, arg SetDeliveryPrefsParams) error
 	SetDeviceSetups(ctx context.Context, deviceSetups string) error
-	// A tip the driver got at the door (absolute). Only a delivery of the given
-	// (open) batch that is out or delivered, not a POS check.
-	SetDoorTip(ctx context.Context, arg SetDoorTipParams) (int64, error)
 	SetDriverOut(ctx context.Context, id string) error
 	// Undo a mistaken return: back out on the run, at its old queue position.
 	SetDriverOutAt(ctx context.Context, arg SetDriverOutAtParams) (int64, error)

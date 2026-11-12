@@ -7,8 +7,6 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/google/uuid"
-
 	"quiccpos/agent/internal/domain/order"
 	"quiccpos/agent/internal/infra/database/models"
 )
@@ -193,48 +191,6 @@ func (r *OrderRepository) ClaimDelivered(ctx context.Context, driverID string, i
 		return nil, err
 	}
 	return claimed, nil
-}
-
-// SetDoorTip records a tip the driver got at the door (absolute cents) on a
-// delivery of the open batch that is out or delivered (not a POS check:
-// ErrNotTippable). No card is charged. A counter order's door tip goes to
-// main as order.tip {kind: door} (main keeps the tips of our own orders, the
-// owner 2026-11-12); an online / website order's stays on the Pi.
-func (r *OrderRepository) SetDoorTip(ctx context.Context, id string, cents int64) (result *order.StoredOrder, err error) {
-	ctx, _, end := dbSpan(ctx, "floor.set_door_tip")
-	defer end(&err)
-	var fresh order.StoredOrder
-	err = r.withTx(ctx, func(q *models.Queries) error {
-		b, err := q.GetOpenBatch(ctx)
-		if err != nil {
-			return fmt.Errorf("open batch: %w", err)
-		}
-		n, err := q.SetDoorTip(ctx, models.SetDoorTipParams{TipCents: cents, ID: id, BatchID: b.ID})
-		if err != nil {
-			return fmt.Errorf("set door tip: %w", err)
-		}
-		if n == 0 {
-			if _, err := loadOrder(ctx, q, id); err != nil {
-				return err
-			}
-			return order.ErrNotTippable
-		}
-		if fresh, err = loadOrder(ctx, q, id); err != nil {
-			return err
-		}
-		if fresh.Order.Source != order.SourceCounter {
-			return nil
-		}
-		now := time.Now()
-		ev := order.OrderTipEvent{EventID: uuid.NewString(), Type: order.FloorEventOrderTip, OrderID: id, TipCents: cents,
-			At: now.UTC().Truncate(time.Millisecond), Kind: order.TipKindDoor, DriverID: fresh.Status.DriverID,
-			DriverName: fresh.Status.DriverName}
-		return insertEvent(ctx, q, ev.EventID, id, ev.Type, now, ev)
-	})
-	if err != nil {
-		return nil, err
-	}
-	return &fresh, nil
 }
 
 // AutoCloseLast is the scheduled time of the last auto-close slot handled

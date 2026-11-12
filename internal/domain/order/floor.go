@@ -202,16 +202,7 @@ type OrderTipEvent struct {
 	OrderID  string    `json:"order_id"`
 	TipCents int64     `json:"tip_cents"`
 	At       time.Time `json:"at"`
-	// Kind "door" (2026-11-12): a driver's cash tip at the door on a counter
-	// order (the whole door tip, absolute); main keeps it on the order's
-	// `door_tip` payment, never charged, never in its Z check. Absent = ADD TIP.
-	Kind       string `json:"kind,omitempty"`
-	DriverID   string `json:"driver_id,omitempty"`
-	DriverName string `json:"driver_name,omitempty"`
 }
-
-// TipKindDoor is OrderTipEvent.Kind for a door tip.
-const TipKindDoor = "door"
 
 // BatchClosedEvent is the payload of a batch.closed floor event (2.5.0),
 // written by Close batch after the batch's own order events.
@@ -325,9 +316,6 @@ type DriverReport struct {
 	// charged yet (the driver hasn't clocked out, the batch isn't closed) -
 	// ADD TIP can still change them.
 	PendingTipCents int64 `json:"pending_tip_cents"`
-	// DoorTipCents (terminal driver view): the tips he got at the door on
-	// cash / counter deliveries (kept by him; not in TipCents or OwedCents).
-	DoorTipCents int64 `json:"door_tip_cents"`
 	// DriverShareCents: his share of the delivery fees on his orders (main's
 	// split of the store's delivery fee: store share + driver share). Shown
 	// on the report; OwedCents doesn't count it (the store pays it out).
@@ -360,21 +348,9 @@ type DriverReportLine struct {
 	// TipPending = main hasn't charged the card yet (not tip_locked).
 	AddedTipCents int64 `json:"added_tip_cents,omitempty"`
 	TipPending    bool  `json:"tip_pending,omitempty"`
-	// DoorTipCents (terminal driver view): a tip the driver got at the door
-	// on a cash / counter delivery. In OrderTipCents (the slip's Tip), never
-	// in TipCents: the driver already holds it, the store owes him nothing.
-	DoorTipCents int64 `json:"door_tip_cents,omitempty"`
 	// DriverShareCents: the driver's share of the order's delivery fee (0 =
 	// none, or no split known: a vendor order).
 	DriverShareCents int64 `json:"driver_share_cents,omitempty"`
-}
-
-// addDoorTip shows a tip the driver got at the door on the line.
-func (l *DriverReportLine) addDoorTip(cents int64) {
-	if cents > 0 {
-		l.DoorTipCents = cents
-		l.OrderTipCents += cents
-	}
 }
 
 // setSlipMoney fills the slip's Tip / Total from the order's total without
@@ -448,13 +424,11 @@ func NewDriverReportLine(so StoredOrder) DriverReportLine {
 			l.Cash, l.CashCents = true, due
 		}
 		l.setSlipMoney(base, l.TipCents)
-		l.addDoorTip(so.Status.DoorTipCents)
 		return l
 	}
 	if due := snap.CashDue(); due > 0 {
 		l.Cash, l.CashCents = true, max(due-snap.Money.Tip, 0)
 		l.setSlipMoney(snap.Money.Total-snap.Money.Tip, snap.Money.Tip) // an online total includes the tip
-		l.addDoorTip(so.Status.DoorTipCents)
 		return l
 	}
 	tip := snap.Money.Tip
@@ -464,19 +438,17 @@ func NewDriverReportLine(so StoredOrder) DriverReportLine {
 	}
 	l.TipCents = tip
 	l.setSlipMoney(snap.Money.Total-snap.Money.Tip, tip)
-	l.addDoorTip(so.Status.DoorTipCents)
 	return l
 }
 
 // Finish fills the report's totals with the store's tip tax.
 func (r *DriverReport) Finish(tipTaxBps int64) {
 	r.Deliveries = len(r.Lines)
-	r.CashCents, r.TipCents, r.PendingTipCents, r.DoorTipCents, r.DriverShareCents = 0, 0, 0, 0, 0
+	r.CashCents, r.TipCents, r.PendingTipCents, r.DriverShareCents = 0, 0, 0, 0
 	for _, l := range r.Lines {
 		r.DriverShareCents += l.DriverShareCents
 		r.CashCents += l.CashCents
 		r.TipCents += l.TipCents
-		r.DoorTipCents += l.DoorTipCents
 		if l.TipPending {
 			r.PendingTipCents += l.TipCents
 		}

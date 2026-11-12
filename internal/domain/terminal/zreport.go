@@ -177,7 +177,6 @@ type ZTips struct {
 	CashCents        int64 `json:"cash_cents"`         // taken in cash at a terminal
 	OnlineCents      int64 `json:"online_cents"`       // checkout tips on online orders (in their totals)
 	AddedCents       int64 `json:"added_cents"`        // ADD TIP on website card orders after the order (charged by main)
-	DoorCents        int64 `json:"door_cents"`         // tips drivers got at the door (they keep them)
 	DriversOwedCents int64 `json:"drivers_owed_cents"` // card tips the store owes its drivers (driver reports)
 }
 
@@ -212,7 +211,6 @@ type ZDriver struct {
 	Deliveries       int    `json:"deliveries"`
 	CashCents        int64  `json:"cash_cents"`
 	TipCents         int64  `json:"tip_cents"`
-	DoorTipCents     int64  `json:"door_tip_cents"`
 	DriverShareCents int64  `json:"driver_share_cents"`
 	OwedCents        int64  `json:"owed_cents"`
 }
@@ -464,7 +462,6 @@ func BuildZ(in ZInput) Z {
 				t.CollectedCents += pre
 			}
 		}
-		z.Tips.DoorCents += so.Status.DoorTipCents
 		left := baseDue - netAmt
 		if left != 0 {
 			if delivery && so.Status.State == order.StateDelivered && left > 0 {
@@ -533,7 +530,7 @@ func BuildZ(in ZInput) Z {
 	// Drivers' cash and tips (the driver reports).
 	for _, r := range in.Drivers {
 		z.Drivers = append(z.Drivers, ZDriver{DriverID: r.DriverID, Name: r.DriverName, Deliveries: r.Deliveries, CashCents: r.CashCents,
-			TipCents: r.TipCents, DoorTipCents: r.DoorTipCents, DriverShareCents: r.DriverShareCents, OwedCents: r.OwedCents})
+			TipCents: r.TipCents, DriverShareCents: r.DriverShareCents, OwedCents: r.OwedCents})
 		z.DriversCash += r.CashCents
 		z.Tips.DriversOwedCents += r.TipCents
 	}

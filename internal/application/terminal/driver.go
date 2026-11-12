@@ -49,7 +49,6 @@ type Floor interface {
 	ClaimDelivered(ctx context.Context, driverID string, ids []string, rule order.ClaimRule, by order.MarkedBy) ([]order.StoredOrder, error)
 	DeliverOne(ctx context.Context, driverID, orderID string) (*order.StoredOrder, bool, error)
 	SetTip(ctx context.Context, id string, cents int64) (*order.StoredOrder, error)
-	SetDoorTip(ctx context.Context, id string, cents int64) (*order.StoredOrder, error)
 	DriverReport(ctx context.Context, driverID string) (*order.DriverReport, error)
 	PrintDriverReport(ctx context.Context, driverID, trigger string) (*orderApp.DriverReportPrint, error)
 }
@@ -322,8 +321,7 @@ type DriverTicket struct {
 	TotalCents    int64          `json:"total_cents"`
 	TipCents      int64          `json:"tip_cents"`
 	AddedTipCents int64          `json:"added_tip_cents"`
-	DoorTipCents  int64          `json:"door_tip_cents"`
-	TipKind       string         `json:"tip_kind"` // card = raises the card hold, door = recorded on his report
+	TipKind       string         `json:"tip_kind"` // card = POST …/tip raises the card hold; none = no tip taken here (cash / counter)
 	TipLocked     bool           `json:"tip_locked"`
 	RunSeq        *int64         `json:"run_seq"`
 	OutAt         *time.Time     `json:"out_at"`
@@ -342,9 +340,9 @@ func ticketOf(so order.StoredOrder) DriverTicket {
 	t := DriverTicket{OrderID: so.Order.ID, Number: so.Number(), State: string(so.Status.State), Name: so.Order.Customer.DisplayName,
 		Phone: so.Order.Customer.Phone, Address: addr, Street: street, Notes: so.Order.Notes, Payment: paymentOf(so),
 		CashDueCents: so.Status.CashDueCents, TotalCents: so.Order.Money.Total, AddedTipCents: so.Status.AddedTipCents,
-		DoorTipCents: so.Status.DoorTipCents, TipLocked: so.Status.TipLocked, RunSeq: so.Status.RunSeq, OutAt: so.Status.OutAt,
-		DeliveredAt: so.Status.DeliveredAt, TipKind: "door"}
-	t.TipCents = so.Order.Money.Tip + so.Status.AddedTipCents + so.Status.DoorTipCents
+		TipLocked: so.Status.TipLocked, RunSeq: so.Status.RunSeq, OutAt: so.Status.OutAt,
+		DeliveredAt: so.Status.DeliveredAt, TipKind: "none"}
+	t.TipCents = so.Order.Money.Tip + so.Status.AddedTipCents
 	if cardChannel(so) {
 		t.TipKind = "card"
 	}
@@ -504,8 +502,9 @@ type TipResult struct {
 
 // Tip sets the whole tip added after the order (absolute) on one of his
 // orders: a website card order raises the card hold (ADD TIP's rules: 409
-// tip_locked once charged); a cash / counter order records it on his report
-// (a tip he got at the door).
+// tip_locked once charged). A cash / counter order takes no tip here: cash
+// tips are kept out of the system (the owner, 2026-11-12: "keep cash tips out
+// the entire system"; the door tip was retired) → ErrNotTippable.
 func (s *Service) Tip(ctx context.Context, a Actor, id string, in TipIn) (*TipResult, error) {
 	st, d, err := s.driverOf(ctx, a)
 	if err != nil {
@@ -518,14 +517,12 @@ func (s *Service) Tip(ctx context.Context, a Actor, id string, in TipIn) (*TipRe
 	if err != nil {
 		return nil, err
 	}
-	kind, prev := "door", cur.Status.DoorTipCents
-	var so *order.StoredOrder
-	if cardChannel(*cur) {
-		kind, prev = "card", cur.Status.AddedTipCents
-		so, err = s.drv.floor.SetTip(ctx, id, *in.TipCents)
-	} else {
-		so, err = s.drv.floor.SetDoorTip(ctx, id, *in.TipCents)
+	if !cardChannel(*cur) {
+		return nil, fmt.Errorf("%w: a cash tip at the door isn't recorded (the driver keeps it); only a website card order takes a tip here",
+			order.ErrNotTippable)
 	}
+	kind, prev := "card", cur.Status.AddedTipCents
+	so, err := s.drv.floor.SetTip(ctx, id, *in.TipCents)
 	if err != nil {
 		return nil, err
 	}

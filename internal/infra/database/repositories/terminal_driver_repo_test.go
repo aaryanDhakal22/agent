@@ -6,10 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/google/uuid"
-
 	"quiccpos/agent/internal/domain/order"
-	"quiccpos/agent/internal/domain/terminal"
 )
 
 // The terminal driver view's floor transitions (contract/agent.md §2.10b)
@@ -165,7 +162,9 @@ func TestDeliverOneReturnsTheDriverOnHisLastStop(t *testing.T) {
 	}
 }
 
-func TestDoorTipOnHisReport(t *testing.T) {
+// A cash delivery on his report: the cash collected for the order only, no tip (cash tips are kept out of the
+// system, the owner 2026-11-12; the door tip was retired).
+func TestCashDeliveryOnHisReport(t *testing.T) {
 	ctx := context.Background()
 	r := newFloorRepo(t)
 	d, _ := r.CreateDriver(ctx, "Dan")
@@ -173,21 +172,11 @@ func TestDoorTipOnHisReport(t *testing.T) {
 	cash := arriveDelivery(t, r, "Erik Davis", 0, 2000, true)
 	accept(t, r, cash)
 	ready(t, r, cash)
-	if _, err := r.SetDoorTip(ctx, cash.Order.ID, 300); !errors.Is(err, order.ErrNotTippable) {
-		t.Fatalf("not out yet: %v", err)
-	}
 	if _, err := r.AssignDriver(ctx, d.ID, ids(cash)); err != nil {
 		t.Fatal(err)
 	}
-	so, err := r.SetDoorTip(ctx, cash.Order.ID, 300)
-	if err != nil || so.Status.DoorTipCents != 300 {
-		t.Fatalf("door tip: %v %+v", err, so)
-	}
 	if _, _, err := r.DeliverOne(ctx, d.ID, cash.Order.ID); err != nil {
 		t.Fatal(err)
-	}
-	if so, err = r.SetDoorTip(ctx, cash.Order.ID, 300); err != nil || so.Status.State != order.StateDelivered { // still tippable once closed
-		t.Fatalf("door tip after close: %v", err)
 	}
 	reps, err := r.DriverReports(ctx, 0)
 	if err != nil || len(reps) != 1 || len(reps[0].Lines) != 1 {
@@ -196,48 +185,11 @@ func TestDoorTipOnHisReport(t *testing.T) {
 	rep := reps[0]
 	rep.Finish(0)
 	l := rep.Lines[0]
-	if l.DoorTipCents != 300 || l.OrderTipCents != 300 || l.TipCents != 0 || l.CashCents != 2000 || rep.DoorTipCents != 300 || rep.OwedCents != 2000 {
-		t.Fatalf("door tip on the report: line %+v report %+v", l, rep)
+	if l.OrderTipCents != 0 || l.TipCents != 0 || l.CashCents != 2000 || rep.TipCents != 0 || rep.OwedCents != 2000 {
+		t.Fatalf("cash on the report: line %+v report %+v", l, rep)
 	}
-	if _, err := r.SetDoorTip(ctx, "00000000-0000-0000-0000-000000000000", 1); !errors.Is(err, order.ErrNotFound) {
-		t.Fatalf("unknown order: %v", err)
-	}
-	// Not a counter order: the door tip stays on the Pi (main keeps only our own orders' tips).
 	if ev := eventsOfType(t, r, order.FloorEventOrderTip); len(ev) != 0 {
-		t.Fatalf("an online order's door tip went to main: %v", ev)
-	}
-}
-
-// A counter (phone) delivery's door tip goes to main as order.tip {kind: door}, the whole tip each time
-// (the owner, 2026-11-12: main syncs the tips of our own orders).
-func TestCounterDoorTipGoesToMain(t *testing.T) {
-	ctx := context.Background()
-	r := newFloorRepo(t)
-	d, _ := r.CreateDriver(ctx, "Dan")
-	clockIn(t, r, d.ID)
-	id := uuid.Must(uuid.NewV7()).String()
-	snap := order.Snapshot{ID: id, TenantID: "t", LocationID: "l", Source: order.SourceCounter, SourceEventID: "key-door-0001",
-		Status: "accepted", Fulfillment: order.Fulfillment{Type: "delivery", Address: &order.Address{Line1: "12 Main St", City: "Towson"}},
-		Money: order.Money{Subtotal: 1777, Total: 1777},
-		Items: []order.LineItem{{ID: uuid.NewString(), Name: "Cheese Pizza", Quantity: 1, UnitPrice: 1777, LineTotal: 1777}}}
-	so, _, err := r.PlaceCounterOrder(ctx, terminal.NewCounterOrder{Snapshot: snap, ClientKey: "key-door-0001", CounterStart: 1,
-		PrepMinutes: 15, StaffID: "s1", DeviceID: "d1", Now: time.Now()})
-	if err != nil {
-		t.Fatal(err)
-	}
-	ready(t, r, so)
-	if _, err := r.AssignDriver(ctx, d.ID, ids(so)); err != nil {
-		t.Fatal(err)
-	}
-	for _, cents := range []int64{300, 500} {
-		if _, err := r.SetDoorTip(ctx, id, cents); err != nil {
-			t.Fatal(err)
-		}
-	}
-	ev := eventsOfType(t, r, order.FloorEventOrderTip)
-	if len(ev) != 2 || ev[1]["order_id"] != id || ev[1]["kind"] != order.TipKindDoor || ev[1]["tip_cents"] != float64(500) ||
-		ev[1]["driver_id"] != d.ID || ev[1]["driver_name"] != "Dan" {
-		t.Fatalf("order.tip events: %v", ev)
+		t.Fatalf("an order.tip went to main for a cash delivery: %v", ev)
 	}
 }
 

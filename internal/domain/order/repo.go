@@ -157,9 +157,6 @@ type DriverViewRepository interface {
 	// in the queue. ErrDriverNotFound; ErrInvalidState when it isn't one of
 	// his out orders.
 	DeliverOne(ctx context.Context, driverID, orderID string) (so *StoredOrder, returned bool, err error)
-	// SetDoorTip records a tip the driver got at the door (absolute) on an
-	// out / delivered delivery of the open batch; ErrNotTippable otherwise.
-	SetDoorTip(ctx context.Context, id string, cents int64) (*StoredOrder, error)
 	// ClaimDelivered is a driver claiming deliveries nobody took (the
 	// Dispatch section): each must be ClaimableLate(rule) in the open batch
 	// (one already his and delivered is left as it is), else *ErrTaken with

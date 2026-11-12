@@ -1046,13 +1046,6 @@ DELETE FROM terminal_driver_links WHERE driver_id = sqlc.arg(driver_id) AND staf
 INSERT INTO terminal_driver_links (staff_id, driver_id, linked_at) VALUES (?, ?, ?)
 ON CONFLICT (staff_id) DO UPDATE SET driver_id = excluded.driver_id, linked_at = excluded.linked_at;
 
--- name: SetDoorTip :execrows
--- A tip the driver got at the door (absolute). Only a delivery of the given
--- (open) batch that is out or delivered, not a POS check.
-UPDATE orders SET door_tip_cents = sqlc.arg(tip_cents)
-WHERE id = sqlc.arg(id) AND state IN ('on_delivery', 'delivered')
-  AND batch_id = sqlc.arg(batch_id);
-
 -- name: GetAutoCloseLast :one
 SELECT auto_close_last FROM settings WHERE id = 1;
 

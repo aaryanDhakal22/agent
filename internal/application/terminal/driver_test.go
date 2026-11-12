@@ -179,14 +179,13 @@ func TestDriverClaimMineTipCloseReport(t *testing.T) {
 		t.Fatalf("second driver: %v", err)
 	}
 	mine, err := r.svc.Mine(r.ctx, till2)
-	if err != nil || len(mine.Out) != 0 || len(mine.Delivered) != 2 || mine.Delivered[0].TipKind != "door" || mine.Delivered[0].Phone != "4105550101" {
+	if err != nil || len(mine.Out) != 0 || len(mine.Delivered) != 2 || mine.Delivered[0].TipKind != "none" || mine.Delivered[0].Phone != "4105550101" {
 		t.Fatalf("mine: %+v %v", mine, err)
 	}
-	// Tip: a counter order's is a door tip on his report.
+	// Tip: a counter (cash) order takes none: cash tips are kept out of the system (the owner, 2026-11-12).
 	tip := int64(400)
-	tr, err := r.svc.Tip(r.ctx, till2, cash, TipIn{TipCents: &tip})
-	if err != nil || tr.Kind != "door" || tr.Ticket.DoorTipCents != 400 {
-		t.Fatalf("tip: %+v %v", tr, err)
+	if _, err := r.svc.Tip(r.ctx, till2, cash, TipIn{TipCents: &tip}); !errors.Is(err, order.ErrNotTippable) {
+		t.Fatalf("a cash tip at the door: %v", err)
 	}
 	// Another driver can't touch his orders; a claimed order is closed already.
 	if _, err := r.svc.CloseOrder(r.ctx, till3, cash); !errors.Is(err, terminal.ErrNotYourOrder) {
@@ -201,22 +200,22 @@ func TestDriverClaimMineTipCloseReport(t *testing.T) {
 		t.Fatalf("close: %+v %v", c, err)
 	}
 	rep, err := r.svc.Report(r.ctx, till2)
-	if err != nil || rep.Deliveries != 2 || rep.DoorTipCents != 400 || rep.CashCents == 0 {
+	if err != nil || rep.Deliveries != 2 || rep.TipCents != 0 || rep.CashCents == 0 {
 		t.Fatalf("report: %+v %v", rep, err)
 	}
 	if _, err := r.svc.PrintReport(r.ctx, till2); !errors.Is(err, orderApp.ErrPrintingUnavailable) {
 		t.Fatalf("no printer wired: %v", err)
 	}
-	// Journal: link x2, claim, tip, close.
+	// Journal: link x2, claim, close (the refused tip journals nothing).
 	j, _ := r.svc.Journal(r.ctx, 100)
 	seen := map[string]int{}
 	for _, e := range j {
 		seen[e.Action]++
 	}
-	if seen[terminal.ActionDriverClaim] != 1 || seen[terminal.ActionDriverTip] != 1 || seen[terminal.ActionDriverClose] != 1 || seen[terminal.ActionDriverLinked] != 2 {
+	if seen[terminal.ActionDriverClaim] != 1 || seen[terminal.ActionDriverTip] != 0 || seen[terminal.ActionDriverClose] != 1 || seen[terminal.ActionDriverLinked] != 2 {
 		t.Fatalf("journal: %v", seen)
 	}
-	if r.pub.count(EventDriverClaimed) != 1 || r.pub.count(EventDriverClosed) != 1 || r.pub.count(EventDriverTip) != 1 {
+	if r.pub.count(EventDriverClaimed) != 1 || r.pub.count(EventDriverClosed) != 1 || r.pub.count(EventDriverTip) != 0 {
 		t.Fatalf("events: %v", r.pub.events)
 	}
 }

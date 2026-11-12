@@ -2,7 +2,6 @@ package order
 
 import (
 	"context"
-	"fmt"
 
 	"quiccpos/agent/internal/application/devlog"
 	"quiccpos/agent/internal/domain/order"
@@ -84,25 +83,4 @@ func (s *Service) DeliverOne(ctx context.Context, driverID, orderID string) (*or
 	}
 	s.publishDrivers(ctx)
 	return so, returned, nil
-}
-
-// SetDoorTip records a tip the driver got at the door on a cash or counter
-// delivery (absolute, 0-MaxAddedTipCents). It shows on his report; nothing
-// is charged or sent to main.
-func (s *Service) SetDoorTip(ctx context.Context, id string, cents int64) (*order.StoredOrder, error) {
-	ctx, span := s.span(ctx, "order.set_door_tip", attribute.String("order.id", id), attribute.Int64("tip_cents", cents))
-	defer span.End()
-	if _, err := uuid.Parse(id); err != nil {
-		return nil, spanErr(span, fmt.Errorf("%w: invalid order id", ErrBadRequest))
-	}
-	if cents < 0 || cents > order.MaxAddedTipCents {
-		return nil, spanErr(span, fmt.Errorf("%w: tip_cents must be 0-%d", ErrBadRequest, order.MaxAddedTipCents))
-	}
-	so, err := s.repo.SetDoorTip(ctx, id, cents)
-	if err != nil {
-		return nil, spanErr(span, err)
-	}
-	s.publishUpdated(*so)
-	s.devEvent(devlog.Info, devlog.KindOrder, "%s door tip recorded: %s", label(*so), cents2(cents))
-	return so, nil
 }

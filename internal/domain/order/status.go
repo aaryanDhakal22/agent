@@ -133,10 +133,6 @@ type Status struct {
 	AddedTipCents int64  `json:"added_tip_cents,omitempty"`
 	TipLocked     bool   `json:"tip_locked,omitempty"`
 	CancelReason  string `json:"cancel_reason,omitempty"`
-	// DoorTipCents (terminal driver view): a tip the driver got at the door
-	// on a cash or counter delivery (absolute). The driver keeps it; his
-	// report shows it (never charged, never owed).
-	DoorTipCents int64 `json:"door_tip_cents,omitempty"`
 	// Carried (00033, contract 2.10s §4): an unsettled check a close
 	// carried past its batch - still on the Pickup list and payable until
 	// settled.

@@ -159,13 +159,13 @@ def test_claim_mine_tip_close_report(drig):
     assert mine["out"] == [] and {t["order_id"] for t in mine["delivered"]} == {cash, cooking}
     t = next(t for t in mine["delivered"] if t["order_id"] == cash)
     assert t["name"] == "Erik Davis" and t["phone"] == "4105550101" and t["address"]["line1"] == "12 Main St, Apt 3"
-    assert t["address"]["notes"] == "ring twice" and t["payment"] == "cash_due" and t["tip_kind"] == "door" and "geo" in t
+    assert t["address"]["notes"] == "ring twice" and t["payment"] == "cash_due" and t["tip_kind"] == "none" and "door_tip_cents" not in t and "geo" in t
     # Someone else's order: 403.
     r = sam.post(f"{base}/api/terminal/driver/orders/{cash}/tip", json={"tip_cents": 100}, timeout=5)
     assert r.status_code == 403 and r.json()["code"] == "not_your_order"
-    # Tip: a counter order's tip is recorded on his report (a door tip).
+    # Tip: a counter (cash) order takes none: cash tips are kept out of the system (the owner, 2026-11-12).
     r = ali.post(f"{base}/api/terminal/driver/orders/{cash}/tip", json={"tip_cents": 400}, timeout=5)
-    assert r.status_code == 200 and r.json()["kind"] == "door" and r.json()["ticket"]["door_tip_cents"] == 400, r.text
+    assert r.status_code == 409 and r.json()["code"] == "not_tippable", r.text
     assert ali.post(f"{base}/api/terminal/driver/orders/{cash}/tip", json={"tip_cents": -1}, timeout=5).status_code == 400
     # A claimed order is closed already.
     r = ali.post(f"{base}/api/terminal/driver/orders/{cash}/close", timeout=5)
@@ -175,7 +175,7 @@ def test_claim_mine_tip_close_report(drig):
     assert r["returned"] and r["driver"]["status"] == "available" and r["ticket"]["state"] == "delivered"
 
     rep = ali.get(f"{base}/api/terminal/driver/report", timeout=5).json()
-    assert rep["driver_id"] == me and rep["deliveries"] == 2 and rep["door_tip_cents"] == 400 and rep["cash_cents"] > 0
+    assert rep["driver_id"] == me and rep["deliveries"] == 2 and "door_tip_cents" not in rep and rep["tip_cents"] == 0 and rep["cash_cents"] > 0
     # Print: the driver-report slip on the receipt printer (fake).
     before = len(fakes["Front"].jobs)
     r = ali.post(f"{base}/api/terminal/driver/report", timeout=30)
@@ -184,8 +184,9 @@ def test_claim_mine_tip_close_report(drig):
 
     # Journaled, and the journal reaches main.
     actions = [e["action"] for e in ali.get(f"{base}/api/terminal/journal", timeout=5).json()]
-    for a in ("driver.linked", "driver.claim", "driver.tip", "driver.report"):
+    for a in ("driver.linked", "driver.claim", "driver.report"):
         assert a in actions, a
+    assert "driver.tip" not in actions  # the refused cash tip journals nothing
     wait_until(lambda: any(e["action"] == "driver.claim" and e["detail"]["delivered"] == [cash, cooking]
                            for ev in fm.of_type("journal.entries") for e in ev["entries"]),
                what="driver journal synced")

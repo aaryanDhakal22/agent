@@ -6188,28 +6188,6 @@ func (q *Queries) SetDeviceSetups(ctx context.Context, deviceSetups string) erro
 	return err
 }
 
-const setDoorTip = `-- name: SetDoorTip :execrows
-UPDATE orders SET door_tip_cents = ?1
-WHERE id = ?2 AND state IN ('on_delivery', 'delivered')
-  AND batch_id = ?3
-`
-
-type SetDoorTipParams struct {
-	TipCents int64  `json:"tip_cents"`
-	ID       string `json:"id"`
-	BatchID  int64  `json:"batch_id"`
-}
-
-// A tip the driver got at the door (absolute). Only a delivery of the given
-// (open) batch that is out or delivered, not a POS check.
-func (q *Queries) SetDoorTip(ctx context.Context, arg SetDoorTipParams) (int64, error) {
-	result, err := q.db.ExecContext(ctx, setDoorTip, arg.TipCents, arg.ID, arg.BatchID)
-	if err != nil {
-		return 0, err
-	}
-	return result.RowsAffected()
-}
-
 const setDriverOut = `-- name: SetDriverOut :exec
 UPDATE drivers SET status = 'out' WHERE id = ?
 `
