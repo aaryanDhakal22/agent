@@ -262,12 +262,12 @@ func TestPlacePrepMinutes(t *testing.T) {
 	}
 	r.login(t, till, "1234")
 	res, err = r.svc.PlaceOrder(r.ctx, till, OrderIn{ClientKey: "prep-0003", Type: "pickup", Cart: sodaCart(1)})
-	if err != nil || res.Order.Status.EstimatedReadyAt.Sub(time.Now()) < 39*time.Minute {
+	if err != nil || time.Until(*res.Order.Status.EstimatedReadyAt) < 39*time.Minute {
 		t.Fatalf("default pickup minutes: %+v %v", res, err)
 	}
 	// A counter sale without minutes keeps the Pi's default (15 here).
 	res, err = r.svc.PlaceOrder(r.ctx, till, OrderIn{ClientKey: "prep-0004", Type: "counter", Cart: sodaCart(1)})
-	if err != nil || res.Order.Status.EstimatedReadyAt.Sub(time.Now()) > 16*time.Minute {
+	if err != nil || time.Until(*res.Order.Status.EstimatedReadyAt) > 16*time.Minute {
 		t.Fatalf("counter default: %v", err)
 	}
 }

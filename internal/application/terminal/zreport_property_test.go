@@ -99,15 +99,14 @@ func (o *mOrder) netByTender() map[string][2]int64 {
 }
 
 type mDrawer struct {
-	id                  string
-	start, in, out      int64 // cash in (sales + tips), cash out (refunds)
-	payIns, payOuts     int64
-	counted             *int64
-	open                bool
-	reason              string
-	staff               string
-	terminalDeviceID    string
-	handoverFromCounted bool
+	id               string
+	start, in, out   int64 // cash in (sales + tips), cash out (refunds)
+	payIns, payOuts  int64
+	counted          *int64
+	open             bool
+	reason           string
+	staff            string
+	terminalDeviceID string
 }
 
 func (d *mDrawer) expected() int64 { return d.start + d.in - d.out + d.payIns - d.payOuts }
