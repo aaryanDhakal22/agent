@@ -308,6 +308,12 @@ type Pick struct {
 	// whole pick — starts from the plain pizza with just its ONLY toppings) |
 	// no (take it off; free).
 	Mode string `json:"mode,omitempty"`
+	// PriceCents: a kept option price (Context.PriceOverrides only, the Pi's
+	// kept line on an edited order, agent §2.10t): this pick's price as it
+	// was rung (after its half price), replacing today's; 0 to
+	// MaxOpenPriceCents, a NO pick stays free. Ignored elsewhere. Coupons
+	// read it too (which regular mods are the cheapest, what is charged).
+	PriceCents *int64 `json:"price_cents,omitempty"`
 }
 
 // Portions and modes (picks, resolved options and order lines).
@@ -404,9 +410,9 @@ type CouponUnit struct {
 	ItemCents     int64    `json:"item_cents"`
 	UpchargeCents int64    `json:"upcharge_cents,omitempty"`
 	ModsCents     int64    `json:"mods_cents"`
-	FreeMods     []string `json:"free_mods"`
-	UnitCents    int64    `json:"unit_cents"`
-	RegularCents int64    `json:"regular_cents"`
+	FreeMods      []string `json:"free_mods"`
+	UnitCents     int64    `json:"unit_cents"`
+	RegularCents  int64    `json:"regular_cents"`
 }
 
 // CouponOffer is a coupon the cart fully fits: Lines are the units it would
@@ -426,8 +432,8 @@ type QuoteLine struct {
 	Name         string   `json:"name"`
 	Mods         []string `json:"mods"`
 	Qty          int      `json:"qty"`
-	UnitCents    int64    `json:"unit_cents"`  // the item's own price (with its options)
-	TotalCents   int64    `json:"total_cents"` // the line as sold: a coupon's units at their coupon prices (Quote.Coupons)
+	UnitCents    int64    `json:"unit_cents"`    // the item's own price (with its options)
+	TotalCents   int64    `json:"total_cents"`   // the line as sold: a coupon's units at their coupon prices (Quote.Coupons)
 	RegularCents *int64   `json:"regular_cents"` // a bundle: what its picks cost on their own
 	DealID       string   `json:"deal_id"`
 	// ListCents: a price change (Selection.PriceCents on a set-price item):

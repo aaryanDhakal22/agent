@@ -1021,7 +1021,7 @@ func (s *Service) placeOrder(ctx context.Context, a Actor, in OrderIn) (*PlaceRe
 		Fulfillment: ful, Items: items, Notes: note, PlacedAt: now.UTC(), ReceivedAt: now.UTC(),
 		SourceMeta: map[string]any{"terminal": map[string]any{"type": typ, "device_id": a.DeviceID, "device_name": a.DeviceName,
 			"staff_id": st.ID, "staff_name": st.Name(), "client_key": in.ClientKey, "menu_version": ms.Version,
-			"cart": in.Cart}}}
+			"cart": in.Cart, "pick_cents": pickCents(p)}}}
 	if cust.ID != "" {
 		snap.SourceMeta["terminal"].(map[string]any)["customer_id"] = cust.ID
 	}

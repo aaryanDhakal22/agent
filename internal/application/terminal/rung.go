@@ -117,6 +117,10 @@ type rungAt struct {
 	mods []string
 	note *string // a stored custom line's own note (mods already in it)
 	from string  // terminal | order
+	// picks: a sent order's line: each pick's price as it was rung (the
+	// order's pick_cents; -1 = unknown), kept so a coupon prices its mods at
+	// them too. nil = only the line's unit is kept.
+	picks []int64
 }
 
 // storedCart is the cart the order was last placed / changed with.
@@ -185,8 +189,9 @@ func goneReason(ctx pricing.Context, l pricing.Line) string {
 // because its item was gone keeps that custom line.
 func storedRungs(snap order.Snapshot, c Cart, ctx pricing.Context) map[string][]rungAt {
 	out := map[string][]rungAt{}
+	pc := storedPickCents(snap)
 	idx := 0
-	for _, l := range c.Lines {
+	for li, l := range c.Lines {
 		if idx >= len(snap.Items) {
 			return nil
 		}
@@ -227,8 +232,12 @@ func storedRungs(snap order.Snapshot, c Cart, ctx pricing.Context) map[string][]
 			if it.Coupon != "" && it.RungCents > 0 {
 				unit = it.RungCents
 			}
+			var picks []int64
+			if li < len(pc) && len(pc[li]) == len(l.Options) {
+				picks = pc[li]
+			}
 			k := lineKey(l)
-			out[k] = append(out[k], rungAt{unit: unit, name: it.Name, mods: mods, from: terminal.RungFromOrder})
+			out[k] = append(out[k], rungAt{unit: unit, name: it.Name, mods: mods, from: terminal.RungFromOrder, picks: picks})
 		}
 	}
 	return out
@@ -333,6 +342,22 @@ func priceRung(menu *terminal.CounterMenu, tz *time.Location, typ string, cur *o
 	sort.Ints(idx)
 	cart := in
 	cart.Lines = append([]pricing.Line(nil), in.Lines...)
+	// 0. A sent order's lines keep each pick's rung price (the engine's
+	// kept option price): a coupon then prices their mods at them too, and
+	// the line's unit below is its rung with them in.
+	for _, i := range idx {
+		l, r := cart.Lines[i], rungs[i]
+		if r.picks == nil || l.Custom || l.DealID != "" || len(r.picks) != len(l.Options) {
+			continue
+		}
+		opts := append([]pricing.Pick(nil), l.Options...)
+		for k := range opts {
+			if c := r.picks[k]; c >= 0 {
+				opts[k].PriceCents = &c
+			}
+		}
+		cart.Lines[i].Options = opts
+	}
 	// 1. Lines no longer on the menu: custom lines at their rung price.
 	var gone []terminal.GoneLine
 	for _, i := range idx {
@@ -483,6 +508,52 @@ func cartCoupons(snap order.Snapshot) []string {
 	out := []string{}
 	for _, cc := range c.Coupons {
 		out = append(out, cc.ID)
+	}
+	return out
+}
+
+// pickCents is each cart line's picks' prices as priced (per pick, the
+// engine's: half price and kept prices in; nil for a custom, gone or combo
+// line or one with an issue), stored with the order as
+// source_metadata.terminal.pick_cents so an edit keeps them (§2.10t).
+func pickCents(p priced) [][]int64 {
+	out := make([][]int64, len(p.cart.Lines))
+	for i, l := range p.cart.Lines {
+		if l.Custom || l.DealID != "" || p.isGone(i) || len(l.Options) == 0 {
+			continue
+		}
+		r := pricing.Resolve(p.ctx, l.Selection, 0)
+		if len(r.Issues) > 0 {
+			continue
+		}
+		row := make([]int64, len(l.Options))
+		for k := range row {
+			row[k] = -1
+		}
+		for _, o := range r.Options {
+			if o.Pick > 0 && o.Pick <= len(row) {
+				row[o.Pick-1] = o.PriceCents
+			}
+		}
+		out[i] = row
+	}
+	return out
+}
+
+// storedPickCents reads the order's pick_cents (nil when it has none: an
+// order from before them keeps only its lines' units).
+func storedPickCents(snap order.Snapshot) [][]int64 {
+	tm, ok := snap.SourceMeta["terminal"].(map[string]any)
+	if !ok || tm["pick_cents"] == nil {
+		return nil
+	}
+	raw, err := json.Marshal(tm["pick_cents"])
+	if err != nil {
+		return nil
+	}
+	var out [][]int64
+	if json.Unmarshal(raw, &out) != nil {
+		return nil
 	}
 	return out
 }

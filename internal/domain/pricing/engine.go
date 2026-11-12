@@ -162,6 +162,10 @@ type ResolvedOption struct {
 	// Count: how many times it is on (FoldRepeats; 0 / 1 = once). PriceCents
 	// stays the price of one.
 	Count int
+	// Pick is the index in the selection's options it came from, + 1 (0: a
+	// half-specialty or a default left off). Go only: the Pi keeps each
+	// pick's price for an edit (Pick.PriceCents).
+	Pick int
 }
 
 // Resolve resolves a selection against the context's menu; free = the
@@ -488,9 +492,11 @@ func (e *engine) price(sel Selection, free int) priced {
 			continue
 		}
 		picks := []Pick{}
-		for _, pk := range sel.Options {
+		pickAt := []int{} // each pick's index in sel.Options
+		for k, pk := range sel.Options {
 			if pk.GroupID == g.ID.String() {
 				picks = append(picks, pk)
+				pickAt = append(pickAt, k)
 			}
 		}
 		seen := map[string]bool{}  // options picked (any portion or mode)
@@ -498,7 +504,7 @@ func (e *engine) price(sel Selection, free int) priced {
 		reps := map[string]int{}   // option + portion + mode → picks so far
 		modAt := map[string]int{}  // option + portion + mode → its p.mods index
 		count := 0                 // picks that put something on (NO doesn't count)
-		for _, pk := range picks {
+		for pi, pk := range picks {
 			var o *menuview.BuildOption
 			for i := range g.Options {
 				if g.Options[i].ID.String() == pk.OptionID {
@@ -552,6 +558,10 @@ func (e *engine) price(sel Selection, free int) priced {
 			case por != PortionWhole && halfPrice:
 				price = (price + 1) / 2 // half the whole-pie price, rounded up to the cent
 			}
+			// A kept option price (the Pi's kept line): the pick as it was rung.
+			if kp := pk.PriceCents; kp != nil && e.ctx.PriceOverrides && mode != ModeNo && *kp >= 0 && *kp <= MaxOpenPriceCents {
+				price = *kp
+			}
 			if price > 0 {
 				extras = append(extras, price)
 			}
@@ -562,7 +572,8 @@ func (e *engine) price(sel Selection, free int) priced {
 					only[halfOf(por)] = true
 				}
 			}
-			p.opts = append(p.opts, ResolvedOption{Name: o.Name, Label: label, Portion: por, Mode: mode, PriceCents: price, RemovedDefault: mode == ModeNo})
+			p.opts = append(p.opts, ResolvedOption{Name: o.Name, Label: label, Portion: por, Mode: mode, PriceCents: price, RemovedDefault: mode == ModeNo,
+				Pick: pickAt[pi] + 1})
 			p.optIDs = append(p.optIDs, pk.OptionID)
 		}
 		// "NO onions": a default left off in a pick-many group (in a pick-one

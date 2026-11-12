@@ -156,3 +156,58 @@ func TestKeptLineKeepsItsCoupon(t *testing.T) {
 		t.Fatalf("coupon.removed %v", j)
 	}
 }
+
+// The price doesn't change under an order (the owner): on an edited sent
+// order a coupon unit's charged toppings keep their rung prices too (the
+// order's pick_cents → the engine's kept option prices), not today's.
+func TestKeptCouponToppingsKeepTheirPrices(t *testing.T) {
+	r := newRig(t)
+	r.login(t, till, "1234")
+	cart := r.couponMenu(t, 60, "56_coupon_premium_never_free.json", nil)
+	res, err := r.svc.PlaceOrder(r.ctx, till, OrderIn{ClientKey: tk(), Type: "counter", Cart: Cart{Cart: cart}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, before := res.Order.Order.ID, res.Order.Order.Money
+	if before.Subtotal != 1849 { // the pizza carries $14.99 + Steak $3.50, the cans $0.00
+		t.Fatalf("placed %+v", before)
+	}
+	// The pizza and every topping go up a dollar (Steak $3.50 → $4.50).
+	r.couponMenu(t, 61, "56_coupon_premium_never_free.json", func(ctx map[string]any) {
+		raise("00000000-0000-0000-0000-0000000000a5", 100)(ctx["menu"].(map[string]any))
+	})
+	v, err := r.svc.Quote(r.ctx, till, QuoteIn{Cart: Cart{Cart: cart}, OrderID: id})
+	if err != nil {
+		t.Fatal(err)
+	}
+	q := rq(v)
+	if len(q.Coupons) != 1 || q.Coupons[0].Units[0].ModsCents != 350 || q.SubtotalCents != before.Subtotal || q.TotalCents != before.Total {
+		t.Fatalf("the coupon pizza's Steak moved: coupons %+v, %d / %d (was %d / %d)", q.Coupons, q.SubtotalCents, q.TotalCents,
+			before.Subtotal, before.Total)
+	}
+	// An edit: the Steak stays $3.50 on the order's lines and in the next edit too.
+	for n := 0; n < 2; n++ {
+		cart.Lines = append(cart.Lines, pricing.Line{Qty: 1, Selection: pricing.Selection{ItemID: "00000000-0000-0000-0000-0000000000a8"}})
+		ch, err := r.svc.ChangeCart(r.ctx, till, id, ChangeIn{ClientKey: tk(), Cart: Cart{Cart: cart}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		o := ch.Order.Order
+		steak := int64(-1)
+		for _, it := range o.Items {
+			for _, c := range it.Children {
+				if c.Name == "Steak" {
+					steak = c.UnitPrice
+				}
+			}
+		}
+		if steak != 350 || o.Money.Subtotal != before.Subtotal+int64(n+1)*699 {
+			t.Fatalf("edit %d: Steak %d, %+v", n, steak, o.Money)
+		}
+	}
+	// A new order prices today's Steak.
+	res2, err := r.svc.PlaceOrder(r.ctx, till, OrderIn{ClientKey: tk(), Type: "counter", Cart: Cart{Cart: cart}})
+	if err != nil || res2.Order.Order.Money.Subtotal == before.Subtotal+2*699 {
+		t.Fatalf("a new order kept the old prices: %v %+v", err, res2.Order.Order.Money)
+	}
+}

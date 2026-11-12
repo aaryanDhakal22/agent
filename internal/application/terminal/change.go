@@ -293,7 +293,7 @@ func (s *Service) changeCart(ctx context.Context, a Actor, id string, in ChangeI
 		if len(hist) > terminal.MaxEditKeys {
 			hist = hist[len(hist)-terminal.MaxEditKeys:]
 		}
-		tm["cart"], tm["edits"], tm["menu_version"] = in.Cart, hist, ms.Version
+		tm["cart"], tm["edits"], tm["menu_version"], tm["pick_cents"] = in.Cart, hist, ms.Version, pickCents(p)
 		meta["terminal"] = tm
 		snap.SourceMeta = meta
 		d := map[string]any{"added": rec.Added, "removed": rec.Removed, "total_before_cents": cur.Order.Money.Total,
