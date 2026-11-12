@@ -59,6 +59,37 @@ type CustomerSync struct {
 	SyncedAt   string `json:"synced_at"`
 }
 
+type DrawerMovement struct {
+	ID          string `json:"id"`
+	DrawerID    string `json:"drawer_id"`
+	Kind        string `json:"kind"`
+	AmountCents int64  `json:"amount_cents"`
+	Reason      string `json:"reason"`
+	StaffID     string `json:"staff_id"`
+	ApprovedBy  string `json:"approved_by"`
+	ClientKey   string `json:"client_key"`
+	At          string `json:"at"`
+}
+
+type DrawerSession struct {
+	ID            string         `json:"id"`
+	DeviceID      string         `json:"device_id"`
+	DeviceName    string         `json:"device_name"`
+	StaffID       string         `json:"staff_id"`
+	StaffName     string         `json:"staff_name"`
+	BatchID       int64          `json:"batch_id"`
+	OpenedAt      string         `json:"opened_at"`
+	StartCents    int64          `json:"start_cents"`
+	HandoverFrom  string         `json:"handover_from"`
+	ClosedAt      sql.NullString `json:"closed_at"`
+	ClosedBy      string         `json:"closed_by"`
+	CloseReason   string         `json:"close_reason"`
+	CountedCents  sql.NullInt64  `json:"counted_cents"`
+	Denominations string         `json:"denominations"`
+	ExpectedCents sql.NullInt64  `json:"expected_cents"`
+	Flagged       bool           `json:"flagged"`
+}
+
 type Driver struct {
 	ID             string         `json:"id"`
 	Name           string         `json:"name"`
@@ -81,15 +112,32 @@ type DriverShift struct {
 	AutoOut    bool           `json:"auto_out"`
 }
 
+type FloorDeadLetter struct {
+	EventID        string         `json:"event_id"`
+	Subject        string         `json:"subject"`
+	Type           string         `json:"type"`
+	Result         string         `json:"result"`
+	Refusals       int64          `json:"refusals"`
+	FirstRefusedAt string         `json:"first_refused_at"`
+	ParkedAt       string         `json:"parked_at"`
+	LastError      string         `json:"last_error"`
+	RetriedAt      sql.NullString `json:"retried_at"`
+	RetriedBy      string         `json:"retried_by"`
+}
+
 type FloorEvent struct {
-	ID        string         `json:"id"`
-	OrderID   sql.NullString `json:"order_id"`
-	Type      string         `json:"type"`
-	Payload   string         `json:"payload"`
-	At        string         `json:"at"`
-	SyncedAt  sql.NullString `json:"synced_at"`
-	Attempts  int64          `json:"attempts"`
-	LastError string         `json:"last_error"`
+	ID             string         `json:"id"`
+	OrderID        sql.NullString `json:"order_id"`
+	Type           string         `json:"type"`
+	Payload        string         `json:"payload"`
+	At             string         `json:"at"`
+	SyncedAt       sql.NullString `json:"synced_at"`
+	Attempts       int64          `json:"attempts"`
+	LastError      string         `json:"last_error"`
+	Subject        string         `json:"subject"`
+	Refusals       int64          `json:"refusals"`
+	FirstRefusedAt sql.NullString `json:"first_refused_at"`
+	ParkedAt       sql.NullString `json:"parked_at"`
 }
 
 type IntegrationEvent struct {
@@ -212,6 +260,7 @@ type OrderPayment struct {
 	StaffID       string `json:"staff_id"`
 	DeviceID      string `json:"device_id"`
 	ApprovedBy    string `json:"approved_by"`
+	DrawerID      string `json:"drawer_id"`
 }
 
 type OrderTime struct {
@@ -289,6 +338,9 @@ type Setting struct {
 	Look                       string  `json:"look"`
 	CounterNext                int64   `json:"counter_next"`
 	AutoCloseLast              string  `json:"auto_close_last"`
+	SyncParkRefusals           int64   `json:"sync_park_refusals"`
+	SyncParkHours              int64   `json:"sync_park_hours"`
+	SyncParkAlertedAt          string  `json:"sync_park_alerted_at"`
 }
 
 type SettingsLog struct {
@@ -337,4 +389,15 @@ type TerminalSnapshot struct {
 	Etag      string `json:"etag"`
 	Body      string `json:"body"`
 	FetchedAt string `json:"fetched_at"`
+}
+
+type ZReport struct {
+	BatchID   int64          `json:"batch_id"`
+	ID        string         `json:"id"`
+	Status    string         `json:"status"`
+	CloseKind string         `json:"close_kind"`
+	Forced    bool           `json:"forced"`
+	Report    string         `json:"report"`
+	CreatedAt string         `json:"created_at"`
+	BuiltAt   sql.NullString `json:"built_at"`
 }

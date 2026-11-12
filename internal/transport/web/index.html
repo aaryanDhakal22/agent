@@ -207,6 +207,33 @@
         </section>
       </div>
 
+      <section class="card card-pad stack" style="gap:10px" x-show="parked && (parked.count > 0 || parkFormOpen)" x-cloak aria-labelledby="h-parked">
+        <div class="hrow" style="justify-content:space-between">
+          <span class="eyebrow" id="h-parked">Not synced to main</span>
+          <div class="hrow">
+            <button type="button" class="btn btn-sm" @click="parkFormOpen = !parkFormOpen" x-text="parkFormOpen ? 'Close' : 'When to park'"></button>
+            <button type="button" class="btn btn-sm btn-p" :disabled="!!parkBusy || !(parked && parked.count)" @click="retryParked('')" x-text="parkBusy === 'all' ? 'Sending…' : 'Retry all'"></button>
+          </div>
+        </div>
+        <p class="help" x-text="parked ? ('Main refused ' + parked.count + ' change' + (parked.count === 1 ? '' : 's') + ' for good, so they were parked and everything else kept syncing.' + (parked.held ? ' ' + parked.held + ' later change' + (parked.held === 1 ? '' : 's') + ' about the same order wait behind them.' : '') + ' Retry once main is fixed or updated.') : ''"></p>
+        <template x-for="d in (parked ? parked.parked : [])" :key="d.event_id">
+          <div class="attn bad">
+            <div class="grow" style="min-width:0">
+              <b x-text="parkedWhat(d)"></b>
+              <span class="small muted" x-text="' · main said ' + d.result + ', ' + d.refusals + ' time' + (d.refusals === 1 ? '' : 's') + ' · parked ' + clock(d.parked_at)"></span>
+            </div>
+            <button type="button" class="btn btn-sm" :disabled="!!parkBusy" @click="retryParked(d.event_id)" x-text="parkBusy === d.event_id ? 'Sending…' : 'Retry'"></button>
+          </div>
+        </template>
+        <form class="hrow" style="flex-wrap:wrap;gap:10px" x-show="parkFormOpen" @submit.prevent="saveParkSettings()">
+          <label class="lbl" for="park-ref">Park after (refusals)</label>
+          <input class="field field-sm" id="park-ref" style="width:90px" inputmode="numeric" x-model="parkForm.refusals" />
+          <label class="lbl" for="park-hrs">or after (hours)</label>
+          <input class="field field-sm" id="park-hrs" style="width:90px" inputmode="numeric" x-model="parkForm.hours" />
+          <button type="submit" class="btn btn-sm btn-p" :disabled="!!parkBusy">Save</button>
+        </form>
+      </section>
+
       <section class="card" style="overflow:hidden" aria-labelledby="h-drvtbl">
         <div class="hrow" style="padding:14px 18px;justify-content:space-between">
           <span class="eyebrow" id="h-drvtbl" x-text="reportBatch === 'current' ? 'Drivers this batch' : 'Drivers — batch ' + reportBatch"></span>

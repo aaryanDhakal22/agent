@@ -85,6 +85,9 @@ type Service struct {
 	dev atomic.Pointer[devlog.Ring]
 	// onBatchClosed runs after a Close batch (OnBatchClosed).
 	onBatchClosed atomic.Pointer[func(ctx context.Context)]
+	// onClosed runs right after a successful Close batch, in the background
+	// (the terminals: closed drawers announced + the Z report built).
+	onClosed atomic.Pointer[func(ctx context.Context, closed order.Batch)]
 	// autoMu: one auto-assign at a time (autoassign.go).
 	autoMu sync.Mutex
 	// ledger: the POS driver ledger from the store hub (2.3.0, ledger.go).

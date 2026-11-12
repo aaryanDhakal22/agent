@@ -35,6 +35,13 @@ func (r *OrderRepository) withTx(ctx context.Context, fn func(q *models.Queries)
 
 // insertEvent marshals payload and appends it to floor_events.
 func insertEvent(ctx context.Context, q *models.Queries, id, orderID, typ string, at time.Time, payload any) error {
+	return insertSubjectEvent(ctx, q, id, orderID, orderID, typ, at, payload)
+}
+
+// insertSubjectEvent writes a floor event about a subject other than an
+// order ("customer:<id>", "drawer:<id>", "z:<batch>"): later events about
+// the same subject wait behind it while it is parked (contract 2.4e).
+func insertSubjectEvent(ctx context.Context, q *models.Queries, id, orderID, subject, typ string, at time.Time, payload any) error {
 	raw, err := json.Marshal(payload)
 	if err != nil {
 		return fmt.Errorf("marshal floor event: %w", err)
@@ -45,6 +52,7 @@ func insertEvent(ctx context.Context, q *models.Queries, id, orderID, typ string
 		Type:    typ,
 		Payload: string(raw),
 		At:      fmtTS(at),
+		Subject: subject,
 	})
 }
 
@@ -300,10 +308,12 @@ func (r *OrderRepository) CloseBatch(ctx context.Context, force bool) (closed *o
 	ctx, _, end := dbSpan(ctx, "floor.close_batch")
 	defer end(&err)
 	now := time.Now()
-	var clearedDrafts []string
+	var clearedDrafts, closedDrawers []string
 	defer func() {
 		if err == nil && closed != nil {
 			closed.ClearedDrafts = clearedDrafts
+			closed.ClosedDrawers = closedDrawers
+			closed.ZPending = true
 		}
 	}()
 	err = r.withTx(ctx, func(q *models.Queries) error {
@@ -468,6 +478,20 @@ func (r *OrderRepository) CloseBatch(ctx context.Context, force bool) (closed *o
 			return err
 		}
 		clearedDrafts = cleared
+		// Terminal drawers (contract 2.10k): every open session closes with
+		// the batch, not counted (flagged); then the batch's Z report is
+		// queued (built right after the transaction, contract 2.10l).
+		drawers, err := closeOpenDrawers(ctx, q, now)
+		if err != nil {
+			return err
+		}
+		for _, d := range drawers {
+			closedDrawers = append(closedDrawers, d.ID)
+		}
+		if err := q.InsertPendingZReport(ctx, models.InsertPendingZReportParams{BatchID: b.ID, ID: uuid.NewString(),
+			CloseKind: order.CloseKindOf(ctx), Forced: force, CreatedAt: fmtTS(now)}); err != nil {
+			return fmt.Errorf("queue z report: %w", err)
+		}
 		outDrivers, err := q.ListActiveDrivers(ctx)
 		if err != nil {
 			return err
@@ -1116,6 +1140,20 @@ func (r *OrderRepository) TrimBatches(ctx context.Context, keepClosed int, synce
 			return err
 		}
 		if _, err := q.PruneJournal(ctx, fmtTS(time.Now().Add(-order.JournalRetention))); err != nil {
+			return err
+		}
+		// Stage 2: drawers and Z reports go with their batch (main keeps
+		// them); dead letters with their event.
+		if err := q.DeleteOrphanDrawerMovements(ctx); err != nil {
+			return err
+		}
+		if err := q.DeleteOrphanDrawerSessions(ctx); err != nil {
+			return err
+		}
+		if err := q.DeleteOrphanZReports(ctx); err != nil {
+			return err
+		}
+		if err := q.DeleteOrphanDeadLetters(ctx); err != nil {
 			return err
 		}
 		return q.DeleteOldAutoPlans(ctx, fmtTS(syncedBefore))

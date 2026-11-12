@@ -302,7 +302,7 @@ func (r *OrderRepository) SaveTerminalCustomer(ctx context.Context, c terminal.C
 		for k, v := range wire {
 			ev[k] = v
 		}
-		if err := insertEvent(ctx, q, id, "", terminal.EventCustomerUpsert, now, ev); err != nil {
+		if err := insertSubjectEvent(ctx, q, id, "", "customer:"+c.ID, terminal.EventCustomerUpsert, now, ev); err != nil {
 			return err
 		}
 		return insertJournal(ctx, q, now, journal)

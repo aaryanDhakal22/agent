@@ -112,6 +112,21 @@ type Settings struct {
 	// EmployeeMealPct: the Employee meal discount anyone logged in may give
 	// without a manager (missing = DefaultEmployeeMealPct).
 	EmployeeMealPct *int `json:"employee_meal_pct"`
+	// CashierPayoutCents: a cashier's drawer pay-out without a manager's PIN
+	// (missing = DefaultCashierPayoutCents; contract 2.10k).
+	CashierPayoutCents *int64 `json:"cashier_payout_cents"`
+	// DefaultPickupMinutes: a pickup's quoted minutes when the terminal
+	// sends none (main's default_pickup_minutes, default 15).
+	DefaultPickupMinutes *int `json:"default_pickup_minutes"`
+}
+
+// DefaultPickupMinutes is main's default_pickup_minutes (false when main's
+// settings don't carry it), bounded 0-240.
+func (c *Config) DefaultPickupMinutes() (int64, bool) {
+	if c == nil || c.parsed.DefaultPickupMinutes == nil {
+		return 0, false
+	}
+	return int64(min(max(*c.parsed.DefaultPickupMinutes, 0), 240)), true
 }
 
 // DefaultEmployeeMealPct is the Employee meal's percent when main's settings
@@ -407,6 +422,9 @@ type Payment struct {
 	StaffID       string    `json:"staff_id"`
 	DeviceID      string    `json:"device_id"`
 	ApprovedBy    string    `json:"approved_by,omitempty"` // the manager whose PIN allowed it
+	// DrawerID: the terminal drawer session a cash payment went in (set by
+	// the Pi; "" = none open, or not cash).
+	DrawerID string `json:"drawer_id,omitempty"`
 }
 
 // Wire is the payment as main's order.payment / order.placed carry it
@@ -464,13 +482,27 @@ const (
 	ActionDriverTip    = "driver.tip"
 	ActionDriverClose  = "driver.close"
 	ActionDriverReport = "driver.report"
+	// Terminal stage 2 (contract 2.4e, 2.10k, 2.10l).
+	ActionSyncParked     = "sync.parked"
+	ActionSyncRetry      = "sync.retry"
+	ActionDrawerOpen     = "drawer.open"
+	ActionDrawerPayIn    = "drawer.pay_in"
+	ActionDrawerPayOut   = "drawer.pay_out"
+	ActionDrawerClose    = "drawer.close"
+	ActionDrawerHandover = "drawer.handover"
+	ActionZReport        = "z.report"
+	// ActionNoSale is the terminal's own no-sale row (it posts it; the Pi
+	// adds the open drawer's id and counts them per drawer).
+	ActionNoSale = "no_sale"
 )
 
 var reserved = map[string]bool{ActionLogin: true, ActionLoginFailed: true, ActionLogout: true, ActionOrderPlaced: true,
 	ActionDiscount: true, ActionPayment: true, ActionRefund: true, ActionVoid: true, ActionOverride: true,
 	ActionPriceChange: true, ActionManagerCheck: true, ActionEmployeeMeal: true, ActionComp: true, ActionPickedUp: true,
 	ActionDraftTakeOver: true,
-	ActionDriverLinked:  true, ActionDriverClaim: true, ActionDriverTip: true, ActionDriverClose: true, ActionDriverReport: true}
+	ActionDriverLinked:  true, ActionDriverClaim: true, ActionDriverTip: true, ActionDriverClose: true, ActionDriverReport: true,
+	ActionSyncParked: true, ActionSyncRetry: true, ActionDrawerOpen: true, ActionDrawerPayIn: true, ActionDrawerPayOut: true,
+	ActionDrawerClose: true, ActionDrawerHandover: true, ActionZReport: true}
 
 var actionRe = regexp.MustCompile(`^[a-z][a-z0-9_.]{1,39}$`)
 

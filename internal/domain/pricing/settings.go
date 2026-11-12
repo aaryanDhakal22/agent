@@ -72,10 +72,19 @@ type KindOverride struct {
 	CardFee *CardFee `json:"card_fee"`
 }
 
-// DefaultStore are a new store's settings: Maryland's 6% food tax, no fees,
-// tips off, no card fee, the best single discount.
+// DefaultDeliveryFeeCents is a new store's delivery fee (the owner,
+// 2026-11-11: $4 = driver $3 + store $1).
+const DefaultDeliveryFeeCents = 400
+
+// DefaultStore are a new store's settings: Maryland's 6% food tax, a $4
+// delivery fee ($3 of it the driver's), no service fee, tips off, no card
+// fee, the best single discount. (Stores that existed before the $4 default
+// had their old defaults saved by migration 00037: their fee stays $0.)
 func DefaultStore() StoreSettings {
-	return StoreSettings{TaxBps: 600, Stacking: StackBest, Tips: Tips{Presets: []int{15, 18, 20}, DefaultPct: 18},
+	driver := int64(DefaultDriverShareCents)
+	return StoreSettings{TaxBps: 600, Stacking: StackBest,
+		Fees:    Fees{DeliveryFeeCents: DefaultDeliveryFeeCents, DeliveryDriverCents: &driver},
+		Tips:    Tips{Presets: []int{15, 18, 20}, DefaultPct: 18},
 		CardFee: CardFee{Mode: CardFeeNone}, HalfToppingPrice: HalfFull}
 }
 

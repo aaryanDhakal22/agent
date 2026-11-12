@@ -337,6 +337,11 @@ func main() {
 	}, broker, logger)
 	termSvc := terminalApp.NewService(termStore, orderRepo, orderService, broker, logger)
 	termSvc.SetFloor(orderService, orderRepo) // the driver view (§2.10b)
+	// Close batch closes the drawers and queues the Z report (§2.10k-l):
+	// built right after, and at start for one a crash left pending.
+	termSvc.SetZDrivers(orderService.DriverReports)
+	orderService.OnClosed(termSvc.AfterBatchClose)
+	go termSvc.BuildPendingZ(ctx)
 	termStore.Load(ctx)
 	registry.Register(terminalApp.MsgMenuChanged, termStore.HandleMenuChanged)
 	registry.Register(terminalApp.MsgTerminalChanged, termStore.HandleTerminalChanged)
@@ -677,6 +682,11 @@ func main() {
 		}
 		return mainClient.PostRPC(rc, k, body)
 	}, logger, meters)
+	// Parked events (contract 2.4e) page the owner, at most once an hour,
+	// and nudge the Pi page.
+	floorSender.SetPager(notifier)
+	floorSender.OnParked(func(n int) { broker.Publish("sync.parked", map[string]any{"parked": n}) })
+	httpServer.SetFloorSync(orderRepo, floorSender.Wake)
 	orderService.OnFloorEvent(func() {
 		floorSender.Wake()
 		stateSync.Wake()

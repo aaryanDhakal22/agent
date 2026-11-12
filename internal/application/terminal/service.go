@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -65,6 +66,9 @@ type Service struct {
 	now    func() time.Time
 	drv    driverView
 	cust   *CustomerBook
+	// The Z report (contract 2.10l): driver reports + one build at a time.
+	zDrivers func(ctx context.Context, batchID int64) ([]order.DriverReport, error)
+	zMu      sync.Mutex
 }
 
 // NewService wires the terminal flow; the store's config changes reach the
@@ -287,6 +291,9 @@ func (s *Service) PostJournal(ctx context.Context, a Actor, in JournalIn) (*term
 	var obj map[string]any
 	if err := json.Unmarshal(d, &obj); err != nil {
 		return nil, badRequest("detail must be a JSON object")
+	}
+	if in.Action == terminal.ActionNoSale {
+		d = s.noSaleDetail(ctx, a, d) // + the open drawer (contract 2.10k)
 	}
 	e := terminal.Entry{ID: uuid.NewString(), At: s.now().UTC().Truncate(time.Millisecond), StaffID: st.ID, DeviceID: a.DeviceID,
 		Action: in.Action, OrderID: in.OrderID, Detail: d}
@@ -577,6 +584,24 @@ func (p PaymentIn) payment(a Actor, st terminal.Staff, orderID string, at time.T
 	return out, nil
 }
 
+// MaxPrepMinutes bounds a placed order's quoted minutes.
+const MaxPrepMinutes = 240
+
+// prepMinutes is a placed order's minutes until ready: what the terminal
+// quoted, else main's default_pickup_minutes for a pickup, else the Pi's
+// default for the fulfillment.
+func (s *Service) prepMinutes(cfg *terminal.Config, typ, fulfillment string, quoted *int64) int64 {
+	if quoted != nil {
+		return *quoted
+	}
+	if typ == terminal.TypePickup {
+		if m, ok := cfg.DefaultPickupMinutes(); ok {
+			return m
+		}
+	}
+	return s.orders.PrepMinutesFor(fulfillment)
+}
+
 // OrderIn is POST /api/terminal/orders.
 type OrderIn struct {
 	ClientKey  string      `json:"client_key"`
@@ -586,6 +611,10 @@ type OrderIn struct {
 	Payments   []PaymentIn `json:"payments"`
 	Note       string      `json:"note"`
 	ManagerPIN string      `json:"manager_pin"`
+	// PrepMinutes: the minutes the cashier quoted (ASAP + quoted, +-5 on the
+	// terminal): the order's ready time = now + this (0-240). Absent: main's
+	// default_pickup_minutes for a pickup, else the Pi's default for the type.
+	PrepMinutes *int64 `json:"prep_minutes"`
 }
 
 // PlaceResult is the order a terminal placed (or the one its client_key
@@ -627,6 +656,9 @@ func (s *Service) PlaceOrder(ctx context.Context, a Actor, in OrderIn) (*PlaceRe
 	note := strings.TrimSpace(in.Note)
 	if utf8.RuneCountInString(note) > 500 {
 		return nil, badRequest("note is at most 500 characters")
+	}
+	if in.PrepMinutes != nil && (*in.PrepMinutes < 0 || *in.PrepMinutes > MaxPrepMinutes) {
+		return nil, badRequest("prep_minutes is 0-240")
 	}
 	cust := Customer{}
 	if in.Customer != nil {
@@ -741,8 +773,9 @@ func (s *Service) PlaceOrder(ctx context.Context, a Actor, in OrderIn) (*PlaceRe
 		}
 		journal = append(journal, terminal.Entry{StaffID: st.ID, DeviceID: a.DeviceID, Action: terminal.ActionPayment, OrderID: id, Detail: detail(d)})
 	}
+	prep := s.prepMinutes(cfg, typ, ful.Type, in.PrepMinutes)
 	so, created, err := s.repo.PlaceCounterOrder(ctx, terminal.NewCounterOrder{Snapshot: snap, ClientKey: in.ClientKey,
-		CounterStart: cfg.CounterStart(), PrepMinutes: s.orders.PrepMinutesFor(ful.Type), Payments: pays, Journal: journal,
+		CounterStart: cfg.CounterStart(), PrepMinutes: prep, Payments: pays, Journal: journal,
 		StaffID: st.ID, DeviceID: a.DeviceID, Now: now})
 	if err != nil {
 		return nil, err
@@ -915,6 +948,11 @@ func (s *Service) AddPayment(ctx context.Context, a Actor, orderID string, in Pa
 	return &PaymentResult{Order: so, Payment: got, Duplicate: dup, BalanceCents: so.Status.CashDueCents}, nil
 }
 
+// voidReduceOrder: which tenders' refunds shrink first when another tender
+// already gave back more than it took (a void never returns more than the
+// order holds). Cash last: the drawer keeps what it was paid.
+var voidReduceOrder = []string{terminal.TenderComp, terminal.TenderManualCard, terminal.TenderSquareApp, terminal.TenderCard, terminal.TenderCash}
+
 // VoidIn is POST /api/terminal/orders/{id}/void.
 type VoidIn struct {
 	Reason     string `json:"reason"`
@@ -986,15 +1024,35 @@ func (s *Service) Void(ctx context.Context, a Actor, id string, in VoidIn) (*Voi
 			n.amount += pa
 			n.tip += pt
 		}
+		// A tender refunded past zero (a tender change: card paid, cash given
+		// back) already returned money for the others: what it gave back
+		// over its own comes off the other tenders' refunds (comp first,
+		// cash last), so the void returns exactly the order's net amount and
+		// net tip.
+		amtBack, tipBack := map[string]int64{}, map[string]int64{}
+		var amtDeficit, tipDeficit int64
+		for _, t := range tenders {
+			n := by[t]
+			amtBack[t], tipBack[t] = max(n.amount, 0), max(n.tip, 0)
+			amtDeficit += max(-n.amount, 0)
+			tipDeficit += max(-n.tip, 0)
+		}
+		for _, t := range voidReduceOrder {
+			cut := min(amtBack[t], amtDeficit)
+			amtBack[t] -= cut
+			amtDeficit -= cut
+			cut = min(tipBack[t], tipDeficit)
+			tipBack[t] -= cut
+			tipDeficit -= cut
+		}
 		var refunds []terminal.Payment
 		entries := []terminal.Entry{}
 		for _, t := range tenders {
-			n := by[t]
-			if n.amount <= 0 && n.tip <= 0 {
+			if amtBack[t] <= 0 && tipBack[t] <= 0 {
 				continue
 			}
-			r := terminal.Payment{ID: uuid.Must(uuid.NewV7()).String(), OrderID: id, At: now, Tender: t, AmountCents: max(n.amount, 0),
-				TipCents: max(n.tip, 0), Refund: true, Reason: reason, StaffID: st.ID, DeviceID: a.DeviceID}
+			r := terminal.Payment{ID: uuid.Must(uuid.NewV7()).String(), OrderID: id, At: now, Tender: t, AmountCents: amtBack[t],
+				TipCents: tipBack[t], Refund: true, Reason: reason, StaffID: st.ID, DeviceID: a.DeviceID}
 			if approver != nil {
 				r.ApprovedBy = approver.ID
 			}

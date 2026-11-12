@@ -214,7 +214,6 @@ func TestPoisonEventIsIsolated(t *testing.T) {
 
 // memFloor is an in-memory outbox (only what the sender uses).
 type memFloor struct {
-	order.FloorRepository
 	events []order.FloorEvent
 	synced map[string]bool
 	failed map[string]int
@@ -234,6 +233,16 @@ func (m *memFloor) MarkEventSynced(_ context.Context, id string, _ time.Time) er
 	return nil
 }
 func (m *memFloor) MarkEventFailed(_ context.Context, id, _ string) error { m.failed[id]++; return nil }
+func (m *memFloor) RefuseEvent(_ context.Context, id, _ string, at time.Time) (order.Refusal, error) {
+	m.failed[id]++
+	return order.Refusal{EventID: id, Refusals: int64(m.failed[id]), FirstAt: at}, nil
+}
+func (m *memFloor) ParkEvent(context.Context, order.Refusal, string, time.Time) (bool, error) { return false, nil }
+func (m *memFloor) SyncParkSettings(context.Context) (order.SyncPark, error) {
+	return order.SyncPark{Refusals: 1000, Hours: 1000}, nil
+}
+func (m *memFloor) SetSyncParkAlertedAt(context.Context, time.Time) error { return nil }
+func (m *memFloor) CountParkedEvents(context.Context) (int64, error)      { return 0, nil }
 func (m *memFloor) CountUnsyncedEvents(_ context.Context) (int64, error) {
 	n := int64(0)
 	for _, e := range m.events {

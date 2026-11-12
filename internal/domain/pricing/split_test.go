@@ -38,3 +38,19 @@ func TestDriverShareValidate(t *testing.T) {
 		}
 	}
 }
+
+// TestDefaultDeliveryFee: a new store charges $4 for delivery, $3 of it the
+// driver's (the owner, 2026-11-11).
+func TestDefaultDeliveryFee(t *testing.T) {
+	d := DefaultStore()
+	if err := d.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	eff := Effective(d, KindOverride{})
+	if eff.DeliveryFeeCents != 400 || eff.DeliveryDriverCents != 300 {
+		t.Fatalf("delivery %d, driver %d", eff.DeliveryFeeCents, eff.DeliveryDriverCents)
+	}
+	if st, dr := DeliverySplit(eff, 400); st != 100 || dr != 300 {
+		t.Fatalf("split %d + %d", st, dr)
+	}
+}

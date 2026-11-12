@@ -36,6 +36,11 @@ const NAV = [
   { id: 'settings', label: 'Settings', icon: 'sliders' },
 ];
 // /api/diag problems[] codes → what staff should read.
+// What a parked floor event was (Overview's "Not synced to main" card).
+const PARKED_TYPES = {
+  'order.placed': 'Counter order', 'order.payment': 'Payment', 'customer.upsert': 'Customer', 'z.report': 'Z report',
+  'drawer.opened': 'Drawer opened', 'drawer.movement': 'Drawer pay-in / out', 'drawer.closed': 'Drawer closed',
+};
 const PROBLEM_TEXT = {
   main_down: "Not connected to main — new orders can't arrive.",
   printer_down: 'A printer is down — see Printers.',
@@ -298,6 +303,8 @@ function agentApp() {
 
     // --- Pi updates (Settings › Account, Overview Pi card) ---
     upd: null, updErr: '', updBusy: '',
+    // Floor sync dead letters (contract 2.4e): parked events + the thresholds.
+    parked: null, parkBusy: '', parkForm: { refusals: '', hours: '' }, parkFormOpen: false,
 
     // --- settings ---
     autoAccept: false, autoAcceptLoaded: false, autoUpdate: true, autoUpdateLoaded: false, floorForm: { green: '', tiptax: '' }, deliveryForm: { soon: '', target: '' }, timesForm: { pickup: '', delivery: '' },
@@ -600,7 +607,7 @@ function agentApp() {
     },
     refreshStatus() {
       if (this.state !== 'ready' || document.hidden) return;
-      if (this.page === 'overview') { this.loadDiag(); this.loadDevices(); }
+      if (this.page === 'overview') { this.loadDiag(); this.loadDevices(); this.loadParked(); }
       if (this.page === 'printers') this.loadPrinters();
       if (this.page === 'settings' && this.settingsTab === 'account') this.loadUpdate();
     },
@@ -617,6 +624,7 @@ function agentApp() {
       ['order.arrived', 'order.escalated'].forEach(t => es.addEventListener(t, () => { beep(); reload(); }));
       // POS orders (order.added) never ring.
       ['order.updated', 'order.added', 'drivers.updated', 'batch.closed', 'floor.updated', 'settings.updated', 'integration.status'].forEach(t => es.addEventListener(t, reload));
+      es.addEventListener('sync.parked', () => this.loadParked());
       es.addEventListener('integration.toast', e => {
         try { const d = JSON.parse(e.data); this.toast(d.text, d.severity === 'serious'); } catch { /* malformed frame */ }
       });
@@ -913,8 +921,38 @@ function agentApp() {
 
     // --- overview -------------------------------------------------------------------
     loadOverview() {
-      this.loadFloor(); this.loadDiag(); this.loadDevices(); this.loadAppLatest(); this.loadBatches(); this.loadReports(); this.loadUpdate();
+      this.loadFloor(); this.loadDiag(); this.loadDevices(); this.loadAppLatest(); this.loadBatches(); this.loadReports(); this.loadUpdate(); this.loadParked();
     },
+    // Parked floor events: main refused them for good, the queue moved on.
+    async loadParked() {
+      try {
+        this.parked = await this.call('/api/sync/parked');
+        if (!this.parkFormOpen) this.parkForm = { refusals: String(this.parked.settings.refusals), hours: String(this.parked.settings.hours) };
+      } catch { /* keep the old view */ }
+    },
+    async retryParked(id) {
+      const key = id || 'all';
+      if (this.parkBusy) return;
+      this.parkBusy = key;
+      try {
+        const res = await this.call(id ? '/api/sync/parked/' + encodeURIComponent(id) + '/retry' : '/api/sync/parked/retry', { method: 'POST' });
+        this.parked = res.view;
+        this.toast(res.retried === 1 ? 'Sent again — it syncs in a moment.' : res.retried + ' events sent again.');
+      } catch (e) { this.toast(e.status === 404 ? 'Already sent — the list will refresh.' : e.message, e.status !== 404); this.loadParked(); }
+      finally { this.parkBusy = ''; }
+    },
+    async saveParkSettings() {
+      const refusals = parseInt(this.parkForm.refusals, 10), hours = parseInt(this.parkForm.hours, 10);
+      if (!(refusals >= 1 && refusals <= 1000 && hours >= 1 && hours <= 168)) { this.toast('Refusals is 1-1000, hours 1-168.', true); return; }
+      this.parkBusy = 'settings';
+      try {
+        await this.call('/api/settings/sync', { method: 'PUT', body: { refusals, hours } });
+        this.parkFormOpen = false;
+        this.toast('Saved');
+        this.loadParked();
+      } catch (e) { this.toast(e.message, true); } finally { this.parkBusy = ''; }
+    },
+    parkedWhat(d) { return (PARKED_TYPES[d.type] || d.type) + (d.subject && d.subject.indexOf(':') < 0 ? ' · order' : ''); },
     async loadDiag() {
       try { this.diag = await this.call('/api/diag'); this.diagErr = false; } catch { this.diagErr = true; /* cards: "Couldn't check" */ }
     },
@@ -1038,6 +1076,8 @@ function agentApp() {
       }
       const backlog = (this.diag && this.diag.floor_backlog) || (this.floor && this.floor.unsynced_events) || 0;
       if (backlog > 0) out.push({ k: 'sync', tone: 'warn', text: backlog + ' floor change' + (backlog === 1 ? '' : 's') + ' waiting to sync to main', go: '' });
+      const parked = (this.parked && this.parked.count) || 0;
+      if (parked > 0) out.push({ k: 'parked', tone: 'bad', text: parked + ' change' + (parked === 1 ? '' : 's') + ' main refused, parked — retry below', go: '' });
       const acks = (this.diag && this.diag.acks_pending) || 0;
       if (acks > 0) out.push({ k: 'acks', tone: 'warn', text: acks + ' order receipt' + (acks === 1 ? '' : 's') + ' waiting to be confirmed to main', go: '' });
       if (this.batchOpenHours > 24) out.push({ k: 'old', tone: 'warn', text: 'This batch has been open over a day — close it?', go: '' });

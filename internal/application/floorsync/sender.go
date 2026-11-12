@@ -55,9 +55,31 @@ type envelope struct {
 	Payload json.RawMessage `json:"payload,omitempty"`
 }
 
+// Repo is the outbox the sender drains (repositories.OrderRepository).
+type Repo interface {
+	ListUnsyncedEvents(ctx context.Context, limit int) ([]order.FloorEvent, error)
+	MarkEventSynced(ctx context.Context, id string, at time.Time) error
+	MarkEventFailed(ctx context.Context, id, errMsg string) error
+	CountUnsyncedEvents(ctx context.Context) (int64, error)
+	// Dead letters (contract 2.4e).
+	RefuseEvent(ctx context.Context, id, result string, at time.Time) (order.Refusal, error)
+	ParkEvent(ctx context.Context, ref order.Refusal, result string, at time.Time) (bool, error)
+	SyncParkSettings(ctx context.Context) (order.SyncPark, error)
+	SetSyncParkAlertedAt(ctx context.Context, at time.Time) error
+	CountParkedEvents(ctx context.Context) (int64, error)
+}
+
+// Pager sends the owner a Pushover (notify.Notifier.Send).
+type Pager interface {
+	Send(ctx context.Context, message, sound string) error
+}
+
+// AlertEvery: at most one parked-events Pushover an hour.
+const AlertEvery = time.Hour
+
 // Sender drains the floor_events outbox to main.
 type Sender struct {
-	repo    order.FloorRepository
+	repo    Repo
 	post    Poster
 	wake    chan struct{}
 	logger  zerolog.Logger
@@ -65,9 +87,19 @@ type Sender struct {
 	tracer  trace.Tracer
 	now     func() time.Time
 	backoff time.Duration
+	pager   Pager
+	// unalerted: events parked since the last Pushover (one an hour).
+	unalerted int
+	onParked  func(n int)
 }
 
-func New(repo order.FloorRepository, post Poster, logger zerolog.Logger, meters observability.Meters) *Sender {
+// SetPager wires the problem pager for parked events (nil = log only).
+func (s *Sender) SetPager(p Pager) { s.pager = p }
+
+// OnParked is called after events were parked (the web page's SSE nudge).
+func (s *Sender) OnParked(fn func(n int)) { s.onParked = fn }
+
+func New(repo Repo, post Poster, logger zerolog.Logger, meters observability.Meters) *Sender {
 	return &Sender{
 		repo:   repo,
 		post:   post,
@@ -98,6 +130,7 @@ func (s *Sender) Run(ctx context.Context) {
 		} else {
 			s.backoff = 0
 		}
+		s.alertParked(ctx)
 		timer := time.NewTimer(wait)
 		select {
 		case <-ctx.Done():
@@ -225,19 +258,45 @@ func (s *Sender) send(ctx context.Context, events []order.FloorEvent) (err error
 		known[e.ID] = true
 		typeOf[e.ID] = e.Type
 	}
-	synced, kept := 0, 0
+	synced, kept, parked := 0, 0, 0
+	var park *order.SyncPark
 	for _, r := range results.Results {
 		if !known[r.EventID] {
 			continue
 		}
 		// Money and records that exist only on the Pi until main takes them:
 		// a refusal keeps the event queued (retried with the backoff; main
-		// looks at a refused event again) rather than lose it.
+		// looks at a refused event again) rather than lose it - until it was
+		// refused too often or too long: then it is parked (contract 2.4e)
+		// so the rest of the queue moves on.
 		if KeepRefused(typeOf[r.EventID], r.Result) {
-			_ = s.repo.MarkEventFailed(ctx, r.EventID, "main answered "+r.Result+" (kept, retried)")
-			s.logger.Warn().Ctx(ctx).Str("event_id", r.EventID).Str("type", typeOf[r.EventID]).Str("result", r.Result).
-				Msg("main refused a floor event the Pi must not lose (kept, retried)")
 			s.count(ctx, "rejected", 1)
+			ref, err := s.repo.RefuseEvent(ctx, r.EventID, r.Result, now)
+			if err != nil {
+				return fmt.Errorf("count refusal: %w", err)
+			}
+			if park == nil {
+				p, err := s.repo.SyncParkSettings(ctx)
+				if err != nil {
+					return fmt.Errorf("park settings: %w", err)
+				}
+				park = &p
+			}
+			if park.Due(ref.Refusals, ref.FirstAt, now) {
+				ok, err := s.repo.ParkEvent(ctx, ref, r.Result, now)
+				if err != nil {
+					return fmt.Errorf("park event: %w", err)
+				}
+				if ok {
+					parked++
+					s.count(ctx, "parked", 1)
+					s.logger.Error().Ctx(ctx).Str("event_id", r.EventID).Str("type", ref.Type).Str("result", r.Result).
+						Int64("refusals", ref.Refusals).Msg("main refused a floor event for good: parked (dead letter), the queue moves on")
+				}
+				continue
+			}
+			s.logger.Warn().Ctx(ctx).Str("event_id", r.EventID).Str("type", typeOf[r.EventID]).Str("result", r.Result).
+				Int64("refusals", ref.Refusals).Msg("main refused a floor event the Pi must not lose (kept, retried)")
 			kept++
 			continue
 		}
@@ -252,10 +311,16 @@ func (s *Sender) send(ctx context.Context, events []order.FloorEvent) (err error
 		}
 		s.count(ctx, res, 1)
 	}
+	if parked > 0 {
+		s.unalerted += parked
+		if s.onParked != nil {
+			s.onParked(parked)
+		}
+	}
 	if kept > 0 {
 		return fmt.Errorf("main refused %d event(s) the Pi keeps; retried later", kept)
 	}
-	if synced < len(events) {
+	if synced+parked < len(events) {
 		return fmt.Errorf("main acknowledged %d of %d events", synced, len(events))
 	}
 	return nil
@@ -265,16 +330,48 @@ func (s *Sender) send(ctx context.Context, events []order.FloorEvent) (err error
 // being marked synced: a counter order (order.placed, a main older than
 // terminal 0d answers invalid), a payment (order.payment: a main before
 // terminal 1d refuses one on an online order; not_found while its counter
-// order is still queued) and a counter customer (customer.upsert, a main
-// before 1d). Every other refusal is final (marked synced, logged).
+// order is still queued), a counter customer (customer.upsert, a main
+// before 1d), and stage 2's drawers and Z report (drawer.*, z.report: they
+// exist only on the Pi). Every other refusal is final (marked synced,
+// logged). A kept event is parked after too many refusals (contract 2.4e).
 func KeepRefused(typ, result string) bool {
 	switch typ {
-	case "order.placed", "customer.upsert":
+	case "order.placed", "customer.upsert", "z.report", "drawer.opened", "drawer.closed":
 		return result == "invalid"
-	case "order.payment":
+	case "order.payment", "drawer.movement":
 		return result == "invalid" || result == "not_found"
 	}
 	return false
+}
+
+// alertParked pages the owner about parked events: at most one Pushover an
+// hour (the last one is kept in settings, so a restart doesn't page again),
+// with the count parked since the last one and the total.
+func (s *Sender) alertParked(ctx context.Context) {
+	if s.unalerted == 0 {
+		return
+	}
+	p, err := s.repo.SyncParkSettings(ctx)
+	if err != nil {
+		return
+	}
+	now := s.now()
+	if p.AlertedAt != nil && now.Sub(*p.AlertedAt) < AlertEvery {
+		return
+	}
+	total, _ := s.repo.CountParkedEvents(ctx)
+	n := s.unalerted
+	s.unalerted = 0
+	if err := s.repo.SetSyncParkAlertedAt(ctx, now); err != nil {
+		s.logger.Warn().Ctx(ctx).Err(err).Msg("parked alert: save time failed")
+	}
+	if s.pager == nil {
+		return
+	}
+	msg := fmt.Sprintf("Floor sync: main refused %d event(s) for good; parked so the rest keeps syncing (%d parked in all). Retry them on the Pi page (Overview).", n, total)
+	if err := s.pager.Send(ctx, msg, "siren"); err != nil {
+		s.logger.Warn().Ctx(ctx).Err(err).Msg("parked alert: Pushover failed (non-fatal)")
+	}
 }
 
 func (s *Sender) count(ctx context.Context, result string, n int) {

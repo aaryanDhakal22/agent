@@ -52,6 +52,9 @@ class FakeMain:
         self.terminal_config: dict | None = None
         self.events: list[dict] = []
         self.fetches: dict[str, int] = {}
+        # Floor event types this fake main refuses for good (answered
+        # "invalid" here, never forwarded): the sync-stall rule's tests.
+        self.refuse: set[str] = set()
         self._streams: list = []
         self._lock = threading.Lock()
         outer = self
@@ -84,6 +87,8 @@ class FakeMain:
                 body = self.rfile.read(n) if n else None
                 if method == "POST" and self.path == "/store/v1/agent/rpc" and body:
                     env = json.loads(body)
+                    if env.get("type") == "floor.events" and outer.refuse:
+                        return self._floor_refusing(env, dict(self.headers))
                     if env.get("type") == "floor.events":
                         with outer._lock:
                             outer.events.extend(env["payload"]["events"])
@@ -116,6 +121,28 @@ class FakeMain:
                         up.close()
                     return
                 self.wfile.write(up.content)
+
+            def _floor_refusing(self, env: dict, headers: dict) -> None:
+                events = env["payload"]["events"]
+                keep = [e for e in events if e.get("type") not in outer.refuse]
+                results = [{"event_id": e["event_id"], "result": "invalid"} for e in events if e.get("type") in outer.refuse]
+                with outer._lock:
+                    outer.events.extend(keep)
+                if keep:
+                    fwd = {**env, "payload": {"events": keep}}
+                    h = {k: v for k, v in headers.items() if k.lower() not in ("host", "content-length", "connection")}
+                    up = requests.post(MAIN_BASE_URL + self.path, json=fwd, headers=h, timeout=10)
+                    if up.status_code != 200:
+                        self.send_response(up.status_code)
+                        self.end_headers()
+                        return
+                    results += up.json()["payload"]["results"]
+                raw = json.dumps({"type": "floor.events.reply", "id": env.get("id"), "payload": {"results": results}}).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(raw)))
+                self.end_headers()
+                self.wfile.write(raw)
 
             def do_GET(self):
                 self._proxy("GET")

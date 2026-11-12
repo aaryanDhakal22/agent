@@ -93,9 +93,9 @@ func (r *OrderRepository) PlaceCounterOrder(ctx context.Context, in terminal.New
 		if err := q.InsertCounterOrder(ctx, ins); err != nil {
 			return fmt.Errorf("insert counter order: %w", err)
 		}
-		for _, p := range in.Payments {
-			p.OrderID = snap.ID
-			if err := insertPayment(ctx, q, p); err != nil {
+		for i := range in.Payments {
+			in.Payments[i].OrderID = snap.ID
+			if err := insertPayment(ctx, q, &in.Payments[i]); err != nil {
 				return err
 			}
 		}
@@ -151,11 +151,17 @@ func placedSnapshot(so order.StoredOrder, in terminal.NewCounterOrder) (map[stri
 	return m, nil
 }
 
-func insertPayment(ctx context.Context, q *models.Queries, p terminal.Payment) error {
-	err := q.InsertOrderPayment(ctx, models.InsertOrderPaymentParams{ID: p.ID, OrderID: p.OrderID, ClientKey: p.ClientKey,
+func insertPayment(ctx context.Context, q *models.Queries, p *terminal.Payment) error {
+	// A cash payment (or refund) goes in the paying terminal's open drawer.
+	drawer, err := drawerForPayment(ctx, q, p.Tender, p.DeviceID)
+	if err != nil {
+		return err
+	}
+	p.DrawerID = drawer
+	err = q.InsertOrderPayment(ctx, models.InsertOrderPaymentParams{ID: p.ID, OrderID: p.OrderID, ClientKey: p.ClientKey,
 		At: fmtTS(p.At), Tender: p.Tender, AmountCents: p.AmountCents, TipCents: p.TipCents, TenderedCents: p.TenderedCents,
 		ChangeCents: p.ChangeCents, Refund: p.Refund, Reason: p.Reason, Ref: p.Ref, Last4: p.Last4, StaffID: p.StaffID,
-		DeviceID: p.DeviceID, ApprovedBy: p.ApprovedBy})
+		DeviceID: p.DeviceID, ApprovedBy: p.ApprovedBy, DrawerID: drawer})
 	if err != nil {
 		return fmt.Errorf("insert payment: %w", err)
 	}
@@ -170,7 +176,7 @@ func paymentFromRow(row models.OrderPayment) (terminal.Payment, error) {
 	return terminal.Payment{ID: row.ID, OrderID: row.OrderID, ClientKey: row.ClientKey, At: at, Tender: row.Tender,
 		AmountCents: row.AmountCents, TipCents: row.TipCents, TenderedCents: row.TenderedCents, ChangeCents: row.ChangeCents,
 		Refund: row.Refund, Reason: row.Reason, Ref: row.Ref, Last4: row.Last4, StaffID: row.StaffID, DeviceID: row.DeviceID,
-		ApprovedBy: row.ApprovedBy}, nil
+		ApprovedBy: row.ApprovedBy, DrawerID: row.DrawerID}, nil
 }
 
 func listPayments(ctx context.Context, q *models.Queries, orderID string) ([]terminal.Payment, error) {
@@ -220,7 +226,8 @@ func applyPayments(ctx context.Context, q *models.Queries, so order.StoredOrder,
 		return so.Order, applyOnlinePayments(ctx, q, so, pays, now)
 	}
 	snap := so.Order
-	for _, p := range pays {
+	for i := range pays {
+		p := &pays[i]
 		if err := insertPayment(ctx, q, p); err != nil {
 			return snap, err
 		}
@@ -248,8 +255,8 @@ func applyPayments(ctx context.Context, q *models.Queries, so order.StoredOrder,
 // the balance is the snapshot's cash due (the one cash rule) less what the
 // terminals took; the snapshot itself is never rewritten.
 func applyOnlinePayments(ctx context.Context, q *models.Queries, so order.StoredOrder, pays []terminal.Payment, now time.Time) error {
-	for _, p := range pays {
-		if err := insertPayment(ctx, q, p); err != nil {
+	for i := range pays {
+		if err := insertPayment(ctx, q, &pays[i]); err != nil {
 			return err
 		}
 	}
@@ -336,10 +343,10 @@ func (r *OrderRepository) AddCounterPayment(ctx context.Context, orderID, client
 		if len(pays) != 1 {
 			return fmt.Errorf("one payment expected, got %d", len(pays))
 		}
-		pay = pays[0]
 		if _, err := applyPayments(ctx, q, cur, pays, now); err != nil {
 			return err
 		}
+		pay = pays[0] // with its drawer
 		if so, err = loadOrder(ctx, q, orderID); err != nil {
 			return err
 		}

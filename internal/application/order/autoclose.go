@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"quiccpos/agent/internal/application/devlog"
+	"quiccpos/agent/internal/domain/order"
 )
 
 // Batch auto-close (contract/agent.md §2.10c): if nobody pressed Close batch,
@@ -98,7 +99,7 @@ func (s *Service) AutoCloseDue(ctx context.Context, now time.Time, loc *time.Loc
 	if total == 0 {
 		return skip(AutoCloseEmpty, "the batch has no orders")
 	}
-	closed, finished, err := s.CloseBatch(ctx, true)
+	closed, finished, err := s.CloseBatch(order.WithCloseKind(ctx, order.CloseAuto), true)
 	if err != nil {
 		res.Outcome = AutoCloseFailed
 		s.logger.Error().Ctx(ctx).Err(err).Int64("batch", b.ID).Msg("Batch auto-close failed")

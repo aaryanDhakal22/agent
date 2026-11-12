@@ -35,18 +35,26 @@ type Querier interface {
 	ClearTerminalDrafts(ctx context.Context) ([]string, error)
 	ClockOutDriver(ctx context.Context, id string) (int64, error)
 	CloseBatch(ctx context.Context, arg CloseBatchParams) error
+	CloseDrawerSession(ctx context.Context, arg CloseDrawerSessionParams) (int64, error)
 	CloseShift(ctx context.Context, arg CloseShiftParams) error
 	ConfirmAutoPlan(ctx context.Context, arg ConfirmAutoPlanParams) error
 	CountAllDrivers(ctx context.Context) (int64, error)
 	CountAllOrders(ctx context.Context) (int64, error)
 	CountCustomers(ctx context.Context) (int64, error)
 	CountDeliveriesInBatch(ctx context.Context, batchID int64) ([]CountDeliveriesInBatchRow, error)
+	// CountHeldFloorEvents: unsynced events waiting behind a parked one about
+	// the same subject.
+	CountHeldFloorEvents(ctx context.Context) (int64, error)
+	// CountNoSales: a terminal's no_sale journal rows in a time window
+	// (closed_at '' = still open).
+	CountNoSales(ctx context.Context, arg CountNoSalesParams) (int64, error)
 	CountOnDeliveryByDriver(ctx context.Context, driverID sql.NullString) (int64, error)
 	// Pi updates (2.0.6) ----------------------------------------------------------
 	CountOpenBatchOrders(ctx context.Context) (CountOpenBatchOrdersRow, error)
 	// Metrics: floor.orders.open (open batch, by state and online/POS; POS
 	// counter checks with no kitchen item are left out, as on Kitchen).
 	CountOpenFloorOrders(ctx context.Context) ([]CountOpenFloorOrdersRow, error)
+	CountParkedFloorEvents(ctx context.Context) (int64, error)
 	CountTerminalDrafts(ctx context.Context, locationID string) (int64, error)
 	CountUnsyncedFloorEvents(ctx context.Context) (int64, error)
 	CreateDriver(ctx context.Context, arg CreateDriverParams) error
@@ -66,10 +74,16 @@ type Querier interface {
 	// Batch retention: keep the open batch plus the newest N closed batches.
 	DeleteOrdersOutsideKeptBatches(ctx context.Context, limit int64) (int64, error)
 	DeleteOrphanCustomerAddresses(ctx context.Context) error
+	DeleteOrphanDeadLetters(ctx context.Context) error
+	// Retention of stage 2 rows: drawers and Z reports of trimmed batches, dead
+	// letters whose event is gone.
+	DeleteOrphanDrawerMovements(ctx context.Context) error
+	DeleteOrphanDrawerSessions(ctx context.Context) error
 	DeleteOrphanOrderGeo(ctx context.Context) error
 	// Retention: the payments of trimmed counter orders.
 	DeleteOrphanOrderPayments(ctx context.Context) error
 	DeleteOrphanOrderTimes(ctx context.Context) error
+	DeleteOrphanZReports(ctx context.Context) error
 	// A feed reset: drop main's copy, keep what a terminal changed (on its way to main).
 	DeleteSyncedCustomers(ctx context.Context) error
 	DeleteTerminalDraft(ctx context.Context, id string) (int64, error)
@@ -101,6 +115,8 @@ type Querier interface {
 	GetCustomerSync(ctx context.Context) (GetCustomerSyncRow, error)
 	// Delivery settings + store map (2.0.9) -------------------------------------------
 	GetDeliveryPrefs(ctx context.Context) (GetDeliveryPrefsRow, error)
+	GetDrawerMovementByKey(ctx context.Context, arg GetDrawerMovementByKeyParams) (DrawerMovement, error)
+	GetDrawerSession(ctx context.Context, id string) (DrawerSession, error)
 	GetDriver(ctx context.Context, id string) (Driver, error)
 	GetDriverReset(ctx context.Context) (GetDriverResetRow, error)
 	GetFloorPrefs(ctx context.Context) (GetFloorPrefsRow, error)
@@ -116,6 +132,8 @@ type Querier interface {
 	GetMapFile(ctx context.Context) (string, error)
 	// Batches -------------------------------------------------------------------
 	GetOpenBatch(ctx context.Context) (Batch, error)
+	GetOpenDrawerByDevice(ctx context.Context, deviceID string) (DrawerSession, error)
+	GetOpenDrawerByStaff(ctx context.Context, staffID string) (DrawerSession, error)
 	GetOpenShift(ctx context.Context, driverID string) (DriverShift, error)
 	GetOrderByClientKey(ctx context.Context, clientKey string) (Order, error)
 	// The newest order for a POS check (a check number is never reused by the POS).
@@ -129,6 +147,7 @@ type Querier interface {
 	GetStoreAPIKey(ctx context.Context) (string, error)
 	// Store config (starter pack from main/'s SSE handshake) --------------------
 	GetStoreConfig(ctx context.Context) (GetStoreConfigRow, error)
+	GetSyncParkSettings(ctx context.Context) (GetSyncParkSettingsRow, error)
 	// The terminals' shared drafts (00027, contract 2.10i) -------------------------
 	GetTerminalDraft(ctx context.Context, id string) (TerminalDraft, error)
 	// Terminal driver view + batch auto-close (00026_terminal_driver) ----------------
@@ -138,6 +157,7 @@ type Querier interface {
 	GetUIPassword(ctx context.Context) (GetUIPasswordRow, error)
 	GetUpdateLastSuccess(ctx context.Context) (string, error)
 	GetUpdateState(ctx context.Context) (GetUpdateStateRow, error)
+	GetZReport(ctx context.Context, batchID int64) (ZReport, error)
 	// AUTO plans ------------------------------------------------------------------------
 	InsertAutoPlan(ctx context.Context, arg InsertAutoPlanParams) error
 	InsertBatchWithID(ctx context.Context, arg InsertBatchWithIDParams) error
@@ -145,6 +165,10 @@ type Querier interface {
 	// counter number, in the open batch.
 	InsertCounterOrder(ctx context.Context, arg InsertCounterOrderParams) error
 	InsertCustomerAddress(ctx context.Context, arg InsertCustomerAddressParams) error
+	InsertDeadLetter(ctx context.Context, arg InsertDeadLetterParams) error
+	InsertDrawerMovement(ctx context.Context, arg InsertDrawerMovementParams) error
+	// Cash drawers (00029_drawers_z) ---------------------------------------------
+	InsertDrawerSession(ctx context.Context, arg InsertDrawerSessionParams) error
 	// POS orders from the store hub (2.1.0) ------------------------------------------
 	// A POS check the hub pulled: stored accepted (no kitchen number), local only.
 	InsertExternalOrder(ctx context.Context, arg InsertExternalOrderParams) error
@@ -154,9 +178,12 @@ type Querier interface {
 	InsertIntegrationEvent(ctx context.Context, arg InsertIntegrationEventParams) error
 	InsertJournal(ctx context.Context, arg InsertJournalParams) error
 	InsertOrderPayment(ctx context.Context, arg InsertOrderPaymentParams) error
+	// Z reports -------------------------------------------------------------------
+	InsertPendingZReport(ctx context.Context, arg InsertPendingZReportParams) error
 	InsertSettingsChange(ctx context.Context, arg InsertSettingsChangeParams) error
 	// Drivers -------------------------------------------------------------------
 	ListActiveDrivers(ctx context.Context) ([]Driver, error)
+	ListAllBatchOrders(ctx context.Context, batchID int64) ([]Order, error)
 	ListArrivedOrders(ctx context.Context) ([]Order, error)
 	ListAvailableDrivers(ctx context.Context) ([]Driver, error)
 	// Driver report: delivered orders of a batch that went out with a driver.
@@ -165,12 +192,15 @@ type Querier interface {
 	// or ready for a non-delivery order. Scheduled (future) orders move on to
 	// the next batch instead.
 	ListBatchLeftovers(ctx context.Context, batchID int64) ([]Order, error)
+	ListBatchPayments(ctx context.Context, batchID int64) ([]OrderPayment, error)
 	// 2.4.0: a batch's deliveries delivered with no driver (the UNASSIGNED report).
 	ListBatchUnassigned(ctx context.Context, batchID int64) ([]Order, error)
 	ListBatches(ctx context.Context, limit int64) ([]ListBatchesRow, error)
 	// Counter orders of a batch (the terminals' Pick Up list filters them).
 	ListCounterOrders(ctx context.Context, batchID int64) ([]Order, error)
 	ListCustomerAddresses(ctx context.Context, customerID string) ([]CustomerAddress, error)
+	ListDrawerMovements(ctx context.Context, drawerID string) ([]DrawerMovement, error)
+	ListDrawersByBatch(ctx context.Context, batchID int64) ([]DrawerSession, error)
 	// Online pickups / dine-in ready since before the cutoff and not finished yet.
 	ListDueOnlinePickups(ctx context.Context, cutoff sql.NullString) ([]string, error)
 	ListDueScheduled(ctx context.Context, ringAt sql.NullString) ([]Order, error)
@@ -179,13 +209,16 @@ type Querier interface {
 	ListInterruptedAccepts(ctx context.Context) ([]string, error)
 	// Newest first.
 	ListJournal(ctx context.Context, limit int64) ([]Journal, error)
+	ListJournalBetween(ctx context.Context, arg ListJournalBetweenParams) ([]Journal, error)
 	ListLocalOnlyByBatch(ctx context.Context, batchID int64) ([]Order, error)
 	// Delivery orders main located (their address + point), for the customers'
 	// in / out of area check.
 	ListLocatedDeliveries(ctx context.Context) ([]ListLocatedDeliveriesRow, error)
 	ListOnDeliveryByDriver(ctx context.Context, driverID sql.NullString) ([]Order, error)
+	ListOpenDeadLetters(ctx context.Context, limit int64) ([]ListOpenDeadLettersRow, error)
 	// The open batch's deliveries still on the floor (cooking, ready or out).
 	ListOpenDeliveries(ctx context.Context) ([]Order, error)
+	ListOpenDrawers(ctx context.Context) ([]DrawerSession, error)
 	ListOpenShifts(ctx context.Context) ([]DriverShift, error)
 	ListOrderGeo(ctx context.Context, ids []string) ([]OrderGeo, error)
 	ListOrderPayments(ctx context.Context, orderID string) ([]OrderPayment, error)
@@ -199,6 +232,8 @@ type Querier interface {
 	// Arrived orders older than the cutoff that haven't been alerted since the cutoff.
 	ListOverdueArrived(ctx context.Context, cutoff string) ([]Order, error)
 	ListPairedDevices(ctx context.Context) ([]PairedDevice, error)
+	ListParkedFloorEventIDs(ctx context.Context) ([]string, error)
+	ListPendingZReports(ctx context.Context) ([]ZReport, error)
 	// The terminals' Pickup list (contract 2.10i): a batch's pickup / counter orders of
 	// every source but the old POS, oldest first (the service filters states).
 	ListPickupOrders(ctx context.Context, batchID int64) ([]Order, error)
@@ -214,19 +249,24 @@ type Querier interface {
 	ListShiftsSince(ctx context.Context, clockIn string) ([]DriverShift, error)
 	ListTerminalDrafts(ctx context.Context, locationID string) ([]TerminalDraft, error)
 	ListTerminalDriverLinks(ctx context.Context) ([]ListTerminalDriverLinksRow, error)
+	// ListUnsyncedFloorEvents: oldest first, never a parked event nor one about
+	// the same subject queued behind a parked one (they wait for its retry).
 	ListUnsyncedFloorEvents(ctx context.Context, limit int64) ([]FloorEvent, error)
+	ListZReports(ctx context.Context, limit int64) ([]ZReport, error)
 	// 2.5.0 Close batch: main charges everything left, every tip is final.
 	LockBatchTips(ctx context.Context, batchID int64) error
 	// 2.5.0: a driver's shift ended - main charges the card deliveries they took
 	// out during it, so their tips can't change any more. Returns the ids locked.
 	LockShiftTips(ctx context.Context, arg LockShiftTipsParams) ([]string, error)
 	MarkAlerted(ctx context.Context, arg MarkAlertedParams) error
+	MarkDeadLetterRetried(ctx context.Context, arg MarkDeadLetterRetriedParams) error
 	MarkDelivered(ctx context.Context, arg MarkDeliveredParams) (int64, error)
 	// 2.4.0 MARK DELIVERED: an open delivery (cooking or ready, pooled or not,
 	// held as came back) is delivered with no driver - Unassigned on the Drivers
 	// tab. marked = the MarkedDelivered JSON.
 	MarkDeliveredNoDriver(ctx context.Context, arg MarkDeliveredNoDriverParams) (int64, error)
 	MarkFloorEventFailed(ctx context.Context, arg MarkFloorEventFailedParams) error
+	MarkFloorEventRefused(ctx context.Context, arg MarkFloorEventRefusedParams) (MarkFloorEventRefusedRow, error)
 	MarkFloorEventSynced(ctx context.Context, arg MarkFloorEventSyncedParams) error
 	// 2.2.1: a delivery that came back with its driver leaves the run. retry =
 	// ready again with no driver, held aside (came_back) until released; cancel =
@@ -251,6 +291,7 @@ type Querier interface {
 	OpenBatch(ctx context.Context, openedAt string) (Batch, error)
 	// Driver shifts ----------------------------------------------------------------
 	OpenShift(ctx context.Context, arg OpenShiftParams) error
+	ParkFloorEvent(ctx context.Context, arg ParkFloorEventParams) (int64, error)
 	// 2.4.3 MAKE NOW: a waiting future order leaves the future (made_now hides
 	// its promised_at) and waits as a plain arrived order for the accept that
 	// follows at once.
@@ -286,6 +327,7 @@ type Querier interface {
 	RevertAccept(ctx context.Context, id string) error
 	RevokeAllPairedDevices(ctx context.Context, revokedAt sql.NullString) error
 	RevokePairedDevice(ctx context.Context, arg RevokePairedDeviceParams) (int64, error)
+	SaveZReport(ctx context.Context, arg SaveZReportParams) error
 	// Future orders (2.1.0) --------------------------------------------------------
 	// First confirm of a future order (or a lead edit): it waits until ring_at.
 	ScheduleOrder(ctx context.Context, arg ScheduleOrderParams) (int64, error)
@@ -364,6 +406,8 @@ type Querier interface {
 	SetRunSeq(ctx context.Context, arg SetRunSeqParams) error
 	SetSessionSecret(ctx context.Context, sessionSecret string) error
 	SetStoreAPIKey(ctx context.Context, storeApiKey string) error
+	SetSyncParkAlertedAt(ctx context.Context, syncParkAlertedAt string) error
+	SetSyncParkSettings(ctx context.Context, arg SetSyncParkSettingsParams) error
 	// A payment taken at a terminal on an online pickup (contract 2.10i): the
 	// money columns only; the snapshot stays main's.
 	SetTerminalPaidMoney(ctx context.Context, arg SetTerminalPaidMoneyParams) error
@@ -373,6 +417,8 @@ type Querier interface {
 	SetUpdateNotified(ctx context.Context, updateNotified string) error
 	// A hidden POS check that now qualifies for Kitchen: shown as if new.
 	ShowPosOrder(ctx context.Context, arg ShowPosOrderParams) error
+	SumDrawerCash(ctx context.Context, drawerID string) (SumDrawerCashRow, error)
+	SumDrawerMovements(ctx context.Context, drawerID string) (SumDrawerMovementsRow, error)
 	// The counter sequence: hands out counter_next (or start when it is 0, i.e.
 	// after Close batch) and moves it on. Returns the number AFTER the one taken.
 	TakeCounterNumber(ctx context.Context, start int64) (int64, error)
@@ -384,6 +430,7 @@ type Querier interface {
 	// 2.3.8: a READY tapped by mistake, undone soon after (ready_at >= since):
 	// back to cooking, not finished. Pools stay (a cooking order may be pooled).
 	UndoReady(ctx context.Context, arg UndoReadyParams) (int64, error)
+	UnparkFloorEvent(ctx context.Context, id string) (int64, error)
 	// A changed POS check: the new snapshot (items, money, notes, address) and
 	// the paid / cash / tip / hidden figures. No state change. paid_at (2.4.0)
 	// moves when the check goes from a balance due to paid.

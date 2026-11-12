@@ -18,6 +18,33 @@ type Batch struct {
 	// ClearedDrafts: the terminals' shared drafts Close batch deleted (their
 	// removal is announced; never on the wire).
 	ClearedDrafts []string `json:"-"`
+	// ClosedDrawers: the terminal drawer sessions Close batch closed (not
+	// counted, flagged; contract 2.10k). ZPending: a Z report was queued for
+	// this batch (built right after, contract 2.10l).
+	ClosedDrawers []string `json:"-"`
+	ZPending      bool     `json:"-"`
+}
+
+// Close kinds (the Z report's close_kind): Close batch by hand, or the Pi's
+// auto-close.
+const (
+	CloseManual = "manual"
+	CloseAuto   = "auto"
+)
+
+type closeKindKey struct{}
+
+// WithCloseKind tells CloseBatch how it was started (the Z report).
+func WithCloseKind(ctx context.Context, kind string) context.Context {
+	return context.WithValue(ctx, closeKindKey{}, kind)
+}
+
+// CloseKindOf is the close kind on ctx (CloseManual when none).
+func CloseKindOf(ctx context.Context) string {
+	if k, ok := ctx.Value(closeKindKey{}).(string); ok && k != "" {
+		return k
+	}
+	return CloseManual
 }
 
 // Driver statuses: off = clocked out (not in the queue), available = clocked

@@ -84,6 +84,9 @@ type Server struct {
 	// audited settings PUTs (settings_audit.go).
 	settingsLog settingslog.Repository
 	auditMu     sync.Mutex
+	// floorSync: the parked floor events (contract 2.4e) + the sender's wake.
+	floorSync     FloorSyncRepo
+	floorSyncWake func()
 	// terminalSvc: the POS terminals' API (terminal stage 0d).
 	terminalSvc *terminalApp.Service
 }

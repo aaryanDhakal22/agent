@@ -4,6 +4,7 @@ import (
 	"net/http"
 
 	"quiccpos/agent/internal/domain/order"
+	"quiccpos/agent/internal/domain/terminal"
 )
 
 // routeDef is one HTTP route. It is the single source of truth: Start() builds
@@ -141,13 +142,14 @@ func (s *Server) routes() []routeDef {
 		{"POST", "/api/batch/close", "device", "Close the batch {force}: 409 lists leftovers unless force (prints driver reports)", s.handleCloseBatch},
 		{"GET", "/api/batches/{id}/driver-reports", "device", "Per-driver delivery/cash/tip reports for a batch (0 = open)", s.handleDriverReports},
 		{"POST", "/api/batches/{id}/driver-reports/print", "device", "Print one driver-report slip per driver (receipt printer)", s.handlePrintDriverReports},
+		{"GET", "/api/batches/{id}/z", "device", "A closed batch's Z report (contract §2.10l) -> {report} | 404 not_found (open, not built yet, or no longer kept)", s.handleBatchZ},
 		{"GET", "/api/printers", "device", "Printer reachability snapshot (a POS terminal's key may read it too)", s.handleListPrinters},
 		{"GET", "/api/printers/found", "device", "Printers seen on the LAN (TCP 9100) {scanned_at, scanning, printers:[{ip, mac, known, printer_name}]}; ?refresh=1 scans now", s.handlePrintersFound},
 		{"POST", "/api/printers/add", "device", "Add a found printer {name, ip, mac} -> RPC printer.add -> 201 {id, name, ip} | 409 name_taken | 400 | 503 main_offline", s.handlePrinterAdd},
 		{"GET", "/api/app/latest", "device", "Newest Quibase release cached for tablets (204 none)", s.handleAppLatest},
 		{"GET", "/api/app/apk", "device", "Download the cached Quibase APK", s.handleAppAPK},
 		{"GET", "/api/update/status", "device", "Pi update state: versions, latest, pending request, last result, can_update_now/blocked_reason", s.handleUpdateStatus},
-		{"GET", "/api/events", "device", "SSE: order.arrived|added|updated|escalated, drivers.updated|dispatched, driver.route, batch.closed, floor.updated, settings.updated, integration.status|toast, terminal.menu.changed|config.changed|order.placed|order.paid|order.voided|order.changed|order.picked_up|draft.changed|draft.removed|draft.taken|customer.changed|customers.synced|driver.linked|driver.claimed|driver.tip|driver.closed|driver.report", s.handleEvents},
+		{"GET", "/api/events", "device", "SSE: order.arrived|added|updated|escalated, drivers.updated|dispatched, driver.route, batch.closed, floor.updated, settings.updated, integration.status|toast, terminal.menu.changed|config.changed|order.placed|order.paid|order.voided|order.changed|order.picked_up|draft.changed|draft.removed|draft.taken|customer.changed|customers.synced|driver.linked|driver.claimed|driver.tip|driver.closed|driver.report|drawer.changed|z.report, sync.parked", s.handleEvents},
 
 		// Quibase setup + diagnostics — paired tablet (or web-UI session).
 		{"POST", "/api/pairing/code", "device", "Show a 6-digit tablet pairing code (5 min) — web UI or a paired tablet (Pair another tablet)", s.handlePairingCode},
@@ -191,6 +193,15 @@ func (s *Server) routes() []routeDef {
 		{"GET", "/api/terminal/drafts", "terminal", "The store's shared drafts (held or open on a terminal) {drafts: [{id, type, name, held, holder|null, staff_id, staff_name, order_id?, draft, created_at, updated_at}]}", s.handleTerminalDrafts},
 		{"PUT", "/api/terminal/drafts/{id}", "terminal", "Hold or open a shared draft {type, name, held, order_id?, take_over?, draft: object <= 64 KB} -> {draft} (holder = this terminal + its login when not held; SSE terminal.draft.changed, terminal.draft.taken {id, by} on a take-over) | 400 | 401 login_required | 409 open_elsewhere {holder} / too_many_drafts", s.handleTerminalPutDraft},
 		{"DELETE", "/api/terminal/drafts/{id}", "terminal", "Drop a shared draft (sent, paid or cleared) -> 204 (SSE terminal.draft.removed {id}) | 401 login_required | 409 open_elsewhere {holder}", s.handleTerminalDeleteDraft},
+		// Cash drawers (stage 2, contract §2.10k): one session per terminal + cashier shift.
+		{"GET", "/api/terminal/drawer", "terminal", "This terminal's open drawer {drawer|null, mine|null (the logged-in cashier's open drawer on another terminal), device_id, staff|null, payout_limit_cents|null}; drawer = {id, device_id, device_name, staff_id, staff_name, batch_id, opened_at, start_cents, state, expected_cents, cash_sales_cents, cash_tips_cents, cash_refunds_cents, pay_ins_cents, pay_outs_cents, payments, no_sales, movements, ...}", s.handleTerminalDrawer},
+		{"GET", "/api/terminal/drawers", "terminal", "A batch's drawer sessions ?batch=<id>|current (default current) -> {drawers: [Drawer]}", s.handleTerminalDrawers},
+		{"POST", "/api/terminal/drawer/open", "terminal", "Count the logged-in cashier's drawer in on this terminal {start_cents | denominations: [{value_cents, count}]} -> 201 {drawer} (drawer.opened to main) | 400 | 401 login_required | 403 drawer_not_allowed (driver) | 409 drawer_open {drawer} / cashier_has_drawer {drawer}", s.handleTerminalDrawerOpen},
+		{"POST", "/api/terminal/drawer/pay-in", "terminal", "Put cash in this terminal's drawer {amount_cents 1-1000000, reason, client_key?} -> {drawer, movement, duplicate} (drawer.movement) | 400 | 401 | 409 no_drawer / client_key_reused", s.drawerMove(terminal.MovePayIn)},
+		{"POST", "/api/terminal/drawer/pay-out", "terminal", "Take cash out of this terminal's drawer {amount_cents, reason, client_key?, manager_pin?} (a cashier over cashier_payout_cents needs a manager) -> {drawer, movement, duplicate} | 400 | 401 | 403 manager_required {action: pay_out} / manager_pin_invalid | 409 no_drawer / not_enough_cash {expected_cents}", s.drawerMove(terminal.MovePayOut)},
+		{"POST", "/api/terminal/drawer/close", "terminal", "Count a drawer out {counted_cents | denominations, drawer_id? (default this terminal's), manager_pin? (another cashier's drawer)} -> {drawer: {..., state: closed, close_reason: counted, counted_cents, expected_cents, over_short_cents}} (drawer.closed) | 400 | 401 | 403 manager_required {action: drawer_close} | 404 drawer_not_found | 409 no_drawer / drawer_closed", s.handleTerminalDrawerClose},
+		{"POST", "/api/terminal/drawer/handover", "terminal", "The logged-in cashier takes over this terminal's drawer: counted out for the cashier before (close_reason handover) and counted in for them from the count {counted_cents | denominations} -> {closed, drawer} | 400 | 401 | 409 no_drawer / same_cashier / cashier_has_drawer", s.handleTerminalDrawerHandover},
+		{"GET", "/api/terminal/z", "terminal", "The Z report (stage 2, contract §2.10l) ?batch=<id> -> {report} | 404 not_found; no batch = the kept ones {reports: [Z]} newest first", s.handleTerminalZ},
 		{"POST", "/api/terminal/journal", "terminal", "Journal a terminal-only action {action (not a Pi one), order_id?, detail?: object <= 4 KB} -> 201 the entry (journal.entries to main) | 400 | 401 login_required", s.handleTerminalJournalPost},
 		// The store's customers (terminal 1d, contract §2.10j): a copy of main's, kept by its change feed.
 		{"GET", "/api/terminal/customers", "terminal", "Look a caller up by phone (works offline) ?phone=<digits>: 10 digits = that number, 3-9 = numbers starting or ending with them (the last 4) -> {customers: [{id, phone, first_name, last_name, name, notes, source, last_order_at?, pending, addresses: [{id, label, line1, line2, city, state, zip, notes, default, area?: {state: in|near|out|unknown, distance_mi?}}]}], area: {radius_mi, margin_mi}|null, count, synced_at} (fewer than 3 digits: no customers) | 400", s.handleTerminalCustomers},
@@ -219,6 +230,12 @@ func (s *Server) routes() []routeDef {
 		{"POST", "/api/resend", "session", "Full arrival pipeline for a fetched snapshot", s.handleResend},
 		{"GET", "/api/store-config", "session", "Current store config, proxied from main/", s.handleGetStoreConfig},
 		{"PUT", "/api/settings/floor", "session", "Set {green_till_minutes, tip_tax_percent}", s.audited("floor", s.readFloorPrefs, s.handleSetFloorPrefs)},
+		// Floor sync dead letters (contract 2.4e).
+		{"GET", "/api/sync/parked", "session", "Floor events main refused for good, parked so the queue moves on {parked: [{event_id, type, subject, result, refusals, first_refused_at, parked_at, last_error, at}], count, held (events waiting behind a parked one about the same subject), backlog, settings: {refusals, hours}}", s.handleSyncParked},
+		{"POST", "/api/sync/parked/retry", "session", "Put parked events back in the queue at their old place {event_ids?: [...] (none = all)} -> {retried, view} | 404 not_parked; journal sync.retry", s.handleSyncRetry},
+		{"POST", "/api/sync/parked/{id}/retry", "session", "Put one parked event back in the queue -> {retried: 1, view} | 404 not_parked", s.handleSyncRetry},
+		{"GET", "/api/settings/sync", "session", "Floor sync parking thresholds {refusals, hours}", s.handleGetSyncPark},
+		{"PUT", "/api/settings/sync", "session", "Set the parking thresholds {refusals? 1-1000 (default 8), hours? 1-168 (default 2)}: a kept event main refused that often, or that long since its first refusal, is parked -> {refusals, hours} | 400", s.audited("sync", s.readSyncPark, s.handleSetSyncPark)},
 		{"PUT", "/api/settings/driver-reset", "session", "Set the daily driver clock-out time {time: HH:MM}", s.audited("driver-reset", s.readDriverReset, s.handleSetDriverReset)},
 		{"POST", "/api/settings/password", "session", "Change the local UI password (current + new + hint)", s.handleChangePassword},
 		{"POST", "/api/update", "session", "Update this Pi now (right after Close batch only) -> 202 {id, state} | 409 {code} | 501 not_supported", s.handleUpdate},

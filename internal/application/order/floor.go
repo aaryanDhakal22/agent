@@ -226,6 +226,10 @@ func (s *Service) CloseBatch(ctx context.Context, force bool) (*order.Batch, []o
 			s.broker.Publish(terminal.EventDraftRemoved, map[string]any{"id": id})
 		}
 	}
+	if fn := s.onClosed.Load(); fn != nil && *fn != nil {
+		b := *closed
+		go (*fn)(context.WithoutCancel(ctx), b)
+	}
 	s.devEvent(devlog.Info, devlog.KindOrder, "Batch %d closed (%d auto-finished)", closed.ID, len(finished))
 	s.printReportsAfterClose(ctx, closed.ID, s.afterClose)
 	s.forgetPOSDeliveries(ctx, closed.ID)
@@ -235,6 +239,11 @@ func (s *Service) CloseBatch(ctx context.Context, force bool) (*order.Batch, []o
 // OnBatchClosed registers the hook run after a successful Close batch, once
 // its driver reports printed (or failed): cmd/main.go's Pi auto-update.
 func (s *Service) OnBatchClosed(fn func(ctx context.Context)) { s.onBatchClosed.Store(&fn) }
+
+// OnClosed registers the hook run (in the background) right after a
+// successful Close batch: the terminals' drawers and Z report (contract
+// 2.10k-l).
+func (s *Service) OnClosed(fn func(ctx context.Context, closed order.Batch)) { s.onClosed.Store(&fn) }
 
 func (s *Service) afterClose(ctx context.Context) {
 	if fn := s.onBatchClosed.Load(); fn != nil && *fn != nil {

@@ -137,9 +137,32 @@ CREATE TABLE floor_events (
     at         text    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     synced_at  text,
     attempts   integer NOT NULL DEFAULT 0,
-    last_error text    NOT NULL DEFAULT ''
+    last_error text    NOT NULL DEFAULT '',
+    -- 00029_drawers_z: the subject the event is about (order id,
+    -- "customer:<id>", "drawer:<id>", "z:<batch>"; '' = none), main's
+    -- refusals of a kept event and when it was parked (dead letter).
+    subject          text    NOT NULL DEFAULT '',
+    refusals         integer NOT NULL DEFAULT 0,
+    first_refused_at text,
+    parked_at        text
 );
 CREATE INDEX idx_floor_events_unsynced ON floor_events (at) WHERE synced_at IS NULL;
+CREATE INDEX idx_floor_events_parked ON floor_events (subject) WHERE parked_at IS NOT NULL AND synced_at IS NULL;
+
+-- 00029_drawers_z: why an event was parked, and its retry.
+CREATE TABLE floor_dead_letters (
+    event_id         text    PRIMARY KEY,
+    subject          text    NOT NULL DEFAULT '',
+    type             text    NOT NULL,
+    result           text    NOT NULL DEFAULT '',
+    refusals         integer NOT NULL DEFAULT 0,
+    first_refused_at text    NOT NULL DEFAULT '',
+    parked_at        text    NOT NULL,
+    last_error       text    NOT NULL DEFAULT '',
+    retried_at       text,
+    retried_by       text    NOT NULL DEFAULT ''
+);
+CREATE INDEX idx_floor_dead_letters_open ON floor_dead_letters (parked_at) WHERE retried_at IS NULL;
 
 CREATE TABLE paired_devices (
     id           text PRIMARY KEY,
@@ -237,6 +260,10 @@ CREATE TABLE settings (
     counter_next              integer NOT NULL DEFAULT 0,
     -- 00026_terminal_driver: the last batch auto-close slot handled (UTC).
     auto_close_last           text    NOT NULL DEFAULT '',
+    -- 00029_drawers_z: floor sync parking thresholds + the last parked alert.
+    sync_park_refusals        integer NOT NULL DEFAULT 8,
+    sync_park_hours           integer NOT NULL DEFAULT 2,
+    sync_park_alerted_at      text    NOT NULL DEFAULT '',
     CHECK (id = 1)
 );
 
@@ -332,9 +359,12 @@ CREATE TABLE order_payments (
     last4          text    NOT NULL DEFAULT '',
     staff_id       text    NOT NULL DEFAULT '',
     device_id      text    NOT NULL DEFAULT '',
-    approved_by    text    NOT NULL DEFAULT ''
+    approved_by    text    NOT NULL DEFAULT '',
+    -- 00029_drawers_z: the terminal drawer a cash payment went in ('' = none).
+    drawer_id      text    NOT NULL DEFAULT ''
 );
 CREATE INDEX idx_order_payments_order ON order_payments (order_id, at);
+CREATE INDEX idx_order_payments_drawer ON order_payments (drawer_id) WHERE drawer_id <> '';
 CREATE UNIQUE INDEX idx_order_payments_key ON order_payments (order_id, client_key) WHERE client_key <> '';
 
 -- Every terminal action (login, lock, order, payment, void, no sale, ...):
@@ -416,4 +446,53 @@ CREATE TABLE customer_sync (
     location_id text    NOT NULL DEFAULT '',
     cursor      text    NOT NULL DEFAULT '',
     synced_at   text    NOT NULL DEFAULT ''
+);
+
+-- 00029_drawers_z: cash drawer sessions (terminal + cashier shift), their
+-- pay-ins / pay-outs, and the Z report per closed batch.
+CREATE TABLE drawer_sessions (
+    id                 text    PRIMARY KEY,
+    device_id          text    NOT NULL,
+    device_name        text    NOT NULL DEFAULT '',
+    staff_id           text    NOT NULL,
+    staff_name         text    NOT NULL DEFAULT '',
+    batch_id           integer NOT NULL,
+    opened_at          text    NOT NULL,
+    start_cents        integer NOT NULL,
+    handover_from      text    NOT NULL DEFAULT '',
+    closed_at          text,
+    closed_by          text    NOT NULL DEFAULT '',
+    close_reason       text    NOT NULL DEFAULT '',
+    counted_cents      integer,
+    denominations      text    NOT NULL DEFAULT '',
+    expected_cents     integer,
+    flagged            boolean NOT NULL DEFAULT false
+);
+CREATE UNIQUE INDEX idx_drawer_sessions_open_device ON drawer_sessions (device_id) WHERE closed_at IS NULL;
+CREATE UNIQUE INDEX idx_drawer_sessions_open_staff ON drawer_sessions (staff_id) WHERE closed_at IS NULL;
+CREATE INDEX idx_drawer_sessions_batch ON drawer_sessions (batch_id);
+
+CREATE TABLE drawer_movements (
+    id           text    PRIMARY KEY,
+    drawer_id    text    NOT NULL,
+    kind         text    NOT NULL CHECK (kind IN ('pay_in', 'pay_out')),
+    amount_cents integer NOT NULL,
+    reason       text    NOT NULL DEFAULT '',
+    staff_id     text    NOT NULL DEFAULT '',
+    approved_by  text    NOT NULL DEFAULT '',
+    client_key   text    NOT NULL DEFAULT '',
+    at           text    NOT NULL
+);
+CREATE INDEX idx_drawer_movements_drawer ON drawer_movements (drawer_id, at);
+CREATE UNIQUE INDEX idx_drawer_movements_key ON drawer_movements (drawer_id, client_key) WHERE client_key <> '';
+
+CREATE TABLE z_reports (
+    batch_id   integer PRIMARY KEY,
+    id         text    NOT NULL,
+    status     text    NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'done')),
+    close_kind text    NOT NULL DEFAULT 'manual',
+    forced     boolean NOT NULL DEFAULT false,
+    report     text    NOT NULL DEFAULT '',
+    created_at text    NOT NULL,
+    built_at   text
 );

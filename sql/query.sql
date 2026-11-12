@@ -383,10 +383,69 @@ GROUP BY driver_id;
 -- Floor events (sync outbox to main) -------------------------------------------
 
 -- name: InsertFloorEvent :exec
-INSERT INTO floor_events (id, order_id, type, payload, at) VALUES (?, ?, ?, ?, ?);
+INSERT INTO floor_events (id, order_id, type, payload, at, subject) VALUES (?, ?, ?, ?, ?, ?);
 
+-- ListUnsyncedFloorEvents: oldest first, never a parked event nor one about
+-- the same subject queued behind a parked one (they wait for its retry).
 -- name: ListUnsyncedFloorEvents :many
-SELECT * FROM floor_events WHERE synced_at IS NULL ORDER BY rowid ASC LIMIT ?;
+SELECT * FROM floor_events f
+WHERE f.synced_at IS NULL AND f.parked_at IS NULL
+  AND (f.subject = '' OR NOT EXISTS (
+        SELECT 1 FROM floor_events p
+        WHERE p.subject = f.subject AND p.parked_at IS NOT NULL AND p.synced_at IS NULL AND p.rowid < f.rowid))
+ORDER BY f.rowid ASC LIMIT ?;
+
+-- name: MarkFloorEventRefused :one
+UPDATE floor_events SET refusals = refusals + 1, attempts = attempts + 1, last_error = sqlc.arg(last_error),
+       first_refused_at = COALESCE(first_refused_at, sqlc.arg(at))
+WHERE id = sqlc.arg(id)
+RETURNING refusals, first_refused_at, subject, type;
+
+-- name: ParkFloorEvent :execrows
+UPDATE floor_events SET parked_at = sqlc.arg(parked_at) WHERE id = sqlc.arg(id) AND synced_at IS NULL AND parked_at IS NULL;
+
+-- name: InsertDeadLetter :exec
+INSERT INTO floor_dead_letters (event_id, subject, type, result, refusals, first_refused_at, parked_at, last_error)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT (event_id) DO UPDATE SET result = excluded.result, refusals = excluded.refusals,
+  first_refused_at = excluded.first_refused_at, parked_at = excluded.parked_at, last_error = excluded.last_error,
+  retried_at = NULL, retried_by = '';
+
+-- name: ListOpenDeadLetters :many
+SELECT d.event_id, d.subject, d.type, d.result, d.refusals, d.first_refused_at, d.parked_at, d.last_error, f.at
+FROM floor_dead_letters d JOIN floor_events f ON f.id = d.event_id
+WHERE d.retried_at IS NULL AND f.parked_at IS NOT NULL AND f.synced_at IS NULL
+ORDER BY f.rowid ASC LIMIT ?;
+
+-- name: CountParkedFloorEvents :one
+SELECT count(*) FROM floor_events WHERE parked_at IS NOT NULL AND synced_at IS NULL;
+
+-- CountHeldFloorEvents: unsynced events waiting behind a parked one about
+-- the same subject.
+-- name: CountHeldFloorEvents :one
+SELECT count(*) FROM floor_events f
+WHERE f.synced_at IS NULL AND f.parked_at IS NULL AND f.subject <> ''
+  AND EXISTS (SELECT 1 FROM floor_events p
+              WHERE p.subject = f.subject AND p.parked_at IS NOT NULL AND p.synced_at IS NULL AND p.rowid < f.rowid);
+
+-- name: UnparkFloorEvent :execrows
+UPDATE floor_events SET parked_at = NULL, refusals = 0, first_refused_at = NULL
+WHERE id = ? AND parked_at IS NOT NULL AND synced_at IS NULL;
+
+-- name: MarkDeadLetterRetried :exec
+UPDATE floor_dead_letters SET retried_at = ?, retried_by = ? WHERE event_id = ? AND retried_at IS NULL;
+
+-- name: ListParkedFloorEventIDs :many
+SELECT id FROM floor_events WHERE parked_at IS NOT NULL AND synced_at IS NULL ORDER BY rowid;
+
+-- name: GetSyncParkSettings :one
+SELECT sync_park_refusals, sync_park_hours, sync_park_alerted_at FROM settings WHERE id = 1;
+
+-- name: SetSyncParkSettings :exec
+UPDATE settings SET sync_park_refusals = ?, sync_park_hours = ? WHERE id = 1;
+
+-- name: SetSyncParkAlertedAt :exec
+UPDATE settings SET sync_park_alerted_at = ? WHERE id = 1;
 
 -- name: MarkFloorEventSynced :exec
 UPDATE floor_events SET synced_at = ?, last_error = '' WHERE id = ?;
@@ -395,7 +454,7 @@ UPDATE floor_events SET synced_at = ?, last_error = '' WHERE id = ?;
 UPDATE floor_events SET attempts = attempts + 1, last_error = ? WHERE id = ?;
 
 -- name: CountUnsyncedFloorEvents :one
-SELECT count(*) FROM floor_events WHERE synced_at IS NULL;
+SELECT count(*) FROM floor_events WHERE synced_at IS NULL AND parked_at IS NULL;
 
 -- name: DeleteOldSyncedFloorEvents :execrows
 DELETE FROM floor_events WHERE synced_at IS NOT NULL AND synced_at < ?;
@@ -1001,10 +1060,10 @@ SELECT * FROM orders WHERE source = 'counter' AND batch_id = ? ORDER BY arrival_
 
 -- name: InsertOrderPayment :exec
 INSERT INTO order_payments (id, order_id, client_key, at, tender, amount_cents, tip_cents, tendered_cents,
-                            change_cents, refund, reason, ref, last4, staff_id, device_id, approved_by)
+                            change_cents, refund, reason, ref, last4, staff_id, device_id, approved_by, drawer_id)
 VALUES (sqlc.arg(id), sqlc.arg(order_id), sqlc.arg(client_key), sqlc.arg(at), sqlc.arg(tender), sqlc.arg(amount_cents),
         sqlc.arg(tip_cents), sqlc.arg(tendered_cents), sqlc.arg(change_cents), sqlc.arg(refund), sqlc.arg(reason),
-        sqlc.arg(ref), sqlc.arg(last4), sqlc.arg(staff_id), sqlc.arg(device_id), sqlc.arg(approved_by));
+        sqlc.arg(ref), sqlc.arg(last4), sqlc.arg(staff_id), sqlc.arg(device_id), sqlc.arg(approved_by), sqlc.arg(drawer_id));
 
 -- name: ListOrderPayments :many
 SELECT * FROM order_payments WHERE order_id = ? ORDER BY at, rowid;
@@ -1186,3 +1245,100 @@ SELECT o.snapshot, g.lat, g.lng FROM orders o JOIN order_geo g ON g.order_id = o
 WHERE g.state = 'located' AND g.lat IS NOT NULL AND g.lng IS NOT NULL
   AND json_extract(o.snapshot, '$.fulfillment.type') = 'delivery'
 ORDER BY o.arrival_date DESC LIMIT 2000;
+
+-- Cash drawers (00029_drawers_z) ---------------------------------------------
+
+-- name: InsertDrawerSession :exec
+INSERT INTO drawer_sessions (id, device_id, device_name, staff_id, staff_name, batch_id, opened_at, start_cents, handover_from)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
+
+-- name: GetDrawerSession :one
+SELECT * FROM drawer_sessions WHERE id = ?;
+
+-- name: GetOpenDrawerByDevice :one
+SELECT * FROM drawer_sessions WHERE device_id = ? AND closed_at IS NULL;
+
+-- name: GetOpenDrawerByStaff :one
+SELECT * FROM drawer_sessions WHERE staff_id = ? AND closed_at IS NULL;
+
+-- name: ListOpenDrawers :many
+SELECT * FROM drawer_sessions WHERE closed_at IS NULL ORDER BY opened_at;
+
+-- name: ListDrawersByBatch :many
+SELECT * FROM drawer_sessions WHERE batch_id = ? ORDER BY opened_at, rowid;
+
+-- name: CloseDrawerSession :execrows
+UPDATE drawer_sessions SET closed_at = sqlc.arg(closed_at), closed_by = sqlc.arg(closed_by), close_reason = sqlc.arg(close_reason),
+       counted_cents = sqlc.arg(counted_cents), denominations = sqlc.arg(denominations), expected_cents = sqlc.arg(expected_cents),
+       flagged = sqlc.arg(flagged)
+WHERE id = sqlc.arg(id) AND closed_at IS NULL;
+
+-- name: InsertDrawerMovement :exec
+INSERT INTO drawer_movements (id, drawer_id, kind, amount_cents, reason, staff_id, approved_by, client_key, at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
+
+-- name: GetDrawerMovementByKey :one
+SELECT * FROM drawer_movements WHERE drawer_id = ? AND client_key = ? AND client_key <> '';
+
+-- name: ListDrawerMovements :many
+SELECT * FROM drawer_movements WHERE drawer_id = ? ORDER BY at, rowid;
+
+-- name: SumDrawerCash :one
+SELECT CAST(COALESCE(SUM(CASE WHEN refund THEN 0 ELSE amount_cents END), 0) AS INTEGER) AS sales_cents,
+       CAST(COALESCE(SUM(CASE WHEN refund THEN 0 ELSE tip_cents END), 0) AS INTEGER) AS tips_cents,
+       CAST(COALESCE(SUM(CASE WHEN refund THEN amount_cents + tip_cents ELSE 0 END), 0) AS INTEGER) AS refunds_cents,
+       count(*) AS payments
+FROM order_payments WHERE drawer_id = ?;
+
+-- name: SumDrawerMovements :one
+SELECT CAST(COALESCE(SUM(CASE WHEN kind = 'pay_in' THEN amount_cents ELSE 0 END), 0) AS INTEGER) AS pay_ins_cents,
+       CAST(COALESCE(SUM(CASE WHEN kind = 'pay_out' THEN amount_cents ELSE 0 END), 0) AS INTEGER) AS pay_outs_cents
+FROM drawer_movements WHERE drawer_id = ?;
+
+-- CountNoSales: a terminal's no_sale journal rows in a time window
+-- (closed_at '' = still open).
+-- name: CountNoSales :one
+SELECT count(*) FROM journal
+WHERE action = 'no_sale' AND device_id = sqlc.arg(device_id) AND at >= sqlc.arg(from_at)
+  AND (sqlc.arg(to_at) = '' OR at <= sqlc.arg(to_at));
+
+-- Z reports -------------------------------------------------------------------
+
+-- name: InsertPendingZReport :exec
+INSERT INTO z_reports (batch_id, id, status, close_kind, forced, created_at) VALUES (?, ?, 'pending', ?, ?, ?)
+ON CONFLICT (batch_id) DO NOTHING;
+
+-- name: GetZReport :one
+SELECT * FROM z_reports WHERE batch_id = ?;
+
+-- name: ListPendingZReports :many
+SELECT * FROM z_reports WHERE status = 'pending' ORDER BY batch_id;
+
+-- name: ListZReports :many
+SELECT * FROM z_reports ORDER BY batch_id DESC LIMIT ?;
+
+-- name: SaveZReport :exec
+UPDATE z_reports SET status = 'done', report = ?, built_at = ? WHERE batch_id = ?;
+
+-- name: ListBatchPayments :many
+SELECT p.* FROM order_payments p JOIN orders o ON o.id = p.order_id WHERE o.batch_id = ? ORDER BY p.at, p.rowid;
+
+-- name: ListJournalBetween :many
+SELECT * FROM journal WHERE at >= sqlc.arg(from_at) AND at <= sqlc.arg(to_at) ORDER BY at, rowid;
+
+-- name: ListAllBatchOrders :many
+SELECT * FROM orders WHERE batch_id = ? ORDER BY arrival_date, rowid;
+
+-- Retention of stage 2 rows: drawers and Z reports of trimmed batches, dead
+-- letters whose event is gone.
+-- name: DeleteOrphanDrawerMovements :exec
+DELETE FROM drawer_movements WHERE drawer_id IN (SELECT id FROM drawer_sessions WHERE batch_id NOT IN (SELECT id FROM batches));
+
+-- name: DeleteOrphanDrawerSessions :exec
+DELETE FROM drawer_sessions WHERE batch_id NOT IN (SELECT id FROM batches);
+
+-- name: DeleteOrphanZReports :exec
+DELETE FROM z_reports WHERE status = 'done' AND batch_id NOT IN (SELECT id FROM batches);
+
+-- name: DeleteOrphanDeadLetters :exec
+DELETE FROM floor_dead_letters WHERE event_id NOT IN (SELECT id FROM floor_events);
