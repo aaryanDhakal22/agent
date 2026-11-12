@@ -171,6 +171,11 @@ func (it LineItem) HasHalves() bool {
 	return false
 }
 
+// SKUCustom marks a custom line (the counter terminal's Quicc Add: a free
+// name and price, no menu item; it prints on every station). main keeps it
+// like any SKU.
+const SKUCustom = "custom"
+
 // Routing values (LineItem.Routing).
 const (
 	RoutingMatched    = "matched"

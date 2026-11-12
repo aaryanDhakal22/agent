@@ -127,7 +127,7 @@ func (s *Service) ChangeCart(ctx context.Context, a Actor, id string, in ChangeI
 	}
 	typ := orderType(cur.Order.Order)
 	now := s.now()
-	p, err := priceCart(m, s.orders.StoreLocation(), typ, in.Cart, now)
+	p, err := priceCart(m, s.orders.StoreLocation(), typ, in.Cart, now, s.toppingMax())
 	if err != nil {
 		return nil, badRequest(err.Error())
 	}
@@ -203,6 +203,7 @@ func (s *Service) ChangeCart(ctx context.Context, a Actor, id string, in ChangeI
 		}
 		entries = append(entries, overrides...)
 		entries = append(entries, priceEntries(a, st, p.changes, approver, id)...)
+		entries = append(entries, customEntries(a, st, p, id, keptCustom(cur.Order))...)
 		entries[0].Detail = detail(d)
 		return &snap, entries, nil
 	})

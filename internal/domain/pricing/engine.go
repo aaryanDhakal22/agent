@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"quiccpos/agent/internal/domain/menuview"
 
@@ -129,6 +130,7 @@ type priced struct {
 	list     *int64 // a price change: the price the line's own replaced
 	opts     []ResolvedOption
 	issues   []Issue
+	soft     []Issue // the counter's warnings (a missed required group)
 }
 
 // Resolved is one configured menu item as an order line is built from it.
@@ -156,6 +158,9 @@ type ResolvedOption struct {
 	PriceCents     int64  // for the item's size (a half topping at the store's half price)
 	RemovedDefault bool   // "NO x" (a default left off, or a NO pick)
 	Included       bool   // one of a bundle step's included options (not charged)
+	// Count: how many times it is on (FoldRepeats; 0 / 1 = once). PriceCents
+	// stays the price of one.
+	Count int
 }
 
 // Resolve resolves a selection against the context's menu; free = the
@@ -482,6 +487,8 @@ func (e *engine) price(sel Selection, free int) priced {
 		}
 		seen := map[string]bool{}  // options picked (any portion or mode)
 		twice := map[string]bool{} // option + portion + mode
+		reps := map[string]int{}   // option + portion + mode → picks so far
+		modAt := map[string]int{}  // option + portion + mode → its p.mods index
 		count := 0                 // picks that put something on (NO doesn't count)
 		for _, pk := range picks {
 			var o *menuview.BuildOption
@@ -503,6 +510,10 @@ func (e *engine) price(sel Selection, free int) priced {
 				p.issues = append(p.issues, Issue{Code: IssueOptionRules, Message: it.Name + ": " + o.Name + " only once."})
 			}
 			twice[key] = true
+			reps[key]++
+			if g.AllowMultiple && e.ctx.MaxRepeat > 0 && reps[key] == e.ctx.MaxRepeat+1 {
+				p.issues = append(p.issues, Issue{Code: IssueOptionRules, Message: fmt.Sprintf("%s: up to %d× %s.", it.Name, e.ctx.MaxRepeat, o.Name)})
+			}
 			seen[pk.OptionID] = true
 			if mode != ModeNo {
 				count++
@@ -511,7 +522,14 @@ func (e *engine) price(sel Selection, free int) priced {
 				}
 			}
 			label := OptionLabel(o.Name, por, mode)
-			if !o.IsDefault || por != PortionWhole || mode != ModeAdd {
+			// A repeat (allow_multiple: a double / triple) reads once, "2× Pepperoni".
+			if at, ok := modAt[key]; ok && g.AllowMultiple {
+				p.mods[at] = fmt.Sprintf("%d× %s", reps[key], label)
+			} else if reps[key] > 1 && g.AllowMultiple {
+				modAt[key] = len(p.mods)
+				p.mods = append(p.mods, fmt.Sprintf("%d× %s", reps[key], label))
+			} else if !o.IsDefault || por != PortionWhole || mode != ModeAdd {
+				modAt[key] = len(p.mods)
 				p.mods = append(p.mods, label)
 			}
 			price := o.PriceCents
@@ -557,7 +575,12 @@ func (e *engine) price(sel Selection, free int) priced {
 			if min == 1 {
 				what = "a"
 			}
-			p.issues = append(p.issues, Issue{Code: IssueOptionRules, Message: fmt.Sprintf("%s: choose %s %s.", it.Name, what, strings.ToLower(g.Name))})
+			is := Issue{Code: IssueOptionRules, Message: fmt.Sprintf("%s: choose %s %s.", it.Name, what, strings.ToLower(g.Name))}
+			if e.ctx.Counter { // the counter: the cashier's screen asked; the line still sells
+				p.soft = append(p.soft, is)
+			} else {
+				p.issues = append(p.issues, is)
+			}
 		}
 		if g.MaxSelect > 0 && count > g.MaxSelect {
 			p.issues = append(p.issues, Issue{Code: IssueOptionRules, Message: fmt.Sprintf("%s: up to %d %s.", it.Name, g.MaxSelect, strings.ToLower(g.Name))})
@@ -635,6 +658,18 @@ func Price(ctx Context, cart Cart, at time.Time) Quote {
 			q.Nudges = append(q.Nudges, msg)
 		}
 	}
+	warn := func(is Issue, line int) {
+		if !contains(q.Warnings, is.Message) {
+			q.Warnings = append(q.Warnings, is.Message)
+		}
+		for _, x := range q.LineWarnings {
+			if x.Code == is.Code && x.Message == is.Message && x.Line != nil && *x.Line == line {
+				return
+			}
+		}
+		l := line
+		q.LineWarnings = append(q.LineWarnings, Issue{Code: is.Code, Message: is.Message, Line: &l})
+	}
 	type taxed struct {
 		total int64
 		rate  int
@@ -652,10 +687,39 @@ func Price(ctx Context, cart Cart, at time.Time) Quote {
 		if qty > 50 {
 			qty = 50
 		}
+		if line.Custom {
+			// A custom line (Quicc Add): the cashier's name and price, the
+			// store's tax rate, no deals.
+			name := strings.TrimSpace(line.Name)
+			if name == "" {
+				name = CustomLineName
+			}
+			var unitCents int64
+			switch {
+			case !ctx.Counter:
+				issue(IssueCustomLine, "A custom item can't be ordered here.", &idx)
+			case utf8.RuneCountInString(name) > MaxCustomName:
+				issue(IssueCustomLine, fmt.Sprintf("A custom item's name is at most %d characters.", MaxCustomName), &idx)
+			case line.PriceCents == nil || *line.PriceCents < 0 || *line.PriceCents > MaxCustomCents:
+				issue(IssueCustomLine, name+": a price is $0.00 to "+Money(MaxCustomCents)+".", &idx)
+			default:
+				unitCents = *line.PriceCents
+			}
+			mods := []string{}
+			if n := strings.TrimSpace(line.Note); n != "" {
+				mods = append(mods, "“"+n+"”")
+			}
+			q.Lines = append(q.Lines, QuoteLine{Index: i, Name: name, Mods: mods, Qty: qty, UnitCents: unitCents, TotalCents: unitCents * int64(qty), Custom: true})
+			lineTax = append(lineTax, taxed{unitCents * int64(qty), st.TaxBps})
+			continue
+		}
 		if line.DealID == "" {
 			p := e.price(line.Selection, 0)
 			for _, is := range p.issues {
 				issue(is.Code, is.Message, &idx)
+			}
+			for _, is := range p.soft {
+				warn(is, i)
 			}
 			mods := p.mods
 			if n := strings.TrimSpace(line.Note); n != "" {
@@ -700,6 +764,9 @@ func Price(ctx Context, cart Cart, at time.Time) Quote {
 			p := e.price(pick, slot.IncludedOptions)
 			for _, is := range p.issues {
 				issue(is.Code, is.Message, &idx)
+			}
+			for _, is := range p.soft {
+				warn(is, i)
 			}
 			if p.list != nil {
 				issue(IssueOpenPrice, d.Name+": a combo's items keep their prices.", &idx)

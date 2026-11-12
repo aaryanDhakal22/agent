@@ -371,7 +371,7 @@ func (s *Service) Quote(_ context.Context, a Actor, in QuoteIn) (*QuoteView, err
 	if m == nil {
 		return nil, terminal.ErrNoMenu
 	}
-	p, err := priceCart(m, s.orders.StoreLocation(), typ, in.Cart, s.now())
+	p, err := priceCart(m, s.orders.StoreLocation(), typ, in.Cart, s.now(), s.toppingMax())
 	if err != nil {
 		return nil, badRequest(err.Error())
 	}
@@ -685,7 +685,7 @@ func (s *Service) PlaceOrder(ctx context.Context, a Actor, in OrderIn) (*PlaceRe
 		return nil, terminal.ErrNoMenu
 	}
 	now := s.now()
-	p, err := priceCart(m, s.orders.StoreLocation(), typ, in.Cart, now)
+	p, err := priceCart(m, s.orders.StoreLocation(), typ, in.Cart, now, s.toppingMax())
 	if err != nil {
 		return nil, badRequest(err.Error())
 	}
@@ -762,6 +762,7 @@ func (s *Service) PlaceOrder(ctx context.Context, a Actor, in OrderIn) (*PlaceRe
 	journal = append(journal, terminal.Entry{StaffID: st.ID, DeviceID: a.DeviceID, Action: terminal.ActionOrderPlaced, OrderID: id,
 		Detail: detail(map[string]any{"type": typ, "total_cents": money.Total, "paid_cents": paidCents, "lines": len(items), "client_key": in.ClientKey})})
 	journal = append(journal, priceEntries(a, st, p.changes, approver, id)...)
+	journal = append(journal, customEntries(a, st, p, id, nil)...)
 	if p.manualCents > 0 {
 		journal = append(journal, discountEntry(a, st, in.Cart.Discount, p, dNeed, approver, id))
 	}

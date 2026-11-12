@@ -86,7 +86,10 @@ type priced struct {
 // at the counter whatever its online status, so Types is always open. A
 // line's price_cents on a set-price item is an item price change
 // (PriceOverrides: the engine prices it; who may make it is checkPrices').
-func priceCart(menu *terminal.CounterMenu, tz *time.Location, typ string, c Cart, now time.Time) (priced, error) {
+// Counter: a missed required group is a quote warning, not an error, and a
+// cart may carry custom lines; maxRepeat caps a double / triple topping
+// (main's topping_max_count, Service.toppingMax).
+func priceCart(menu *terminal.CounterMenu, tz *time.Location, typ string, c Cart, now time.Time, maxRepeat int) (priced, error) {
 	if err := c.Discount.check(); err != nil {
 		return priced{}, err
 	}
@@ -101,6 +104,8 @@ func priceCart(menu *terminal.CounterMenu, tz *time.Location, typ string, c Cart
 	ctx := menu.Pricing
 	ctx.Types = pricing.Types{Pickup: true, Delivery: true}
 	ctx.PriceOverrides = true
+	ctx.Counter = true
+	ctx.MaxRepeat = maxRepeat
 	if ctx.Timezone == "" && tz != nil {
 		ctx.Timezone = tz.String()
 	}
@@ -147,12 +152,52 @@ func priceCart(menu *terminal.CounterMenu, tz *time.Location, typ string, c Cart
 	return out, nil
 }
 
+// toppingMax is main's topping_max_count (default 3): the engine's MaxRepeat.
+func (s *Service) toppingMax() int {
+	cfg, _ := s.store.Config()
+	return cfg.ToppingMaxCount()
+}
+
+// customLineKey tells custom lines apart for the journal (name + price).
+func customLineKey(name string, cents int64) string { return fmt.Sprintf("%s|%d", name, cents) }
+
+// customEntries journals the cart's custom lines (Quicc Add) with who added
+// them; one in `kept` (customLineKey → count: the order's earlier cart) was
+// journaled already.
+func customEntries(a Actor, st terminal.Staff, p priced, orderID string, kept map[string]int) []terminal.Entry {
+	var out []terminal.Entry
+	for i, l := range p.cart.Lines {
+		if !l.Custom || i >= len(p.quote.Lines) {
+			continue
+		}
+		ql := p.quote.Lines[i]
+		if k := customLineKey(ql.Name, ql.UnitCents); kept[k] > 0 {
+			kept[k]--
+			continue
+		}
+		out = append(out, terminal.Entry{StaffID: st.ID, DeviceID: a.DeviceID, Action: terminal.ActionCustomLine, OrderID: orderID,
+			Detail: detail(map[string]any{"line": i, "name": ql.Name, "price_cents": ql.UnitCents, "qty": ql.Qty})})
+	}
+	return out
+}
+
+// keptCustom are the custom lines on the order's stored cart (customLineKey → count).
+func keptCustom(snap order.Snapshot) map[string]int {
+	out := map[string]int{}
+	for _, it := range snap.Items {
+		if it.SKU == order.SKUCustom {
+			out[customLineKey(it.Name, it.UnitPrice)]++
+		}
+	}
+	return out
+}
+
 // priceChanges are the cart's lines whose price_cents replaced a set price
 // (the engine's list_cents on the line).
 func priceChanges(c pricing.Cart, q pricing.Quote) []terminal.PriceChange {
 	var out []terminal.PriceChange
 	for i, l := range c.Lines {
-		if l.DealID != "" || l.PriceCents == nil || i >= len(q.Lines) || q.Lines[i].ListCents == nil {
+		if l.Custom || l.DealID != "" || l.PriceCents == nil || i >= len(q.Lines) || q.Lines[i].ListCents == nil {
 			continue
 		}
 		from, to := *q.Lines[i].ListCents, *l.PriceCents
@@ -182,9 +227,10 @@ func buildItems(menu *terminal.CounterMenu, p priced) (items []order.LineItem, o
 		li := order.LineItem{ID: uuid.Must(uuid.NewV7()).String(), Position: pos, Name: r.Name, Size: r.SizeName, Quantity: qty,
 			UnitPrice: r.BaseCents, Notes: note}
 		total := r.BaseCents * int64(qty)
-		for k, o := range r.Options {
+		// A double / triple topping is one child "2x Pepperoni" at its price × 2.
+		for k, o := range pricing.FoldRepeats(r.Options) {
 			child := order.LineItem{ID: uuid.Must(uuid.NewV7()).String(), Position: k, Quantity: qty, Name: o.Label,
-				Portion: o.Portion, Mode: o.Mode, UnitPrice: o.PriceCents}
+				Portion: o.Portion, Mode: o.Mode, UnitPrice: o.PriceCents * int64(o.Count)}
 			if o.RemovedDefault {
 				child.Quantity, child.UnitPrice = 1, 0
 			}
@@ -200,6 +246,17 @@ func buildItems(menu *terminal.CounterMenu, p priced) (items []order.LineItem, o
 	}
 	for i, l := range p.cart.Lines {
 		qty := min(max(l.Qty, 1), 50)
+		if l.Custom {
+			// A custom line (Quicc Add): the quote's name and price, no menu
+			// item, so no route: it prints on every station (unmatched).
+			if i >= len(p.quote.Lines) {
+				continue
+			}
+			ql := p.quote.Lines[i]
+			lines = append(lines, built{item: order.LineItem{ID: uuid.Must(uuid.NewV7()).String(), Position: len(lines), SKU: order.SKUCustom,
+				Name: ql.Name, Quantity: qty, UnitPrice: ql.UnitCents, LineTotal: ql.TotalCents, Notes: strings.TrimSpace(l.Note)}})
+			continue
+		}
 		if l.DealID == "" {
 			lines = append(lines, lineOf(pricing.Resolve(p.ctx, l.Selection, 0), qty, strings.TrimSpace(l.Note), len(lines)))
 			continue

@@ -28,6 +28,17 @@ type Context struct {
 	// lowers by up to cashier_price_drop_pct, a manager's PIN for more).
 	// main's own channels never take one.
 	PriceOverrides bool `json:"price_overrides,omitempty"`
+	// Counter: the counter terminal (main's counter kind, the Pi). A line
+	// that misses a required group / min_select is a warning there, not an
+	// error (the cashier's screen asks; "no side" still sells), and a cart
+	// may carry custom lines (Quicc Add). Every other channel: errors, and
+	// a custom line is refused.
+	Counter bool `json:"counter,omitempty"`
+	// MaxRepeat caps one option picked again and again (a double / triple
+	// topping) in an allow_multiple group: at most this many times on the
+	// same portion + mode. 0 = no cap besides the group's max_select. The
+	// Pi sets it from main's terminal setting topping_max_count.
+	MaxRepeat int `json:"max_repeat,omitempty"`
 }
 
 // Menu is the part of a channel's menu a quote reads.
@@ -262,14 +273,29 @@ const (
 	ModeSpecialty = "specialty" // a resolved half-specialty (never in a pick)
 )
 
-// Line is a cart line: an item (Selection) or a bundle deal (DealID + Picks).
+// Line is a cart line: an item (Selection), a bundle deal (DealID + Picks)
+// or, on the counter only, a custom line (Custom: Name + PriceCents, no
+// menu item; the terminal's Quicc Add).
 type Line struct {
 	Selection
 	Qty    int         `json:"qty"`
 	Note   string      `json:"note"`
 	DealID string      `json:"deal_id"`
 	Picks  []Selection `json:"picks"`
+	// Custom: a free line the cashier names and prices (Context.Counter
+	// only): Name (1-MaxCustomName characters after trimming; blank =
+	// CustomLineName) at PriceCents (0-MaxCustomCents), taxed at the store
+	// rate, never in a deal. Its other fields are ignored.
+	Custom bool   `json:"custom,omitempty"`
+	Name   string `json:"name,omitempty"`
 }
+
+// Custom lines (Line.Custom).
+const (
+	MaxCustomCents = 999_999 // $9,999.99
+	MaxCustomName  = 60
+	CustomLineName = "Open item"
+)
 
 // Quote is a priced cart.
 type Quote struct {
@@ -286,6 +312,10 @@ type Quote struct {
 	Errors           []Issue     `json:"errors"`
 	Warnings         []string    `json:"warnings"`
 	Nudges           []string    `json:"nudges"`
+	// LineWarnings are the warnings that are about a line, with its index
+	// (the counter's missed required group: code option_rules). Each one's
+	// message is in Warnings too. Absent when there are none.
+	LineWarnings []Issue `json:"line_warnings,omitempty"`
 }
 
 type QuoteLine struct {
@@ -301,6 +331,8 @@ type QuoteLine struct {
 	// the item's own price that the line's price_cents replaced (at its
 	// size; half and half: the pizza's). Absent otherwise.
 	ListCents *int64 `json:"list_cents,omitempty"`
+	// Custom: a custom line (Line.Custom). Absent otherwise.
+	Custom bool `json:"custom,omitempty"`
 }
 
 type Discount struct {
@@ -336,4 +368,5 @@ const (
 	IssueBadType     = "bad_type"
 	IssueDeliveryMin = "delivery_minimum"
 	IssueOpenPrice   = "open_price"
+	IssueCustomLine  = "custom_line"
 )

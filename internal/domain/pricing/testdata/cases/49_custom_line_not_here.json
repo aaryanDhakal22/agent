@@ -1,0 +1,325 @@
+{
+ "at": "2026-11-11T18:00:00-05:00",
+ "cart": {
+  "code": "",
+  "first_order": null,
+  "lines": [
+   {
+    "custom": true,
+    "name": "Extra",
+    "price_cents": 100,
+    "qty": 1
+   }
+  ],
+  "payment": "cash",
+  "tip_cents": null,
+  "tip_pct": null,
+  "type": "pickup"
+ },
+ "context": {
+  "deals": [],
+  "items": {
+   "00000000-0000-0000-0000-0000000000a1": {
+    "category_id": "00000000-0000-0000-0000-0000000000e1",
+    "tax_bps": 0
+   },
+   "00000000-0000-0000-0000-0000000000a2": {
+    "category_id": "00000000-0000-0000-0000-0000000000e1",
+    "tax_bps": 0
+   },
+   "00000000-0000-0000-0000-0000000000a3": {
+    "category_id": "00000000-0000-0000-0000-0000000000e1",
+    "tax_bps": 0
+   },
+   "00000000-0000-0000-0000-0000000000a4": {
+    "category_id": "00000000-0000-0000-0000-0000000000e1",
+    "tax_bps": 900
+   }
+  },
+  "menu": {
+   "categories": [
+    {
+     "items": [
+      {
+       "anchor": {
+        "item_ids": [
+         "00000000-0000-0000-0000-0000000000a1"
+        ]
+       },
+       "description": "",
+       "id": "00000000-0000-0000-0000-0000000000a1",
+       "modifier_group_ids": [
+        "00000000-0000-0000-0000-0000000000c1"
+       ],
+       "name": "Cheese Pizza",
+       "photo": "",
+       "price_cents": 0,
+       "sizes": [
+        {
+         "name": "12 Medium",
+         "price_cents": 999,
+         "size_id": "00000000-0000-0000-0000-0000000000b1"
+        },
+        {
+         "name": "16 X-Large",
+         "price_cents": 1299,
+         "size_id": "00000000-0000-0000-0000-0000000000b2"
+        }
+       ],
+       "sold_out": false
+      },
+      {
+       "anchor": {
+        "item_ids": [
+         "00000000-0000-0000-0000-0000000000a2"
+        ]
+       },
+       "description": "",
+       "id": "00000000-0000-0000-0000-0000000000a2",
+       "modifier_group_ids": [
+        "00000000-0000-0000-0000-0000000000c2"
+       ],
+       "name": "Wings",
+       "photo": "",
+       "price_cents": 899,
+       "sizes": [],
+       "sold_out": false
+      },
+      {
+       "anchor": {
+        "item_ids": [
+         "00000000-0000-0000-0000-0000000000a3"
+        ]
+       },
+       "description": "",
+       "id": "00000000-0000-0000-0000-0000000000a3",
+       "modifier_group_ids": [
+        "00000000-0000-0000-0000-0000000000c3",
+        "00000000-0000-0000-0000-0000000000c4"
+       ],
+       "name": "Club Sandwich",
+       "photo": "",
+       "price_cents": 1099,
+       "sizes": [],
+       "sold_out": false
+      },
+      {
+       "anchor": {
+        "item_ids": [
+         "00000000-0000-0000-0000-0000000000a4"
+        ]
+       },
+       "description": "",
+       "id": "00000000-0000-0000-0000-0000000000a4",
+       "modifier_group_ids": [],
+       "name": "Soda",
+       "photo": "",
+       "price_cents": 199,
+       "sizes": [],
+       "sold_out": false
+      }
+     ],
+     "key": "00000000-0000-0000-0000-0000000000e1",
+     "name": "Food",
+     "position": 1
+    }
+   ],
+   "modifier_groups": [
+    {
+     "allow_multiple": true,
+     "id": "00000000-0000-0000-0000-0000000000c1",
+     "max_select": 0,
+     "min_select": 0,
+     "name": "Toppings",
+     "options": [
+      {
+       "id": "00000000-0000-0000-0000-0000000000d1",
+       "is_default": false,
+       "name": "Pepperoni",
+       "price_cents": 150,
+       "prices": [
+        {
+         "price_cents": 225,
+         "size_id": "00000000-0000-0000-0000-0000000000b2"
+        }
+       ],
+       "sold_out": false
+      },
+      {
+       "id": "00000000-0000-0000-0000-0000000000d2",
+       "is_default": false,
+       "name": "Mushrooms",
+       "price_cents": 150,
+       "prices": [
+        {
+         "price_cents": 225,
+         "size_id": "00000000-0000-0000-0000-0000000000b2"
+        }
+       ],
+       "sold_out": false
+      },
+      {
+       "id": "00000000-0000-0000-0000-0000000000d3",
+       "is_default": true,
+       "name": "Cheese",
+       "price_cents": 100,
+       "prices": [],
+       "sold_out": false
+      }
+     ],
+     "portions": true,
+     "required": false
+    },
+    {
+     "allow_multiple": false,
+     "id": "00000000-0000-0000-0000-0000000000c2",
+     "max_select": 0,
+     "min_select": 0,
+     "name": "Sauce",
+     "options": [
+      {
+       "id": "00000000-0000-0000-0000-0000000000d4",
+       "is_default": false,
+       "name": "Ranch",
+       "price_cents": 50,
+       "prices": [],
+       "sold_out": false
+      },
+      {
+       "id": "00000000-0000-0000-0000-0000000000d5",
+       "is_default": false,
+       "name": "BBQ",
+       "price_cents": 50,
+       "prices": [],
+       "sold_out": false
+      }
+     ],
+     "portions": false,
+     "required": false
+    },
+    {
+     "allow_multiple": false,
+     "id": "00000000-0000-0000-0000-0000000000c3",
+     "max_select": 1,
+     "min_select": 0,
+     "name": "Side",
+     "options": [
+      {
+       "id": "00000000-0000-0000-0000-0000000000d6",
+       "is_default": false,
+       "name": "Fries",
+       "price_cents": 0,
+       "prices": [],
+       "sold_out": false
+      },
+      {
+       "id": "00000000-0000-0000-0000-0000000000d7",
+       "is_default": false,
+       "name": "Salad",
+       "price_cents": 100,
+       "prices": [],
+       "sold_out": false
+      }
+     ],
+     "portions": false,
+     "required": true
+    },
+    {
+     "allow_multiple": false,
+     "id": "00000000-0000-0000-0000-0000000000c4",
+     "max_select": 0,
+     "min_select": 2,
+     "name": "Dips",
+     "options": [
+      {
+       "id": "00000000-0000-0000-0000-0000000000d8",
+       "is_default": false,
+       "name": "Ranch dip",
+       "price_cents": 75,
+       "prices": [],
+       "sold_out": false
+      },
+      {
+       "id": "00000000-0000-0000-0000-0000000000d9",
+       "is_default": false,
+       "name": "Blue cheese",
+       "price_cents": 75,
+       "prices": [],
+       "sold_out": false
+      }
+     ],
+     "portions": false,
+     "required": false
+    }
+   ]
+  },
+  "settings": {
+   "card_fee": {
+    "bps": 0,
+    "mode": "none"
+   },
+   "delivery_fee_cents": 0,
+   "delivery_min_cents": 0,
+   "free_delivery_over_cents": null,
+   "half_specialty_off_pct": 0,
+   "half_topping_price": "half",
+   "service_fee_bps": 0,
+   "service_fee_cents": 0,
+   "stacking": "best",
+   "tax_bps": 600,
+   "tips": {
+    "default_pct": 0,
+    "enabled": false,
+    "presets": []
+   }
+  },
+  "timezone": "America/New_York",
+  "types": {
+   "delivery": true,
+   "pickup": true
+  }
+ },
+ "expect": {
+  "error_codes": [
+   "custom_line"
+  ],
+  "error_messages": [
+   "A custom item can't be ordered here."
+  ],
+  "subtotal_cents": 0
+ },
+ "name": "custom_line_not_here",
+ "quote": {
+  "card_fee_cents": 0,
+  "delivery_fee_cents": 0,
+  "discounts": [],
+  "errors": [
+   {
+    "code": "custom_line",
+    "line": 0,
+    "message": "A custom item can't be ordered here."
+   }
+  ],
+  "lines": [
+   {
+    "custom": true,
+    "deal_id": "",
+    "index": 0,
+    "mods": [],
+    "name": "Extra",
+    "qty": 1,
+    "regular_cents": null,
+    "total_cents": 0,
+    "unit_cents": 0
+   }
+  ],
+  "nudges": [],
+  "saved_cents": 0,
+  "service_fee_cents": 0,
+  "subtotal_cents": 0,
+  "tax_cents": 0,
+  "tip_cents": 0,
+  "total_cents": 0,
+  "warnings": []
+ }
+}
