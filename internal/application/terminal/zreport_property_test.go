@@ -264,6 +264,15 @@ func runDay(t *testing.T, r *rig, rng *rand.Rand, day int) *model {
 			if tip > 0 && rng.Intn(2) == 0 {
 				ref.TipCents = 1 + rng.Int63n(tip)
 			}
+			if ref.Tender == terminal.TenderComp {
+				// A comp reversed gives back at most what was comped
+				// (terminal.RefundRefused, money-rules R14).
+				c := o.netByTender()[terminal.TenderComp]
+				if c[0]+c[1] <= 0 {
+					continue
+				}
+				ref.AmountCents, ref.TipCents = 1+rng.Int63n(min(amt, c[0]+c[1])), 0
+			}
 			res, err := r.svc.AddPayment(r.ctx, a, o.id, ref)
 			if err != nil {
 				t.Fatalf("refund %+v of %d/%d: %v", ref, amt, tip, err)

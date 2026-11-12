@@ -309,12 +309,14 @@ func TestMoneyActionsAreLogged(t *testing.T) {
 	if _, err := r.svc.AddPayment(r.ctx, till, id, PaymentIn{ClientKey: tk(), Tender: "cash", AmountCents: 1000}); err != nil {
 		t.Fatal(err)
 	}
+	// A wrong inline manager PIN on a card refund (a manager's; asked while the
+	// order still holds money: a refund it can't hold is refused before any
+	// PIN, money-rules R23).
+	r.svc.AddPayment(r.ctx, till, id, PaymentIn{ClientKey: tk(), Tender: "card", AmountCents: 1, Refund: true, Reason: "x", ManagerPIN: "0000"})
 	if _, err := r.svc.AddPayment(r.ctx, till, id, PaymentIn{ClientKey: tk(), Tender: "cash", AmountCents: 1000, Refund: true, Reason: "cold",
 		ManagerPIN: "0000"}); err != nil {
 		t.Fatal(err)
 	}
-	// A wrong inline manager PIN on a refund over the limit.
-	r.svc.AddPayment(r.ctx, till, id, PaymentIn{ClientKey: tk(), Tender: "card", AmountCents: 1, Refund: true, Reason: "x", ManagerPIN: "0000"})
 	if _, err := r.svc.Void(r.ctx, till, id, VoidIn{Reason: "left"}); err != nil {
 		t.Fatal(err)
 	}

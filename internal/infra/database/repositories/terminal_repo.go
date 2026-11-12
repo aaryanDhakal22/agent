@@ -356,7 +356,7 @@ func (r *OrderRepository) AddCounterPayment(ctx context.Context, orderID, client
 		}
 		// The open batch's orders, and a check carried past its batch's
 		// close (contract 2.10s §4: still payable until settled).
-		if (cur.Status.BatchID != b.ID && !cur.Status.Carried) || cur.Status.State == order.StateCancelled {
+		if !terminal.PayableBatch(cur.Status.BatchID == b.ID, cur.Status.Carried) || cur.Status.State == order.StateCancelled {
 			return terminal.ErrNotPayable
 		}
 		if cur.Order.Source != order.SourceCounter && !terminal.OnPickupStates(cur) {

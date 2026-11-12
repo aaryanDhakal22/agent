@@ -1282,6 +1282,9 @@ func (s *Service) addPayment(ctx context.Context, a Actor, orderID string, in Pa
 			return nil, err
 		}
 		need = terminal.RefundNeed(cfg, st, before, []terminal.Payment{pay}, terminal.ActionRefund)
+		if err := terminal.RefundRefused(before, pay); err != nil {
+			return nil, err // refused for anyone: no manager is asked first
+		}
 	case pay.Tender == terminal.TenderComp && !cfg.MayComp(st):
 		// A driver's comp needs a manager (contract §2.10i).
 		need = &terminal.ManagerRequired{Action: terminal.ActionComp, Requested: pay.AmountCents}
@@ -1293,10 +1296,9 @@ func (s *Service) addPayment(ctx context.Context, a Actor, orderID string, in Pa
 		pay.ApprovedBy = approver.ID
 	}
 	so, got, dup, err := s.repo.AddCounterPayment(ctx, orderID, in.ClientKey, hash, func(cur order.StoredOrder, paid []terminal.Payment) ([]terminal.Payment, []terminal.Entry, error) {
-		amount, tip := netPaid(paid)
 		if pay.Refund {
-			if pay.AmountCents > amount || pay.TipCents > tip {
-				return nil, nil, fmt.Errorf("%w: %d paid", terminal.ErrRefundTooBig, amount)
+			if err := terminal.RefundRefused(paid, pay); err != nil {
+				return nil, nil, err // more back than was paid, or than was comped
 			}
 			if approver == nil {
 				if n := terminal.RefundNeed(cfg, st, paid, []terminal.Payment{pay}, terminal.ActionRefund); n != nil {

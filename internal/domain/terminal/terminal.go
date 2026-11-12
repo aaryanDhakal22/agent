@@ -308,9 +308,23 @@ func (c *Config) LimitsOf(s Staff) Limits {
 		if string(e) == "null" {
 			return Limits{Unlimited: true}
 		}
-		var l Limits
-		if json.Unmarshal(e, &l) == nil {
-			l.Unlimited = false
+		// main's wire: {refund_cents, discount_pct}, null = unlimited; both
+		// null = a person main made unlimited (contract/money-rules.json "uma").
+		var w struct {
+			RefundCents *int64 `json:"refund_cents"`
+			DiscountPct *int   `json:"discount_pct"`
+		}
+		if json.Unmarshal(e, &w) == nil {
+			if w.RefundCents == nil && w.DiscountPct == nil {
+				return Limits{Unlimited: true}
+			}
+			var l Limits
+			if w.RefundCents != nil {
+				l.RefundCents = *w.RefundCents
+			}
+			if w.DiscountPct != nil {
+				l.DiscountPct = *w.DiscountPct
+			}
 			return l
 		}
 	}
@@ -737,11 +751,12 @@ const (
 
 // CashierRefunded is what the order's refunds gave back without a manager
 // (amount + tip): refunds no manager approved, made by someone with a limit
-// (a manager's own refunds never count against a cashier's limit).
+// (a manager's own refunds never count against a cashier's limit), comps
+// reversed aside (they move no money: contract/money-rules.json R29).
 func CashierRefunded(c *Config, paid []Payment) int64 {
 	var n int64
 	for _, p := range paid {
-		if !p.Refund || p.ApprovedBy != "" {
+		if !p.Refund || p.ApprovedBy != "" || p.Tender == TenderComp {
 			continue
 		}
 		if st, ok := c.Find(p.StaffID); ok && c.LimitsOf(st).Unlimited {
@@ -751,6 +766,35 @@ func CashierRefunded(c *Config, paid []Payment) int64 {
 	}
 	return n
 }
+
+// RefundRefused is why a refund can't be made at all, for anyone (nil =
+// it can): more back than the order holds (amount or tip: 409
+// refund_too_big), or more comp back than was comped (a comp reversed is
+// free; past the comp it would turn paid money into a comp:
+// contract/money-rules.json R14).
+func RefundRefused(paid []Payment, r Payment) error {
+	var amount, tip, comp int64
+	for _, p := range paid {
+		a, t := p.Signed()
+		amount += a
+		tip += t
+		if p.Tender == TenderComp {
+			comp += a + t
+		}
+	}
+	if r.AmountCents > amount || r.TipCents > tip {
+		return fmt.Errorf("%w: %d paid", ErrRefundTooBig, amount)
+	}
+	if r.Tender == TenderComp && r.AmountCents+r.TipCents > comp {
+		return fmt.Errorf("%w: %d comped", ErrRefundTooBig, max(comp, 0))
+	}
+	return nil
+}
+
+// PayableBatch: an order takes money (and refunds) only in the open batch,
+// or while it is carried past its close (contract 2.10s §4); an earlier
+// batch's is refused for anyone (409 not_payable).
+func PayableBatch(inOpenBatch, carried bool) bool { return inOpenBatch || carried }
 
 // RefundNeed is what a manager must approve for refunds about to be made
 // on an order (nil = nothing), the owner's rules of 2026-11-12: a cashier
