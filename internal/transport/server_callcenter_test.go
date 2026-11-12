@@ -333,6 +333,43 @@ func TestRelayAllowlistSessionAndManager(t *testing.T) {
 			t.Errorf("%s: %d %s", name, got.Status, got.Body)
 		}
 	}
+	// Fail closed: a body whose guarded fields have the wrong JSON type (or that isn't an object) is a 400
+	// before any handler or guard reads it half-decoded.
+	orders := r.relay(t, ccAgent, "GET", "orders", nil)
+	for _, c := range []struct{ method, path, body string }{
+		{"POST", "orders/x/payments", `{"tender":"comp","client_key":7}`},
+		{"POST", "orders/x/payments", `{"tender":["comp"],"amount_cents":100}`},
+		{"POST", "orders/x/payments", `{"tender":"manual_card","amount_cents":100,"refund":"yes"}`},
+		{"POST", "orders/x/payments", `{"tender":"manual_card","amount_cents":"100"}`},
+		{"POST", "orders", `{"client_key":"cc-key-shape1","type":"pickup","payments":"x","cart":{"lines":[]}}`},
+		{"POST", "orders", `{"client_key":"cc-key-shape2","type":"pickup","payments":[{"tender":"manual_card","refund":1}],"cart":{"lines":[]}}`},
+		{"POST", "orders", `{"client_key":"cc-key-shape3","type":"pickup","cart":{"lines":"x"}}`},
+		{"POST", "orders", `{"client_key":"cc-key-shape4","type":"pickup","cart":"x"}`},
+		{"POST", "orders", `{"client_key":"cc-key-shape5","type":"pickup","cart":{"lines":[{"item_id":"a","custom":"true"}]}}`},
+		{"POST", "orders", `{"client_key":"cc-key-shape6","type":"pickup","cart":{"lines":[{"item_id":"a","price_cents":"500"}]}}`},
+		{"POST", "orders", `{"client_key":"cc-key-shape7","type":"pickup","cart":{"lines":[{"item_id":"a","options":[{"price_cents":"1"}]}]}}`},
+		{"POST", "orders", `{"client_key":"cc-key-shape8","type":"pickup","cart":{"lines":[],"discount":"5%"}}`},
+		{"POST", "orders", `{"client_key":"cc-key-shape9","type":["counter"],"cart":{"lines":[]}}`},
+		{"POST", "orders", `{"client_key":"cc-key-shap10","type":"pickup","manager_pin":["1"],"cart":{"lines":[]}}`},
+		{"POST", "orders", `{"client_key":"cc-key-shap11","type":"pickup","manager_pin":9876,"cart":{"lines":[]}}`},
+		{"POST", "orders", `{"client_key":"cc-key-shap12","type":"pickup","approvals":"ap-1","cart":{"lines":[]}}`},
+		{"POST", "orders", `{"client_key":"cc-key-shap13","type":"pickup","approvals":[1],"cart":{"lines":[]}}`},
+		{"PUT", "orders/x/cart", `{"client_key":"cc-key-shap14","cart":{"lines":[7]}}`},
+		{"POST", "quote", `["type","pickup"]`},
+		{"POST", "quote", `"pickup"`},
+		{"POST", "quote", `7`},
+	} {
+		raw, _ := json.Marshal(map[string]any{"device": "desk-2", "staff_id": ccAgent, "method": c.method, "path": c.path, "headers": map[string]string{},
+			"body": json.RawMessage(c.body)})
+		out, err := r.s.HandleTerminalRelay(context.Background(), raw)
+		rr, _ := out.(RelayReply)
+		if err != nil || rr.Status != http.StatusBadRequest || !strings.Contains(string(rr.Body), `"code":"bad_request"`) {
+			t.Errorf("%s %s %s: %d %s, want 400 bad_request", c.method, c.path, c.body, rr.Status, rr.Body)
+		}
+	}
+	if after := r.relay(t, ccAgent, "GET", "orders", nil); string(after.Body) != string(orders.Body) || len(r.floor.receipts) != 0 {
+		t.Fatalf("a refused body places nothing: %s", after.Body)
+	}
 	empty := ccOrder("")
 	delete(empty, "client_key")
 	empty["manager_pin"], empty["approvals"] = "", []string{}

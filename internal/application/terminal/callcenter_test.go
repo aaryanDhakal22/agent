@@ -900,3 +900,63 @@ func readRules(t *testing.T) []byte {
 	}
 	return raw
 }
+
+// The call center has no drawer: a typed card from a seat (with the order or
+// afterwards) never opens or joins a drawer session, and the day's Z still
+// balances with its payments in the tenders only.
+func TestCallcenterPaymentOpensNoDrawer(t *testing.T) {
+	r, seat := ccRig(t)
+	r.svc.SetReports(fakeReports{r})
+	with := ccPlace(t, r, seat, "pickup", []PaymentIn{{Tender: terminal.TenderManualCard, AmountCents: 500, TipCents: 100, Last4: "1881"}}, pizzaLine())
+	later := ccPlace(t, r, seat, "delivery", nil, pizzaLine())
+	total := later.Order.Order.Money.Total
+	paid, err := r.svc.AddPayment(r.ctx, seat, later.Order.Order.ID, PaymentIn{ClientKey: tk(), Tender: terminal.TenderManualCard, AmountCents: total, TipCents: 300, Last4: "1881"})
+	if err != nil || paid.Payment.DrawerID != "" {
+		t.Fatalf("a seat's payment has no drawer: %+v %v", paid, err)
+	}
+	if ds, err := r.svc.Drawers(r.ctx, 0); err != nil || len(ds) != 0 {
+		t.Fatalf("no drawer session for the call center: %+v %v", ds, err)
+	}
+	for _, id := range []string{with.Order.Order.ID, later.Order.Order.ID} {
+		pays, _ := r.repo.OrderPayments(r.ctx, id)
+		for _, p := range pays {
+			if p.DrawerID != "" || p.DeviceID != seat.DeviceID {
+				t.Fatalf("payment %+v", p)
+			}
+		}
+	}
+	// The store's own terminal still gets its drawer at its first payment.
+	r.login(t, till, "1234")
+	cash, err := r.svc.PlaceOrder(r.ctx, till, OrderIn{ClientKey: tk(), Type: "counter", Cart: cartOf(sodaLine(1))})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.svc.AddPayment(r.ctx, till, cash.Order.Order.ID, PaymentIn{ClientKey: tk(), Tender: terminal.TenderCash, AmountCents: cash.Order.Order.Money.Total}); err != nil {
+		t.Fatal(err)
+	}
+	ds, err := r.svc.Drawers(r.ctx, 0)
+	if err != nil || len(ds) != 1 || ds[0].DeviceID != till.DeviceID {
+		t.Fatalf("the till's drawer only: %+v %v", ds, err)
+	}
+	// Close the day: one drawer (the till's), the call center's cards in the tenders, the identity holds.
+	closed, _, err := r.repo.CloseBatch(order.WithCloseKind(r.ctx, order.CloseAuto), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.svc.AfterBatchClose(r.ctx, *closed)
+	z, err := r.svc.ZReport(r.ctx, closed.ID)
+	if err != nil || z == nil {
+		t.Fatalf("z: %v", err)
+	}
+	var typed int64
+	for _, tn := range z.Tenders {
+		if tn.Tender == terminal.TenderManualCard {
+			typed = tn.CollectedCents
+		}
+	}
+	if len(z.Drawers) != 1 || z.Drawers[0].ID != ds[0].ID || z.Flagged || z.Reconcile.DifferenceCents != 0 ||
+		z.Reconcile.DrawersDifferences != 0 || typed == 0 {
+		t.Fatalf("z: drawers %d, flagged %v, difference %d, drawers difference %d, typed cards %d\n%+v", len(z.Drawers), z.Flagged,
+			z.Reconcile.DifferenceCents, z.Reconcile.DrawersDifferences, typed, z.Reconcile)
+	}
+}

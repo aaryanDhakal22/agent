@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"time"
 
+	"quiccpos/agent/internal/domain/device"
 	"quiccpos/agent/internal/domain/terminal"
 	"quiccpos/agent/internal/infra/database/models"
 
@@ -418,7 +419,9 @@ func closeOpenDrawers(ctx context.Context, q *models.Queries, at time.Time) ([]t
 // drawerForPayment is the open session a cash payment taken on a terminal
 // goes in ("" = no drawer open there, or not cash).
 func drawerForPayment(ctx context.Context, q *models.Queries, p *terminal.Payment) (string, error) {
-	if p.DeviceID == "" {
+	if p.DeviceID == "" || device.IsCallcenterSeat(p.DeviceID) {
+		// The call center has no drawer (contract 2.10ab): its payments (a
+		// typed card) never open or join a drawer session.
 		return "", nil
 	}
 	row, err := q.GetOpenDrawerByDevice(ctx, p.DeviceID)

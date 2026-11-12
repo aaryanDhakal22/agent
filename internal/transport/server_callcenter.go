@@ -164,7 +164,11 @@ func (s *Server) HandleTerminalRelay(ctx context.Context, payload json.RawMessag
 	if len(body) > relayMaxBody {
 		return relayAnswer(http.StatusRequestEntityTooLarge, errCodeMap("the body is at most 256 KB", "too_large")), nil
 	}
-	if relayCarriesManager(body) {
+	manager, bad := relayBody(body)
+	if bad { // fail closed: a wrong type never reaches a guard half-decoded
+		return relayAnswer(http.StatusBadRequest, errCodeMap("invalid body", "bad_request")), nil
+	}
+	if manager {
 		return relayRefused(terminal.NotAllowedManager), nil
 	}
 	actor := terminalApp.CallcenterActor(seat, in.DeviceName, in.StaffID)
@@ -228,38 +232,119 @@ func (s *Server) HandleTerminalRelay(ctx context.Context, payload json.RawMessag
 	return out, nil
 }
 
-// relayCarriesManager: the body names a manager (a manager_pin that isn't
-// empty, approvals that aren't an empty list): the call center never uses
-// one.
-func relayCarriesManager(body []byte) bool {
+// relayBody checks a relayed body before any handler sees it, so nothing
+// slips past the kind's guards because a lenient decode gave up: the body
+// is a JSON object (or none) and every field a guard reads has its type
+// (bad = 400 bad_request). manager = it names a manager (a manager_pin
+// that isn't empty, approvals that aren't an empty list): the call center
+// never uses one.
+func relayBody(body []byte) (manager, bad bool) {
+	if len(body) == 0 {
+		return false, false
+	}
 	var top map[string]json.RawMessage
-	if len(body) == 0 || json.Unmarshal(body, &top) != nil {
-		return false // no body, or not an object: the handler answers
+	if json.Unmarshal(body, &top) != nil || top == nil {
+		return false, true
 	}
-	given := func(key string, empty ...string) bool {
-		raw, ok := top[key]
-		if !ok {
-			return false
+	null := func(raw json.RawMessage) bool { return len(raw) == 0 || string(bytes.TrimSpace(raw)) == "null" }
+	is := func(m map[string]json.RawMessage, key string, into any) bool { // absent / null, or of into's type
+		raw, ok := m[key]
+		return !ok || null(raw) || json.Unmarshal(raw, into) == nil
+	}
+	object := func(m map[string]json.RawMessage, key string) (map[string]json.RawMessage, bool) {
+		raw, ok := m[key]
+		if !ok || null(raw) {
+			return nil, true
 		}
-		v := string(bytes.TrimSpace(raw))
-		if v == "null" {
-			return false
+		var o map[string]json.RawMessage
+		return o, json.Unmarshal(raw, &o) == nil && o != nil
+	}
+	objects := func(m map[string]json.RawMessage, key string) ([]map[string]json.RawMessage, bool) {
+		raw, ok := m[key]
+		if !ok || null(raw) {
+			return nil, true
 		}
-		for _, e := range empty {
-			if v == e {
-				return false
+		var list []json.RawMessage
+		if json.Unmarshal(raw, &list) != nil {
+			return nil, false
+		}
+		out := make([]map[string]json.RawMessage, 0, len(list))
+		for _, x := range list {
+			var o map[string]json.RawMessage
+			if json.Unmarshal(x, &o) != nil || o == nil {
+				return nil, false
 			}
+			out = append(out, o)
 		}
-		return true
+		return out, true
 	}
-	if given("approvals", "[]") {
-		return true
-	}
-	if !given("manager_pin", `""`) {
-		return false
+	var (
+		str   string
+		flag  bool
+		cents int64
+	)
+	payment := func(m map[string]json.RawMessage) bool {
+		return is(m, "tender", &str) && is(m, "refund", &flag) && is(m, "goodwill", &flag) && is(m, "outside", &flag) &&
+			is(m, "amount_cents", &cents) && is(m, "tip_cents", &cents) && is(m, "client_key", &str)
 	}
 	var pin string
-	return json.Unmarshal(top["manager_pin"], &pin) != nil || strings.TrimSpace(pin) != ""
+	var approvals []string
+	if !is(top, "manager_pin", &pin) || !is(top, "approvals", &approvals) || !is(top, "type", &str) || !is(top, "client_key", &str) ||
+		!is(top, "reason", &str) || !is(top, "draft_id", &str) || !is(top, "order_id", &str) || !is(top, "take_over", &flag) || !payment(top) {
+		return false, true
+	}
+	pays, ok := objects(top, "payments")
+	if !ok {
+		return false, true
+	}
+	for _, p := range pays {
+		if !payment(p) {
+			return false, true
+		}
+	}
+	cart, ok := object(top, "cart")
+	if !ok {
+		return false, true
+	}
+	if cart != nil {
+		if _, ok := object(cart, "discount"); !ok {
+			return false, true
+		}
+		lines, ok := objects(cart, "lines")
+		if !ok || !is(cart, "code", &str) {
+			return false, true
+		}
+		for _, l := range lines {
+			if !is(l, "custom", &flag) || !is(l, "price_cents", &cents) || !is(l, "keep_price", &flag) || !is(l, "item_id", &str) ||
+				!is(l, "deal_id", &str) || !is(l, "name", &str) {
+				return false, true
+			}
+			for _, key := range []string{"options", "picks"} {
+				subs, ok := objects(l, key)
+				if !ok {
+					return false, true
+				}
+				for _, o := range subs {
+					if !is(o, "price_cents", &cents) {
+						return false, true
+					}
+					if opts, ok := objects(o, "options"); !ok {
+						return false, true
+					} else {
+						for _, oo := range opts {
+							if !is(oo, "price_cents", &cents) {
+								return false, true
+							}
+						}
+					}
+				}
+			}
+		}
+		if _, ok := objects(cart, "coupons"); !ok {
+			return false, true
+		}
+	}
+	return strings.TrimSpace(pin) != "" || len(approvals) > 0, false
 }
 
 // --- the device ----------------------------------------------------------------------
