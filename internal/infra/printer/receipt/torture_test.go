@@ -18,6 +18,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"quiccpos/agent/internal/domain/order"
 	"quiccpos/agent/internal/domain/printer"
@@ -371,6 +372,66 @@ func dumpTortureWidth(t *testing.T, dir string, cols int) {
 	put("sample_receipt", BuildSample(sc, def, closed, cols), "sample", nil, totals...)
 	put("future_sample_kitchen", BuildFutureSample(sc, def, closed, true, cols), "station", nil)
 	put("future_sample_receipt", BuildFutureSample(sc, def, closed, false, cols), "sample", nil, totals...)
+
+	// --- printer commands typed into the texts (the security review, H3; scrub.go): ESC p (drawer kick),
+	// DLE DC4, GS V (cut), ESC @ in the customer, the notes, the address, the item / modifier names, the
+	// driver, staff and printer names. The verifier's control_byte / unknown_command checks must find
+	// nothing, and every text still prints (its letters; the typed commands' own letters with it).
+	inj := tortureSnap("delivery", tInjectItems([]order.LineItem{items[0], items[2], items[4]})...)
+	inj.Customer.DisplayName, inj.Notes, inj.TakenBy = tInject(tCustomer), tInject(tNote300[:200]), tInject("Call center - "+tStaff)
+	inj.Fulfillment.Address = &order.Address{Line1: tInject(tStreet), Line2: tInject(tApt), City: tInject(tCity), PostalCode: "21093", Notes: tInject(tDirections)}
+	want := mapStrings(inj, refClean) // what must print: the same texts without their control bytes
+	injTexts := append(textsOf(want.Items, false), want.Notes, want.Fulfillment.Address.Line1, want.Fulfillment.Address.Line2,
+		want.Fulfillment.Address.City)
+	put("receipt_delivery_injected", Build(inj, sc, printer.Ticket{Kind: printer.TicketReceipt, ReroutedFrom: tInject(tPrinter), Cols: cols}, def),
+		"receipt", append(injTexts[:len(injTexts):len(injTexts)], lastFirst(want.Customer.DisplayName), refClean(tInject(tPrinter))), totals...)
+	put("delivery_copies_injected", Build(inj, sc, printer.Ticket{Kind: printer.TicketDeliveryCopies, Cols: cols}, def),
+		"receipt", append(injTexts[:len(injTexts):len(injTexts)], want.Customer.DisplayName, want.Fulfillment.Address.Notes))
+	put("station_injected", Build(inj, sc, printer.Ticket{Kind: printer.TicketStation, TargetID: "p-pizza", Station: tInject("Pizza"),
+		Mine: inj.Items[:1], Others: inj.Items[1:], ReroutedFrom: tInject(tPrinter), Cols: cols}, def), "station",
+		append(textsOf(want.Items[:1], false), want.Notes, lastFirst(want.Customer.DisplayName), want.Items[1].Name, want.Items[2].Name))
+	irep := rep72()
+	irep.DriverName, irep.Lines[0].Street, irep.Lines[0].Customer = tInject(tStaff), tInject(tStreet), tInject(tCustomer)
+	put("driver_report_injected", BuildDriverReport(irep, sc, "", on(tInject(tPrinter)), closed), "driver_report",
+		[]string{refClean(tInject(tStaff)), refClean(tInject(tStreet)), refClean(tInject(tPrinter))})
+	iul := order.UnsettledList{BatchID: 41, Count: 1, DueCents: 10999, Checks: []order.UnsettledCheck{
+		{OrderID: "b", Number: 1107, Type: "delivery", Source: "web", State: order.StateReady, PlacedAt: placed, BatchID: 41,
+			StaffName: tInject(tStaff), Customer: order.UnsettledCustomer{Name: tInject(tCustomer), Phone: "4105550100"}, TotalCents: 10999, DueCents: 10999,
+			Items: []order.UnsettledLineItem{{Qty: 1, Name: tInject(tName60), Mods: []string{tInject(tModLong)}, PriceCents: 10999}}}}}
+	put("unsettled_list_injected", BuildUnsettledList(iul, sc, "", on(""), closed), "unsettled",
+		[]string{refClean(tInject(tName60)), refClean(tInject(tModLong)), refClean(tInject(tCustomer)), refClean(tInject(tStaff))})
+}
+
+// tInject is s with printer commands typed into it: a drawer kick before it, a real-time drawer pulse, a
+// cut and a reset in the middle, a cut after it.
+func tInject(s string) string {
+	mid := len(s) / 2
+	for mid > 0 && !utf8.RuneStart(s[mid]) {
+		mid--
+	}
+	return "\x1bp\x00\x19\x19" + s[:mid] + "\x10\x14\x01\x00\x05\x1dV\x00\x1b@" + s[mid:] + "\x1dVB\x03"
+}
+
+// tInjectItems is items with tInject in every name, size, note and modifier.
+func tInjectItems(items []order.LineItem) []order.LineItem {
+	var out []order.LineItem
+	for _, it := range items {
+		it.Name = tInject(it.Name)
+		if it.Size != "" {
+			it.Size = tInject(it.Size)
+		}
+		if it.Notes != "" {
+			it.Notes = tInject(it.Notes)
+		}
+		kids := make([]order.LineItem, len(it.Children))
+		for i, c := range it.Children {
+			c.Name = tInject(c.Name)
+			kids[i] = c
+		}
+		it.Children = kids
+		out = append(out, it)
+	}
+	return out
 }
 
 // rep72 is a short driver report (one cash delivery).

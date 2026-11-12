@@ -18,6 +18,7 @@ import (
 // was carried (still open, payable next day); then the count and the total
 // due. Same text size rule as the driver report (size = driver_report_size).
 func BuildUnsettledList(l order.UnsettledList, sc storeconfig.StoreContext, size string, on printer.Paper, printedAt time.Time) []byte {
+	l, sc, on = scrubUnsettledList(l), scrubStore(sc), scrubPaper(on)
 	lay := layoutFor(on.Cols) // the printer it prints on (width.go)
 	lineWidth := lay.cols
 	loc := time.Local

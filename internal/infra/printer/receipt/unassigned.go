@@ -18,6 +18,7 @@ import (
 // it was taken from and the drivers in the store then; then the counts.
 // Same text size rule as the driver report (size = driver_report_size).
 func BuildUnassignedReport(rep order.UnassignedReport, sc storeconfig.StoreContext, size string, on printer.Paper, printedAt time.Time) []byte {
+	rep, sc, on = scrubUnassignedReport(rep), scrubStore(sc), scrubPaper(on)
 	lay := layoutFor(on.Cols) // the printer it prints on (width.go)
 	lineWidth := lay.cols
 	loc := time.Local

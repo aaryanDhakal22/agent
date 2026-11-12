@@ -45,6 +45,7 @@ const (
 // Every ticket is laid out for t.Cols, the width of the printer it prints on
 // (width.go).
 func Build(snap order.Snapshot, sc storeconfig.StoreContext, t printer.Ticket, prefs order.ReceiptPrefs) []byte {
+	snap, sc, t, prefs = scrubSnapshot(snap), scrubStore(sc), scrubTicket(t), scrubPrefs(prefs) // scrub.go
 	if t.Kind == printer.TicketDeliveryCopies {
 		return BuildDeliveryCopies(snap, sc, prefs, printer.Paper{Cols: t.Cols, ReroutedFrom: t.ReroutedFrom})
 	}
@@ -72,6 +73,7 @@ func Build(snap order.Snapshot, sc storeconfig.StoreContext, t printer.Ticket, p
 //
 // Default receipt settings; Build takes the store's.
 func BuildWith(snap order.Snapshot, sc storeconfig.StoreContext) []byte {
+	snap, sc = scrubSnapshot(snap), scrubStore(sc)
 	return buildFull(localize(snap, sc), sc, "", order.DefaultReceiptPrefs(), defaultLayout)
 }
 
@@ -586,7 +588,7 @@ func writeOrderNumbers(w func(string), nl func(), snap order.Snapshot, l layout)
 // to the band: "REROUTED FROM PIZZA", "REDIRIGIDO DE PIZZA".
 func RerouteLines(from string, cols int) []string {
 	text := layoutFor(cols).big() - 2
-	name := strings.ToUpper(strings.Join(strings.Fields(from), " "))
+	name := strings.ToUpper(strings.Join(strings.Fields(cleanName(from)), " "))
 	var out []string
 	for _, l := range wordWrap("REROUTED FROM "+name, text, "") {
 		out = append(out, printable(l))

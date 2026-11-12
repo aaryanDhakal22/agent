@@ -71,18 +71,7 @@ func (p *escw) wrapped(s, indent string) {
 // control bytes. A PC437 byte passes again unchanged (lines are cleaned once
 // to wrap and once to print).
 func dclean(s string) string {
-	s = toPC437(printable(s))
-	var b strings.Builder
-	for i := 0; i < len(s); i++ {
-		switch c := s[i]; {
-		case c == '\t':
-			b.WriteByte(' ')
-		case c < 0x20 || c == 0x7F:
-		default:
-			b.WriteByte(c)
-		}
-	}
-	return b.String()
+	return cleanText(toPC437(printable(s)))
 }
 
 // dwrap is the terminal's wrap(): words onto lines of width, a word longer
@@ -215,6 +204,7 @@ func storeOf(sc storeconfig.StoreContext, prefs order.ReceiptPrefs) deliveryStor
 // time zone, laid out for on.Cols (the printer's line, like the terminal's
 // printer profile: 48 / 42 / 32).
 func BuildDeliveryCopies(snap order.Snapshot, sc storeconfig.StoreContext, prefs order.ReceiptPrefs, on printer.Paper) []byte {
+	snap, sc, prefs, on = scrubSnapshot(snap), scrubStore(sc), scrubPrefs(prefs), scrubPaper(on)
 	lay := layoutFor(on.Cols)
 	reroutedFrom := on.ReroutedFrom
 	snap = localize(snap, sc)

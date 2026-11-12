@@ -16,6 +16,7 @@ import (
 // codepage garbage on the very slip that is supposed to prove the printer works.
 // It is laid out for the printer's width (cols, width.go) and says which one.
 func BuildTestSlip(printerName string, sc storeconfig.StoreContext, tablet string, at time.Time, cols int) []byte {
+	printerName, sc, tablet = cleanName(printerName), scrubStore(sc), cleanName(tablet)
 	lay := layoutFor(cols)
 	loc := time.Local
 	if tz, err := time.LoadLocation(sc.Location.Timezone); sc.Location.Timezone != "" && err == nil {
@@ -123,6 +124,7 @@ func SymbolOfColumns(cols int) string {
 // single size, never wrapped by us: the printer's own wrap is the answer). Every other line fits 32
 // columns, so the slip reads the same on any printer.
 func BuildWidthTest(printerName string, at time.Time) []byte {
+	printerName = cleanName(printerName)
 	var buf bytes.Buffer
 	w := func(s string) { buf.WriteString(s) }
 	nl := func() { buf.WriteString(cmdFeed) }

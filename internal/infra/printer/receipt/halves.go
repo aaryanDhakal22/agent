@@ -32,7 +32,9 @@ const halfSign = "½"
 
 var printer437 = strings.NewReplacer("½", "\xab", "\x1f", " ")
 
-func printable(s string) string { return printer437.Replace(s) }
+// printable is a line of text as it goes to the printer: ½ in the code page, the glue a space, and no
+// control byte left (cleanText, scrub.go) whatever the text was built from.
+func printable(s string) string { return cleanText(printer437.Replace(s)) }
 
 func glue(s string) string { return strings.ReplaceAll(s, halfSign+" ", halfSign+"\x1f") }
 

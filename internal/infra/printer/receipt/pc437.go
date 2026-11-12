@@ -13,6 +13,10 @@ import (
 // anything else (an emoji) prints "?". One character in = at most one byte out, so wordWrap's rune counts
 // still hold.
 //
+// It is the writer of every builder, so the builders' own commands pass through it too: it cannot drop the
+// ASCII control bytes (cleanText, scrub.go, takes them out of every text before it gets here), only the
+// ones that arrive as characters (C1, the Unicode line and paragraph separators).
+//
 // Only valid multi-byte UTF-8 is touched: ASCII, the commands and a byte already in PC437 ("\xab" = ½,
 // "\xfa" = ·, which are invalid UTF-8 on their own) pass as they are. A picture (ESC * / GS v 0) is never
 // passed through it: its dots are any bytes.
@@ -37,7 +41,7 @@ var fold437 = map[rune]string{
 	'Ý': "Y", 'ý': "y", 'Ÿ': "Y", 'Ø': "O", 'ø': "o", 'Œ': "O", 'œ': "o", 'Š': "S", 'š': "s", 'Ž': "Z",
 	'ž': "z", 'Č': "C", 'č': "c", 'Ł': "L", 'ł': "l", 'ő': "o", 'ű': "u",
 	'‘': "'", '’': "'", '‚': ",", '“': "\"", '”': "\"", '„': "\"", '–': "-", '—': "-", '‐': "-", '‑': "-",
-	'…': ".", '•': "\xf9", '×': "x", '\u2028': " ",
+	'…': ".", '•': "\xf9", '×': "x", '\u2028': " ", '\u2029': " ",
 }
 
 // gone437: marks that print nothing (zero-width, joiners, variation selectors, emoji skin tones).
@@ -48,6 +52,8 @@ func gone437(r rune) bool {
 	case r >= '\ufe00' && r <= '\ufe0f', r >= 0x1F3FB && r <= 0x1F3FF, r >= 0xE0020 && r <= 0xE007F:
 		return true
 	case r >= 0x0300 && r <= 0x036F: // combining accents: the letter before stays
+		return true
+	case r >= 0x80 && r <= 0x9F: // the C1 control characters: never a byte on the wire
 		return true
 	}
 	return false

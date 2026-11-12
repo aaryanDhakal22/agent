@@ -22,6 +22,7 @@ import (
 // printedAt is shown in the footer. It is laid out for on.Cols, the printer
 // it prints on (width.go), with the reroute bands on a stand-in.
 func BuildDriverReport(rep order.DriverReport, sc storeconfig.StoreContext, size string, on printer.Paper, printedAt time.Time) []byte {
+	rep, sc, on = scrubDriverReport(rep), scrubStore(sc), scrubPaper(on)
 	lay := layoutFor(on.Cols)
 	lineWidth := lay.cols
 	loc := time.Local

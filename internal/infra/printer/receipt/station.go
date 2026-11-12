@@ -63,6 +63,7 @@ const (
 // BuildStation renders a kitchen station ticket with the default receipt
 // settings (Build takes the store's: item size, spacing, strike images).
 func BuildStation(snap order.Snapshot, t printer.Ticket) []byte {
+	snap, t = scrubSnapshot(snap), scrubTicket(t)
 	return buildStation(snap, t, order.DefaultReceiptPrefs())
 }
 
