@@ -112,9 +112,10 @@ def test_online_cash_pickup_paid_at_the_terminal(rig):  # noqa: F811
         assert r.json()["balance_cents"] == 0 and r.json()["order"]["status"]["paid"] and r.json()["payment"]["change_cents"] == 500
         assert term.get(f"{base}/api/terminal/orders/{oid}", timeout=5).json()["payments"][0]["tender"] == "cash"
         wait_until(lambda: any(e["order_id"] == oid for e in fm.of_type("order.payment")), what="order.payment to main")
-        # Fully paid = off the Pickup list at once (the owner, 2026-11-12: no Picked Up needed); picked-up still works.
-        ids = [o["order"]["id"] for o in term.get(f"{base}/api/terminal/pickups", timeout=5).json()["orders"]]
-        assert oid not in ids and cid in ids
+        # An online pickup stays on the list once paid, until it is finished (the owner, 2026-11-12: online pickups
+        # always show; a counter pickup leaves once fully paid).
+        pickups = {o["order"]["id"]: o for o in term.get(f"{base}/api/terminal/pickups", timeout=5).json()["orders"]}
+        assert oid in pickups and pickups[oid]["status"]["paid"] and cid in pickups
 
         r = term.post(f"{base}/api/terminal/orders/{oid}/picked-up", timeout=5)
         assert r.status_code == 200, r.text

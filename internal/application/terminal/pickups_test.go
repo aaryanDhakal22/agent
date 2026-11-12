@@ -66,11 +66,11 @@ func TestOnlineCashPickupPaidAtTheTerminalThenPickedUp(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Every source that still owes money; no delivery, and the card pickup (paid online) isn't on it (the
-	// owner, 2026-11-12: fully paid = off the list).
+	// Every source, no delivery; the card pickup (paid online) is on it too until it is finished (the owner,
+	// 2026-11-12: online pickups always show; a counter pickup only while it owes).
 	list := pickupIDs(t, r)
-	if _, ok := list[deliv.Order.ID]; ok || len(list) != 2 {
-		t.Fatalf("every pickup source that owes, no delivery: %d", len(list))
+	if _, ok := list[deliv.Order.ID]; ok || len(list) != 3 {
+		t.Fatalf("every pickup source, no delivery: %d", len(list))
 	}
 	if _, ok := list[counter.Order.Order.ID]; !ok {
 		t.Fatal("the unpaid counter pickup is on it")
@@ -78,8 +78,8 @@ func TestOnlineCashPickupPaidAtTheTerminalThenPickedUp(t *testing.T) {
 	if so := list[cash.Order.ID]; so.Status.CashDueCents != 2000 || so.Status.Paid {
 		t.Fatalf("cash pickup due: %+v", so.Status)
 	}
-	if _, ok := list[card.Order.ID]; ok {
-		t.Fatal("a paid card pickup is not on the list")
+	if so := list[card.Order.ID]; so.Status.CashDueCents != 0 || !so.Status.Paid {
+		t.Fatalf("card pickup paid, still listed: %+v", so.Status)
 	}
 	// Not handed over while money is due.
 	var due *terminal.CashDue
@@ -109,9 +109,9 @@ func TestOnlineCashPickupPaidAtTheTerminalThenPickedUp(t *testing.T) {
 	if r.pub.count(EventOrderPaid) != 1 {
 		t.Fatal("terminal.order.paid")
 	}
-	// Fully paid: off the Pickup list at once (no Picked Up needed).
-	if _, ok := pickupIDs(t, r)[cash.Order.ID]; ok {
-		t.Fatal("paid = off the list")
+	// An online pickup paid at the counter stays listed (paid) until it is finished.
+	if so, ok := pickupIDs(t, r)[cash.Order.ID]; !ok || !so.Status.Paid {
+		t.Fatal("a paid online pickup stays until finished")
 	}
 	if len(journalOf(t, r, terminal.ActionPayment)) != 1 {
 		t.Fatal("payment journaled")
@@ -165,6 +165,14 @@ func TestOnlineCashPickupPaidAtTheTerminalThenPickedUp(t *testing.T) {
 	}
 	if finished != 2 {
 		t.Fatalf("order.status ready + finished_at: %d", finished)
+	}
+	// A counter pickup leaves the list as soon as it is fully paid (no Picked Up).
+	counterDue := pickupIDs(t, r)[counter.Order.Order.ID].Status.CashDueCents
+	if _, err := r.svc.AddPayment(r.ctx, till, counter.Order.Order.ID, PaymentIn{ClientKey: tk(), Tender: terminal.TenderCash, AmountCents: counterDue}); err != nil {
+		t.Fatalf("pay the counter pickup: %v", err)
+	}
+	if _, ok := pickupIDs(t, r)[counter.Order.Order.ID]; ok {
+		t.Fatal("a fully paid counter pickup is off the list")
 	}
 }
 
