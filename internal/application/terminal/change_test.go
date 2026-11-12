@@ -26,7 +26,7 @@ func TestChangeCartAfterSend(t *testing.T) {
 	}
 	pizzaID := res.Order.Order.Items[0].ID
 	// Pay it all, then add two sodas: the balance is the sodas.
-	if _, err := r.svc.AddPayment(r.ctx, till, id, PaymentIn{Tender: "cash", AmountCents: before}); err != nil {
+	if _, err := r.svc.AddPayment(r.ctx, till, id, PaymentIn{ClientKey: tk(), Tender: "cash", AmountCents: before}); err != nil {
 		t.Fatal(err)
 	}
 	in := ChangeIn{ClientKey: "chg-000001", Cart: Cart{Cart: pricing.Cart{Lines: []pricing.Line{pizzaLine(), soda2}}}}
@@ -55,22 +55,22 @@ func TestChangeCartAfterSend(t *testing.T) {
 		t.Fatalf("idempotent: %+v %v", again, err)
 	}
 	// The same cart with no key: nothing changed.
-	same, err := r.svc.ChangeCart(r.ctx, till, id, ChangeIn{Cart: in.Cart})
+	same, err := r.svc.ChangeCart(r.ctx, till, id, ChangeIn{ClientKey: tk(), Cart: in.Cart})
 	if err != nil || same.Changed || r.pub.count(EventOrderChanged) != 1 {
 		t.Fatalf("no change: %+v %v", same, err)
 	}
 	// Taking the pizza off would leave less than was paid: refund first.
-	if _, err := r.svc.ChangeCart(r.ctx, till, id, ChangeIn{Cart: Cart{Cart: pricing.Cart{Lines: []pricing.Line{soda2}}}}); !errors.Is(err, terminal.ErrRefundFirst) {
+	if _, err := r.svc.ChangeCart(r.ctx, till, id, ChangeIn{ClientKey: tk(), Cart: Cart{Cart: pricing.Cart{Lines: []pricing.Line{soda2}}}}); !errors.Is(err, terminal.ErrRefundFirst) {
 		t.Fatalf("refund first: %v", err)
 	}
 	// Drop one soda (unpaid part): a VOID ticket for it.
 	one := pricing.Line{Qty: 1, Selection: pricing.Selection{ItemID: soda}}
-	ch, err = r.svc.ChangeCart(r.ctx, till, id, ChangeIn{Cart: Cart{Cart: pricing.Cart{Lines: []pricing.Line{pizzaLine(), one}}}})
+	ch, err = r.svc.ChangeCart(r.ctx, till, id, ChangeIn{ClientKey: tk(), Cart: Cart{Cart: pricing.Cart{Lines: []pricing.Line{pizzaLine(), one}}}})
 	if err != nil || len(ch.Removed) != 1 || ch.Removed[0] != "Soda" || len(r.orders.voidLns) != 1 {
 		t.Fatalf("removed: %+v %v", ch, err)
 	}
 	// A discount over the cashier's limit needs a manager.
-	disc := ChangeIn{Cart: Cart{Cart: pricing.Cart{Lines: []pricing.Line{pizzaLine(), one, one}}, Discount: &Discount{Pct: 5, Reason: "x"}}}
+	disc := ChangeIn{ClientKey: tk(), Cart: Cart{Cart: pricing.Cart{Lines: []pricing.Line{pizzaLine(), one, one}}, Discount: &Discount{Pct: 5, Reason: "x"}}}
 	disc.Cart.Discount.Pct = 30
 	var mr *terminal.ManagerRequired
 	if _, err := r.svc.ChangeCart(r.ctx, till, id, disc); !errors.As(err, &mr) {
@@ -78,7 +78,7 @@ func TestChangeCartAfterSend(t *testing.T) {
 	}
 	// Bad cart, empty cart, unknown order.
 	var ci *terminal.CartInvalid
-	if _, err := r.svc.ChangeCart(r.ctx, till, id, ChangeIn{Cart: Cart{Cart: pricing.Cart{Lines: []pricing.Line{{Qty: 1, Selection: pricing.Selection{ItemID: "nope"}}}}}}); !errors.As(err, &ci) {
+	if _, err := r.svc.ChangeCart(r.ctx, till, id, ChangeIn{ClientKey: tk(), Cart: Cart{Cart: pricing.Cart{Lines: []pricing.Line{{Qty: 1, Selection: pricing.Selection{ItemID: "nope"}}}}}}); !errors.As(err, &ci) {
 		t.Fatalf("cart invalid: %v", err)
 	}
 	if _, err := r.svc.ChangeCart(r.ctx, till, "0193a000-0000-7000-8000-000000000000", in); !errors.Is(err, order.ErrNotFound) {
@@ -88,7 +88,7 @@ func TestChangeCartAfterSend(t *testing.T) {
 	if _, err := r.svc.Void(r.ctx, till, id, VoidIn{Reason: "left", ManagerPIN: "9876"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := r.svc.ChangeCart(r.ctx, till, id, ChangeIn{Cart: in.Cart}); !errors.Is(err, terminal.ErrNotEditable) {
+	if _, err := r.svc.ChangeCart(r.ctx, till, id, ChangeIn{ClientKey: tk(), Cart: in.Cart}); !errors.Is(err, terminal.ErrNotEditable) {
 		t.Fatalf("voided: %v", err)
 	}
 	journal, _ := r.repo.Journal(r.ctx, 50)
@@ -118,11 +118,11 @@ func TestChangeCartType(t *testing.T) {
 	id := res.Order.Order.ID
 	cart := Cart{Cart: pricing.Cart{Lines: []pricing.Line{pizzaLine()}}}
 	// No address: refused.
-	if _, err := r.svc.ChangeCart(r.ctx, till, id, ChangeIn{Cart: cart, Type: "delivery"}); err == nil {
+	if _, err := r.svc.ChangeCart(r.ctx, till, id, ChangeIn{ClientKey: tk(), Cart: cart, Type: "delivery"}); err == nil {
 		t.Fatal("a delivery without an address")
 	}
 	// Counter is not a type to move to.
-	if _, err := r.svc.ChangeCart(r.ctx, till, id, ChangeIn{Cart: cart, Type: "counter"}); err == nil {
+	if _, err := r.svc.ChangeCart(r.ctx, till, id, ChangeIn{ClientKey: tk(), Cart: cart, Type: "counter"}); err == nil {
 		t.Fatal("pickup -> counter")
 	}
 	addr := &Address{Line1: "1 Test Street", City: "Towson", Zip: "21286"}
@@ -155,11 +155,11 @@ func TestChangeCartType(t *testing.T) {
 		t.Fatalf("journaled with type_from / type_to: %+v", journal)
 	}
 	// Back to a pickup: the address goes; the same type again changes nothing.
-	ch, err = r.svc.ChangeCart(r.ctx, till, id, ChangeIn{Cart: cart, Type: "pickup"})
+	ch, err = r.svc.ChangeCart(r.ctx, till, id, ChangeIn{ClientKey: tk(), Cart: cart, Type: "pickup"})
 	if err != nil || !ch.TypeChanged || ch.Order.Order.Fulfillment.Type != "pickup" || ch.Order.Order.Fulfillment.Address != nil {
 		t.Fatalf("back to pickup: %+v %v", ch, err)
 	}
-	same, err := r.svc.ChangeCart(r.ctx, till, id, ChangeIn{Cart: cart, Type: "pickup"})
+	same, err := r.svc.ChangeCart(r.ctx, till, id, ChangeIn{ClientKey: tk(), Cart: cart, Type: "pickup"})
 	if err != nil || same.Changed || same.TypeChanged {
 		t.Fatalf("same type: %+v %v", same, err)
 	}
@@ -168,7 +168,7 @@ func TestChangeCartType(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := r.svc.ChangeCart(r.ctx, till, c.Order.Order.ID, ChangeIn{Cart: cart, Type: "pickup"}); err == nil {
+	if _, err := r.svc.ChangeCart(r.ctx, till, c.Order.Order.ID, ChangeIn{ClientKey: tk(), Cart: cart, Type: "pickup"}); err == nil {
 		t.Fatal("counter -> pickup")
 	}
 }

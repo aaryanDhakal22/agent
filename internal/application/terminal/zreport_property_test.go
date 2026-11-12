@@ -251,7 +251,7 @@ func runDay(t *testing.T, r *rig, rng *rand.Rand, day int) *model {
 			}
 			amt, tip := o.net()
 			ref := PaymentIn{Tender: tenders[rng.Intn(len(tenders))], AmountCents: 1 + rng.Int63n(amt), Refund: true, Reason: "property",
-				ManagerPIN: "9876"}
+				ManagerPIN: "9876", ClientKey: nextKey()}
 			if tip > 0 && rng.Intn(2) == 0 {
 				ref.TipCents = 1 + rng.Int63n(tip)
 			}

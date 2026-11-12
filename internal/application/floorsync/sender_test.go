@@ -232,7 +232,14 @@ func (m *memFloor) MarkEventSynced(_ context.Context, id string, _ time.Time) er
 	m.synced[id] = true
 	return nil
 }
-func (m *memFloor) MarkEventFailed(_ context.Context, id, _ string) error { m.failed[id]++; return nil }
+func (m *memFloor) MarkEventsSynced(ctx context.Context, ids []string, at time.Time) error {
+	for _, id := range ids {
+		m.MarkEventSynced(ctx, id, at)
+	}
+	return nil
+}
+func (m *memFloor) OldestUnsynced(context.Context) (map[string]time.Time, error) { return nil, nil }
+func (m *memFloor) MarkEventFailed(_ context.Context, id, _ string) error        { m.failed[id]++; return nil }
 func (m *memFloor) RefuseEvent(_ context.Context, id, _ string, at time.Time) (order.Refusal, error) {
 	m.failed[id]++
 	return order.Refusal{EventID: id, Refusals: int64(m.failed[id]), FirstAt: at}, nil

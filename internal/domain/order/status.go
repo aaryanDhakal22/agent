@@ -137,6 +137,10 @@ type Status struct {
 	// on a cash or counter delivery (absolute). The driver keeps it; his
 	// report shows it (never charged, never owed).
 	DoorTipCents int64 `json:"door_tip_cents,omitempty"`
+	// Carried (00033, contract 2.10s §4): an unsettled check a close
+	// carried past its batch - still on the Pickup list and payable until
+	// settled.
+	Carried bool `json:"carried,omitempty"`
 }
 
 // MarkedBy is who did something on the floor: a paired tablet (kind
@@ -234,9 +238,12 @@ var ErrNotUnassigned = fmt.Errorf("order is not delivered without a driver")
 // website "web", later "operator" / "counter") - see Snapshot.IsChannel.
 func (so StoredOrder) IsChannel() bool { return so.Order.IsChannel() }
 
-// SourceLabel is the order's source as metrics label it: web (every
-// channel order) or online.
+// SourceLabel is the order's source as metrics label it: counter (placed at
+// the store's terminals, CM-12), web (every other channel order) or online.
 func (so StoredOrder) SourceLabel() string {
+	if so.Order.Source == SourceCounter {
+		return SourceCounter
+	}
 	if so.IsChannel() {
 		return SourceWeb
 	}

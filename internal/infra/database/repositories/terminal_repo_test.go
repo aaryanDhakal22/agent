@@ -117,7 +117,7 @@ func TestCounterPaymentsAndVoid(t *testing.T) {
 	}
 	cash := pay(terminal.TenderCash, 1500)
 	cash.OrderID, cash.ClientKey, cash.TipCents = so.Order.ID, "pay-key-0001", 200
-	got, p, dup, err := r.AddCounterPayment(ctx, so.Order.ID, cash.ClientKey, check(cash))
+	got, p, dup, err := r.AddCounterPayment(ctx, so.Order.ID, cash.ClientKey, "", check(cash))
 	if err != nil || dup || p.ID != cash.ID {
 		t.Fatalf("payment: %v dup=%v", err, dup)
 	}
@@ -126,7 +126,7 @@ func TestCounterPaymentsAndVoid(t *testing.T) {
 		t.Fatalf("paid in full + tip: %+v money %+v", got.Status, got.Order.Money)
 	}
 	// The same payment key again: the stored payment, nothing new.
-	_, p2, dup, err := r.AddCounterPayment(ctx, so.Order.ID, cash.ClientKey, check(pay(terminal.TenderCash, 1)))
+	_, p2, dup, err := r.AddCounterPayment(ctx, so.Order.ID, cash.ClientKey, "", check(pay(terminal.TenderCash, 1)))
 	if err != nil || !dup || p2.ID != cash.ID {
 		t.Fatalf("duplicate payment: %v dup=%v %s", err, dup, p2.ID)
 	}
@@ -168,7 +168,7 @@ func TestCounterPaymentsAndVoid(t *testing.T) {
 		t.Fatalf("second void: %v", err)
 	}
 	// No payment on a voided order.
-	if _, _, _, err := r.AddCounterPayment(ctx, so.Order.ID, "", check(pay(terminal.TenderCash, 1))); !errors.Is(err, terminal.ErrNotPayable) {
+	if _, _, _, err := r.AddCounterPayment(ctx, so.Order.ID, "", "", check(pay(terminal.TenderCash, 1))); !errors.Is(err, terminal.ErrNotPayable) {
 		t.Fatalf("pay a voided order: %v", err)
 	}
 	pays, _ := r.OrderPayments(ctx, so.Order.ID)
@@ -177,7 +177,7 @@ func TestCounterPaymentsAndVoid(t *testing.T) {
 	}
 	// Not a counter order, nor a pickup (contract 2.10i: online pickups may be paid here).
 	web := accept(t, r, arriveWeb(t, r, "web", "delivery", true))
-	if _, _, _, err := r.AddCounterPayment(ctx, web.Order.ID, "", nil); !errors.Is(err, terminal.ErrNotCounterOrder) {
+	if _, _, _, err := r.AddCounterPayment(ctx, web.Order.ID, "", "", nil); !errors.Is(err, terminal.ErrNotCounterOrder) {
 		t.Fatalf("web delivery: %v", err)
 	}
 }

@@ -469,6 +469,7 @@ func TestTrimDropsOrphanGeo(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	markAllSynced(t, r)
 	if _, err := r.TrimBatches(ctx, 0, time.Now().Add(time.Hour)); err != nil {
 		t.Fatal(err)
 	}

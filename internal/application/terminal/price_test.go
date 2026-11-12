@@ -94,7 +94,7 @@ func TestPriceChangeLimits(t *testing.T) {
 	}
 	// A kitchen change keeps the approved price without asking again ...
 	before := len(journalOf(t, r, terminal.ActionPriceChange))
-	ch, err := r.svc.ChangeCart(r.ctx, till, id, ChangeIn{Cart: Cart{Cart: pricing.Cart{Lines: []pricing.Line{atPrice(pizzaLine(), 1500), soda1}}}})
+	ch, err := r.svc.ChangeCart(r.ctx, till, id, ChangeIn{ClientKey: tk(), Cart: Cart{Cart: pricing.Cart{Lines: []pricing.Line{atPrice(pizzaLine(), 1500), soda1}}}})
 	if err != nil || !ch.Changed {
 		t.Fatalf("change keeps the price: %+v %v", ch, err)
 	}
@@ -102,7 +102,7 @@ func TestPriceChangeLimits(t *testing.T) {
 		t.Fatal("an unchanged price change isn't journaled again")
 	}
 	// ... but a new drop over the limit needs one.
-	if _, err := r.svc.ChangeCart(r.ctx, till, id, ChangeIn{Cart: Cart{Cart: pricing.Cart{Lines: []pricing.Line{atPrice(pizzaLine(), 1500), atPrice(soda1, 100)}}}}); !errors.As(err, &mr) || mr.Requested != 50 {
+	if _, err := r.svc.ChangeCart(r.ctx, till, id, ChangeIn{ClientKey: tk(), Cart: Cart{Cart: pricing.Cart{Lines: []pricing.Line{atPrice(pizzaLine(), 1500), atPrice(soda1, 100)}}}}); !errors.As(err, &mr) || mr.Requested != 50 {
 		t.Fatalf("a new drop in a change: %v", err)
 	}
 	// A manager is unlimited; $0 is a price.

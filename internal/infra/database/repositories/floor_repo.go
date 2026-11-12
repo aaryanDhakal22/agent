@@ -987,7 +987,35 @@ func (r *OrderRepository) ListUnsyncedEvents(ctx context.Context, limit int) (ou
 			return nil, err
 		}
 		out = append(out, order.FloorEvent{ID: row.ID, OrderID: row.OrderID.String, Type: row.Type,
-			Payload: json.RawMessage(row.Payload), At: at, Attempts: row.Attempts})
+			Payload: json.RawMessage(row.Payload), At: at, Attempts: row.Attempts, Subject: row.Subject})
+	}
+	return out, nil
+}
+
+// MarkEventsSynced marks a flush's events synced in one statement (S-7).
+func (r *OrderRepository) MarkEventsSynced(ctx context.Context, ids []string, at time.Time) (err error) {
+	ctx, _, end := dbSpan(ctx, "floor_events.mark_synced_many")
+	defer end(&err)
+	if len(ids) == 0 {
+		return nil
+	}
+	return models.New(r.db).MarkFloorEventsSyncedAt(ctx, models.MarkFloorEventsSyncedAtParams{
+		SyncedAt: sql.NullString{String: fmtTS(at), Valid: true}, Ids: ids})
+}
+
+// OldestUnsynced is the oldest unsynced, unparked event's time per type (CM-9).
+func (r *OrderRepository) OldestUnsynced(ctx context.Context) (out map[string]time.Time, err error) {
+	ctx, _, end := dbSpan(ctx, "floor_events.oldest")
+	defer end(&err)
+	rows, err := models.New(r.db).OldestUnsyncedByType(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out = make(map[string]time.Time, len(rows))
+	for _, row := range rows {
+		if t, err := parseTS(row.Oldest); err == nil {
+			out[row.Type] = t
+		}
 	}
 	return out, nil
 }

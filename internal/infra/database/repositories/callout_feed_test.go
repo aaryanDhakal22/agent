@@ -67,7 +67,7 @@ func TestPickupPaidAfterReadyOnTheFeed(t *testing.T) {
 	if _, err := r.MarkReady(ctx, so.Order.ID, true); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, _, err := r.AddCounterPayment(ctx, so.Order.ID, "", func(cur order.StoredOrder, paid []terminal.Payment) ([]terminal.Payment, []terminal.Entry, error) {
+	if _, _, _, err := r.AddCounterPayment(ctx, so.Order.ID, "", "", func(cur order.StoredOrder, paid []terminal.Payment) ([]terminal.Payment, []terminal.Entry, error) {
 		p := pay(terminal.TenderCash, 1299)
 		p.OrderID = so.Order.ID
 		return []terminal.Payment{p}, nil, nil

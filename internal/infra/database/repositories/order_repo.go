@@ -232,6 +232,7 @@ func toStored(row models.Order) (order.StoredOrder, error) {
 	}
 	// 2.1.0: paid (a terminal's payments), future orders.
 	st.Paid, st.Rerung = row.Paid, row.Rerung
+	st.Carried = row.Carried
 	st.AutoAccepted = row.AutoAccepted
 	st.CameBack = row.CameBack
 	st.RunSeq = optInt(row.RunSeq)

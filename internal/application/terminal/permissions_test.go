@@ -27,11 +27,11 @@ func TestRefundPermissions(t *testing.T) {
 		return res.Order.Order.ID, res.Order.Order.Money.Total
 	}
 	id, total := place("k-perm-0001")
-	if _, err := r.svc.AddPayment(r.ctx, till, id, PaymentIn{Tender: "cash", AmountCents: total}); err != nil {
+	if _, err := r.svc.AddPayment(r.ctx, till, id, PaymentIn{ClientKey: tk(), Tender: "cash", AmountCents: total}); err != nil {
 		t.Fatal(err)
 	}
 	refund := func(a Actor, tender string, cents int64, pin string) (*PaymentResult, error) {
-		return r.svc.AddPayment(r.ctx, a, id, PaymentIn{Tender: tender, AmountCents: cents, Refund: true, Reason: "cold", ManagerPIN: pin})
+		return r.svc.AddPayment(r.ctx, a, id, PaymentIn{ClientKey: tk(), Tender: tender, AmountCents: cents, Refund: true, Reason: "cold", ManagerPIN: pin})
 	}
 	// $6 + $4 = the $10 limit; one more cent needs a manager (per order, not per refund).
 	for _, c := range []int64{600, 400} {
@@ -58,7 +58,7 @@ func TestRefundPermissions(t *testing.T) {
 
 	// A card sale: a card refund needs a manager (any amount), cash back for it too.
 	id, total = place("k-perm-0002")
-	if _, err := r.svc.AddPayment(r.ctx, till, id, PaymentIn{Tender: "card", AmountCents: total, Brand: "VISA"}); err != nil {
+	if _, err := r.svc.AddPayment(r.ctx, till, id, PaymentIn{ClientKey: tk(), Tender: "card", AmountCents: total, Brand: "VISA"}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := refund(till, "card", 1, ""); !errors.As(err, &mr) || mr.Action != terminal.NeedCardRefund {
@@ -82,7 +82,7 @@ func TestRefundPermissions(t *testing.T) {
 	}
 	// A cash void within the cashier limit needs no one (unpaid is free anyway).
 	id, total = place("k-perm-0003")
-	if _, err := r.svc.AddPayment(r.ctx, till, id, PaymentIn{Tender: "cash", AmountCents: total}); err != nil {
+	if _, err := r.svc.AddPayment(r.ctx, till, id, PaymentIn{ClientKey: tk(), Tender: "cash", AmountCents: total}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := r.svc.Void(r.ctx, till, id, VoidIn{Reason: "left"}); total > 1000 && (!errors.As(err, &mr) || mr.Action != terminal.ActionVoid || mr.Limit != 1000) {
@@ -118,7 +118,7 @@ func TestGoodwillOutsideAndKick(t *testing.T) {
 		t.Fatal(err)
 	}
 	id, total := res.Order.Order.ID, res.Order.Order.Money.Total
-	g, err := r.svc.AddPayment(r.ctx, till, id, PaymentIn{Tender: "cash", AmountCents: 500, Refund: true, Goodwill: true, Reason: "late"})
+	g, err := r.svc.AddPayment(r.ctx, till, id, PaymentIn{ClientKey: tk(), Tender: "cash", AmountCents: 500, Refund: true, Goodwill: true, Reason: "late"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -134,11 +134,11 @@ func TestGoodwillOutsideAndKick(t *testing.T) {
 	}
 	// Goodwill counts against the cashier's $10 per order like any cash refund.
 	var mr *terminal.ManagerRequired
-	if _, err := r.svc.AddPayment(r.ctx, till, id, PaymentIn{Tender: "cash", AmountCents: 501, Refund: true, Goodwill: true, Reason: "more"}); !errors.As(err, &mr) ||
+	if _, err := r.svc.AddPayment(r.ctx, till, id, PaymentIn{ClientKey: tk(), Tender: "cash", AmountCents: 501, Refund: true, Goodwill: true, Reason: "more"}); !errors.As(err, &mr) ||
 		mr.Requested != 1001 {
 		t.Fatalf("goodwill over the limit: %v", err)
 	}
-	if _, err := r.svc.AddPayment(r.ctx, till, id, PaymentIn{Tender: "cash", AmountCents: 1, TipCents: 1, Refund: true, Goodwill: true, Reason: "x"}); !errors.Is(err, ErrBadRequest) {
+	if _, err := r.svc.AddPayment(r.ctx, till, id, PaymentIn{ClientKey: tk(), Tender: "cash", AmountCents: 1, TipCents: 1, Refund: true, Goodwill: true, Reason: "x"}); !errors.Is(err, ErrBadRequest) {
 		t.Fatalf("goodwill tip: %v", err)
 	}
 
@@ -146,7 +146,7 @@ func TestGoodwillOutsideAndKick(t *testing.T) {
 	res, _ = r.svc.PlaceOrder(r.ctx, till, OrderIn{ClientKey: "k-good-0002", Cart: Cart{Cart: pricing.Cart{Lines: []pricing.Line{pizzaLine()}}},
 		Payments: []PaymentIn{{Tender: "square_app", AmountCents: 2357}}})
 	id2 := res.Order.Order.ID
-	out := PaymentIn{Tender: "square_app", AmountCents: 2357, Refund: true, Outside: true, Reason: "Square dashboard"}
+	out := PaymentIn{ClientKey: "k-out-000001", Tender: "square_app", AmountCents: 2357, Refund: true, Outside: true, Reason: "Square dashboard"}
 	if _, err := r.svc.AddPayment(r.ctx, till, id2, out); !errors.As(err, &mr) || mr.Action != terminal.NeedCardRefund {
 		t.Fatalf("outside by a cashier: %v", err)
 	}
@@ -155,13 +155,13 @@ func TestGoodwillOutsideAndKick(t *testing.T) {
 	if err != nil || o.KickDrawer || o.Payment.RefundKind != terminal.RefundOutside || o.Payment.DrawerID != "" {
 		t.Fatalf("outside: %+v %v", o, err)
 	}
-	if _, err := r.svc.AddPayment(r.ctx, till, id, PaymentIn{Tender: "cash", AmountCents: 1, Refund: true, Outside: true, Reason: "x"}); !errors.Is(err, ErrBadRequest) {
+	if _, err := r.svc.AddPayment(r.ctx, till, id, PaymentIn{ClientKey: tk(), Tender: "cash", AmountCents: 1, Refund: true, Outside: true, Reason: "x"}); !errors.Is(err, ErrBadRequest) {
 		t.Fatalf("outside on cash: %v", err)
 	}
 	// A void that hands cash back kicks the drawer.
 	res, _ = r.svc.PlaceOrder(r.ctx, till, OrderIn{ClientKey: "k-good-0003", Cart: Cart{Cart: pricing.Cart{Lines: []pricing.Line{{Qty: 1, Selection: pricing.Selection{ItemID: soda}}}}}})
 	sodaTotal := res.Order.Order.Money.Total
-	if _, err := r.svc.AddPayment(r.ctx, till, res.Order.Order.ID, PaymentIn{Tender: "cash", AmountCents: sodaTotal}); err != nil {
+	if _, err := r.svc.AddPayment(r.ctx, till, res.Order.Order.ID, PaymentIn{ClientKey: tk(), Tender: "cash", AmountCents: sodaTotal}); err != nil {
 		t.Fatal(err)
 	}
 	v, err := r.svc.Void(r.ctx, till, res.Order.Order.ID, VoidIn{Reason: "left"})

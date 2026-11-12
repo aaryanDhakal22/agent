@@ -85,13 +85,14 @@ func (s *Service) AddTip(ctx context.Context, a Actor, orderID, paymentID string
 		return &PaymentTipResult{Order: cur.Order, TipCents: now}, nil
 	}
 	at := s.now().UTC().Truncate(time.Millisecond)
-	so, got, dup, err := s.repo.AddCounterPayment(ctx, orderID, in.ClientKey, func(cur order.StoredOrder, paid []terminal.Payment) ([]terminal.Payment, []terminal.Entry, error) {
+	hash := tipFingerprint(paymentID, in)
+	so, got, dup, err := s.repo.AddCounterPayment(ctx, orderID, in.ClientKey, hash, func(cur order.StoredOrder, paid []terminal.Payment) ([]terminal.Payment, []terminal.Entry, error) {
 		_, from, _ := tipOf(paid, paymentID)
 		delta := in.TipCents - from
 		if delta == 0 {
 			return nil, nil, errNoTipChange
 		}
-		p := terminal.Payment{ID: uuid.Must(uuid.NewV7()).String(), OrderID: orderID, ClientKey: in.ClientKey, At: at, Tender: orig.Tender,
+		p := terminal.Payment{ID: uuid.Must(uuid.NewV7()).String(), OrderID: orderID, ClientKey: in.ClientKey, RequestHash: hash, At: at, Tender: orig.Tender,
 			TipCents: max(delta, -delta), Refund: delta < 0, Ref: paymentID, Last4: orig.Last4, Brand: orig.Brand, StaffID: st.ID, DeviceID: a.DeviceID}
 		if p.Refund {
 			p.Reason = "tip lowered"

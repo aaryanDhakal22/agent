@@ -59,6 +59,11 @@ type envelope struct {
 type Repo interface {
 	ListUnsyncedEvents(ctx context.Context, limit int) ([]order.FloorEvent, error)
 	MarkEventSynced(ctx context.Context, id string, at time.Time) error
+	// MarkEventsSynced marks a flush's events in one transaction (S-7).
+	MarkEventsSynced(ctx context.Context, ids []string, at time.Time) error
+	// OldestUnsynced is the oldest unsynced, unparked event's time per type
+	// (CM-9).
+	OldestUnsynced(ctx context.Context) (map[string]time.Time, error)
 	MarkEventFailed(ctx context.Context, id, errMsg string) error
 	CountUnsyncedEvents(ctx context.Context) (int64, error)
 	// Dead letters (contract 2.4e).
@@ -91,7 +96,11 @@ type Sender struct {
 	// unalerted: events parked since the last Pushover (one an hour).
 	unalerted int
 	onParked  func(n int)
+	cm        *observability.CounterMeters
 }
+
+// SetCounterMeters swaps the CM-9 instruments (tests).
+func (s *Sender) SetCounterMeters(cm *observability.CounterMeters) { s.cm = cm }
 
 // SetPager wires the problem pager for parked events (nil = log only).
 func (s *Sender) SetPager(p Pager) { s.pager = p }
@@ -108,6 +117,7 @@ func New(repo Repo, post Poster, logger zerolog.Logger, meters observability.Met
 		meters: meters,
 		tracer: otel.Tracer("quiccpos/agent/floorsync"),
 		now:    time.Now,
+		cm:     observability.Counter(),
 	}
 }
 
@@ -214,17 +224,47 @@ func (s *Sender) send(ctx context.Context, events []order.FloorEvent) (err error
 		// main rejected the batch as a whole: isolate the bad event(s) so one
 		// poison event can't hold up every later change forever.
 		if len(events) > 1 {
+			// One at a time; an event behind a refused one of its subject
+			// waits (the next flush holds it, contract 2.10s §3).
+			var first error
+			held := map[string]bool{}
 			for _, e := range events {
+				if e.Subject != "" && held[e.Subject] {
+					continue
+				}
 				if err := s.send(ctx, []order.FloorEvent{e}); err != nil {
-					return err
+					if first == nil {
+						first = err
+					}
+					if e.Subject != "" {
+						held[e.Subject] = true
+					}
 				}
 			}
-			return nil
+			return first
 		}
-		s.logger.Error().Ctx(ctx).Str("event_id", events[0].ID).Str("type", events[0].Type).
+		e := events[0]
+		if KeepRefused(e.Type, "invalid") {
+			// M-2: a money / record event is never dropped on a 400 / 413
+			// (a Pi / main version drift during an update): it is a refusal
+			// like an "invalid" answer - kept, retried, parked past the
+			// thresholds (dead letter + page + Retry).
+			s.logger.Error().Ctx(ctx).Str("event_id", e.ID).Str("type", e.Type).Int("status", status).
+				Msg("main rejected a floor event outright: kept (refusal), it parks if main keeps refusing it")
+			parked, err := s.refuse(ctx, e.ID, fmt.Sprintf("http_%d", status))
+			if err != nil {
+				return err
+			}
+			if parked {
+				s.noteParked(1)
+				return nil
+			}
+			return fmt.Errorf("main answered %d to a floor event the Pi keeps; retried later", status)
+		}
+		s.logger.Error().Ctx(ctx).Str("event_id", e.ID).Str("type", e.Type).
 			Int("status", status).Msg("main rejected a floor event outright — dropping it")
-		s.count(ctx, "rejected", 1)
-		return s.repo.MarkEventSynced(ctx, events[0].ID, s.now())
+		s.count(ctx, e.Type, "rejected", 1)
+		return s.repo.MarkEventSynced(ctx, e.ID, s.now())
 	}
 	if err == nil && status != http.StatusOK && status != http.StatusAccepted {
 		err = fmt.Errorf("main answered %d", status)
@@ -232,12 +272,14 @@ func (s *Sender) send(ctx context.Context, events []order.FloorEvent) (err error
 	if err != nil {
 		for _, e := range events {
 			_ = s.repo.MarkEventFailed(ctx, e.ID, err.Error())
+			s.count(ctx, e.Type, "error", 1)
 		}
-		s.count(ctx, "error", len(events))
 		return err
 	}
 	if status == http.StatusAccepted {
-		s.count(ctx, "unsupported", len(events))
+		for _, e := range events {
+			s.count(ctx, e.Type, "unsupported", 1)
+		}
 		return unsupportedError{}
 	}
 
@@ -258,67 +300,71 @@ func (s *Sender) send(ctx context.Context, events []order.FloorEvent) (err error
 		known[e.ID] = true
 		typeOf[e.ID] = e.Type
 	}
-	synced, kept, parked := 0, 0, 0
-	var park *order.SyncPark
+	byID := make(map[string]Result, len(results.Results))
 	for _, r := range results.Results {
-		if !known[r.EventID] {
+		if known[r.EventID] {
+			byID[r.EventID] = r
+		}
+	}
+	synced, kept, parked, waiting := 0, 0, 0, 0
+	var done []string
+	refusedSubject := map[string]bool{}
+	for _, e := range events {
+		r, ok := byID[e.ID]
+		if !ok {
+			continue
+		}
+		// main applied this event's subject out of order behind a refused
+		// one (e.g. order.status after a refused order.placed): it isn't
+		// marked synced, the next flush holds it behind the refused event.
+		if e.Subject != "" && refusedSubject[e.Subject] && r.Result != "applied" && r.Result != "duplicate" {
+			waiting++
 			continue
 		}
 		// Money and records that exist only on the Pi until main takes them:
 		// a refusal keeps the event queued (retried with the backoff; main
 		// looks at a refused event again) rather than lose it - until it was
 		// refused too often or too long: then it is parked (contract 2.4e)
-		// so the rest of the queue moves on.
+		// so the rest of the queue moves on. Later events of its subject
+		// wait behind it from its first refusal (contract 2.10s §3).
 		if KeepRefused(typeOf[r.EventID], r.Result) {
-			s.count(ctx, "rejected", 1)
-			ref, err := s.repo.RefuseEvent(ctx, r.EventID, r.Result, now)
+			p, err := s.refuse(ctx, r.EventID, r.Result)
 			if err != nil {
-				return fmt.Errorf("count refusal: %w", err)
+				return err
 			}
-			if park == nil {
-				p, err := s.repo.SyncParkSettings(ctx)
-				if err != nil {
-					return fmt.Errorf("park settings: %w", err)
-				}
-				park = &p
+			if e.Subject != "" {
+				refusedSubject[e.Subject] = true
 			}
-			if park.Due(ref.Refusals, ref.FirstAt, now) {
-				ok, err := s.repo.ParkEvent(ctx, ref, r.Result, now)
-				if err != nil {
-					return fmt.Errorf("park event: %w", err)
-				}
-				if ok {
-					parked++
-					s.count(ctx, "parked", 1)
-					s.logger.Error().Ctx(ctx).Str("event_id", r.EventID).Str("type", ref.Type).Str("result", r.Result).
-						Int64("refusals", ref.Refusals).Msg("main refused a floor event for good: parked (dead letter), the queue moves on")
-				}
-				continue
+			if p {
+				parked++
+			} else {
+				kept++
 			}
-			s.logger.Warn().Ctx(ctx).Str("event_id", r.EventID).Str("type", typeOf[r.EventID]).Str("result", r.Result).
-				Int64("refusals", ref.Refusals).Msg("main refused a floor event the Pi must not lose (kept, retried)")
-			kept++
 			continue
 		}
-		if err := s.repo.MarkEventSynced(ctx, r.EventID, now); err != nil {
-			return fmt.Errorf("mark synced: %w", err)
-		}
+		done = append(done, r.EventID)
 		synced++
 		res := "ok"
 		if r.Result == "not_found" || r.Result == "invalid" {
 			res = "rejected"
-			s.logger.Warn().Ctx(ctx).Str("event_id", r.EventID).Str("result", r.Result).Msg("main rejected a floor event (dropped)")
+			s.logger.Warn().Ctx(ctx).Str("event_id", r.EventID).Str("type", typeOf[r.EventID]).Str("result", r.Result).
+				Msg("main rejected a floor event (dropped)")
 		}
-		s.count(ctx, res, 1)
+		s.count(ctx, typeOf[r.EventID], res, 1)
 	}
-	if parked > 0 {
-		s.unalerted += parked
-		if s.onParked != nil {
-			s.onParked(parked)
+	// One transaction for the flush's synced events (S-7: one fsync on the
+	// SD card, not one per event).
+	if len(done) > 0 {
+		if err := s.repo.MarkEventsSynced(ctx, done, now); err != nil {
+			return fmt.Errorf("mark synced: %w", err)
 		}
 	}
+	s.noteParked(parked)
 	if kept > 0 {
 		return fmt.Errorf("main refused %d event(s) the Pi keeps; retried later", kept)
+	}
+	if waiting > 0 {
+		return fmt.Errorf("%d event(s) wait behind a refused one of their subject; retried later", waiting)
 	}
 	if synced+parked < len(events) {
 		return fmt.Errorf("main acknowledged %d of %d events", synced, len(events))
@@ -326,22 +372,72 @@ func (s *Sender) send(ctx context.Context, events []order.FloorEvent) (err error
 	return nil
 }
 
+// MoneyTypes are the events that exist only on the Pi until main takes them
+// (contract 2.10s §3, HARDENING-PLAN M-2): the counter orders and their
+// money, changes and voids, the customers, the drawers, the Z and the
+// journal. A refusal of one (invalid / not_found, or a 400 / 413) never
+// marks it synced: it is kept, retried and parked past the thresholds.
+var MoneyTypes = map[string]bool{
+	"order.placed": true, "order.payment": true, "order.changed": true, "order.void": true,
+	"customer.upsert": true, "drawer.opened": true, "drawer.closed": true, "drawer.movement": true,
+	"z.report": true, "journal.entries": true,
+}
+
 // KeepRefused reports whether an event main refused stays queued instead of
-// being marked synced: a counter order (order.placed, a main older than
-// terminal 0d answers invalid), a payment (order.payment: a main before
-// terminal 1d refuses one on an online order; not_found while its counter
-// order is still queued), a counter customer (customer.upsert, a main
-// before 1d), and stage 2's drawers and Z report (drawer.*, z.report: they
-// exist only on the Pi). Every other refusal is final (marked synced,
-// logged). A kept event is parked after too many refusals (contract 2.4e).
+// being marked synced: a MoneyTypes event answered invalid or not_found.
+// Every other refusal is final (marked synced, logged: floor bookkeeping an
+// older main may not know). A kept event is parked after too many refusals
+// (contract 2.4e).
 func KeepRefused(typ, result string) bool {
-	switch typ {
-	case "order.placed", "customer.upsert", "z.report", "drawer.opened", "drawer.closed":
-		return result == "invalid"
-	case "order.payment", "drawer.movement":
-		return result == "invalid" || result == "not_found"
+	return MoneyTypes[typ] && (result == "invalid" || result == "not_found")
+}
+
+// ClassOf is an event type's class on the CM-9 metrics: money | floor.
+func ClassOf(typ string) string {
+	if MoneyTypes[typ] {
+		return "money"
 	}
-	return false
+	return "floor"
+}
+
+// refuse counts one refusal of a kept event and parks it past the
+// thresholds (true = parked now).
+func (s *Sender) refuse(ctx context.Context, id, result string) (bool, error) {
+	ref, err := s.repo.RefuseEvent(ctx, id, result, s.now())
+	if err != nil {
+		return false, fmt.Errorf("count refusal: %w", err)
+	}
+	s.count(ctx, ref.Type, "rejected", 1)
+	p, err := s.repo.SyncParkSettings(ctx)
+	if err != nil {
+		return false, fmt.Errorf("park settings: %w", err)
+	}
+	if !p.Due(ref.Refusals, ref.FirstAt, s.now()) {
+		s.logger.Warn().Ctx(ctx).Str("event_id", id).Str("type", ref.Type).Str("result", result).
+			Int64("refusals", ref.Refusals).Msg("main refused a floor event the Pi must not lose (kept, retried)")
+		return false, nil
+	}
+	ok, err := s.repo.ParkEvent(ctx, ref, result, s.now())
+	if err != nil {
+		return false, fmt.Errorf("park event: %w", err)
+	}
+	if ok {
+		s.count(ctx, ref.Type, "parked", 1)
+		s.logger.Error().Ctx(ctx).Str("event_id", id).Str("type", ref.Type).Str("result", result).
+			Int64("refusals", ref.Refusals).Msg("main refused a floor event for good: parked (dead letter), the queue moves on")
+	}
+	return ok, nil
+}
+
+// noteParked queues parked events for the hourly page and the Pi page's nudge.
+func (s *Sender) noteParked(n int) {
+	if n == 0 {
+		return
+	}
+	s.unalerted += n
+	if s.onParked != nil {
+		s.onParked(n)
+	}
 }
 
 // alertParked pages the owner about parked events: at most one Pushover an
@@ -374,12 +470,38 @@ func (s *Sender) alertParked(ctx context.Context) {
 	}
 }
 
-func (s *Sender) count(ctx context.Context, result string, n int) {
-	s.meters.FloorEventsSent.Add(ctx, int64(n), metric.WithAttributes(attribute.String("result", result)))
+func (s *Sender) count(ctx context.Context, typ, result string, n int) {
+	if s.meters.FloorEventsSent != nil {
+		s.meters.FloorEventsSent.Add(ctx, int64(n), metric.WithAttributes(attribute.String("result", result)))
+	}
+	s.cm.Sync(ctx, ClassOf(typ), result, n)
 }
 
+// recordBacklog: the backlog, the parked count and (CM-9) the oldest
+// unsynced event's age per class (0 = none waiting).
 func (s *Sender) recordBacklog(ctx context.Context) {
-	if n, err := s.repo.CountUnsyncedEvents(ctx); err == nil {
+	if n, err := s.repo.CountUnsyncedEvents(ctx); err == nil && s.meters.FloorSyncBacklog != nil {
 		s.meters.FloorSyncBacklog.Record(ctx, n)
+	}
+	if s.cm == nil || s.cm.SyncParked == nil {
+		return
+	}
+	if n, err := s.repo.CountParkedEvents(ctx); err == nil {
+		s.cm.SyncParked.Record(ctx, n)
+	}
+	oldest, err := s.repo.OldestUnsynced(ctx)
+	if err != nil {
+		return
+	}
+	age := map[string]float64{"money": 0, "floor": 0}
+	now := s.now()
+	for typ, at := range oldest {
+		c := ClassOf(typ)
+		if a := now.Sub(at).Seconds(); a > age[c] {
+			age[c] = a
+		}
+	}
+	for c, a := range age {
+		s.cm.SyncOldestAge.Record(ctx, a, metric.WithAttributes(attribute.String("class", c)))
 	}
 }

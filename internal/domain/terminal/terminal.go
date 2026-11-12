@@ -121,6 +121,9 @@ type Settings struct {
 	// DrawerStartCents: the cash left in each terminal's drawer at opening
 	// (the owner, 2026-11-12; missing = DefaultDrawerStartCents).
 	DrawerStartCents *int64 `json:"drawer_start_cents"`
+	// WasteReasons: the store's Void waste reasons (contract 2.10s §5;
+	// missing / empty = DefaultWasteReasons).
+	WasteReasons []string `json:"waste_reasons"`
 }
 
 // DefaultDrawerStartCents is the starting cash in each drawer when main's
@@ -468,6 +471,12 @@ type Payment struct {
 	// DrawerStart (not stored): the starting cash a drawer session the Pi
 	// opens by itself with this payment gets (main's drawer_start_cents).
 	DrawerStart int64 `json:"-"`
+	// RequestHash (00033): the keyed request's fingerprint (contract 2.10s:
+	// the same client_key with another body is 409 key_reused).
+	RequestHash string `json:"-"`
+	// BatchID (00033): the batch the payment was taken in (a carried check's
+	// later payment counts on that batch's Z).
+	BatchID int64 `json:"batch_id,omitempty"`
 }
 
 // Refund kinds (Payment.RefundKind).
@@ -779,8 +788,10 @@ const VoidReason = "void"
 // number yet: the repository takes it from the counter sequence in the same
 // transaction), its payments and journal rows.
 type NewCounterOrder struct {
-	Snapshot     order.Snapshot
-	ClientKey    string
+	Snapshot  order.Snapshot
+	ClientKey string
+	// RequestHash: the SEND's fingerprint (contract 2.10s key_reused).
+	RequestHash  string
 	CounterStart int64
 	PrepMinutes  int64
 	Payments     []Payment

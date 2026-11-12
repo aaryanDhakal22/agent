@@ -224,6 +224,13 @@ DELETE FROM orders
 WHERE batch_id NOT IN (SELECT id FROM batches WHERE closed_at IS NULL)
   AND batch_id NOT IN (
       SELECT id FROM batches WHERE closed_at IS NOT NULL ORDER BY id DESC LIMIT ?
+  )
+  AND batch_id NOT IN (
+      -- F-10: held while an event about them hasn't reached main, or a carried check is open.
+      SELECT o2.batch_id FROM orders o2 JOIN floor_events f ON f.subject = o2.id WHERE f.synced_at IS NULL
+      UNION SELECT o3.batch_id FROM orders o3 WHERE o3.carried
+      UNION SELECT d.batch_id FROM drawer_sessions d JOIN floor_events f2 ON f2.subject = 'drawer:' || d.id WHERE f2.synced_at IS NULL
+      UNION SELECT z.batch_id FROM z_reports z JOIN floor_events f3 ON f3.subject = 'z:' || z.batch_id WHERE f3.synced_at IS NULL
   );
 
 -- name: DeleteOldClosedBatches :exec
@@ -231,6 +238,13 @@ DELETE FROM batches
 WHERE closed_at IS NOT NULL
   AND id NOT IN (
       SELECT id FROM batches WHERE closed_at IS NOT NULL ORDER BY id DESC LIMIT ?
+  )
+  AND id NOT IN (
+      -- F-10: held while an event about them hasn't reached main, or a carried check is open.
+      SELECT o2.batch_id FROM orders o2 JOIN floor_events f ON f.subject = o2.id WHERE f.synced_at IS NULL
+      UNION SELECT o3.batch_id FROM orders o3 WHERE o3.carried
+      UNION SELECT d.batch_id FROM drawer_sessions d JOIN floor_events f2 ON f2.subject = 'drawer:' || d.id WHERE f2.synced_at IS NULL
+      UNION SELECT z.batch_id FROM z_reports z JOIN floor_events f3 ON f3.subject = 'z:' || z.batch_id WHERE f3.synced_at IS NULL
   );
 
 -- Batches -------------------------------------------------------------------
@@ -386,7 +400,8 @@ SELECT * FROM floor_events f
 WHERE f.synced_at IS NULL AND f.parked_at IS NULL
   AND (f.subject = '' OR NOT EXISTS (
         SELECT 1 FROM floor_events p
-        WHERE p.subject = f.subject AND p.parked_at IS NOT NULL AND p.synced_at IS NULL AND p.rowid < f.rowid))
+        WHERE p.subject = f.subject AND p.synced_at IS NULL AND p.rowid < f.rowid
+          AND (p.parked_at IS NOT NULL OR p.refusals > 0)))
 ORDER BY f.rowid ASC LIMIT ?;
 
 -- name: MarkFloorEventRefused :one
@@ -943,13 +958,13 @@ UPDATE settings SET counter_next = 0 WHERE id = 1;
 -- counter number, in the open batch.
 INSERT INTO orders (id, tenant_id, location_id, source, source_event_id, snapshot, state, arrival_date,
                     batch_id, kitchen_number, prep_minutes, estimated_ready_at, accepted_at,
-                    paid, cash_due_cents, tip_cents, sent_at, paid_at, client_key)
+                    paid, cash_due_cents, tip_cents, sent_at, paid_at, client_key, request_hash, kitchen_pending)
 VALUES (sqlc.arg(id), sqlc.arg(tenant_id), sqlc.arg(location_id), sqlc.arg(source), sqlc.arg(source_event_id),
         sqlc.arg(snapshot), 'accepted', sqlc.arg(arrival_date),
         (SELECT id FROM batches WHERE closed_at IS NULL ORDER BY id DESC LIMIT 1),
         sqlc.arg(kitchen_number), sqlc.arg(prep_minutes), sqlc.arg(estimated_ready_at), sqlc.arg(accepted_at),
         sqlc.arg(paid), sqlc.arg(cash_due_cents), sqlc.arg(tip_cents), sqlc.arg(sent_at), sqlc.narg(paid_at),
-        sqlc.arg(client_key));
+        sqlc.arg(client_key), sqlc.arg(request_hash), sqlc.arg(kitchen_pending));
 
 -- name: GetOrderByClientKey :one
 SELECT * FROM orders WHERE client_key = ? AND client_key <> '';
@@ -968,11 +983,12 @@ SELECT * FROM orders WHERE source = 'counter' AND batch_id = ? ORDER BY arrival_
 -- name: InsertOrderPayment :exec
 INSERT INTO order_payments (id, order_id, client_key, at, tender, amount_cents, tip_cents, tendered_cents,
                             change_cents, refund, reason, ref, last4, staff_id, device_id, approved_by, drawer_id, brand,
-                            refund_kind)
+                            refund_kind, request_hash, batch_id)
 VALUES (sqlc.arg(id), sqlc.arg(order_id), sqlc.arg(client_key), sqlc.arg(at), sqlc.arg(tender), sqlc.arg(amount_cents),
         sqlc.arg(tip_cents), sqlc.arg(tendered_cents), sqlc.arg(change_cents), sqlc.arg(refund), sqlc.arg(reason),
         sqlc.arg(ref), sqlc.arg(last4), sqlc.arg(staff_id), sqlc.arg(device_id), sqlc.arg(approved_by), sqlc.arg(drawer_id),
-        sqlc.arg(brand), sqlc.arg(refund_kind));
+        sqlc.arg(brand), sqlc.arg(refund_kind), sqlc.arg(request_hash),
+        (SELECT id FROM batches WHERE closed_at IS NULL ORDER BY id DESC LIMIT 1));
 
 -- name: ListOrderPayments :many
 SELECT * FROM order_payments WHERE order_id = ? ORDER BY at, rowid;
@@ -1233,7 +1249,9 @@ SELECT * FROM z_reports ORDER BY batch_id DESC LIMIT ?;
 UPDATE z_reports SET status = 'done', report = ?, built_at = ? WHERE batch_id = ?;
 
 -- name: ListBatchPayments :many
-SELECT p.* FROM order_payments p JOIN orders o ON o.id = p.order_id WHERE o.batch_id = ? ORDER BY p.at, p.rowid;
+-- The payments taken in a batch (00033: a carried order's later payment
+-- counts on the batch it was taken in; an older row has its order's batch).
+SELECT p.* FROM order_payments p WHERE p.batch_id = ? ORDER BY p.at, p.rowid;
 
 -- name: ListJournalBetween :many
 SELECT * FROM journal WHERE at >= sqlc.arg(from_at) AND at <= sqlc.arg(to_at) ORDER BY at, rowid;
@@ -1254,3 +1272,40 @@ DELETE FROM z_reports WHERE status = 'done' AND batch_id NOT IN (SELECT id FROM 
 
 -- name: DeleteOrphanDeadLetters :exec
 DELETE FROM floor_dead_letters WHERE event_id NOT IN (SELECT id FROM floor_events);
+
+-- Hardening round (00033_hardening, contract 2.10s) ------------------------------
+
+-- name: MarkFloorEventsSyncedAt :exec
+-- One flush's events in one statement (S-7: one fsync, not one per event).
+UPDATE floor_events SET synced_at = sqlc.arg(synced_at), last_error = '' WHERE id IN (sqlc.slice(ids));
+
+-- name: OldestUnsyncedByType :many
+-- CM-9: the oldest unsynced, unparked event of each type.
+SELECT type, CAST(min(at) AS TEXT) AS oldest FROM floor_events
+WHERE synced_at IS NULL AND parked_at IS NULL GROUP BY type;
+
+-- name: SetOrderCarried :exec
+UPDATE orders SET carried = sqlc.arg(carried) WHERE id = sqlc.arg(id);
+
+-- name: ListCarriedOrders :many
+-- Unsettled checks carried past their batch's close (M-10), oldest first.
+SELECT * FROM orders WHERE carried ORDER BY arrival_date, id;
+
+-- name: SetKitchenPending :exec
+UPDATE orders SET kitchen_pending = sqlc.arg(pending) WHERE id = sqlc.arg(id);
+
+-- name: ListKitchenPending :many
+-- M-11: counter orders whose kitchen tickets never printed (a restart in between).
+SELECT * FROM orders WHERE kitchen_pending ORDER BY arrival_date, id;
+
+-- name: SetZReportFlagged :exec
+UPDATE z_reports SET flagged = true WHERE batch_id = ?;
+
+-- name: ListFlaggedZReports :many
+SELECT batch_id, id, built_at FROM z_reports WHERE flagged ORDER BY batch_id DESC LIMIT ?;
+
+-- name: GetPinThrottle :one
+SELECT pin_throttle FROM settings WHERE id = 1;
+
+-- name: SetPinThrottle :exec
+UPDATE settings SET pin_throttle = ? WHERE id = 1;

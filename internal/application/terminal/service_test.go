@@ -427,23 +427,23 @@ func TestPaymentsRefundsAndVoid(t *testing.T) {
 		t.Fatal(err)
 	}
 	id, total := res.Order.Order.ID, res.Order.Order.Money.Total
-	if _, err := r.svc.AddPayment(r.ctx, till, id, PaymentIn{Tender: "cash", AmountCents: total + 1}); !errors.Is(err, terminal.ErrOverBalance) {
+	if _, err := r.svc.AddPayment(r.ctx, till, id, PaymentIn{ClientKey: tk(), Tender: "cash", AmountCents: total + 1}); !errors.Is(err, terminal.ErrOverBalance) {
 		t.Fatalf("over balance: %v", err)
 	}
 	p, err := r.svc.AddPayment(r.ctx, till, id, PaymentIn{Tender: "card", AmountCents: 1000, ClientKey: "pay-00000001"})
 	if err != nil || p.BalanceCents != total-1000 || p.Duplicate {
 		t.Fatalf("part payment: %+v %v", p, err)
 	}
-	p, err = r.svc.AddPayment(r.ctx, till, id, PaymentIn{Tender: "cash", AmountCents: total - 1000, TenderedCents: 5000})
+	p, err = r.svc.AddPayment(r.ctx, till, id, PaymentIn{ClientKey: tk(), Tender: "cash", AmountCents: total - 1000, TenderedCents: 5000})
 	if err != nil || p.BalanceCents != 0 || !p.Order.Status.Paid || p.Payment.ChangeCents != 5000-(total-1000) {
 		t.Fatalf("rest: %+v %v", p, err)
 	}
 	// A refund over $10 needs a manager.
 	var mr *terminal.ManagerRequired
-	if _, err := r.svc.AddPayment(r.ctx, till, id, PaymentIn{Tender: "cash", AmountCents: 1500, Refund: true, Reason: "cold"}); !errors.As(err, &mr) {
+	if _, err := r.svc.AddPayment(r.ctx, till, id, PaymentIn{ClientKey: tk(), Tender: "cash", AmountCents: 1500, Refund: true, Reason: "cold"}); !errors.As(err, &mr) {
 		t.Fatalf("refund over the limit: %v", err)
 	}
-	p, err = r.svc.AddPayment(r.ctx, till, id, PaymentIn{Tender: "cash", AmountCents: 500, Refund: true, Reason: "cold"})
+	p, err = r.svc.AddPayment(r.ctx, till, id, PaymentIn{ClientKey: tk(), Tender: "cash", AmountCents: 500, Refund: true, Reason: "cold"})
 	if err != nil || p.BalanceCents != 500 || p.Order.Status.Paid {
 		t.Fatalf("small refund: %+v %v", p, err)
 	}

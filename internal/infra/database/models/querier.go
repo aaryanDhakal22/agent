@@ -133,6 +133,7 @@ type Querier interface {
 	GetOrderPaymentByKey(ctx context.Context, arg GetOrderPaymentByKeyParams) (OrderPayment, error)
 	GetPairedDeviceByHash(ctx context.Context, keyHash string) (PairedDevice, error)
 	GetPairedDeviceName(ctx context.Context, id string) (string, error)
+	GetPinThrottle(ctx context.Context) (string, error)
 	GetReceiptPrefs(ctx context.Context) (string, error)
 	GetSessionSecret(ctx context.Context) (string, error)
 	GetStoreAPIKey(ctx context.Context) (string, error)
@@ -180,10 +181,14 @@ type Querier interface {
 	// or ready for a non-delivery order. Scheduled (future) orders move on to
 	// the next batch instead.
 	ListBatchLeftovers(ctx context.Context, batchID int64) ([]Order, error)
-	ListBatchPayments(ctx context.Context, batchID int64) ([]OrderPayment, error)
+	// The payments taken in a batch (00033: a carried order's later payment
+	// counts on the batch it was taken in; an older row has its order's batch).
+	ListBatchPayments(ctx context.Context, batchID sql.NullInt64) ([]OrderPayment, error)
 	// 2.4.0: a batch's deliveries delivered with no driver (the UNASSIGNED report).
 	ListBatchUnassigned(ctx context.Context, batchID int64) ([]Order, error)
 	ListBatches(ctx context.Context, limit int64) ([]ListBatchesRow, error)
+	// Unsettled checks carried past their batch's close (M-10), oldest first.
+	ListCarriedOrders(ctx context.Context) ([]Order, error)
 	// Counter orders of a batch (the terminals' Pick Up list filters them).
 	ListCounterOrders(ctx context.Context, batchID int64) ([]Order, error)
 	ListCustomerAddresses(ctx context.Context, customerID string) ([]CustomerAddress, error)
@@ -192,12 +197,15 @@ type Querier interface {
 	// Online pickups / dine-in ready since before the cutoff and not finished yet.
 	ListDueOnlinePickups(ctx context.Context, cutoff sql.NullString) ([]string, error)
 	ListDueScheduled(ctx context.Context, ringAt sql.NullString) ([]Order, error)
+	ListFlaggedZReports(ctx context.Context, limit int64) ([]ListFlaggedZReportsRow, error)
 	ListIntegrationEvents(ctx context.Context, arg ListIntegrationEventsParams) ([]IntegrationEvent, error)
 	// Claimed but never recorded: the agent stopped between claim and record.
 	ListInterruptedAccepts(ctx context.Context) ([]string, error)
 	// Newest first.
 	ListJournal(ctx context.Context, limit int64) ([]Journal, error)
 	ListJournalBetween(ctx context.Context, arg ListJournalBetweenParams) ([]Journal, error)
+	// M-11: counter orders whose kitchen tickets never printed (a restart in between).
+	ListKitchenPending(ctx context.Context) ([]Order, error)
 	// Delivery orders main located (their address + point), for the customers'
 	// in / out of area check.
 	ListLocatedDeliveries(ctx context.Context) ([]ListLocatedDeliveriesRow, error)
@@ -255,6 +263,9 @@ type Querier interface {
 	MarkFloorEventFailed(ctx context.Context, arg MarkFloorEventFailedParams) error
 	MarkFloorEventRefused(ctx context.Context, arg MarkFloorEventRefusedParams) (MarkFloorEventRefusedRow, error)
 	MarkFloorEventSynced(ctx context.Context, arg MarkFloorEventSyncedParams) error
+	// Hardening round (00033_hardening, contract 2.10s) ------------------------------
+	// One flush's events in one statement (S-7: one fsync, not one per event).
+	MarkFloorEventsSyncedAt(ctx context.Context, arg MarkFloorEventsSyncedAtParams) error
 	// 2.2.1: a delivery that came back with its driver leaves the run. retry =
 	// ready again with no driver, held aside (came_back) until released; cancel =
 	// cancelled. Either way no driver, no pool, no out / delivered time, so it
@@ -275,6 +286,8 @@ type Querier interface {
 	NextKitchenNumber(ctx context.Context) (int64, error)
 	// A stop joining a run that is out goes last.
 	NextRunSeq(ctx context.Context, driverID sql.NullString) (int64, error)
+	// CM-9: the oldest unsynced, unparked event of each type.
+	OldestUnsyncedByType(ctx context.Context) ([]OldestUnsyncedByTypeRow, error)
 	OpenBatch(ctx context.Context, openedAt string) (Batch, error)
 	// Driver shifts ----------------------------------------------------------------
 	OpenShift(ctx context.Context, arg OpenShiftParams) error
@@ -349,6 +362,7 @@ type Querier interface {
 	SetIntegrationSettings(ctx context.Context, arg SetIntegrationSettingsParams) error
 	SetIntegrationStatus(ctx context.Context, integrationStatus string) error
 	SetKitchenCounters(ctx context.Context, arg SetKitchenCountersParams) error
+	SetKitchenPending(ctx context.Context, arg SetKitchenPendingParams) error
 	SetLastBackup(ctx context.Context, lastBackupAt string) error
 	SetLastDriverReset(ctx context.Context, lastDriverResetAt string) error
 	SetLastPrepMinutes(ctx context.Context, lastPrepMinutes int64) error
@@ -357,6 +371,7 @@ type Querier interface {
 	SetLinkInfo(ctx context.Context, arg SetLinkInfoParams) error
 	SetManagerPasswordHash(ctx context.Context, uiPasswordHash string) error
 	SetMapFile(ctx context.Context, mapFile string) error
+	SetOrderCarried(ctx context.Context, arg SetOrderCarriedParams) error
 	// 2.4.0 Drivers tab: a delivered or out delivery moves to another driver
 	// (driver_id NULL = Unassigned) with its run stop number and the
 	// MarkedDelivered record.
@@ -373,6 +388,7 @@ type Querier interface {
 	SetOrderPool(ctx context.Context, arg SetOrderPoolParams) (int64, error)
 	SetOrderSnapshot(ctx context.Context, arg SetOrderSnapshotParams) error
 	SetPairedDeviceAppVersion(ctx context.Context, arg SetPairedDeviceAppVersionParams) error
+	SetPinThrottle(ctx context.Context, pinThrottle string) error
 	// Renumbers one pooled order (0 rows = no longer in that pool, or unchanged).
 	SetPoolSeq(ctx context.Context, arg SetPoolSeqParams) (int64, error)
 	// The Pushover part of the link secrets, refreshed from main (2.3.7).
@@ -390,6 +406,7 @@ type Querier interface {
 	SetUpdateJob(ctx context.Context, updateJob string) error
 	SetUpdateLastSuccess(ctx context.Context, updateLastSuccess string) error
 	SetUpdateNotified(ctx context.Context, updateNotified string) error
+	SetZReportFlagged(ctx context.Context, batchID int64) error
 	SumDrawerCash(ctx context.Context, drawerID string) (SumDrawerCashRow, error)
 	SumDrawerMovements(ctx context.Context, drawerID string) (SumDrawerMovementsRow, error)
 	// The counter sequence: hands out counter_next (or start when it is 0, i.e.

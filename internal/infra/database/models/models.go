@@ -210,6 +210,9 @@ type Order struct {
 	CancelReason         string         `json:"cancel_reason"`
 	ClientKey            string         `json:"client_key"`
 	DoorTipCents         int64          `json:"door_tip_cents"`
+	RequestHash          string         `json:"request_hash"`
+	Carried              bool           `json:"carried"`
+	KitchenPending       bool           `json:"kitchen_pending"`
 }
 
 type OrderGeo struct {
@@ -232,25 +235,27 @@ type OrderGeo struct {
 }
 
 type OrderPayment struct {
-	ID            string `json:"id"`
-	OrderID       string `json:"order_id"`
-	ClientKey     string `json:"client_key"`
-	At            string `json:"at"`
-	Tender        string `json:"tender"`
-	AmountCents   int64  `json:"amount_cents"`
-	TipCents      int64  `json:"tip_cents"`
-	TenderedCents int64  `json:"tendered_cents"`
-	ChangeCents   int64  `json:"change_cents"`
-	Refund        bool   `json:"refund"`
-	Reason        string `json:"reason"`
-	Ref           string `json:"ref"`
-	Last4         string `json:"last4"`
-	StaffID       string `json:"staff_id"`
-	DeviceID      string `json:"device_id"`
-	ApprovedBy    string `json:"approved_by"`
-	DrawerID      string `json:"drawer_id"`
-	Brand         string `json:"brand"`
-	RefundKind    string `json:"refund_kind"`
+	ID            string        `json:"id"`
+	OrderID       string        `json:"order_id"`
+	ClientKey     string        `json:"client_key"`
+	At            string        `json:"at"`
+	Tender        string        `json:"tender"`
+	AmountCents   int64         `json:"amount_cents"`
+	TipCents      int64         `json:"tip_cents"`
+	TenderedCents int64         `json:"tendered_cents"`
+	ChangeCents   int64         `json:"change_cents"`
+	Refund        bool          `json:"refund"`
+	Reason        string        `json:"reason"`
+	Ref           string        `json:"ref"`
+	Last4         string        `json:"last4"`
+	StaffID       string        `json:"staff_id"`
+	DeviceID      string        `json:"device_id"`
+	ApprovedBy    string        `json:"approved_by"`
+	DrawerID      string        `json:"drawer_id"`
+	Brand         string        `json:"brand"`
+	RefundKind    string        `json:"refund_kind"`
+	RequestHash   string        `json:"request_hash"`
+	BatchID       sql.NullInt64 `json:"batch_id"`
 }
 
 type OrderTime struct {
@@ -331,6 +336,7 @@ type Setting struct {
 	SyncParkRefusals           int64   `json:"sync_park_refusals"`
 	SyncParkHours              int64   `json:"sync_park_hours"`
 	SyncParkAlertedAt          string  `json:"sync_park_alerted_at"`
+	PinThrottle                string  `json:"pin_throttle"`
 }
 
 type SettingsLog struct {
@@ -390,4 +396,5 @@ type ZReport struct {
 	Report    string         `json:"report"`
 	CreatedAt string         `json:"created_at"`
 	BuiltAt   sql.NullString `json:"built_at"`
+	Flagged   bool           `json:"flagged"`
 }

@@ -95,7 +95,7 @@ func TestDrawerLifecycle(t *testing.T) {
 	// A card sale doesn't.
 	res2, _ := r.svc.PlaceOrder(r.ctx, till, OrderIn{ClientKey: "drw-0002", Type: "pickup", Cart: sodaCart(1)})
 	q1, _ := r.svc.Quote(r.ctx, till, QuoteIn{Cart: sodaCart(1)})
-	if _, err := r.svc.AddPayment(r.ctx, till, res2.Order.Order.ID, PaymentIn{Tender: "card", AmountCents: q1.Quote.(pricing.Quote).TotalCents}); err != nil {
+	if _, err := r.svc.AddPayment(r.ctx, till, res2.Order.Order.ID, PaymentIn{ClientKey: tk(), Tender: "card", AmountCents: q1.Quote.(pricing.Quote).TotalCents}); err != nil {
 		t.Fatal(err)
 	}
 	// Pay-in free; pay-out over the cashier's $20 needs a manager; more than
@@ -135,7 +135,7 @@ func TestDrawerLifecycle(t *testing.T) {
 		t.Fatalf("expected %d: %+v", want, v.Drawer)
 	}
 	// A cash refund from Till 1 comes out of it.
-	if _, err := r.svc.AddPayment(r.ctx, till, res.Order.Order.ID, PaymentIn{Tender: "cash", AmountCents: 50, Refund: true, Reason: "sorry",
+	if _, err := r.svc.AddPayment(r.ctx, till, res.Order.Order.ID, PaymentIn{ClientKey: tk(), Tender: "cash", AmountCents: 50, Refund: true, Reason: "sorry",
 		ManagerPIN: "9876"}); err != nil {
 		t.Fatal(err)
 	}
@@ -287,7 +287,7 @@ func TestVoidAfterTenderChangeGivesBackOnlyTheNet(t *testing.T) {
 		t.Fatal(err)
 	}
 	id := res.Order.Order.ID
-	if _, err := r.svc.AddPayment(r.ctx, till, id, PaymentIn{Tender: "cash", AmountCents: 100, TipCents: 50, Refund: true, Reason: "change"}); err != nil {
+	if _, err := r.svc.AddPayment(r.ctx, till, id, PaymentIn{ClientKey: tk(), Tender: "cash", AmountCents: 100, TipCents: 50, Refund: true, Reason: "change"}); err != nil {
 		t.Fatal(err)
 	}
 	v, err := r.svc.Void(r.ctx, till, id, VoidIn{Reason: "left"})

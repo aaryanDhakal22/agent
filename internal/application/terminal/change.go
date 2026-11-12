@@ -119,11 +119,14 @@ func orderType(snap order.Snapshot) string {
 
 // editRecord is one kitchen change remembered on the order (by client_key).
 type editRecord struct {
-	ClientKey string    `json:"client_key"`
-	At        time.Time `json:"at"`
-	StaffID   string    `json:"staff_id"`
-	Added     []string  `json:"added"`
-	Removed   []string  `json:"removed"`
+	ClientKey string `json:"client_key"`
+	// Hash: the change request's fingerprint (contract 2.10s: the same key
+	// with another body is 409 key_reused; "" on an older edit).
+	Hash    string    `json:"hash,omitempty"`
+	At      time.Time `json:"at"`
+	StaffID string    `json:"staff_id"`
+	Added   []string  `json:"added"`
+	Removed []string  `json:"removed"`
 }
 
 // edits are the changes the order remembers (newest last).
@@ -176,14 +179,18 @@ func (s *Service) ChangeCart(ctx context.Context, a Actor, id string, in ChangeI
 	if _, err := uuid.Parse(id); err != nil {
 		return nil, order.ErrNotFound
 	}
-	if in.ClientKey != "" && !keyRe.MatchString(in.ClientKey) {
-		return nil, badRequest("client_key is 8-64 letters, digits, _ . : -")
+	if err := requireKey(in.ClientKey); err != nil {
+		return nil, err
 	}
+	hash := changeFingerprint(in)
 	cur, err := s.Order(ctx, id)
 	if err != nil {
 		return nil, err
 	}
 	if e := findEdit(cur.Order.Order, in.ClientKey); e != nil {
+		if !terminal.SameRequest(e.Hash, hash) {
+			return nil, &terminal.KeyReused{ClientKey: in.ClientKey, OrderID: id}
+		}
 		return &ChangeResult{Order: cur.Order, Added: nonNil(e.Added), Removed: nonNil(e.Removed), Changed: true, Duplicate: true,
 			BalanceCents: cur.Order.Status.CashDueCents}, nil
 	}
@@ -229,6 +236,9 @@ func (s *Service) ChangeCart(ctx context.Context, a Actor, id string, in ChangeI
 	var dup *editRecord
 	so, _, changed, err := s.repo.ChangeCounterOrder(ctx, id, st.ID, a.DeviceID, func(cur order.StoredOrder, paid []terminal.Payment) (*order.Snapshot, []terminal.Entry, error) {
 		if e := findEdit(cur.Order, in.ClientKey); e != nil { // a retry raced the first one
+			if !terminal.SameRequest(e.Hash, hash) {
+				return nil, nil, &terminal.KeyReused{ClientKey: in.ClientKey, OrderID: id}
+			}
 			dup = e
 			return nil, nil, nil
 		}
@@ -260,7 +270,7 @@ func (s *Service) ChangeCart(ctx context.Context, a Actor, id string, in ChangeI
 				tm[k] = v
 			}
 		}
-		rec := editRecord{ClientKey: in.ClientKey, At: now.UTC().Truncate(time.Millisecond), StaffID: st.ID,
+		rec := editRecord{ClientKey: in.ClientKey, Hash: hash, At: now.UTC().Truncate(time.Millisecond), StaffID: st.ID,
 			Added: nonNil(terminal.Labels(added)), Removed: nonNil(terminal.Labels(removed))}
 		hist := append(edits(cur.Order), rec)
 		if len(hist) > terminal.MaxEditKeys {

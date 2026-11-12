@@ -62,6 +62,9 @@ func (r *OrderRepository) PlaceCounterOrder(ctx context.Context, in terminal.New
 	err = r.withTx(ctx, func(q *models.Queries) error {
 		switch row, err := q.GetOrderByClientKey(ctx, in.ClientKey); {
 		case err == nil:
+			if !terminal.SameRequest(row.RequestHash, in.RequestHash) {
+				return &terminal.KeyReused{ClientKey: in.ClientKey, OrderID: row.ID}
+			}
 			so, err = toStored(row)
 			return err
 		case !errors.Is(err, sql.ErrNoRows):
@@ -86,7 +89,10 @@ func (r *OrderRepository) PlaceCounterOrder(ctx context.Context, in terminal.New
 			PrepMinutes:      sql.NullInt64{Int64: in.PrepMinutes, Valid: true},
 			EstimatedReadyAt: nullTS(now.Add(time.Duration(in.PrepMinutes) * time.Minute)), AcceptedAt: nullTS(now),
 			Paid: due == 0, CashDueCents: sql.NullInt64{Int64: due, Valid: true}, TipCents: sql.NullInt64{Int64: tips, Valid: true},
-			SentAt: nullTS(now), ClientKey: in.ClientKey}
+			SentAt: nullTS(now), ClientKey: in.ClientKey, RequestHash: in.RequestHash,
+			// M-11: the kitchen tickets print after the commit; a restart in
+			// between finds this set and prints them (with a REPRINT banner).
+			KitchenPending: true}
 		if due == 0 {
 			ins.PaidAt = nullTS(now)
 		}
@@ -161,9 +167,13 @@ func insertPayment(ctx context.Context, q *models.Queries, p *terminal.Payment) 
 	err = q.InsertOrderPayment(ctx, models.InsertOrderPaymentParams{ID: p.ID, OrderID: p.OrderID, ClientKey: p.ClientKey,
 		At: fmtTS(p.At), Tender: p.Tender, AmountCents: p.AmountCents, TipCents: p.TipCents, TenderedCents: p.TenderedCents,
 		ChangeCents: p.ChangeCents, Refund: p.Refund, Reason: p.Reason, Ref: p.Ref, Last4: p.Last4, StaffID: p.StaffID,
-		DeviceID: p.DeviceID, ApprovedBy: p.ApprovedBy, DrawerID: drawer, Brand: p.Brand, RefundKind: p.RefundKind})
+		DeviceID: p.DeviceID, ApprovedBy: p.ApprovedBy, DrawerID: drawer, Brand: p.Brand, RefundKind: p.RefundKind,
+		RequestHash: p.RequestHash})
 	if err != nil {
 		return fmt.Errorf("insert payment: %w", err)
+	}
+	if b, err := q.GetOpenBatch(ctx); err == nil {
+		p.BatchID = b.ID
 	}
 	return nil
 }
@@ -176,7 +186,8 @@ func paymentFromRow(row models.OrderPayment) (terminal.Payment, error) {
 	return terminal.Payment{ID: row.ID, OrderID: row.OrderID, ClientKey: row.ClientKey, At: at, Tender: row.Tender,
 		AmountCents: row.AmountCents, TipCents: row.TipCents, TenderedCents: row.TenderedCents, ChangeCents: row.ChangeCents,
 		Refund: row.Refund, Reason: row.Reason, Ref: row.Ref, Last4: row.Last4, StaffID: row.StaffID, DeviceID: row.DeviceID,
-		ApprovedBy: row.ApprovedBy, DrawerID: row.DrawerID, Brand: row.Brand, RefundKind: row.RefundKind}, nil
+		ApprovedBy: row.ApprovedBy, DrawerID: row.DrawerID, Brand: row.Brand, RefundKind: row.RefundKind,
+		RequestHash: row.RequestHash, BatchID: row.BatchID.Int64}, nil
 }
 
 func listPayments(ctx context.Context, q *models.Queries, orderID string) ([]terminal.Payment, error) {
@@ -298,7 +309,7 @@ func tipsOf(ctx context.Context, q *models.Queries, orderID string) int64 {
 // AddCounterPayment records a payment (or refund) on a counter order of the
 // open batch. A payment whose client_key the order already has returns that
 // payment (duplicate, nothing written).
-func (r *OrderRepository) AddCounterPayment(ctx context.Context, orderID, clientKey string, check terminal.MoneyCheck) (so order.StoredOrder, pay terminal.Payment, duplicate bool, err error) {
+func (r *OrderRepository) AddCounterPayment(ctx context.Context, orderID, clientKey, requestHash string, check terminal.MoneyCheck) (so order.StoredOrder, pay terminal.Payment, duplicate bool, err error) {
 	ctx, _, end := dbSpan(ctx, "terminal.add_payment")
 	defer end(&err)
 	now := time.Now()
@@ -315,6 +326,9 @@ func (r *OrderRepository) AddCounterPayment(ctx context.Context, orderID, client
 		if clientKey != "" {
 			switch row, err := q.GetOrderPaymentByKey(ctx, models.GetOrderPaymentByKeyParams{OrderID: orderID, ClientKey: clientKey}); {
 			case err == nil:
+				if !terminal.SameRequest(row.RequestHash, requestHash) {
+					return &terminal.KeyReused{ClientKey: clientKey, OrderID: orderID}
+				}
 				duplicate, so = true, cur
 				pay, err = paymentFromRow(row)
 				return err
@@ -326,7 +340,9 @@ func (r *OrderRepository) AddCounterPayment(ctx context.Context, orderID, client
 		if err != nil {
 			return fmt.Errorf("open batch: %w", err)
 		}
-		if cur.Status.BatchID != b.ID || cur.Status.State == order.StateCancelled {
+		// The open batch's orders, and a check carried past its batch's
+		// close (contract 2.10s §4: still payable until settled).
+		if (cur.Status.BatchID != b.ID && !cur.Status.Carried) || cur.Status.State == order.StateCancelled {
 			return terminal.ErrNotPayable
 		}
 		if cur.Order.Source != order.SourceCounter && !terminal.OnPickupStates(cur) {
@@ -363,6 +379,9 @@ func (r *OrderRepository) AddCounterPayment(ctx context.Context, orderID, client
 			return err
 		}
 		pay = pays[0] // with its drawer
+		if err := settleCarried(ctx, q, orderID); err != nil {
+			return err
+		}
 		if so, err = loadOrder(ctx, q, orderID); err != nil {
 			return err
 		}
@@ -572,4 +591,50 @@ func nilIfEmpty(s string) any {
 		return nil
 	}
 	return s
+}
+
+// settleCarried drops the carried mark of a check that is settled now
+// (contract 2.10s §4): paid (and, a pickup, picked up) or cancelled.
+func settleCarried(ctx context.Context, q *models.Queries, id string) error {
+	so, err := loadOrder(ctx, q, id)
+	if err != nil {
+		return err
+	}
+	if !so.Status.Carried || !order.Settled(so) {
+		return nil
+	}
+	return q.SetOrderCarried(ctx, models.SetOrderCarriedParams{Carried: false, ID: id})
+}
+
+// CounterKeyHash is what a SEND's client_key made before: the order and the
+// request's fingerprint (contract 2.10s §1; found false = a new key).
+func (r *OrderRepository) CounterKeyHash(ctx context.Context, key string) (orderID, hash string, found bool, err error) {
+	ctx, _, end := dbSpan(ctx, "terminal.key_hash")
+	defer end(&err)
+	row, err := models.New(r.db).GetOrderByClientKey(ctx, key)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", "", false, nil
+	}
+	if err != nil {
+		return "", "", false, err
+	}
+	return row.ID, row.RequestHash, true, nil
+}
+
+// PaymentByKey is the payment a client_key made on an order (nil = none).
+func (r *OrderRepository) PaymentByKey(ctx context.Context, orderID, key string) (p *terminal.Payment, err error) {
+	ctx, _, end := dbSpan(ctx, "terminal.payment_by_key")
+	defer end(&err)
+	row, err := models.New(r.db).GetOrderPaymentByKey(ctx, models.GetOrderPaymentByKeyParams{OrderID: orderID, ClientKey: key})
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	pay, err := paymentFromRow(row)
+	if err != nil {
+		return nil, err
+	}
+	return &pay, nil
 }

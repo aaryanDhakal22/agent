@@ -125,6 +125,8 @@ type FloorEvent struct {
 	Payload  json.RawMessage `json:"payload"`
 	At       time.Time       `json:"at"`
 	Attempts int64           `json:"attempts"`
+	// Subject (contract 2.4e): what the event is about ("" = nothing held).
+	Subject string `json:"subject,omitempty"`
 }
 
 // OrderStatusEvent is the payload of an order.status floor event.

@@ -61,7 +61,7 @@ func (r *OrderRepository) ZInputs(ctx context.Context, batchID int64) (in termin
 	if in.Orders, err = mapRowsBare(rows); err != nil {
 		return in, err
 	}
-	pays, err := q.ListBatchPayments(ctx, batchID)
+	pays, err := q.ListBatchPayments(ctx, sql.NullInt64{Int64: batchID, Valid: true})
 	if err != nil {
 		return in, err
 	}

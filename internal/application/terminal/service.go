@@ -23,9 +23,10 @@ type Repo interface {
 	SnapshotRepo
 	PickupRepo
 	DraftRepo
+	KeyRepo
 	CounterOrderByKey(ctx context.Context, key string) (*order.StoredOrder, error)
 	PlaceCounterOrder(ctx context.Context, in terminal.NewCounterOrder) (order.StoredOrder, bool, error)
-	AddCounterPayment(ctx context.Context, orderID, clientKey string, check terminal.MoneyCheck) (order.StoredOrder, terminal.Payment, bool, error)
+	AddCounterPayment(ctx context.Context, orderID, clientKey, requestHash string, check terminal.MoneyCheck) (order.StoredOrder, terminal.Payment, bool, error)
 	VoidCounterOrder(ctx context.Context, id, reason, staffID, deviceID string, check terminal.MoneyCheck) (so, prev order.StoredOrder, refunds []terminal.Payment, returned bool, err error)
 	ChangeCounterOrder(ctx context.Context, id, staffID, deviceID string, check terminal.ChangeCheck) (so, prev order.StoredOrder, changed bool, err error)
 	OrderPayments(ctx context.Context, orderID string) ([]terminal.Payment, error)
@@ -704,13 +705,12 @@ func (s *Service) PlaceOrder(ctx context.Context, a Actor, in OrderIn) (*PlaceRe
 	if err != nil {
 		return nil, err
 	}
-	if !keyRe.MatchString(in.ClientKey) {
-		return nil, badRequest("client_key is 8-64 letters, digits, _ . : -")
-	}
-	if prev, err := s.repo.CounterOrderByKey(ctx, in.ClientKey); err != nil {
+	if err := requireKey(in.ClientKey); err != nil {
 		return nil, err
-	} else if prev != nil {
-		return &PlaceResult{Order: *prev, Number: numberOf(*prev), Duplicate: true}, nil
+	}
+	hash := orderFingerprint(in)
+	if dup, err := s.duplicateOrder(ctx, in.ClientKey, hash); err != nil || dup != nil {
+		return dup, err
 	}
 	typ, err := checkType(in.Type)
 	if err != nil {
@@ -839,14 +839,14 @@ func (s *Service) PlaceOrder(ctx context.Context, a Actor, in OrderIn) (*PlaceRe
 	}
 	prep := s.prepMinutes(cfg, typ, ful.Type, in.PrepMinutes)
 	stampStart(cfg, pays)
-	so, created, err := s.repo.PlaceCounterOrder(ctx, terminal.NewCounterOrder{Snapshot: snap, ClientKey: in.ClientKey,
+	so, created, err := s.repo.PlaceCounterOrder(ctx, terminal.NewCounterOrder{Snapshot: snap, ClientKey: in.ClientKey, RequestHash: hash,
 		CounterStart: cfg.CounterStart(), PrepMinutes: prep, Payments: pays, Journal: journal,
 		StaffID: st.ID, DeviceID: a.DeviceID, Now: now})
 	if err != nil {
 		return nil, err
 	}
 	if !created {
-		return &PlaceResult{Order: so, Number: numberOf(so), Duplicate: true}, nil
+		return s.duplicateOrder(ctx, in.ClientKey, hash)
 	}
 	s.orders.PrintCounterTickets(ctx, so)
 	s.orders.CounterOrderChanged(ctx, so, nil, false)
@@ -976,10 +976,25 @@ func (s *Service) AddPayment(ctx context.Context, a Actor, orderID string, in Pa
 	if _, err := uuid.Parse(orderID); err != nil {
 		return nil, order.ErrNotFound
 	}
+	if err := requireKey(in.ClientKey); err != nil {
+		return nil, err
+	}
+	hash := paymentFingerprint(in)
+	// The same key again: the stored answer (or 409 key_reused) before any
+	// limit is checked - a retried refund is not a second refund.
+	if prev, err := s.repo.PaymentByKey(ctx, orderID, in.ClientKey); err != nil {
+		return nil, err
+	} else if prev != nil {
+		if !terminal.SameRequest(prev.RequestHash, hash) {
+			return nil, &terminal.KeyReused{ClientKey: in.ClientKey, OrderID: orderID}
+		}
+		return s.duplicatePayment(ctx, orderID, *prev)
+	}
 	pay, err := in.payment(a, st, orderID, s.now())
 	if err != nil {
 		return nil, err
 	}
+	pay.RequestHash = hash
 	var approver *terminal.Staff
 	var need *terminal.ManagerRequired
 	switch {
@@ -1001,7 +1016,7 @@ func (s *Service) AddPayment(ctx context.Context, a Actor, orderID string, in Pa
 		}
 		pay.ApprovedBy = approver.ID
 	}
-	so, got, dup, err := s.repo.AddCounterPayment(ctx, orderID, in.ClientKey, func(cur order.StoredOrder, paid []terminal.Payment) ([]terminal.Payment, []terminal.Entry, error) {
+	so, got, dup, err := s.repo.AddCounterPayment(ctx, orderID, in.ClientKey, hash, func(cur order.StoredOrder, paid []terminal.Payment) ([]terminal.Payment, []terminal.Entry, error) {
 		amount, tip := netPaid(paid)
 		if pay.Refund {
 			if pay.AmountCents > amount || pay.TipCents > tip {

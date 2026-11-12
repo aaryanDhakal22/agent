@@ -85,13 +85,13 @@ func TestOnlineCashPickupPaidAtTheTerminalThenPickedUp(t *testing.T) {
 	if v, err := r.svc.Order(r.ctx, cash.Order.ID); err != nil || len(v.Payments) != 0 {
 		t.Fatalf("order view: %v", err)
 	}
-	if _, err := r.svc.AddPayment(r.ctx, till, cash.Order.ID, PaymentIn{Tender: terminal.TenderCash, AmountCents: 2001}); !errors.Is(err, terminal.ErrOverBalance) {
+	if _, err := r.svc.AddPayment(r.ctx, till, cash.Order.ID, PaymentIn{ClientKey: tk(), Tender: terminal.TenderCash, AmountCents: 2001}); !errors.Is(err, terminal.ErrOverBalance) {
 		t.Fatalf("over the balance: %v", err)
 	}
-	if _, err := r.svc.AddPayment(r.ctx, till, card.Order.ID, PaymentIn{Tender: terminal.TenderCash, AmountCents: 1}); !errors.Is(err, terminal.ErrOverBalance) {
+	if _, err := r.svc.AddPayment(r.ctx, till, card.Order.ID, PaymentIn{ClientKey: tk(), Tender: terminal.TenderCash, AmountCents: 1}); !errors.Is(err, terminal.ErrOverBalance) {
 		t.Fatalf("a card order owes nothing: %v", err)
 	}
-	if _, err := r.svc.AddPayment(r.ctx, till, deliv.Order.ID, PaymentIn{Tender: terminal.TenderCash, AmountCents: 1}); !errors.Is(err, terminal.ErrNotCounterOrder) {
+	if _, err := r.svc.AddPayment(r.ctx, till, deliv.Order.ID, PaymentIn{ClientKey: tk(), Tender: terminal.TenderCash, AmountCents: 1}); !errors.Is(err, terminal.ErrNotCounterOrder) {
 		t.Fatalf("a delivery is the driver's: %v", err)
 	}
 	pay, err := r.svc.AddPayment(r.ctx, till, cash.Order.ID, PaymentIn{Tender: terminal.TenderCash, AmountCents: 2000, TenderedCents: 2500, ClientKey: "pay-online-01"})
@@ -170,7 +170,7 @@ func TestCompByACashierNeedsNoManager(t *testing.T) {
 		t.Fatal(err)
 	}
 	id, total := res.Order.Order.ID, res.Order.Order.Money.Total
-	pay, err := r.svc.AddPayment(r.ctx, till, id, PaymentIn{Tender: terminal.TenderComp, AmountCents: total})
+	pay, err := r.svc.AddPayment(r.ctx, till, id, PaymentIn{ClientKey: tk(), Tender: terminal.TenderComp, AmountCents: total})
 	if err != nil || pay.Payment.ApprovedBy != "" || pay.BalanceCents != 0 {
 		t.Fatalf("comp tender by a cashier: %+v %v", pay, err)
 	}

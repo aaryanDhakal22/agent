@@ -78,6 +78,11 @@ CREATE TABLE orders (
     client_key              text    NOT NULL DEFAULT '',
     -- 00026_terminal_driver: a tip the driver got at the door (cash / counter).
     door_tip_cents          integer NOT NULL DEFAULT 0,
+    -- 00033_hardening: a keyed request's fingerprint (409 key_reused), a check
+    -- carried past its batch's close, kitchen tickets still to print.
+    request_hash            text    NOT NULL DEFAULT '',
+    carried                 boolean NOT NULL DEFAULT false,
+    kitchen_pending         boolean NOT NULL DEFAULT false,
     CHECK (state IN ('arrived', 'scheduled', 'accepted', 'ready', 'on_delivery', 'delivered', 'cancelled'))
 );
 CREATE INDEX idx_orders_arrival_date ON orders (arrival_date DESC);
@@ -248,6 +253,8 @@ CREATE TABLE settings (
     sync_park_refusals        integer NOT NULL DEFAULT 8,
     sync_park_hours           integer NOT NULL DEFAULT 2,
     sync_park_alerted_at      text    NOT NULL DEFAULT '',
+    -- 00033_hardening: wrong PINs per terminal + per store (JSON).
+    pin_throttle              text    NOT NULL DEFAULT '',
     CHECK (id = 1)
 );
 
@@ -350,9 +357,13 @@ CREATE TABLE order_payments (
     -- mastercard | visa | other; '' = none given / not a card).
     brand          text    NOT NULL DEFAULT '',
     -- 00032_drawer_auto: a refund's kind ('' | goodwill | outside).
-    refund_kind    text    NOT NULL DEFAULT ''
+    refund_kind    text    NOT NULL DEFAULT '',
+    -- 00033_hardening: the keyed request's fingerprint; the batch it was taken in.
+    request_hash   text    NOT NULL DEFAULT '',
+    batch_id       integer
 );
 CREATE INDEX idx_order_payments_order ON order_payments (order_id, at);
+CREATE INDEX idx_order_payments_batch ON order_payments (batch_id);
 CREATE INDEX idx_order_payments_drawer ON order_payments (drawer_id) WHERE drawer_id <> '';
 CREATE UNIQUE INDEX idx_order_payments_key ON order_payments (order_id, client_key) WHERE client_key <> '';
 
@@ -484,5 +495,14 @@ CREATE TABLE z_reports (
     forced     boolean NOT NULL DEFAULT false,
     report     text    NOT NULL DEFAULT '',
     created_at text    NOT NULL,
-    built_at   text
+    built_at   text,
+    -- 00033_hardening: doesn't balance (paged once).
+    flagged    boolean NOT NULL DEFAULT false
 );
+
+-- 00033_hardening: CREATE INDEX idx_orders_carried ON orders (carried) WHERE carried;
+-- and the S-6 triggers (order_payments_money_ins / _order_ins / _money_upd,
+-- drawer_sessions_money_ins, drawer_movements_ins, batches_one_open) live in
+-- the migration only (sqlc doesn't need them; the drift test compares tables
+-- and indexes).
+CREATE INDEX idx_orders_carried ON orders (carried) WHERE carried;

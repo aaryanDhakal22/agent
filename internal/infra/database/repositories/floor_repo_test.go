@@ -378,6 +378,14 @@ func TestTrimBatchesKeepsOpenPlusN(t *testing.T) {
 		}
 	}
 	arrive(t, r, "pickup") // in the open batch
+	// F-10: a batch whose orders still have events main hasn't taken stays.
+	if n, err := r.TrimBatches(ctx, 3, time.Now().Add(time.Hour)); err != nil || n != 0 {
+		t.Fatalf("trim deleted %d (%v) while their events are unsynced", n, err)
+	}
+	if left, _ := r.CountUnsyncedEvents(ctx); left == 0 {
+		t.Fatal("unsynced events must survive the trim")
+	}
+	markAllSynced(t, r)
 	n, err := r.TrimBatches(ctx, 3, time.Now().Add(time.Hour))
 	if err != nil || n != 2 {
 		t.Fatalf("trim deleted %d (%v), want the 2 oldest batches' orders", n, err)
@@ -386,10 +394,13 @@ func TestTrimBatchesKeepsOpenPlusN(t *testing.T) {
 	if len(bs) != 4 || bs[0].ClosedAt != nil {
 		t.Fatalf("want open + 3 closed, got %+v", bs)
 	}
-	// Unsynced events are never trimmed; synced ones past the cutoff are.
-	left, _ := r.CountUnsyncedEvents(ctx)
-	if left == 0 {
-		t.Fatal("unsynced events must survive the trim")
+}
+
+// markAllSynced marks every floor event synced (main took them all).
+func markAllSynced(t *testing.T, r *OrderRepository) {
+	t.Helper()
+	if _, err := r.db.Exec(`UPDATE floor_events SET synced_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE synced_at IS NULL`); err != nil {
+		t.Fatal(err)
 	}
 }
 

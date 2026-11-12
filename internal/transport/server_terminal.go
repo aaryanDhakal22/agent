@@ -50,7 +50,15 @@ func (s *Server) terminalError(w http.ResponseWriter, r *http.Request, err error
 	var cart *terminal.CartInvalid
 	var oe *terminal.OpenElsewhere
 	var due *terminal.CashDue
+	var kr *terminal.KeyReused
+	var pf *terminal.PaidFirst
 	switch {
+	case errors.As(err, &kr):
+		s.writeJSON(w, http.StatusConflict, map[string]any{"error": err.Error(), "code": "key_reused", "client_key": kr.ClientKey, "order_id": kr.OrderID})
+	case errors.Is(err, terminal.ErrClientKeyRequired):
+		s.writeJSON(w, http.StatusBadRequest, errCodeMap(err.Error(), "client_key_required"))
+	case errors.As(err, &pf):
+		s.writeJSON(w, http.StatusConflict, map[string]any{"error": err.Error(), "code": "refund_first", "paid_cents": pf.PaidCents})
 	case errors.As(err, &oe):
 		s.writeJSON(w, http.StatusConflict, map[string]any{"error": err.Error(), "code": "open_elsewhere", "holder": oe.Holder})
 	case errors.As(err, &due):
