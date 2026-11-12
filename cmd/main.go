@@ -207,6 +207,11 @@ func main() {
 	if _, err := observability.StartPprof(ctx, cfg.PprofAddr, logger); err != nil {
 		logger.Warn().Err(err).Msg("pprof not started")
 	}
+	if cfg.DevTimersRefused != "" {
+		logger.Warn().Msg(cfg.DevTimersRefused)
+	} else if len(cfg.DevTimers) > 0 {
+		logger.Warn().Interface("timers", cfg.DevTimers).Msg("dev timers: time-based jobs check more often (AGENT_DEV_TIMERS, dev only)")
+	}
 
 	orderRepo := repositories.NewOrderRepository(db, logger)
 	settingsRepo := repositories.NewSettingsRepository(db, logger)
@@ -713,8 +718,13 @@ func main() {
 	sseCtrl.OnDisconnected(func() {
 		devRing.Add(devlog.Warn, devlog.KindSSE, "Lost the connection to main")
 	})
+	// The floor sync is built further down; its "main is back" signal is wired through this.
+	var floorReconnected atomic.Pointer[func()]
 	sseCtrl.OnConnected(func() {
 		devRing.Add(devlog.Info, devlog.KindSSE, "Connected to main")
+		if f := floorReconnected.Load(); f != nil {
+			(*f)() // the money events go now, not when the queue's backoff runs out
+		}
 		revokeGuard.Accepted(sseCtrl.CurrentKey())
 		stateSync.Reset()
 		heartbeat.Wake()
@@ -846,6 +856,8 @@ func main() {
 	// Parked events (contract 2.4e) page the owner, at most once an hour,
 	// and nudge the Pi page.
 	floorSender.SetPager(notifier)
+	reconnected := floorSender.Reconnected
+	floorReconnected.Store(&reconnected)
 	floorSender.OnParked(func(n int) { broker.Publish("sync.parked", map[string]any{"parked": n}) })
 	httpServer.SetFloorSync(orderRepo, floorSender.Wake)
 	orderService.OnFloorEvent(func() {
@@ -882,6 +894,9 @@ func main() {
 		tc, _ := termStore.Config()
 		return parseHHMM(tc.AutoCloseAt())
 	})
+	if d := cfg.DevTimers["backup"]; d > 0 {
+		nightly.Every = d
+	}
 	defer nightly.Close()
 	safego.Go("backup", func() { nightly.Run(ctx) })
 
@@ -955,7 +970,9 @@ func main() {
 		}
 		return discovery.State{Linked: key != "", LinkAvailable: true, Store: store}
 	}, logger).Run(ctx)
-	safego.Go("retention", func() { retention.Run(ctx, orderRepo, cfg.KeepBatches, logger, meters) })
+	safego.Go("retention", func() {
+		retention.RunEvery(ctx, orderRepo, cfg.KeepBatches, cfg.DevTimers["retention"], logger, meters)
+	})
 	safego.Go("floorsync", func() { floorSender.Run(ctx) })
 	safego.Go("escalation", func() { escalation.Run(ctx, orderService, logger) })
 	safego.Go("driverreset", func() { driverreset.Run(ctx, orderService, storeTZ, logger) })
