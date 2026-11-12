@@ -112,7 +112,7 @@ func TestHalves_Receipt(t *testing.T) {
 	snap := halfSnap(f, order.LineItem{Name: "Soda", Quantity: 1, UnitPrice: 199, Routing: order.RoutingMatched, PrinterID: "p-pizza"})
 	sc := previewStore()
 	got := Build(snap, sc, printer.Ticket{Kind: printer.TicketReceipt}, order.DefaultReceiptPrefs())
-	want := []string{modifierLine("NO Oregano", 0), modifierLine("1st: Pepperoni", 225), modifierLine("2nd: Hawaiian", 0), modifierLine("2nd: Onion", 175)}
+	want := []string{defaultLayout.modifierLine("NO Oregano", 0), defaultLayout.modifierLine("1st: Pepperoni", 225), defaultLayout.modifierLine("2nd: Hawaiian", 0), defaultLayout.modifierLine("2nd: Onion", 175)}
 	at := -1
 	for _, w := range want {
 		i := bytes.Index(got, []byte(w))

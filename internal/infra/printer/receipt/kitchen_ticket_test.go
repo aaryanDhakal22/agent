@@ -115,7 +115,7 @@ func TestKitchenTicket_Layout(t *testing.T) {
 		"ANA\n",
 		"2  PEPPERONI PIZZA\n   (LARGE)\n", "   - Extra cheese\n", "   - Well done\n",
 		"1  GARLIC KNOTS\n", "   - Side of ranch\n",
-		strings.Repeat("-", stationWidth) + "\nAlso on this order:\n   1 Fries\n   1 2L Coke\n",
+		strings.Repeat("-", Cols80) + "\nAlso on this order:\n   1 Fries\n   1 2L Coke\n",
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("missing %q\n%q", want, got)
@@ -146,7 +146,7 @@ func TestKitchenTicket_TypesAndNumber(t *testing.T) {
 			t.Errorf("%s/%s: %q want %q", c.typ, c.source, got, c.want)
 		}
 	}
-	if numberSize("1104") != cmdHugeSz || numberSize("1234567890123") != cmdQuadSz || numberSize(strings.Repeat("9", 17)) != cmdDoubleSz {
+	if numberSize("1104", defaultLayout) != cmdHugeSz || numberSize("1234567890123", defaultLayout) != cmdQuadSz || numberSize(strings.Repeat("9", 17), defaultLayout) != cmdDoubleSz {
 		t.Error("the number prints at the largest size that fits")
 	}
 	snap := counterOrder()
@@ -161,11 +161,11 @@ func TestKitchenTicket_FutureBand(t *testing.T) {
 	ready, start := printedAt.Add(14*time.Minute), printedAt.Add(-1*time.Minute)
 	snap.Fulfillment.PromisedAt, snap.MakeAt = &ready, &start
 	got := string(BuildStation(snap, pizzaTicket(snap)))
-	band := cmdInvertOn + pad("MAKE AT 6:30 \xfa READY 6:45", stationWidth) + cmdInvertOff
+	band := cmdInvertOn + pad("MAKE AT 6:30 \xfa READY 6:45", Cols80) + cmdInvertOff
 	if strings.Count(got, cmdInvertOn) != 1 || !strings.Contains(got, band) {
 		t.Fatalf("one reverse band:\n%q", got)
 	}
-	name, b, rule := strings.Index(got, "ANA\n"), strings.Index(got, band), strings.Index(got, strings.Repeat("-", stationWidth))
+	name, b, rule := strings.Index(got, "ANA\n"), strings.Index(got, band), strings.Index(got, strings.Repeat("-", Cols80))
 	if !(name < b && b < rule) {
 		t.Errorf("band between the name and the rule: %d %d %d", name, b, rule)
 	}
@@ -174,7 +174,7 @@ func TestKitchenTicket_FutureBand(t *testing.T) {
 	later := printedAt.Add(25 * time.Hour)
 	snap.Fulfillment.PromisedAt = &later
 	got = string(BuildStation(snap, pizzaTicket(snap)))
-	if !strings.Contains(got, pad("READY 7:31", stationWidth)) || !strings.Contains(got, pad("THU NOV 12", stationWidth)) {
+	if !strings.Contains(got, pad("READY 7:31", Cols80)) || !strings.Contains(got, pad("THU NOV 12", Cols80)) {
 		t.Errorf("ready only, another day:\n%q", got)
 	}
 }
@@ -185,9 +185,9 @@ func TestKitchenTicket_Change(t *testing.T) {
 	gone := []order.LineItem{kitchenLine(1, "Garlic Knots", "", "p-pizza")}
 	tk := printer.Ticket{Kind: printer.TicketStation, TargetID: "p-pizza", Change: true, Mine: added, Removed: gone}
 	got := string(BuildStation(snap, tk))
-	addBand := cmdDoubleSz + cmdInvertOn + pad("ADD / AGREGAR", bigLineWidth) + cmdInvertOff
-	rmBand := cmdDoubleSz + cmdInvertOn + pad("REMOVE / QUITAR", bigLineWidth) + cmdInvertOff
-	rule, a, item, r, void := strings.Index(got, strings.Repeat("-", stationWidth)), strings.Index(got, addBand),
+	addBand := cmdDoubleSz + cmdInvertOn + pad("ADD / AGREGAR", defaultLayout.big()) + cmdInvertOff
+	rmBand := cmdDoubleSz + cmdInvertOn + pad("REMOVE / QUITAR", defaultLayout.big()) + cmdInvertOff
+	rule, a, item, r, void := strings.Index(got, strings.Repeat("-", Cols80)), strings.Index(got, addBand),
 		strings.Index(got, "1  CHEESE PIZZA (LARGE)\n"), strings.Index(got, rmBand), strings.Index(got, "(VOID) \x1b*\x21")
 	if rule < 0 || !(rule < a && a < item && item < r && r < void) {
 		t.Fatalf("rule %d < ADD %d < item %d < REMOVE %d < (VOID) %d:\n%q", rule, a, item, r, void, got)
@@ -259,7 +259,7 @@ func TestKitchenTicket_TypeChange(t *testing.T) {
 	snap := kitchenSnap("delivery", order.SourceCounter, "Ada", 14, kitchenLine(1, "Cheese Pizza", "Large", "p-pizza"))
 	tk := printer.Ticket{Kind: printer.TicketStation, TargetID: "p-pizza", Change: true, TypeOnly: true, WasType: "pickup", Mine: snap.Items}
 	got := string(BuildStation(snap, tk))
-	band := cmdDoubleSz + cmdInvertOn + pad("NOW DELIVERY", bigLineWidth) + cmdInvertOff
+	band := cmdDoubleSz + cmdInvertOn + pad("NOW DELIVERY", defaultLayout.big()) + cmdInvertOff
 	top, b, was, item := strings.Index(got, "DELIVERY\n"), strings.Index(got, band), strings.Index(got, "(WAS PICKUP)"), strings.Index(got, "1  CHEESE PIZZA (LARGE)\n")
 	if top < 0 || !(top < b && b < was && was < item) {
 		t.Fatalf("top %d < band %d < was %d < item %d:\n%q", top, b, was, item, got)

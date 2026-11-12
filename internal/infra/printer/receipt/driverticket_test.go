@@ -66,7 +66,7 @@ func TestDriverTicket_DeliveryCondensed(t *testing.T) {
 		}
 	}
 	// The combo line is still priced with all its children.
-	if !strings.Contains(got, itemLine(1, "Cheesesteak Combo", 1449)) {
+	if !strings.Contains(got, defaultLayout.itemLine(1, "Cheesesteak Combo", 1449)) {
 		t.Errorf("combo line price changed:\n%s", got)
 	}
 }

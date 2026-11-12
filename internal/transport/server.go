@@ -78,7 +78,7 @@ type Server struct {
 	diag          DiagDeps
 	square        *squareterm.Service // Square on the terminal (2.10r, server_square.go)
 	testMu        sync.Mutex          // one printer test (or sample) at a time
-	receiptSample func(prefs order.ReceiptPrefs, kind string) []byte
+	receiptSample func(prefs order.ReceiptPrefs, kind string, cols int) []byte
 	mainReach     mainProbe
 	started       time.Time
 	updates       *update.Requester

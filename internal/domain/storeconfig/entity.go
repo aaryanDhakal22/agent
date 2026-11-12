@@ -62,8 +62,13 @@ type PrinterContext struct {
 	IP   string `json:"ip"`
 	// IsReceipt: the location's receipt printer (full customer receipt);
 	// every other printer is a kitchen station.
-	IsReceipt bool      `json:"is_receipt"`
-	UpdatedAt time.Time `json:"updated_at"`
+	IsReceipt bool `json:"is_receipt"`
+	// PrintColumns is the printer's print width in font A characters: 48
+	// (576 dots, 80 mm), 42 (512, a 72 mm print area) or 32 (384, 58 mm);
+	// 0 (an older main) = 48. Every slip is laid out for it (contract
+	// §2.3c "Paper width").
+	PrintColumns int       `json:"print_columns,omitempty"`
+	UpdatedAt    time.Time `json:"updated_at"`
 }
 
 // LocationConfigString reads a string key out of location.config with a

@@ -81,10 +81,10 @@ func TestSpacing_WhereTheFeedsGo(t *testing.T) {
 
 // PRINT SAMPLE prints with the saved prefs, so it shows the spacing too.
 func TestSpacing_Sample(t *testing.T) {
-	if !strings.Contains(string(BuildSample(previewStore(), spaced, printed)), "\x1b\x4a") {
+	if !strings.Contains(string(BuildSample(previewStore(), spaced, printed, 0)), "\x1b\x4a") {
 		t.Error("the sample must reflect the spacing")
 	}
-	if strings.Contains(string(BuildSample(previewStore(), order.DefaultReceiptPrefs(), printed)), "\x1b\x4a") {
+	if strings.Contains(string(BuildSample(previewStore(), order.DefaultReceiptPrefs(), printed, 0)), "\x1b\x4a") {
 		t.Error("the default sample has no extra spacing")
 	}
 }

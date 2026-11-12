@@ -15,6 +15,7 @@ import (
 	printerApp "quiccpos/agent/internal/application/printer"
 	"quiccpos/agent/internal/domain/device"
 	"quiccpos/agent/internal/domain/storeconfig"
+	"quiccpos/agent/internal/infra/printer/receipt"
 	agentrpc "quiccpos/agent/internal/rpc"
 
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
@@ -49,7 +50,11 @@ type DiagDeps struct {
 	AcksPending func() int
 	// TestSlip renders the test slip for one printer (receipt.BuildTestSlip
 	// with the live store context).
-	TestSlip func(printerName, tablet string, at time.Time) []byte
+	// cols is the printer's print width (the slip is laid out for it).
+	TestSlip func(printerName, tablet string, at time.Time, cols int) []byte
+	// WidthTest renders the width test's ruler slip (receipt.BuildWidthTest
+	// in the store's time zone).
+	WidthTest func(printerName string, at time.Time) []byte
 }
 
 // SetDiag wires the diagnostics routes.
@@ -121,14 +126,17 @@ type diagHealth struct {
 }
 
 type diagPrinter struct {
-	ID          string     `json:"id"`
-	Name        string     `json:"name"`
-	IP          string     `json:"ip"`
-	Up          bool       `json:"up"`
-	IsReceipt   bool       `json:"is_receipt"`
-	LastError   string     `json:"last_error"`
-	LastChecked *time.Time `json:"last_checked"`
-	DownSince   *time.Time `json:"down_since"`
+	ID        string `json:"id"`
+	Name      string `json:"name"`
+	IP        string `json:"ip"`
+	Up        bool   `json:"up"`
+	IsReceipt bool   `json:"is_receipt"`
+	// PrintColumns: the width every slip on it is laid out for (48 / 42 / 32;
+	// contract §2.3c "Paper width").
+	PrintColumns int        `json:"print_columns"`
+	LastError    string     `json:"last_error"`
+	LastChecked  *time.Time `json:"last_checked"`
+	DownSince    *time.Time `json:"down_since"`
 }
 
 type diagOrders struct {
@@ -223,7 +231,7 @@ func (s *Server) handleDiag(w http.ResponseWriter, r *http.Request) {
 	// Printers, in roster order, with the health check's last verdict.
 	if s.diag.Dispatcher != nil {
 		for _, e := range s.diag.Dispatcher.Roster() {
-			p := diagPrinter{ID: e.ID, Name: e.Name, IsReceipt: e.IsReceipt}
+			p := diagPrinter{ID: e.ID, Name: e.Name, IsReceipt: e.IsReceipt, PrintColumns: receipt.NormalizeCols(e.Cols)}
 			if st, ok := s.printers.Get(e.Name); ok {
 				p.IP, p.Up, p.LastError, p.LastChecked = st.IP, st.Up, st.LastError, st.LastChecked
 				if !st.Up && st.LastChecked != nil {
@@ -346,7 +354,7 @@ func (s *Server) handlePrinterTest(w http.ResponseWriter, r *http.Request) {
 			if s.diag.TestSlip == nil {
 				return nil
 			}
-			return s.diag.TestSlip(e.Name, tablet, now)
+			return s.diag.TestSlip(e.Name, tablet, now, e.Cols)
 		})
 	}
 	if results == nil {

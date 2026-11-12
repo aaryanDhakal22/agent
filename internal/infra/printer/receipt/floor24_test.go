@@ -16,9 +16,9 @@ func TestBuild_CondensedReceipt(t *testing.T) {
 	snap := previewDelivery()
 	got := string(Build(snap, previewStore(), receiptTicket(), prefsWith(func(p *order.ReceiptPrefs) { p.Format = order.FormatCondensed })))
 	for _, want := range []string{
-		itemLine(1, "Large Pepperoni Pizza", 2199), // 18.99 + 2.00 + 1.00
+		defaultLayout.itemLine(1, "Large Pepperoni Pizza", 2199), // 18.99 + 2.00 + 1.00
 		"    - Extra cheese\n",
-		itemLine(2, "10 pc Buffalo Wings", 2598),
+		defaultLayout.itemLine(2, "10 pc Buffalo Wings", 2598),
 		"    - Hot\n",
 		"    Note: extra ranch please\n",
 		"Subtotal:", "Total:", "PAID - CARD",
@@ -89,7 +89,7 @@ func TestBuildUnassignedReport(t *testing.T) {
 		PlacedAt: &placed, MarkedAt: at, MarkedBy: order.MarkedBy{Kind: order.ByTablet, Name: "Counter"},
 		FromDriver: "Abdul", Available: []string{"Mike", "Sam"},
 	}}, CashCents: 3340, TipCents: 500}
-	got := string(BuildUnassignedReport(rep, previewStore(), order.SizeNormal, "", at))
+	got := string(BuildUnassignedReport(rep, previewStore(), order.SizeNormal, printer.Paper{}, at))
 	for _, want := range []string{"UNASSIGNED", "Batch #9", "#1123 4108 Old Court Rd Apt 2B", "CASH $38.40", "Tip: $5.00",
 		"Marked by tablet Counter", "Taken off Abdul", "In store then: Mike, Sam", "Accepted --", "WHO TOOK THESE?"} {
 		if !strings.Contains(got, want) {
@@ -123,7 +123,7 @@ func TestHeaderOrder(t *testing.T) {
 // FUTURE on the very top.
 func TestFutureEarlyTickets(t *testing.T) {
 	at := printedAt
-	kt := string(BuildFutureSample(previewStore(), order.DefaultReceiptPrefs(), at, true))
+	kt := string(BuildFutureSample(previewStore(), order.DefaultReceiptPrefs(), at, true, 0))
 	if strings.Count(kt, cmdInvertOn) != 1 || !strings.Contains(kt, "MAKE AT ") || !strings.Contains(kt, " READY ") || strings.Contains(kt, "DO NOT MAKE") {
 		t.Fatalf("band: %q", kt)
 	}
@@ -131,7 +131,7 @@ func TestFutureEarlyTickets(t *testing.T) {
 	if !(num < band) {
 		t.Fatalf("order: %q", kt)
 	}
-	rc := string(BuildFutureSample(previewStore(), order.DefaultReceiptPrefs(), at, false))
+	rc := string(BuildFutureSample(previewStore(), order.DefaultReceiptPrefs(), at, false, 0))
 	fut, store := strings.Index(rc, "FUTURE"), strings.Index(rc, "Lombardi")
 	if fut < 0 || store < 0 || fut > store || !strings.HasPrefix(rc, cmdInit+cmdBaseSz+cmdCenter) {
 		t.Fatalf("receipt: %q", rc)

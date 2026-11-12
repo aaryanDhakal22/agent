@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"quiccpos/agent/internal/domain/order"
+	"quiccpos/agent/internal/domain/printer"
 	"quiccpos/agent/internal/domain/storeconfig"
 )
 
@@ -16,7 +17,9 @@ import (
 // (placed, accepted, ready, delivered), who marked it delivered, the driver
 // it was taken from and the drivers in the store then; then the counts.
 // Same text size rule as the driver report (size = driver_report_size).
-func BuildUnassignedReport(rep order.UnassignedReport, sc storeconfig.StoreContext, size, reroutedFrom string, printedAt time.Time) []byte {
+func BuildUnassignedReport(rep order.UnassignedReport, sc storeconfig.StoreContext, size string, on printer.Paper, printedAt time.Time) []byte {
+	lay := layoutFor(on.Cols) // the printer it prints on (width.go)
+	lineWidth := lay.cols
 	loc := time.Local
 	if tz, err := time.LoadLocation(sc.Location.Timezone); sc.Location.Timezone != "" && err == nil {
 		loc = tz
@@ -25,7 +28,7 @@ func BuildUnassignedReport(rep order.UnassignedReport, sc storeconfig.StoreConte
 	w := func(s string) { buf.WriteString(toPC437(s)) }
 	nl := func() { buf.WriteString(cmdFeed) }
 	bold := func(s string) { w(cmdBoldOn); w(s); w(cmdBoldOff); nl() }
-	itemWidth := driverReportWidth(size)
+	itemWidth := lay.driverReportWidth(size)
 	itemSize := driverReportSize(size)
 	separator := func() { w(strings.Repeat("-", lineWidth)); nl() }
 	clock := func(t *time.Time) string {
@@ -37,8 +40,8 @@ func BuildUnassignedReport(rep order.UnassignedReport, sc storeconfig.StoreConte
 
 	w(cmdInit)
 	w(cmdBaseSz)
-	if reroutedFrom != "" {
-		writeRerouted(w, nl, reroutedFrom)
+	if on.ReroutedFrom != "" {
+		writeRerouted(w, nl, on.ReroutedFrom, lay)
 	}
 
 	// --- Header -----------------------------------------------------------
@@ -79,12 +82,18 @@ func BuildUnassignedReport(rep order.UnassignedReport, sc storeconfig.StoreConte
 		if l.Cash {
 			pay = "CASH " + dollars(l.SlipTotalCents)
 		}
-		w(leftRight(pay, "Tip: "+dollars(l.OrderTipCents), itemWidth))
-		nl()
-		w(leftRight("Placed "+clock(l.PlacedAt), "Accepted "+clock(l.AcceptedAt), itemWidth))
-		nl()
-		w(leftRight("Ready "+clock(l.ReadyAt), "Delivered "+clock(l.DeliveredAt), itemWidth))
-		nl()
+		for _, s := range leftRightLines(pay, "Tip: "+dollars(l.OrderTipCents), itemWidth) {
+			w(s)
+			nl()
+		}
+		for _, s := range leftRightLines("Placed "+clock(l.PlacedAt), "Accepted "+clock(l.AcceptedAt), itemWidth) {
+			w(s)
+			nl()
+		}
+		for _, s := range leftRightLines("Ready "+clock(l.ReadyAt), "Delivered "+clock(l.DeliveredAt), itemWidth) {
+			w(s)
+			nl()
+		}
 		by := l.MarkedBy.Name
 		if l.MarkedBy.Kind == order.ByTablet {
 			by = "tablet " + by

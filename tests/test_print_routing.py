@@ -20,9 +20,17 @@ from conftest import ADMIN_V1, STORE_V1, FakePrinter, wait_until
 from test_kitchen_printing import _accept, _item, _snap, _wait_jobs
 
 NAMES = ("Front", "Pizza", "Wings", "Spare")
-# GS B 1 (reverse) + the band text padded to 21 + GS B 0: what the receipt code writes.
-BAND_EN = b"\x1dB\x01 REROUTED FROM WINGS \x1dB\x00"
-BAND_ES = b"\x1dB\x01 REDIRIGIDO DE WINGS \x1dB\x00"
+def band(text: str, cols: int = 48) -> bytes:
+    """GS B 1 (reverse) + the band text centred in the stand-in printer's double-size line (24 / 21 / 16
+    for 48 / 42 / 32 columns, contract §2.3c "Paper width") + GS B 0: what the receipt code writes."""
+    width = {48: 24, 42: 21, 32: 16}[cols]
+    left = (width - len(text)) // 2
+    return b"\x1dB\x01" + (" " * left + text + " " * (width - len(text) - left)).encode() + b"\x1dB\x00"
+
+
+# The four test printers are 80 mm (no print_columns set = 48).
+BAND_EN = band("REROUTED FROM WINGS")
+BAND_ES = band("REDIRIGIDO DE WINGS")
 
 
 @pytest.fixture

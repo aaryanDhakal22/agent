@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"quiccpos/agent/internal/domain/order"
+	"quiccpos/agent/internal/domain/printer"
 	"quiccpos/agent/internal/domain/storeconfig"
 )
 
@@ -18,8 +19,11 @@ import (
 // marked pending, 2.5.0), the POS notes, the totals, and what is
 // owed — to the store, or (negative) by the store — rounded to whole dollars
 // with the exact amount under it. The report must already be Finish()ed.
-// printedAt is shown in the footer.
-func BuildDriverReport(rep order.DriverReport, sc storeconfig.StoreContext, size, reroutedFrom string, printedAt time.Time) []byte {
+// printedAt is shown in the footer. It is laid out for on.Cols, the printer
+// it prints on (width.go), with the reroute bands on a stand-in.
+func BuildDriverReport(rep order.DriverReport, sc storeconfig.StoreContext, size string, on printer.Paper, printedAt time.Time) []byte {
+	lay := layoutFor(on.Cols)
+	lineWidth := lay.cols
 	loc := time.Local
 	if tz, err := time.LoadLocation(sc.Location.Timezone); sc.Location.Timezone != "" && err == nil {
 		loc = tz
@@ -29,16 +33,16 @@ func BuildDriverReport(rep order.DriverReport, sc storeconfig.StoreContext, size
 	nl := func() { buf.WriteString(cmdFeed) }
 	bold := func(s string) { w(cmdBoldOn); w(s); w(cmdBoldOff); nl() }
 	// Headers, groups and totals print large (the base size of the other
-	// slips, 41 characters — the store's 72 mm-wide Online printer wraps a
-	// 48-character line); only the delivery lines use the report's text size.
-	itemWidth := driverReportWidth(size)
+	// slips, the printer's line); only the delivery lines use the report's
+	// text size.
+	itemWidth := lay.driverReportWidth(size)
 	separator := func() string { return strings.Repeat("-", lineWidth) }
 	itemSize := driverReportSize(size)
 
 	w(cmdInit)
 	w(cmdBaseSz)
-	if reroutedFrom != "" {
-		writeRerouted(w, nl, reroutedFrom)
+	if on.ReroutedFrom != "" {
+		writeRerouted(w, nl, on.ReroutedFrom, lay)
 	}
 
 	// --- Header -----------------------------------------------------------
@@ -47,8 +51,9 @@ func BuildDriverReport(rep order.DriverReport, sc storeconfig.StoreContext, size
 	w(cmdDoubleSz)
 	w("DRIVER REPORT")
 	nl()
-	w(cmdQuadSz)
-	w(wrapJoin(strings.ToUpper(rep.DriverName), 12, ""))
+	nameSz, nameW := bigName(strings.ToUpper(rep.DriverName), lay)
+	w(nameSz)
+	w(wrapJoin(strings.ToUpper(rep.DriverName), nameW, ""))
 	nl()
 	w(cmdBaseSz)
 	w(cmdBoldOff)
@@ -98,8 +103,10 @@ func BuildDriverReport(rep order.DriverReport, sc storeconfig.StoreContext, size
 		if l.TipPending { // a website card tip ADD TIP can still change
 			tip += " (pending)"
 		}
-		w(leftRight(tip, "Total: "+dollars(l.SlipTotalCents), itemWidth))
-		nl()
+		for _, s := range leftRightLines(tip, "Total: "+dollars(l.SlipTotalCents), itemWidth) {
+			w(s)
+			nl()
+		}
 		w(cmdBaseSz)
 	}
 	if len(cash) > 0 {
@@ -151,10 +158,10 @@ func BuildDriverReport(rep order.DriverReport, sc storeconfig.StoreContext, size
 	w(cmdCenter)
 	w(cmdBoldOn)
 	w(cmdDoubleSz)
-	w(label)
+	w(wrapJoin(label, lay.big(), ""))
 	nl()
 	w(cmdQuadSz)
-	w(dollars(amount))
+	w(wrapJoin(dollars(amount), lay.xl(), ""))
 	nl()
 	w(cmdBaseSz)
 	w(cmdBoldOff)
@@ -171,14 +178,14 @@ func BuildDriverReport(rep order.DriverReport, sc storeconfig.StoreContext, size
 	return buf.Bytes()
 }
 
-// driverReportWidth is the delivery lines' width at the slip's size, sized
-// for the store's 72 mm printer (font A 41 characters like the receipt,
-// also at double height; font B 54) — 48 / 64 wrapped there.
-func driverReportWidth(size string) int {
+// driverReportWidth is the delivery lines' width at the slip's size on the
+// printer: font A (also at double height) = its line, font B (small) 64 /
+// 56 / 42.
+func (l layout) driverReportWidth(size string) int {
 	if size == order.SizeSmall {
-		return 54 // font B on the store's 72 mm printer
+		return l.fontB()
 	}
-	return lineWidth
+	return l.cols
 }
 
 // driverReportSize is the slip's one text size: small = font B, normal =

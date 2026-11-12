@@ -352,17 +352,18 @@ func main() {
 	orderService.StartAcceptWorker(ctx)
 	// Driver reports print on the receipt printer (failover like a ticket),
 	// formatted with the live store context (timezone + store name).
-	orderService.SetDocumentPrinting(dispatcher.PrintDocument, func(rep order.DriverReport, from string) []byte {
+	// Each slip is laid out for the printer it lands on (on.Cols).
+	orderService.SetDocumentPrinting(dispatcher.PrintDocument, func(rep order.DriverReport, on domainprinter.Paper) []byte {
 		sc, _ := storeCtx.Load().(storeconfig.StoreContext)
-		return receipt.BuildDriverReport(rep, sc, orderService.PrintPrefs().DriverReportSize, from, time.Now())
+		return receipt.BuildDriverReport(rep, sc, orderService.PrintPrefs().DriverReportSize, on, time.Now())
 	})
-	orderService.SetUnassignedReport(func(rep order.UnassignedReport, from string) []byte {
+	orderService.SetUnassignedReport(func(rep order.UnassignedReport, on domainprinter.Paper) []byte {
 		sc, _ := storeCtx.Load().(storeconfig.StoreContext)
-		return receipt.BuildUnassignedReport(rep, sc, orderService.PrintPrefs().DriverReportSize, from, time.Now())
+		return receipt.BuildUnassignedReport(rep, sc, orderService.PrintPrefs().DriverReportSize, on, time.Now())
 	})
-	orderService.SetUnsettledReport(func(l order.UnsettledList, from string) []byte { // contract 2.10s §4
+	orderService.SetUnsettledReport(func(l order.UnsettledList, on domainprinter.Paper) []byte { // contract 2.10s §4
 		sc, _ := storeCtx.Load().(storeconfig.StoreContext)
-		return receipt.BuildUnsettledList(l, sc, orderService.PrintPrefs().DriverReportSize, from, time.Now())
+		return receipt.BuildUnsettledList(l, sc, orderService.PrintPrefs().DriverReportSize, on, time.Now())
 	})
 
 	orderService.LoadReceiptPrefs(ctx)
@@ -838,19 +839,26 @@ func main() {
 		StoreCtx:    func() storeconfig.StoreContext { sc, _ := storeCtx.Load().(storeconfig.StoreContext); return sc },
 		RPC:         registry,
 		AcksPending: orderAcker.Pending,
-		TestSlip: func(printerName, tablet string, at time.Time) []byte {
+		TestSlip: func(printerName, tablet string, at time.Time, cols int) []byte {
 			sc, _ := storeCtx.Load().(storeconfig.StoreContext)
-			return receipt.BuildTestSlip(printerName, sc, tablet, at)
+			return receipt.BuildTestSlip(printerName, sc, tablet, at, cols)
+		},
+		WidthTest: func(printerName string, at time.Time) []byte {
+			sc, _ := storeCtx.Load().(storeconfig.StoreContext)
+			if loc, err := time.LoadLocation(sc.Location.Timezone); sc.Location.Timezone != "" && err == nil {
+				at = at.In(loc)
+			}
+			return receipt.BuildWidthTest(printerName, at)
 		},
 	})
 	// Receipt settings (tablet Settings -> Receipts) + PRINT SAMPLE.
-	httpServer.SetReceiptSample(func(p order.ReceiptPrefs, kind string) []byte {
+	httpServer.SetReceiptSample(func(p order.ReceiptPrefs, kind string, cols int) []byte {
 		sc, _ := storeCtx.Load().(storeconfig.StoreContext)
 		switch kind {
 		case "future_kitchen", "future_receipt":
-			return receipt.BuildFutureSample(sc, p, time.Now(), kind == "future_kitchen")
+			return receipt.BuildFutureSample(sc, p, time.Now(), kind == "future_kitchen", cols)
 		}
-		return receipt.BuildSample(sc, p, time.Now())
+		return receipt.BuildSample(sc, p, time.Now(), cols)
 	})
 
 	// Floor sync: every committed floor change wakes the sender, which pushes

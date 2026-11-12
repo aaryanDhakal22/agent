@@ -255,6 +255,9 @@ func terminalMayUse(r *http.Request) bool {
 		return true
 	case r.Method == http.MethodPost && (p == "/api/printers/test" || p == "/api/diag/report"):
 		return true
+	// The width test of a kitchen printer (contract 2.3c "Paper width").
+	case r.Method == http.MethodPost && (p == "/api/printers/width-test" || p == "/api/printers/width"):
+		return true
 	}
 	return false
 }

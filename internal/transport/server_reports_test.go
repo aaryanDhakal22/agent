@@ -93,8 +93,8 @@ func withReportPrinting(t *testing.T, s *Server, addr string) {
 	}
 	d.Apply(ctx, []storeconfig.PrinterContext{{ID: "p-front", Name: "Front", IP: addr, IsReceipt: true}})
 	sc := storeconfig.StoreContext{Location: storeconfig.LocationContext{Name: "Lombardi's Pizza", Timezone: "America/New_York"}}
-	s.service.SetDocumentPrinting(d.PrintDocument, func(rep order.DriverReport, from string) []byte {
-		return receipt.BuildDriverReport(rep, sc, "", from, time.Now())
+	s.service.SetDocumentPrinting(d.PrintDocument, func(rep order.DriverReport, on domainprinter.Paper) []byte {
+		return receipt.BuildDriverReport(rep, sc, "", on, time.Now())
 	})
 }
 

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"quiccpos/agent/internal/domain/order"
+	"quiccpos/agent/internal/domain/printer"
 	"quiccpos/agent/internal/domain/storeconfig"
 )
 
@@ -18,9 +19,6 @@ import (
 // printouts.dart deliveryTicket (and the helpers it uses), line for line, so
 // an online delivery's tickets read like a phone delivery's: keep the two in
 // step when either changes.
-
-// deliveryCols: the terminal's default 48-column line (font A on 80 mm).
-const deliveryCols = 48
 
 // The copy labels.
 const (
@@ -42,6 +40,7 @@ const (
 type escw struct {
 	buf   bytes.Buffer
 	width int
+	lay   layout
 }
 
 func (p *escw) raw(s string) { p.buf.WriteString(s) }
@@ -66,22 +65,21 @@ func (p *escw) wrapped(s, indent string) {
 	}
 }
 
-// dclean is what reaches the printer: no control bytes, the Pi's PC437
-// replacements, anything else outside printable ASCII as '?'.
+// dclean is what reaches the printer, one byte a character (so dwrap's
+// byte counts are columns): the Pi's PC437 replacements (an accented letter
+// is its PC437 byte, like the terminal's printable(); an emoji '?'), no
+// control bytes. A PC437 byte passes again unchanged (lines are cleaned once
+// to wrap and once to print).
 func dclean(s string) string {
-	s = printable(s)
+	s = toPC437(printable(s))
 	var b strings.Builder
-	for _, r := range s {
-		switch {
-		case r == '\xab':
-			b.WriteRune(r)
-		case r >= 0x20 && r < 0x7F:
-			b.WriteRune(r)
-		case r == '\t':
+	for i := 0; i < len(s); i++ {
+		switch c := s[i]; {
+		case c == '\t':
 			b.WriteByte(' ')
-		case r < 0x20 || r == 0x7F:
+		case c < 0x20 || c == 0x7F:
 		default:
-			b.WriteByte('?')
+			b.WriteByte(c)
 		}
 	}
 	return b.String()
@@ -214,19 +212,22 @@ func storeOf(sc storeconfig.StoreContext, prefs order.ReceiptPrefs) deliveryStor
 
 // BuildDeliveryCopies renders an online delivery's two tickets (Merchant
 // Copy, Customer Copy) with the store's identity, printed now in the store's
-// time zone.
-func BuildDeliveryCopies(snap order.Snapshot, sc storeconfig.StoreContext, prefs order.ReceiptPrefs, reroutedFrom string) []byte {
+// time zone, laid out for on.Cols (the printer's line, like the terminal's
+// printer profile: 48 / 42 / 32).
+func BuildDeliveryCopies(snap order.Snapshot, sc storeconfig.StoreContext, prefs order.ReceiptPrefs, on printer.Paper) []byte {
+	lay := layoutFor(on.Cols)
+	reroutedFrom := on.ReroutedFrom
 	snap = localize(snap, sc)
 	at := deliveryNow()
 	if loc, err := time.LoadLocation(sc.Location.Timezone); sc.Location.Timezone != "" && err == nil {
 		at = at.In(loc)
 	}
-	p := &escw{width: deliveryCols}
+	p := &escw{width: lay.cols, lay: lay}
 	p.raw(cmdInit + cmdNormalSz)
 	st := storeOf(sc, prefs.Normalize())
 	for _, copy := range []string{MerchantCopy, CustomerCopy} {
 		if reroutedFrom != "" {
-			for _, l := range RerouteLines(reroutedFrom) {
+			for _, l := range RerouteLines(reroutedFrom, lay.cols) {
 				p.center()
 				p.raw(cmdInvertOn + cmdBoldOn)
 				p.line(l)
@@ -295,7 +296,7 @@ func deliveryTicket(p *escw, snap order.Snapshot, st deliveryStore, at time.Time
 	p.line("DELIVERY")
 	if due := snap.Fulfillment.PromisedAt; due != nil && !due.IsZero() {
 		p.bold(true)
-		p.line("FUTURE: for " + shortDate(*due) + " " + shortTime(*due))
+		p.wrapped("FUTURE: for "+shortDate(*due)+" "+shortTime(*due), "")
 		p.bold(false)
 	}
 	if n := strings.TrimSpace(snap.Customer.DisplayName); n != "" {
@@ -369,16 +370,16 @@ func deliveryTicket(p *escw, snap order.Snapshot, st deliveryStore, at time.Time
 	}
 	if !voided && due > 0 {
 		p.bold(true)
-		p.line("Collect Cash " + moneyC(due))
+		p.wrapped("Collect Cash "+moneyC(due), "")
 		p.bold(false)
 	} else {
 		for _, x := range pays {
 			name := tenderName(x)
 			if x.AmountCents < 0 {
-				p.line("Refund " + name + " -" + moneyC(-x.AmountCents))
+				p.wrapped("Refund "+name+" -"+moneyC(-x.AmountCents), "  ")
 				continue
 			}
-			p.line(name + " " + moneyC(x.AmountCents))
+			p.wrapped(name+" "+moneyC(x.AmountCents), "  ")
 		}
 	}
 	p.feed(1)
@@ -408,7 +409,7 @@ func deliveryTicket(p *escw, snap order.Snapshot, st deliveryStore, at time.Time
 		i++
 	}
 	p.left()
-	p.raw(poweredByFooter())
+	p.raw(poweredByFooter(p.lay))
 	p.raw(cmdNormalSz)
 	p.feed(3)
 	p.raw(cmdCut)

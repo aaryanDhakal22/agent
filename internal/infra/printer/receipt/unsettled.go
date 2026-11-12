@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"quiccpos/agent/internal/domain/order"
+	"quiccpos/agent/internal/domain/printer"
 	"quiccpos/agent/internal/domain/storeconfig"
 )
 
@@ -16,7 +17,9 @@ import (
 // check its number, type, customer, items, total / paid / due and whether it
 // was carried (still open, payable next day); then the count and the total
 // due. Same text size rule as the driver report (size = driver_report_size).
-func BuildUnsettledList(l order.UnsettledList, sc storeconfig.StoreContext, size, reroutedFrom string, printedAt time.Time) []byte {
+func BuildUnsettledList(l order.UnsettledList, sc storeconfig.StoreContext, size string, on printer.Paper, printedAt time.Time) []byte {
+	lay := layoutFor(on.Cols) // the printer it prints on (width.go)
+	lineWidth := lay.cols
 	loc := time.Local
 	if tz, err := time.LoadLocation(sc.Location.Timezone); sc.Location.Timezone != "" && err == nil {
 		loc = tz
@@ -25,14 +28,14 @@ func BuildUnsettledList(l order.UnsettledList, sc storeconfig.StoreContext, size
 	w := func(s string) { buf.WriteString(toPC437(s)) }
 	nl := func() { buf.WriteString(cmdFeed) }
 	bold := func(s string) { w(cmdBoldOn); w(s); w(cmdBoldOff); nl() }
-	itemWidth := driverReportWidth(size)
+	itemWidth := lay.driverReportWidth(size)
 	itemSize := driverReportSize(size)
 	separator := func() { w(strings.Repeat("-", lineWidth)); nl() }
 
 	w(cmdInit)
 	w(cmdBaseSz)
-	if reroutedFrom != "" {
-		writeRerouted(w, nl, reroutedFrom)
+	if on.ReroutedFrom != "" {
+		writeRerouted(w, nl, on.ReroutedFrom, lay)
 	}
 	w(cmdCenter)
 	w(cmdBoldOn)
@@ -109,7 +112,7 @@ func BuildUnsettledList(l order.UnsettledList, sc storeconfig.StoreContext, size
 	w(strings.Repeat("=", lineWidth))
 	nl()
 	w(cmdCenter)
-	w("Kept-open checks stay on the Pickup list")
+	w(wrapJoin("Kept-open checks stay on the Pickup list", lineWidth, ""))
 	nl()
 	w("Printed " + printedAt.In(loc).Format("Jan 2 3:04 PM"))
 	nl()

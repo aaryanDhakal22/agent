@@ -173,18 +173,47 @@ func TestPrintTortureDump(t *testing.T) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	paper := 576
+	// Every slip at every print width (contract/agent.md §2.3c "Paper width"): <name>_<cols>col, verified on
+	// that paper. Nothing in known.json excuses a width any more.
+	for _, cols := range []int{Cols80, Cols72, Cols58} {
+		dumpTortureWidth(t, dir, cols)
+	}
+	// A ticket meant for an 80 mm station rerouted to the 42-column Online printer: laid out for the printer
+	// it lands on (the dispatcher sets Ticket.Cols to the stand-in's width).
+	snap := tortureSnap("delivery", tortureItems()...)
+	items := tortureItems()
+	mine, others := []order.LineItem{items[0], items[3], items[4], items[6]}, []order.LineItem{items[1], items[2], items[5]}
+	tk := printer.Ticket{Kind: printer.TicketStation, TargetID: "p-pizza", Station: "Pizza", Mine: mine, Others: others,
+		ReroutedFrom: "Pizza", Cols: Cols72}
+	writeTortureJob(t, dir, "station_pizza_rerouted_48to42", Build(snap, tortureSC(), tk, order.DefaultReceiptPrefs()),
+		DotsOf(Cols72), "station", append(append(textsOf(mine, false), snap.Notes, lastFirst(tCustomer)), "Pizza"))
+	// The width test's ruler wraps on purpose (known.json: width_test*): its last letter on the first line
+	// names the width.
+	writeTortureJob(t, dir, "width_test_42col", BuildWidthTest(tPrinter, time.Date(2026, 11, 12, 18, 0, 0, 0, time.UTC)),
+		DotsOf(Cols72), "test_slip", []string{"WIDTH TEST"})
+}
+
+func writeTortureJob(t *testing.T, dir, name string, data []byte, paper int, kind string, texts []string, totals ...string) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(dir, name+".bin"), data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	e := tortureJob{Paper: paper, Source: "agent", Kind: kind, Texts: texts, Totals: totals}
+	b, _ := json.MarshalIndent(e, "", " ")
+	if err := os.WriteFile(filepath.Join(dir, name+".expect.json"), b, 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// dumpTortureWidth dumps the corpus laid out for a printer of cols columns.
+func dumpTortureWidth(t *testing.T, dir string, cols int) {
+	paper := DotsOf(cols)
+	sfx := fmt.Sprintf("_%dcol", cols)
 	put := func(name string, data []byte, kind string, texts []string, totals ...string) {
 		t.Helper()
-		if err := os.WriteFile(filepath.Join(dir, name+".bin"), data, 0o644); err != nil {
-			t.Fatal(err)
-		}
-		e := tortureJob{Paper: paper, Source: "agent", Kind: kind, Texts: texts, Totals: totals}
-		b, _ := json.MarshalIndent(e, "", " ")
-		if err := os.WriteFile(filepath.Join(dir, name+".expect.json"), b, 0o644); err != nil {
-			t.Fatal(err)
-		}
+		writeTortureJob(t, dir, name+sfx, data, paper, kind, texts, totals...)
 	}
+	on := func(rerouted string) printer.Paper { return printer.Paper{Cols: cols, ReroutedFrom: rerouted} }
 	sc := tortureSC()
 	def := order.DefaultReceiptPrefs()
 	totals := []string{"Subtotal", "Tax", "Total"}
@@ -205,7 +234,7 @@ func TestPrintTortureDump(t *testing.T) {
 		return append(x, lastFirst(tCustomer), tStoreName)
 	}
 	receipt := func(name string, s order.Snapshot, prefs order.ReceiptPrefs, rerouted string) {
-		data := Build(s, sc, printer.Ticket{Kind: printer.TicketReceipt, ReroutedFrom: rerouted}, prefs)
+		data := Build(s, sc, printer.Ticket{Kind: printer.TicketReceipt, ReroutedFrom: rerouted, Cols: cols}, prefs)
 		x := receiptTexts(s, true)
 		if prefs.Format == order.FormatCondensed {
 			x = nil
@@ -228,6 +257,7 @@ func TestPrintTortureDump(t *testing.T) {
 	receipt("receipt_delivery_many64", tortureSnap("delivery", manyItems(64)...), def, "")
 	receipt("receipt_pickup_coupons", tortureSnap("pickup", couponItems()...), def, "")
 	receipt("receipt_delivery_rerouted", tortureSnap("delivery", items[:2]...), def, tPrinter)
+	receipt("receipt_delivery_rerouted_all", tortureSnap("delivery", items...), def, tPrinter)
 	cond := def
 	cond.Format = order.FormatCondensed
 	receipt("receipt_delivery_condensed", tortureSnap("delivery", items...), cond, "")
@@ -239,13 +269,20 @@ func TestPrintTortureDump(t *testing.T) {
 	tiny.Notes = "."
 	tiny.Money = order.Money{Subtotal: 100, Total: 100}
 	tiny.Payments = nil
-	put("receipt_pickup_tiny", Build(tiny, sc, printer.Ticket{Kind: printer.TicketReceipt}, def), "receipt",
+	put("receipt_pickup_tiny", Build(tiny, sc, printer.Ticket{Kind: printer.TicketReceipt, Cols: cols}, def), "receipt",
 		[]string{"Q"}, "Subtotal", "Total")
 	fut := tortureSnap("delivery", items[:3]...)
 	due := fut.PlacedAt.Add(26 * time.Hour)
 	fut.Fulfillment.PromisedAt = &due
-	data := Build(fut, sc, printer.Ticket{Kind: printer.TicketReceipt, Future: true}, def)
+	data := Build(fut, sc, printer.Ticket{Kind: printer.TicketReceipt, Future: true, Cols: cols}, def)
 	put("receipt_delivery_future", data, "receipt", receiptTexts(fut, true), totals...)
+	// an online delivery's Merchant + Customer Copy (the terminal's layout, §2.10aa)
+	dc := tortureSnap("delivery", items...)
+	dcTexts := append(textsOf(dc.Items, false), tStreet, tApt, tCity, tDirections, tNote300)
+	put("delivery_copies_torture", Build(dc, sc, printer.Ticket{Kind: printer.TicketDeliveryCopies, Cols: cols}, def),
+		"receipt", dcTexts)
+	put("delivery_copies_rerouted", Build(dc, sc, printer.Ticket{Kind: printer.TicketDeliveryCopies, Cols: cols, ReroutedFrom: tPrinter}, def),
+		"receipt", append(dcTexts, tPrinter))
 
 	// --- kitchen station tickets: full + "Also on this order", every change kind, reroute bands
 	snap := tortureSnap("delivery", items...)
@@ -258,20 +295,12 @@ func TestPrintTortureDump(t *testing.T) {
 		return x
 	}
 	station := func(name string, s order.Snapshot, tk printer.Ticket, prefs order.ReceiptPrefs, texts []string) {
-		tk.Kind, tk.TargetID, tk.Station = printer.TicketStation, "p-pizza", "Pizza"
+		tk.Kind, tk.TargetID, tk.Station, tk.Cols = printer.TicketStation, "p-pizza", "Pizza", cols
 		put(name, Build(s, sc, tk, prefs), "station", texts)
 	}
 	station("station_pizza_torture", snap, printer.Ticket{Mine: mine, Others: others}, def, stationTexts(mine, others))
 	station("station_pizza_rerouted", snap, printer.Ticket{Mine: mine, Others: others, ReroutedFrom: tPrinter}, def,
 		append(stationTexts(mine, others), tPrinter))
-	// the same ticket landing on the store's 72 mm Online printer (512 dots, 42 columns): what a reroute prints there
-	paper = 512
-	station("station_pizza_rerouted_72mm", snap, printer.Ticket{Mine: mine, Others: others, ReroutedFrom: tPrinter}, def,
-		append(stationTexts(mine, others), tPrinter))
-	put("driver_report_72mm", BuildDriverReport(rep72(), sc, "", tPrinter, time.Date(2026, 11, 13, 3, 48, 0, 0, time.UTC)),
-		"driver_report", []string{tStaff, tStreet, tPrinter})
-	receipt("receipt_delivery_72mm", tortureSnap("delivery", items...), def, tPrinter)
-	paper = 576
 	for _, size := range []string{order.SizeNormal, order.SizeXLarge} {
 		p := def
 		p.KitchenItemSize = size
@@ -293,8 +322,12 @@ func TestPrintTortureDump(t *testing.T) {
 	station("station_future", fs, printer.Ticket{Mine: mine, Others: others, Future: true}, def, stationTexts(mine, others))
 	tinyS := tiny
 	station("station_tiny", tinyS, printer.Ticket{Mine: tinyS.Items}, def, []string{"Q"})
+	vendor := tiny
+	vendor.KitchenNumber = nil
+	vendor.SourceEventID = "WEB-2026-11-12-000123456789"
+	station("station_vendor_number", vendor, printer.Ticket{Mine: vendor.Items}, def, []string{"Q", vendor.SourceEventID})
 
-	// --- the driver report, the Unsettled Check List, the test slip
+	// --- the driver report, the unassigned slip, the Unsettled Check List, the test slip, the sample
 	k1, k2 := int64(1104), int64(1187)
 	opened := time.Date(2026, 11, 12, 14, 2, 0, 0, time.UTC)
 	closed := time.Date(2026, 11, 13, 3, 48, 0, 0, time.UTC)
@@ -310,8 +343,18 @@ func TestPrintTortureDump(t *testing.T) {
 	rep.Finish(600)
 	for _, size := range []string{"", order.SizeSmall, order.SizeLarge} {
 		put("driver_report_"+map[string]string{"": "default", order.SizeSmall: "small", order.SizeLarge: "large"}[size],
-			BuildDriverReport(rep, sc, size, tPrinter, closed), "driver_report", []string{tStaff, tStreet, tPrinter, tStoreName})
+			BuildDriverReport(rep, sc, size, on(tPrinter), closed), "driver_report", []string{tStaff, tStreet, tPrinter, tStoreName})
 	}
+	owes := rep72()
+	owes.Lines[0].Cash, owes.Lines[0].CashCents, owes.Lines[0].TipCents = false, 0, 99999
+	owes.Finish(600)
+	put("driver_report_store_owes", BuildDriverReport(owes, sc, "", on(""), closed), "driver_report", []string{tStaff, tStreet})
+	un := order.UnassignedReport{BatchID: 3, BatchOpenedAt: opened, BatchClosedAt: &closed, CashCents: 999999, TipCents: 2000,
+		Lines: []order.UnassignedLine{{DriverReportLine: order.DriverReportLine{KitchenNumber: &k1, Street: tStreet, Cash: true,
+			SlipTotalCents: 999999, OrderTipCents: 2000}, MarkedAt: closed, MarkedBy: order.MarkedBy{Name: tStaff},
+			FromDriver: tStaff, Available: []string{tStaff, "Ana P."}}}}
+	put("unassigned_report", BuildUnassignedReport(un, sc, "", on(tPrinter), closed), "driver_report",
+		[]string{tStreet, tStaff, tPrinter, tStoreName})
 	placed := time.Date(2026, 11, 12, 23, 15, 0, 0, time.UTC)
 	ul := order.UnsettledList{BatchID: 41, Count: 2, DueCents: 1009998, Checks: []order.UnsettledCheck{
 		{OrderID: "a", Number: 12, Type: "counter", State: order.StateReady, PlacedAt: placed, BatchID: 41, Carried: true,
@@ -321,14 +364,16 @@ func TestPrintTortureDump(t *testing.T) {
 			Customer: order.UnsettledCustomer{Name: tCustomer, Phone: "4105550100"}, TotalCents: 10999, DueCents: 10999,
 			Items: []order.UnsettledLineItem{{Qty: 1, Name: tUnicode1, Mods: []string{}, PriceCents: 10999}}},
 	}}
-	put("unsettled_list_torture", BuildUnsettledList(ul, sc, "", tPrinter, closed), "unsettled",
+	put("unsettled_list_torture", BuildUnsettledList(ul, sc, "", on(tPrinter), closed), "unsettled",
 		[]string{tName120, tModLong, tCustomer, tStaff, tUnicode1, tPrinter, tStoreName})
-	put("test_slip_long_names", BuildTestSlip(tPrinter, sc, "Front Counter Tablet by the Register (Left)", closed), "test_slip",
+	put("test_slip_long_names", BuildTestSlip(tPrinter, sc, "Front Counter Tablet by the Register (Left)", closed, cols), "test_slip",
 		[]string{tPrinter, "Front Counter Tablet by the Register (Left)"})
-	put("sample_receipt", BuildSample(sc, def, closed), "sample", nil, totals...)
+	put("sample_receipt", BuildSample(sc, def, closed, cols), "sample", nil, totals...)
+	put("future_sample_kitchen", BuildFutureSample(sc, def, closed, true, cols), "station", nil)
+	put("future_sample_receipt", BuildFutureSample(sc, def, closed, false, cols), "sample", nil, totals...)
 }
 
-// rep72 is a short driver report for the 72 mm printer variant.
+// rep72 is a short driver report (one cash delivery).
 func rep72() order.DriverReport {
 	k := int64(1104)
 	opened := time.Date(2026, 11, 12, 14, 2, 0, 0, time.UTC)

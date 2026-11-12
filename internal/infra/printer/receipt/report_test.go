@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"quiccpos/agent/internal/domain/order"
+	"quiccpos/agent/internal/domain/printer"
 	"quiccpos/agent/internal/domain/storeconfig"
 )
 
@@ -32,7 +33,7 @@ var printed = time.Date(2026, 10, 17, 3, 50, 0, 0, time.UTC)
 
 func TestBuildDriverReport_Golden(t *testing.T) {
 	rep, sc := reportFixture()
-	got := BuildDriverReport(rep, sc, "", "", printed)
+	got := BuildDriverReport(rep, sc, "", printer.Paper{}, printed)
 	path := "testdata/driver_report.golden"
 	if *update {
 		if err := os.WriteFile(path, got, 0o644); err != nil {
@@ -50,10 +51,10 @@ func TestBuildDriverReport_Golden(t *testing.T) {
 
 func TestBuildDriverReport_Content(t *testing.T) {
 	rep, sc := reportFixture()
-	s := string(BuildDriverReport(rep, sc, "", "Online", printed))
-	const W = lineWidth // 41: fits the store's 72 mm printer (48 wrapped there)
+	s := string(BuildDriverReport(rep, sc, "", printer.Paper{ReroutedFrom: "Online"}, printed))
+	W := defaultLayout.cols
 	for _, want := range []string{
-		cmdInvertOn + pad("REROUTED FROM", rerouteBandWidth), cmdInvertOn + pad("REDIRIGIDO DE", rerouteBandWidth), pad("ONLINE", rerouteBandWidth),
+		cmdInvertOn + pad("REROUTED FROM ONLINE", defaultLayout.big()), cmdInvertOn + pad("REDIRIGIDO DE ONLINE", defaultLayout.big()),
 		"ABDUL",
 		"Batch #3",
 		"Oct 16 10:02 AM - 11:48 PM", // New York time
@@ -97,9 +98,12 @@ func TestBuildDriverReport_Content(t *testing.T) {
 			t.Errorf("missing %q in %q", big, s)
 		}
 	}
-	// Font B (small) uses a 54-character line (the store's 72 mm printer).
-	if small := string(BuildDriverReport(rep, sc, "small", "", printed)); !strings.Contains(small, leftRight("Tip: $2.00", "Total: $22.49", 54)) {
-		t.Error("small: tip and total at the far ends of a 54-character line")
+	// Font B (small) uses the printer's font B line: 64 / 56 / 42 characters.
+	for cols, fb := range map[int]int{Cols80: 64, Cols72: 56, Cols58: 42} {
+		small := string(BuildDriverReport(rep, sc, "small", printer.Paper{Cols: cols}, printed))
+		if !strings.Contains(small, leftRight("Tip: $2.00", "Total: $22.49", fb)) {
+			t.Errorf("small on %d columns: tip and total at the far ends of a %d-character line", cols, fb)
+		}
 	}
 }
 
@@ -107,7 +111,7 @@ func TestBuildDriverReport_Content(t *testing.T) {
 func TestBuildDriverReport_Sizes(t *testing.T) {
 	rep, sc := reportFixture()
 	for size, cmd := range map[string]string{"small": cmdSmallSz, "normal": cmdNormalSz, "": cmdNormalSz, "large": cmdBaseSz} {
-		s := string(BuildDriverReport(rep, sc, size, "", printed))
+		s := string(BuildDriverReport(rep, sc, size, printer.Paper{}, printed))
 		if !strings.HasPrefix(s, cmdInit+cmdBaseSz) || !strings.Contains(s, cmd+cmdBoldOn+"1104 12 Main St") {
 			t.Errorf("size %q: the delivery lines must use %q", size, cmd)
 		}
@@ -118,14 +122,14 @@ func TestBuildDriverReport_StoreOwesAndEmpty(t *testing.T) {
 	rep := order.DriverReport{BatchID: 1, BatchOpenedAt: printed, DriverName: "Carlos",
 		Lines: []order.DriverReportLine{{Customer: "Sam T.", TipCents: 1000}}} // card only
 	rep.Finish(600)
-	s := string(BuildDriverReport(rep, storeconfig.StoreContext{}, "", "", printed))
+	s := string(BuildDriverReport(rep, storeconfig.StoreContext{}, "", printer.Paper{}, printed))
 	if !strings.Contains(s, "STORE OWES DRIVER") || !strings.Contains(s, "$9.00") || !strings.Contains(s, "exact $9.40") || strings.Contains(s, "-$") {
 		t.Errorf("store-owes slip wrong:\n%s", s)
 	}
 	empty := order.DriverReport{BatchID: 1, BatchOpenedAt: printed, DriverName: "Deep", Lines: []order.DriverReportLine{}}
 	empty.Finish(600)
-	s = string(BuildDriverReport(empty, storeconfig.StoreContext{}, "", "", printed))
-	for _, want := range []string{"No deliveries this batch", leftRight("Deliveries", "0", lineWidth), "OWED TO STORE", "$0.00", " - open"} {
+	s = string(BuildDriverReport(empty, storeconfig.StoreContext{}, "", printer.Paper{}, printed))
+	for _, want := range []string{"No deliveries this batch", leftRight("Deliveries", "0", defaultLayout.cols), "OWED TO STORE", "$0.00", " - open"} {
 		if !strings.Contains(s, want) {
 			t.Errorf("empty slip missing %q", want)
 		}
@@ -165,7 +169,7 @@ func TestBuildDriverReport_WebGolden(t *testing.T) {
 	if rep.PendingTipCents != 1200 || rep.TipCents != 1800 {
 		t.Fatalf("pending %d / tips %d, want 1200 / 1800", rep.PendingTipCents, rep.TipCents)
 	}
-	got := BuildDriverReport(rep, sc, "", "", printed)
+	got := BuildDriverReport(rep, sc, "", printer.Paper{}, printed)
 	path := "testdata/driver_report_web.golden"
 	if *update {
 		if err := os.WriteFile(path, got, 0o644); err != nil {
@@ -180,7 +184,7 @@ func TestBuildDriverReport_WebGolden(t *testing.T) {
 		t.Errorf("web driver report differs from %s (run with -update after checking)\n%s", path, got)
 	}
 	s := string(got)
-	const W = lineWidth
+	W := defaultLayout.cols
 	for _, want := range []string{
 		leftRight("Tip: $7.00 (pending)", "Total: $32.00", W),
 		leftRight("Tip: $5.00 (pending)", "Total: $25.00", W),
@@ -197,11 +201,11 @@ func TestBuildDriverReport_WebGolden(t *testing.T) {
 // there is one (older slips unchanged).
 func TestBuildDriverReport_DriverShare(t *testing.T) {
 	rep, sc := reportFixture()
-	if s := string(BuildDriverReport(rep, sc, "", "", printed)); strings.Contains(s, "Delivery fee share") {
+	if s := string(BuildDriverReport(rep, sc, "", printer.Paper{}, printed)); strings.Contains(s, "Delivery fee share") {
 		t.Fatal("no share: no line")
 	}
 	rep.DriverShareCents = 900
-	if s := string(BuildDriverReport(rep, sc, "", "", printed)); !strings.Contains(s, leftRight("Delivery fee share", "$9.00", lineWidth)) {
+	if s := string(BuildDriverReport(rep, sc, "", printer.Paper{}, printed)); !strings.Contains(s, leftRight("Delivery fee share", "$9.00", defaultLayout.cols)) {
 		t.Fatalf("missing the share line in %q", s)
 	}
 }

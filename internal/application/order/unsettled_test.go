@@ -15,12 +15,12 @@ func TestPrintUnsettledOnTheReportPrinter(t *testing.T) {
 	svc, _, _ := newPoolService(t)
 	var labels []string
 	var built order.UnsettledList
-	svc.SetDocumentPrinting(func(_ context.Context, label string, build func(string) []byte) (printer.TicketResult, error) {
+	svc.SetDocumentPrinting(func(_ context.Context, label string, build func(printer.Paper) []byte) (printer.TicketResult, error) {
 		labels = append(labels, label)
-		build("")
+		build(printer.Paper{})
 		return printer.TicketResult{PrintedOn: "Receipt"}, nil
-	}, func(order.DriverReport, string) []byte { return nil })
-	svc.SetUnsettledReport(func(l order.UnsettledList, _ string) []byte { built = l; return []byte("x") })
+	}, func(order.DriverReport, printer.Paper) []byte { return nil })
+	svc.SetUnsettledReport(func(l order.UnsettledList, _ printer.Paper) []byte { built = l; return []byte("x") })
 	if line := svc.printUnsettled(context.Background(), &order.UnsettledList{BatchID: 3}); line != "" || len(labels) != 0 {
 		t.Fatalf("an empty list prints nothing: %q %v", line, labels)
 	}

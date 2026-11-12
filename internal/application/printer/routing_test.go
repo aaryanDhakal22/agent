@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"quiccpos/agent/internal/domain/printer"
 	"quiccpos/agent/internal/domain/printroute"
 	"quiccpos/agent/internal/domain/storeconfig"
 )
@@ -161,7 +162,7 @@ func TestRouting_DocumentsFollowTheReceiptPrintersRule(t *testing.T) {
 		t.Fatal(err)
 	}
 	fk["Front"].setDown(true)
-	res, err := d.PrintDocument(context.Background(), "driver-report", func(from string) []byte { return []byte("report:" + from) })
+	res, err := d.PrintDocument(context.Background(), "driver-report", func(on printer.Paper) []byte { return []byte("report:" + on.ReroutedFrom) })
 	if err != nil || res.PrintedOn != "Wings" || res.RerouteBy != "rule" || jobs(fk["Wings"]) != "report:Front" {
 		t.Fatalf("res=%+v err=%v wings=%q", res, err, jobs(fk["Wings"]))
 	}

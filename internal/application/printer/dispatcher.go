@@ -190,7 +190,7 @@ func (d *Dispatcher) Apply(ctx context.Context, printers []storeconfig.PrinterCo
 			id := p.ID
 			svc.onProbe = func(ctx context.Context, ip string, up bool) { hook(ctx, id, ip, up) }
 		}
-		slot := rosterSlot{entry: RosterEntry{ID: p.ID, Name: p.Name, IsReceipt: p.IsReceipt}, svc: svc}
+		slot := rosterSlot{entry: RosterEntry{ID: p.ID, Name: p.Name, IsReceipt: p.IsReceipt, Cols: p.PrintColumns}, svc: svc}
 		d.roster = append(d.roster, slot)
 		d.byID[p.ID] = slot
 
@@ -298,6 +298,7 @@ func (d *Dispatcher) printTicket(ctx context.Context, snap order.Snapshot, t pri
 			break
 		}
 		tk := t
+		tk.Cols = sl.entry.Cols // laid out for the printer it prints on, a stand-in's on a reroute
 		if i > 0 {
 			tk.ReroutedFrom = target.entry.Name
 		}
@@ -421,9 +422,10 @@ func rerouteBy(rule map[string]bool, id string) string {
 
 // PrintDocument prints a non-order slip (e.g. a driver report) on the receipt
 // printer (the first printer if none is flagged), failing over like a ticket.
-// build gets the name of the printer it was meant for when it printed on a
-// fallback ("" otherwise). label identifies the job in logs and spans.
-func (d *Dispatcher) PrintDocument(ctx context.Context, label string, build func(reroutedFrom string) []byte) (printer.TicketResult, error) {
+// build gets the paper it prints on: that printer's width and the name of
+// the printer it was meant for when it printed on a fallback ("" otherwise).
+// label identifies the job in logs and spans.
+func (d *Dispatcher) PrintDocument(ctx context.Context, label string, build func(on printer.Paper) []byte) (printer.TicketResult, error) {
 	ctx, cancel := context.WithTimeout(ctx, printBudget)
 	defer cancel()
 	d.mu.RLock()
@@ -452,7 +454,7 @@ func (d *Dispatcher) PrintDocument(ctx context.Context, label string, build func
 		if i > 0 {
 			from = target.entry.Name
 		}
-		if err := sl.svc.PrintBytes(ctx, label, build(from)); err != nil {
+		if err := sl.svc.PrintBytes(ctx, label, build(printer.Paper{Cols: sl.entry.Cols, ReroutedFrom: from})); err != nil {
 			lastErr = err
 			d.logger.Warn().Ctx(ctx).Err(err).Str("job", label).Str("printer", sl.entry.Name).Msg("printer failed for document; trying next")
 			continue

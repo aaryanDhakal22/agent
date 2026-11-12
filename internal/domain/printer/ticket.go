@@ -92,6 +92,11 @@ type Ticket struct {
 	// because TargetID was unreachable — rendered as the inverted
 	// "REROUTED FROM X" / "REDIRIGIDO DE X" bands (receipt.writeRerouted).
 	ReroutedFrom string
+	// Cols is the print width (font A characters: 48 / 42 / 32) of the
+	// printer the ticket is printing on - the stand-in's on a reroute - so
+	// it is laid out for that printer (main's printers.print_columns,
+	// contract §2.3c "Paper width"); 0 = 48.
+	Cols int
 	// Void: a VOID ticket (ModeVoid) - the items are what was voided.
 	Void bool
 	// AddOn: an ADD-ON ticket (ModeAddOn) - the items were added after SEND.
@@ -110,6 +115,14 @@ type Ticket struct {
 	// kitchen ticket says DO NOT MAKE and when it is due, a receipt has a
 	// FUTURE bar on top.
 	Future bool
+}
+
+// Paper is the printer a non-order slip (a driver report, the unsettled
+// list) is printing on: its print width and, on a stand-in, the name of the
+// printer it was meant for.
+type Paper struct {
+	Cols         int    // 48 / 42 / 32 font A characters; 0 = 48
+	ReroutedFrom string // non-empty on a stand-in printer
 }
 
 // TicketResult records where one ticket printed (or why it didn't).

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"quiccpos/agent/internal/domain/order"
+	"quiccpos/agent/internal/domain/printer"
 	"quiccpos/agent/internal/domain/storeconfig"
 )
 
@@ -25,7 +26,7 @@ func unsettledFixture() order.UnsettledList {
 
 func TestBuildUnsettledList_Golden(t *testing.T) {
 	sc := storeconfig.StoreContext{Location: storeconfig.LocationContext{Name: "Lombardi's Pizza", Timezone: "America/New_York"}}
-	got := BuildUnsettledList(unsettledFixture(), sc, "", "", time.Date(2026, 11, 13, 9, 0, 0, 0, time.UTC))
+	got := BuildUnsettledList(unsettledFixture(), sc, "", printer.Paper{}, time.Date(2026, 11, 13, 9, 0, 0, 0, time.UTC))
 	path := "testdata/unsettled_list.golden"
 	if *update {
 		if err := os.WriteFile(path, got, 0o644); err != nil {

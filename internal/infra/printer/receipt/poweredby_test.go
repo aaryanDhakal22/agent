@@ -14,7 +14,7 @@ import (
 var gsv0 = []byte{0x1d, 0x76, 0x30, 0x00}
 
 func TestPoweredBy_Footer(t *testing.T) {
-	f := []byte(poweredByFooter())
+	f := []byte(poweredByFooter(defaultLayout))
 	if !bytes.HasPrefix(f, []byte(cmdFeed+cmdCenter+cmdFontBSz+"powered by"+cmdFeed)) {
 		t.Fatalf("starts with the small, centred powered by: %q", f[:24])
 	}
@@ -47,7 +47,7 @@ func TestPoweredBy_Raster(t *testing.T) {
 	}
 	img.SetGray(0, 1, color.Gray{})
 	img.SetGray(9, 2, color.Gray{})
-	got := rasterGSv0(img)
+	got := rasterGSv0(img, img.Bounds())
 	want := []byte{0x1d, 0x76, 0x30, 0x00, 2, 0, 2, 0, 0x80, 0x00, 0x00, 0x40}
 	if !bytes.Equal(got, want) {
 		t.Fatalf("raster = % x, want % x", got, want)
@@ -56,7 +56,7 @@ func TestPoweredBy_Raster(t *testing.T) {
 	for i := range blank.Pix {
 		blank.Pix[i] = 255
 	}
-	if got := rasterGSv0(blank); got != nil {
+	if got := rasterGSv0(blank, blank.Bounds()); got != nil {
 		t.Errorf("a blank image prints nothing, got % x", got)
 	}
 }
@@ -65,20 +65,23 @@ func TestPoweredBy_Raster(t *testing.T) {
 // slips never have it.
 func TestPoweredBy_OnlyCustomerReceipts(t *testing.T) {
 	sc := previewStore()
-	foot := []byte(poweredByFooter())
+	foot := []byte(poweredByFooter(defaultLayout))
 	two := prefsWith(func(p *order.ReceiptPrefs) { p.Copies = 2 })
 	for name, c := range map[string]struct {
 		b    []byte
 		want int
 	}{
-		"delivery":      {Build(previewDelivery(), sc, receiptTicket(), order.DefaultReceiptPrefs()), 1},
-		"pickup":        {Build(previewPickup(), sc, printer.Ticket{Kind: printer.TicketReceipt, ReroutedFrom: "Pizza"}, order.DefaultReceiptPrefs()), 1},
-		"two copies":    {Build(previewPickup(), sc, receiptTicket(), two), 2},
-		"no footer":     {Build(previewPickup(), sc, receiptTicket(), prefsWith(func(p *order.ReceiptPrefs) { p.ExtraPaper = false })), 1},
-		"sample":        {BuildSample(sc, order.DefaultReceiptPrefs(), time.Date(2026, 11, 12, 18, 0, 0, 0, time.UTC)), 1},
-		"station":       {Build(previewPickup(), sc, printer.Ticket{Kind: printer.TicketStation, Station: "Pizza", Mine: previewPickup().Items}, order.DefaultReceiptPrefs()), 0},
-		"test slip":     {BuildTestSlip("Online", sc, "", time.Date(2026, 11, 12, 18, 0, 0, 0, time.UTC)), 0},
-		"driver report": {func() []byte { rep, rsc := reportFixture(); return BuildDriverReport(rep, rsc, "", "", printed) }(), 0},
+		"delivery":   {Build(previewDelivery(), sc, receiptTicket(), order.DefaultReceiptPrefs()), 1},
+		"pickup":     {Build(previewPickup(), sc, printer.Ticket{Kind: printer.TicketReceipt, ReroutedFrom: "Pizza"}, order.DefaultReceiptPrefs()), 1},
+		"two copies": {Build(previewPickup(), sc, receiptTicket(), two), 2},
+		"no footer":  {Build(previewPickup(), sc, receiptTicket(), prefsWith(func(p *order.ReceiptPrefs) { p.ExtraPaper = false })), 1},
+		"sample":     {BuildSample(sc, order.DefaultReceiptPrefs(), time.Date(2026, 11, 12, 18, 0, 0, 0, time.UTC), 0), 1},
+		"station":    {Build(previewPickup(), sc, printer.Ticket{Kind: printer.TicketStation, Station: "Pizza", Mine: previewPickup().Items}, order.DefaultReceiptPrefs()), 0},
+		"test slip":  {BuildTestSlip("Online", sc, "", time.Date(2026, 11, 12, 18, 0, 0, 0, time.UTC), 0), 0},
+		"driver report": {func() []byte {
+			rep, rsc := reportFixture()
+			return BuildDriverReport(rep, rsc, "", printer.Paper{}, printed)
+		}(), 0},
 	} {
 		if n := bytes.Count(c.b, foot); n != c.want {
 			t.Errorf("%s: powered by %d times, want %d", name, n, c.want)

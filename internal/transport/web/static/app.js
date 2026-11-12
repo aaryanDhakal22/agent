@@ -298,6 +298,9 @@ function agentApp() {
 
     // --- printers ---
     printers: [], printersErr: '', printerResults: {}, printerBusy: '',
+    // The width test (contract §2.3c "Paper width"): the printer whose ruler is out, waiting for its letter.
+    widthFor: '', widthBusy: false,
+    rulerSymbols: 'ABCDEFGHIJKLMNOPQRSTUVWXYZ23456789'.split(''),
     found: null, foundBusy: false,
 
     // --- Pi updates (Settings › Account, Overview Pi card) ---
@@ -1260,7 +1263,7 @@ function agentApp() {
       const cfg = (sc.status === 'fulfilled' && sc.value && sc.value.printers) || [];
       const byName = new Map();
       const add = (name) => { if (!byName.has(name)) byName.set(name, { name, id: '', ip: '', is_receipt: false, up: null }); return byName.get(name); };
-      for (const p of roster) Object.assign(add(p.name), { id: p.id, ip: p.ip || '', is_receipt: !!p.is_receipt });
+      for (const p of roster) Object.assign(add(p.name), { id: p.id, ip: p.ip || '', is_receipt: !!p.is_receipt, print_columns: p.print_columns || 48 });
       for (const p of cfg) { const e = add(p.name); if (!e.id) e.id = p.id; if (!e.ip) e.ip = p.ip; e.is_receipt = e.is_receipt || !!p.is_receipt; }
       for (const s of status) Object.assign(add(s.name), { ip: s.ip || byName.get(s.name).ip, up: s.up, mac: s.mac || '', last_checked: s.last_checked, last_error: s.last_error, up_since: s.up_since, down_since: s.down_since });
       this.printers = [...byName.values()].sort((a, b) => (b.is_receipt - a.is_receipt) || a.name.localeCompare(b.name));
@@ -1328,6 +1331,35 @@ function agentApp() {
       } finally { this.printerBusy = ''; this.loadPrinters(); }
     },
     resultFor(p) { return this.printerResults[p.id] || this.printerResults[p.name] || null; },
+    widthLabel(cols) { return cols === 42 ? '72 mm print area · 42 characters' : cols === 32 ? '58 mm · 32 characters' : '80 mm · 48 characters'; },
+    // Print the letter ruler on one printer, then ask which letter ended its first line.
+    async widthTest(p) {
+      if (this.printerBusy || !p.id) return;
+      this.printerBusy = 'width' + p.id;
+      try {
+        const out = await this.call('/api/printers/width-test', { method: 'POST', body: { printer_id: p.id } });
+        const r = ((out && out.results) || [])[0];
+        if (r && !r.ok) { this.printerResults[p.id] = { ok: false, text: r.error || r.error_code || 'Not printed' }; this.toast("The width test didn't print on " + p.name + '.', true); return; }
+        this.widthFor = p.id;
+      } catch (e) {
+        this.toast(e.code === 'test_in_progress' ? 'A printer test is already running — wait for it.' : e.message, true);
+      } finally { this.printerBusy = ''; }
+    },
+    // letter = the last one on the ruler's first line ('9' = the line didn't wrap).
+    async saveWidth(p, letter) {
+      if (this.widthBusy) return;
+      this.widthBusy = true;
+      try {
+        const out = await this.call('/api/printers/width', { method: 'POST', body: { printer_id: p.id, letter } });
+        this.widthFor = '';
+        p.print_columns = out.print_columns;
+        this.printerResults[p.id] = { ok: true, text: 'Width saved: ' + this.widthLabel(out.print_columns) };
+        this.toast(p.name + ' fits ' + out.columns_read + ' characters a line: its slips are laid out for ' + out.print_columns + '.');
+        setTimeout(() => this.loadPrinters(), 2500);
+      } catch (e) {
+        this.toast(e.message, true);
+      } finally { this.widthBusy = false; }
+    },
     get receiptPrinter() { return this.printers.find(p => p.is_receipt) || null; },
 
     // --- settings -------------------------------------------------------------------------

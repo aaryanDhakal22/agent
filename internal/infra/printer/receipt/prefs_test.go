@@ -130,7 +130,7 @@ func TestBuild_FooterFallbackChain(t *testing.T) {
 			}
 			continue
 		}
-		if !strings.Contains(end, cmdBoldOn+cmdQuadSz+cmdCenter+c.want+cmdBoldOff) {
+		if !strings.Contains(end, cmdBoldOn+cmdQuadSz+cmdCenter+wrapJoin(c.want, defaultLayout.xl(), "")+cmdBoldOff) {
 			t.Errorf("%s: footer %q missing: %q", c.name, c.want, end)
 		}
 	}
@@ -189,7 +189,7 @@ func TestBuild_NoExtraPaper(t *testing.T) {
 	if n := bytes.Count(got, []byte(cmdCut)); n != 1 {
 		t.Fatalf("one cut without extra paper, got %d", n)
 	}
-	if !bytes.HasSuffix(got, []byte("ONLINE ORDER"+cmdBoldOff+cmdBaseSz+poweredByFooter()+"\n\n\n"+cmdCut)) {
+	if !bytes.HasSuffix(got, []byte("ONLINE ORDER"+cmdBoldOff+cmdBaseSz+poweredByFooter(defaultLayout)+"\n\n\n"+cmdCut)) {
 		t.Errorf("footer, powered by, 3 line feeds, one cut: %q", got[len(got)-40:])
 	}
 	def := Build(previewDelivery(), previewStore(), receiptTicket(), order.DefaultReceiptPrefs())
@@ -201,7 +201,7 @@ func TestBuild_NoExtraPaper(t *testing.T) {
 func TestBuildSample(t *testing.T) {
 	at := time.Date(2026, 10, 21, 22, 0, 0, 0, time.UTC)
 	p := prefsWith(func(p *order.ReceiptPrefs) { p.Copies = 2; p.FooterText = strPtr("THANK YOU") })
-	got := string(BuildSample(previewStore(), p, at))
+	got := string(BuildSample(previewStore(), p, at, 0))
 	if n := strings.Count(got, "THANK YOU"); n != 2 {
 		t.Errorf("footer on both receipt copies, got %d", n)
 	}

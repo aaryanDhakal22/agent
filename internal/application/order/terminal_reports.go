@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"quiccpos/agent/internal/domain/order"
+	"quiccpos/agent/internal/domain/printer"
 
 	"go.opentelemetry.io/otel/attribute"
 )
@@ -27,7 +28,7 @@ func (s *Service) PrintBatchDriverReport(ctx context.Context, batchID int64, dri
 			continue
 		}
 		rep := rep
-		res, _ := s.printDoc(ctx, "driver-report", func(from string) []byte { return s.buildReport(rep, from) })
+		res, _ := s.printDoc(ctx, "driver-report", func(on printer.Paper) []byte { return s.buildReport(rep, on) })
 		return &ReportPrint{DriverName: rep.DriverName, TicketResult: res}, nil
 	}
 	return nil, spanErr(span, order.ErrNotFound)

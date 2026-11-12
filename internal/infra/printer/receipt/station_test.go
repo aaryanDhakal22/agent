@@ -56,8 +56,8 @@ func TestBuildStation_Content(t *testing.T) {
 	for _, want := range []string{
 		"DELIVERY\n", cmdHugeSz + "1104\n", "ANA\n",
 		// Printed on a stand-in: the reroute bands, English then Spanish, reverse + double size (2026-11-12).
-		cmdInvertOn + pad("REROUTED FROM OVEN", rerouteBandWidth) + cmdInvertOff,
-		cmdInvertOn + pad("REDIRIGIDO DE OVEN", rerouteBandWidth) + cmdInvertOff,
+		cmdInvertOn + pad("REROUTED FROM OVEN", defaultLayout.big()) + cmdInvertOff,
+		cmdInvertOn + pad("REDIRIGIDO DE OVEN", defaultLayout.big()) + cmdInvertOff,
 		"2  PEPPERONI PIZZA\n   (LARGE)\n", "   - Extra cheese\n", "   - well done\n",
 		"1  MYSTERY\n", "** UNMATCHED **",
 		"Also on this order:\n   1 Fries\n",
@@ -319,23 +319,34 @@ func TestBuildStation_AddOn(t *testing.T) {
 
 // The reroute banner (the owner, 2026-11-12): English then Spanish, ALL
 // CAPS, each line a reverse double-size band like ADD / AGREGAR; a long
-// printer name wraps into more bands, never past the 21-character band
-// (the 72 mm printer's double-width line), a space either side of the text.
+// printer name wraps into more bands, never past the band of the printer it
+// printed on (its double-width line: 24 / 21 / 16), a space either side of
+// the text.
 func TestRerouteBands(t *testing.T) {
-	if got := RerouteLines("pizza"); strings.Join(got, "|") != "REROUTED FROM PIZZA|REDIRIGIDO DE PIZZA" {
+	if got := RerouteLines("pizza", 0); strings.Join(got, "|") != "REROUTED FROM PIZZA|REDIRIGIDO DE PIZZA" {
 		t.Fatalf("lines = %q", got)
 	}
-	long := RerouteLines("Online receipt printer")
-	if strings.Join(long, "|") != "REROUTED FROM|ONLINE RECEIPT|PRINTER|REDIRIGIDO DE|ONLINE RECEIPT|PRINTER" {
-		t.Fatalf("long = %q", long)
-	}
-	for _, l := range long {
-		if len([]rune(l)) > rerouteTextWidth {
-			t.Fatalf("band text %q wider than %d", l, rerouteTextWidth)
+	for _, c := range []struct {
+		cols int
+		want string
+	}{
+		{Cols80, "REROUTED FROM ONLINE|RECEIPT PRINTER|REDIRIGIDO DE ONLINE|RECEIPT PRINTER"},
+		{Cols72, "REROUTED FROM|ONLINE RECEIPT|PRINTER|REDIRIGIDO DE|ONLINE RECEIPT|PRINTER"},
+		{Cols58, "REROUTED FROM|ONLINE RECEIPT|PRINTER|REDIRIGIDO DE|ONLINE RECEIPT|PRINTER"},
+	} {
+		long := RerouteLines("Online receipt printer", c.cols)
+		if strings.Join(long, "|") != c.want {
+			t.Fatalf("%d: long = %q", c.cols, long)
+		}
+		text := layoutFor(c.cols).big() - 2
+		for _, l := range long {
+			if len([]rune(l)) > text {
+				t.Fatalf("%d: band text %q wider than %d", c.cols, l, text)
+			}
 		}
 	}
 	var buf bytes.Buffer
-	writeRerouted(func(s string) { buf.WriteString(s) }, func() { buf.WriteString(cmdFeed) }, "Wings")
+	writeRerouted(func(s string) { buf.WriteString(s) }, func() { buf.WriteString(cmdFeed) }, "Wings", layoutFor(Cols72))
 	want := cmdCenter + cmdBoldOn + cmdDoubleSz + cmdInvertOn + " REROUTED FROM WINGS " + cmdInvertOff + cmdSizeReset + cmdBaseSz + cmdBoldOff + "\n" +
 		cmdCenter + cmdBoldOn + cmdDoubleSz + cmdInvertOn + " REDIRIGIDO DE WINGS " + cmdInvertOff + cmdSizeReset + cmdBaseSz + cmdBoldOff + "\n" +
 		cmdLeft + "\n"
@@ -348,12 +359,12 @@ func TestRerouteBands(t *testing.T) {
 	for name, b := range map[string][]byte{
 		"receipt":    Build(snap, storeconfig.StoreContext{}, tk, order.DefaultReceiptPrefs()),
 		"station":    BuildStation(stationFixture()),
-		"unassigned": BuildUnassignedReport(order.UnassignedReport{}, storeconfig.StoreContext{}, "", "Oven", time.Now()),
-		"unsettled":  BuildUnsettledList(order.UnsettledList{}, storeconfig.StoreContext{}, "", "Oven", time.Now()),
-		"driver":     BuildDriverReport(order.DriverReport{}, storeconfig.StoreContext{}, "", "Oven", time.Now()),
+		"unassigned": BuildUnassignedReport(order.UnassignedReport{}, storeconfig.StoreContext{}, "", printer.Paper{ReroutedFrom: "Oven"}, time.Now()),
+		"unsettled":  BuildUnsettledList(order.UnsettledList{}, storeconfig.StoreContext{}, "", printer.Paper{ReroutedFrom: "Oven"}, time.Now()),
+		"driver":     BuildDriverReport(order.DriverReport{}, storeconfig.StoreContext{}, "", printer.Paper{ReroutedFrom: "Oven"}, time.Now()),
 	} {
 		for _, l := range []string{"REROUTED FROM OVEN", "REDIRIGIDO DE OVEN"} {
-			if !bytes.Contains(b, []byte(cmdInvertOn+pad(l, rerouteBandWidth)+cmdInvertOff)) {
+			if !bytes.Contains(b, []byte(cmdInvertOn+pad(l, defaultLayout.big())+cmdInvertOff)) {
 				t.Errorf("%s: no %q band", name, l)
 			}
 		}

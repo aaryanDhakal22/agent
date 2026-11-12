@@ -12,6 +12,9 @@ type RosterEntry struct {
 	ID        string
 	Name      string
 	IsReceipt bool
+	// Cols is the printer's print width (store_config print_columns; 0 = 48):
+	// what a ticket printing on it is laid out for.
+	Cols int
 }
 
 // Rules are the store's print switches (2.1.0): the kitchen-ticket toggles.

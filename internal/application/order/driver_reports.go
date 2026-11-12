@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"quiccpos/agent/internal/domain/order"
+	"quiccpos/agent/internal/domain/printer"
 
 	"go.opentelemetry.io/otel/attribute"
 )
@@ -133,7 +134,7 @@ func (s *Service) PrintDriverReport(ctx context.Context, driverID, trigger strin
 		return nil, spanErr(span, err)
 	}
 	r := *rep
-	res, perr := s.printDoc(ctx, "driver-report", func(from string) []byte { return s.buildReport(r, from) })
+	res, perr := s.printDoc(ctx, "driver-report", func(on printer.Paper) []byte { return s.buildReport(r, on) })
 	out := &DriverReportPrint{DriverID: rep.DriverID, DriverName: rep.DriverName, PrintedOn: res.PrintedOn,
 		ReroutedFrom: res.ReroutedFrom, Report: rep}
 	if perr != nil {

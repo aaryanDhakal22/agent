@@ -145,6 +145,8 @@ func (s *Server) baseRoutes() []routeDef {
 		{"GET", "/api/batches/{id}/z", "device", "A closed batch's Z report (contract §2.10l) -> {report} | 404 not_found (open, not built yet, or no longer kept)", s.handleBatchZ},
 		{"GET", "/api/printers", "device", "Printer reachability snapshot (a POS terminal's key may read it too)", s.handleListPrinters},
 		{"GET", "/api/printers/found", "device", "Printers seen on the LAN (TCP 9100) {scanned_at, scanning, printers:[{ip, mac, known, printer_name}]}; ?refresh=1 scans now (a terminal key may read it, 2.10y)", s.handlePrintersFound},
+		{"POST", "/api/printers/width-test", "device", "Width test {printer_id}: prints the letter ruler on that printer only (no failover; 409 while a test runs; a terminal key may too) -> {results}", s.handlePrinterWidthTest},
+		{"POST", "/api/printers/width", "device", "Save a printer's print width {printer_id, letter (the last on the ruler's first line) | print_columns 48|42|32} -> RPC printer.width -> {printer_id, name, columns_read, print_columns} | 400 bad_letter/too_narrow | 404 | 501 main_unsupported | 503 main_offline", s.handlePrinterWidth},
 		{"POST", "/api/printers/add", "device", "Add a found printer {name, ip, mac} -> RPC printer.add -> 201 {id, name, ip} | 409 name_taken | 400 | 503 main_offline", s.handlePrinterAdd},
 		{"GET", "/api/app/latest", "device", "Newest Quibase release cached for tablets (204 none)", s.handleAppLatest},
 		{"GET", "/api/app/apk", "device", "Download the cached Quibase APK", s.handleAppAPK},

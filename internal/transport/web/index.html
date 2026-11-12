@@ -559,15 +559,29 @@
                   <span class="badge" :class="p.is_receipt ? 'b-brand' : 'b-mute'" x-text="p.is_receipt ? 'Receipt printer' : 'Kitchen station'"></span>
                   <span class="badge" :class="printerTone(p)"><span class="dot"></span><span x-text="printerState(p)"></span></span>
                 </div>
+                <div class="small muted"><span title="Every slip on this printer is laid out for this width. Run the width test if long lines wrap." x-text="'Paper: ' + widthLabel(p.print_columns)"></span></div>
                 <div class="small muted">
                   <span class="mono" x-text="p.ip || '—'"></span><span class="mono" x-show="p.mac" x-text="' · ' + p.mac" title="MAC address (hardware) — the Pi finds the printer by it if its address changes"></span><span x-show="p.last_checked" x-text="' · checked ' + ago(p.last_checked)"></span><span x-show="p.up === false && p.down_since" x-text="' · down since ' + clock(p.down_since)"></span><span x-show="p.up === true && p.up_since" x-text="' · up since ' + clock(p.up_since)"></span>
                 </div>
                 <div class="err-text small" x-show="p.up === false && p.last_error" x-text="p.last_error"></div>
                 <div role="status" :class="resultFor(p) && resultFor(p).ok ? 'ok-text' : 'err-text'" x-show="resultFor(p)" x-text="resultFor(p) ? resultFor(p).text : ''"></div>
+                <div class="stack" style="gap:6px;margin-top:8px" x-show="widthFor === p.id" :aria-label="'Width test answer for ' + p.name">
+                  <p class="help"><b>Look at the slip that just printed.</b> Which letter (or number) is LAST on the first line of the ruler? Tap it.</p>
+                  <div class="hrow" style="flex-wrap:wrap;gap:4px">
+                    <template x-for="c in rulerSymbols" :key="c">
+                      <button type="button" class="btn btn-sm mono" style="min-width:34px" :disabled="widthBusy" @click="saveWidth(p, c)" x-text="c"></button>
+                    </template>
+                  </div>
+                  <div class="hrow" style="gap:6px">
+                    <button type="button" class="btn btn-sm" :disabled="widthBusy" @click="saveWidth(p, '9')">The line didn't wrap</button>
+                    <button type="button" class="btn btn-sm" :disabled="widthBusy" @click="widthFor = ''">Cancel</button>
+                  </div>
+                </div>
               </div>
               <div class="hrow">
                 <button type="button" class="btn" :disabled="!!printerBusy || !p.id" @click="printerAction('test', p)" x-text="printerBusy === 'test' + p.id ? 'Printing…' : 'Test print'"></button>
                 <button type="button" class="btn" :disabled="!!printerBusy || !p.id" @click="printerAction('sample', p)" x-text="printerBusy === 'sample' + p.id ? 'Printing…' : 'Print sample'"></button>
+                <button type="button" class="btn" :disabled="!!printerBusy || !p.id" @click="widthTest(p)" title="Prints a letter ruler: the last letter on its first line tells the Pi how wide this printer prints" x-text="printerBusy === 'width' + p.id ? 'Printing…' : 'Width test'"></button>
               </div>
             </div>
           </template>

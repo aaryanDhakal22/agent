@@ -6,6 +6,7 @@ import (
 	"sync/atomic"
 
 	"quiccpos/agent/internal/domain/order"
+	"quiccpos/agent/internal/domain/printer"
 )
 
 // The Unsettled Check List at an auto-close (contract/agent.md §2.10s §4,
@@ -14,7 +15,7 @@ import (
 // printer, with failover) and pages the owner.
 
 // UnsettledBuilder renders the UNSETTLED CHECKS slip (receipt.BuildUnsettledList).
-type UnsettledBuilder = func(l order.UnsettledList, reroutedFrom string) []byte
+type UnsettledBuilder = func(l order.UnsettledList, on printer.Paper) []byte
 
 var unsettledBuilder atomic.Pointer[UnsettledBuilder]
 
@@ -33,7 +34,7 @@ func (s *Service) printUnsettled(ctx context.Context, l *order.UnsettledList) st
 		return line + " (list not printed: no printer)"
 	}
 	list := *l
-	res, err := s.printDoc(ctx, "unsettled-checks", func(from string) []byte { return (*b)(list, from) })
+	res, err := s.printDoc(ctx, "unsettled-checks", func(on printer.Paper) []byte { return (*b)(list, on) })
 	if err != nil || res.PrintedOn == "" {
 		s.logger.Warn().Ctx(ctx).Err(err).Int64("batch", l.BatchID).Int("checks", l.Count).Msg("Unsettled Check List not printed")
 		return line + " (the list did NOT print)"

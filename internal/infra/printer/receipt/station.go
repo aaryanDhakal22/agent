@@ -70,6 +70,7 @@ func buildStation(snap order.Snapshot, t printer.Ticket, prefs order.ReceiptPref
 	var buf bytes.Buffer
 	w := func(s string) { buf.WriteString(toPC437(s)) }
 	nl := func() { buf.WriteString(cmdFeed) }
+	l := layoutFor(t.Cols) // the printer it prints on (width.go)
 
 	added, removed := t.Mine, t.Removed
 	if t.Void {
@@ -94,14 +95,14 @@ func buildStation(snap order.Snapshot, t printer.Ticket, prefs order.ReceiptPref
 	// --- The number, the name -----------------------------------------------
 	num := stationNumber(snap)
 	w(cmdBoldOn)
-	w(numberSize(num))
-	w(num)
+	w(numberSize(num, l))
+	w(wrapJoin(num, numberCols(num, l), ""))
 	nl()
 	w(cmdSizeReset)
 	w(cmdBaseSz)
 	if name := strings.TrimSpace(snap.Customer.DisplayName); name != "" {
-		for _, l := range wrapped(lastFirst(name), stationWidth, "") {
-			w(l)
+		for _, line := range wrapped(lastFirst(name), l.cols, "") {
+			w(line)
 			nl()
 		}
 	}
@@ -109,31 +110,31 @@ func buildStation(snap order.Snapshot, t printer.Ticket, prefs order.ReceiptPref
 	if t.ReroutedFrom != "" {
 		// Printed on a stand-in printer: the reroute bands, right under the
 		// number + name (writeRerouted).
-		writeRerouted(w, nl, t.ReroutedFrom)
+		writeRerouted(w, nl, t.ReroutedFrom, l)
 		w(cmdBaseSz)
 	}
 	if p := snap.Fulfillment.PromisedAt; p != nil && !p.IsZero() {
-		writeFutureBand(w, nl, snap, *p)
+		writeFutureBand(w, nl, snap, *p, l)
 	}
 	w(cmdLeft)
-	w(strings.Repeat(ruleChar, stationWidth))
+	w(l.rule(ruleChar))
 	nl()
 	// The order's note (the owner, 2026-11-12: on the station tickets too,
 	// under the header; the receipt keeps it as well).
 	if note := strings.TrimSpace(snap.Notes); note != "" {
 		w(cmdBoldOn)
-		for _, l := range wordWrap(printable("NOTE: "+note), stationWidth, "      ") {
-			w(l)
+		for _, line := range wordWrap(printable("NOTE: "+note), l.cols, "      ") {
+			w(line)
 			nl()
 		}
 		w(cmdBoldOff)
-		w(strings.Repeat(ruleChar, stationWidth))
+		w(l.rule(ruleChar))
 		nl()
 	}
 
 	if change && t.WasType != "" {
 		// Moved takeout <-> delivery after SEND: the new type (also on top) and the old one.
-		writeBand(w, nl, "NOW "+stationType(snap))
+		writeBand(w, nl, "NOW "+stationType(snap), l)
 		w(cmdCenter)
 		w(cmdBoldOn)
 		w("(WAS " + typeWord(t.WasType) + ")")
@@ -142,25 +143,25 @@ func buildStation(snap order.Snapshot, t printer.Ticket, prefs order.ReceiptPref
 		w(cmdLeft)
 		if t.TypeOnly {
 			nl()
-			writeKitchenItems(w, nl, added, t, prefs)
+			writeKitchenItems(w, nl, added, t, prefs, l)
 			added = nil
 		}
 	}
 	if change {
 		if len(added) > 0 {
-			writeBand(w, nl, "ADD / AGREGAR")
-			writeKitchenItems(w, nl, added, t, prefs)
+			writeBand(w, nl, "ADD / AGREGAR", l)
+			writeKitchenItems(w, nl, added, t, prefs, l)
 		}
 		if len(removed) > 0 {
 			if len(added) > 0 {
 				nl()
 			}
-			writeBand(w, nl, "REMOVE / QUITAR")
-			writeRemoved(w, nl, removed, prefs)
+			writeBand(w, nl, "REMOVE / QUITAR", l)
+			writeRemoved(w, nl, removed, prefs, l)
 		}
 	} else {
-		writeKitchenItems(w, nl, added, t, prefs)
-		w(strings.Repeat(ruleChar, stationWidth))
+		writeKitchenItems(w, nl, added, t, prefs, l)
+		w(l.rule(ruleChar))
 		nl()
 		w("Also on this order:")
 		nl()
@@ -169,7 +170,7 @@ func buildStation(snap order.Snapshot, t printer.Ticket, prefs order.ReceiptPref
 			nl()
 		}
 		for _, it := range t.Others {
-			for _, line := range wordWrap(fmt.Sprintf("%s%d %s", itemIndent, it.Quantity, itemName(it)), stationWidth, itemIndent+"  ") {
+			for _, line := range wordWrap(fmt.Sprintf("%s%d %s", itemIndent, it.Quantity, itemName(it)), l.cols, itemIndent+"  ") {
 				w(printable(line))
 				nl()
 			}
@@ -225,23 +226,35 @@ func stationNumber(snap order.Snapshot) string {
 	return snap.SourceEventID
 }
 
-// numberSize is the largest size the number fits on the line at: 4 x 4 (up
-// to 12 characters), 3 x 3 (16), else double.
-func numberSize(num string) string {
+// numberSize is the largest size the number fits on the printer's line at:
+// 4 x 4 (up to 12 characters on 80 mm), 3 x 3 (16), else double.
+func numberSize(num string, l layout) string {
 	switch n := len([]rune(num)); {
-	case n <= stationWidth/4:
+	case n <= l.huge():
 		return cmdHugeSz
-	case n <= xlLineWidth:
+	case n <= l.xl():
 		return cmdQuadSz
 	}
 	return cmdDoubleSz
+}
+
+// numberCols is the line at the number's size (a vendor id too long even at
+// double size wraps there).
+func numberCols(num string, l layout) int {
+	switch numberSize(num, l) {
+	case cmdHugeSz:
+		return l.huge()
+	case cmdQuadSz:
+		return l.xl()
+	}
+	return l.big()
 }
 
 // writeFutureBand is a future order's one reverse band: when the kitchen
 // starts it and when it is due ("MAKE AT 6:30 · READY 6:45"; READY alone
 // when there is nothing to count back from), with the day under it when it
 // isn't today.
-func writeFutureBand(w func(string), nl func(), snap order.Snapshot, ready time.Time) {
+func writeFutureBand(w func(string), nl func(), snap order.Snapshot, ready time.Time, l layout) {
 	text := "READY " + ready.Format("3:04")
 	if m := snap.MakeAt; m != nil && !m.IsZero() {
 		text = "MAKE AT " + m.In(ready.Location()).Format("3:04") + " \xfa " + text
@@ -250,10 +263,10 @@ func writeFutureBand(w func(string), nl func(), snap order.Snapshot, ready time.
 	w(cmdBoldOn)
 	w(cmdBaseSz)
 	w(cmdInvertOn)
-	w(pad(text, stationWidth))
+	w(pad(text, l.cols))
 	if now := clock().In(ready.Location()); now.YearDay() != ready.YearDay() || now.Year() != ready.Year() {
 		nl()
-		w(pad(strings.ToUpper(ready.Format("Mon Jan 2")), stationWidth))
+		w(pad(strings.ToUpper(ready.Format("Mon Jan 2")), l.cols))
 	}
 	w(cmdInvertOff)
 	w(cmdBoldOff)
@@ -261,12 +274,12 @@ func writeFutureBand(w func(string), nl func(), snap order.Snapshot, ready time.
 }
 
 // writeBand is a change ticket's reverse band, centred, one size up (double).
-func writeBand(w func(string), nl func(), text string) {
+func writeBand(w func(string), nl func(), text string, l layout) {
 	w(cmdCenter)
 	w(cmdBoldOn)
 	w(cmdDoubleSz)
 	w(cmdInvertOn)
-	w(pad(text, bigLineWidth))
+	w(pad(text, l.big()))
 	w(cmdInvertOff)
 	w(cmdSizeReset)
 	w(cmdBaseSz)
@@ -294,7 +307,7 @@ func itemLabel(it order.LineItem) string {
 // writeKitchenItems prints items: quantity + name bold at the store's item
 // size, then every modifier and note on its own "- " line (halves under
 // WHOLE: / 1ST HALF: / 2ND HALF:).
-func writeKitchenItems(w func(string), nl func(), items []order.LineItem, t printer.Ticket, prefs order.ReceiptPrefs) {
+func writeKitchenItems(w func(string), nl func(), items []order.LineItem, t printer.Ticket, prefs order.ReceiptPrefs, lay layout) {
 	sp := prefs.Spacing
 	w(cmdLeft)
 	for i, it := range items {
@@ -303,7 +316,7 @@ func writeKitchenItems(w func(string), nl func(), items []order.LineItem, t prin
 		}
 		w(cmdBoldOn)
 		w(textSize(prefs.KitchenItemSize))
-		for _, line := range wordWrap(itemLabel(it), itemWidth(prefs.KitchenItemSize), itemIndent) {
+		for _, line := range wordWrap(itemLabel(it), lay.itemWidth(prefs.KitchenItemSize), itemIndent) {
 			w(printable(line))
 			nl()
 		}
@@ -320,7 +333,7 @@ func writeKitchenItems(w func(string), nl func(), items []order.LineItem, t prin
 			} else {
 				w(feedDots(sp.ModMod))
 			}
-			for _, line := range wordWrap(itemIndent+l, stationWidth, itemIndent+"  ") {
+			for _, line := range wordWrap(itemIndent+l, lay.cols, itemIndent+"  ") {
 				w(printable(line))
 				nl()
 			}
@@ -391,12 +404,12 @@ func halfLines(it order.LineItem) []string {
 // writeRemoved prints removed lines: "(VOID) " + the line struck through
 // (its modifiers too, under it), at font A so the 24-dot picture sits in the
 // text line. Without pictures: "(VOID)" in reverse + the text.
-func writeRemoved(w func(string), nl func(), items []order.LineItem, prefs order.ReceiptPrefs) {
+func writeRemoved(w func(string), nl func(), items []order.LineItem, prefs order.ReceiptPrefs, lay layout) {
 	w(cmdLeft)
 	w(cmdSizeReset)
 	w(cmdNormalSz)
 	w(cmdBoldOn)
-	room := stationWidth - len(voidMark)
+	room := lay.cols - len(voidMark)
 	for _, it := range items {
 		lines := []string{itemLabel(it)}
 		for _, l := range modLines(it) {

@@ -11,13 +11,13 @@ import (
 // BuildSample renders what a real order looks like with the given receipt
 // settings — the customer receipt (every copy) then a kitchen ticket — for the
 // tablet's PRINT SAMPLE. The order is made up (kitchen #1234, "Sample
-// Customer") and says so in its notes.
-func BuildSample(sc storeconfig.StoreContext, prefs order.ReceiptPrefs, at time.Time) []byte {
+// Customer") and says so in its notes. Laid out for the printer's width (cols).
+func BuildSample(sc storeconfig.StoreContext, prefs order.ReceiptPrefs, at time.Time, cols int) []byte {
 	snap := SampleOrder(at)
-	out := Build(snap, sc, printer.Ticket{Kind: printer.TicketReceipt}, prefs)
+	out := Build(snap, sc, printer.Ticket{Kind: printer.TicketReceipt, Cols: cols}, prefs)
 	return append(out, Build(snap, sc, printer.Ticket{
 		Kind: printer.TicketStation, TargetID: samplePrinter, Station: "Sample",
-		Mine: snap.Items[:2], Others: snap.Items[2:],
+		Mine: snap.Items[:2], Others: snap.Items[2:], Cols: cols,
 	}, prefs)...)
 }
 
@@ -54,15 +54,15 @@ func SampleOrder(at time.Time) order.Snapshot {
 // BuildFutureSample is the TEST PRINT of a future-order switch (2.4.0): the
 // sample delivery due an hour from now, as its early kitchen ticket
 // (its MAKE AT / READY band) or its early customer receipt (FUTURE on top).
-func BuildFutureSample(sc storeconfig.StoreContext, prefs order.ReceiptPrefs, at time.Time, kitchen bool) []byte {
+func BuildFutureSample(sc storeconfig.StoreContext, prefs order.ReceiptPrefs, at time.Time, kitchen bool, cols int) []byte {
 	snap := SampleOrder(at)
 	due, start := at.Add(time.Hour), at.Add(40*time.Minute)
 	snap.Fulfillment.PromisedAt, snap.MakeAt = &due, &start
 	if kitchen {
 		return Build(snap, sc, printer.Ticket{
 			Kind: printer.TicketStation, TargetID: samplePrinter, Station: "Sample",
-			Mine: snap.Items[:2], Others: snap.Items[2:], Future: true,
+			Mine: snap.Items[:2], Others: snap.Items[2:], Future: true, Cols: cols,
 		}, prefs)
 	}
-	return Build(snap, sc, printer.Ticket{Kind: printer.TicketReceipt, Future: true}, prefs)
+	return Build(snap, sc, printer.Ticket{Kind: printer.TicketReceipt, Future: true, Cols: cols}, prefs)
 }
