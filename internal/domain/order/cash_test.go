@@ -73,3 +73,24 @@ func TestDriverReportLine_TipRules(t *testing.T) {
 		}
 	}
 }
+
+// The delivery fee split: the driver's share of each order's delivery fee
+// is on its line and summed on the report; the owed total doesn't count it.
+func TestDriverReportLine_DriverShare(t *testing.T) {
+	fee := []Fee{{Type: "delivery", Label: "Delivery fee", Amount: 400, DriverCents: 300}}
+	a := NewDriverReportLine(StoredOrder{Order: Snapshot{Money: Money{Total: 2400, Fees: fee}}})
+	b := NewDriverReportLine(StoredOrder{Order: Snapshot{Money: Money{Total: 2000}}}) // no split known
+	if a.DriverShareCents != 300 || b.DriverShareCents != 0 {
+		t.Fatalf("lines: %d %d", a.DriverShareCents, b.DriverShareCents)
+	}
+	r := DriverReport{Lines: []DriverReportLine{a, b}}
+	r.Finish(0)
+	if r.DriverShareCents != 300 || r.OwedCents != 4400 {
+		t.Fatalf("report: share %d owed %d", r.DriverShareCents, r.OwedCents)
+	}
+	// A share above the fee counts only the fee.
+	over := Money{Fees: []Fee{{Type: "delivery", Amount: 200, DriverCents: 300}, {Type: "service", Amount: 99, DriverCents: 50}}}
+	if got := over.DeliveryDriverCents(); got != 200 {
+		t.Fatalf("capped share = %d", got)
+	}
+}

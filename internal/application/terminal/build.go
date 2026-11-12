@@ -204,7 +204,10 @@ func buildItems(menu *terminal.CounterMenu, p priced) (items []order.LineItem, o
 }
 
 // moneyOf is the order's money from its lines and the quote (as main's).
-func moneyOf(items []order.LineItem, q pricing.Quote, off []order.Discount, fees []order.Fee) order.Money {
+// The delivery fee carries the driver's share (main's split of the store's
+// delivery fee, pricing.DeliverySplit) for the driver reports.
+func moneyOf(items []order.LineItem, p priced, off []order.Discount, fees []order.Fee) order.Money {
+	q := p.quote
 	var sub int64
 	for _, it := range items {
 		sub += it.LineTotal
@@ -218,7 +221,8 @@ func moneyOf(items []order.LineItem, q pricing.Quote, off []order.Discount, fees
 		m.Discounts = append(m.Discounts, order.Discount{Type: t, Code: code, Label: d.Label, Amount: d.AmountCents})
 	}
 	if q.DeliveryFeeCents > 0 {
-		m.Fees = append(m.Fees, order.Fee{Type: "delivery", Label: "Delivery fee", Amount: q.DeliveryFeeCents})
+		_, driver := pricing.DeliverySplit(p.ctx.Settings, q.DeliveryFeeCents)
+		m.Fees = append(m.Fees, order.Fee{Type: "delivery", Label: "Delivery fee", Amount: q.DeliveryFeeCents, DriverCents: driver})
 	}
 	if q.ServiceFeeCents > 0 {
 		m.Fees = append(m.Fees, order.Fee{Type: "service", Label: "Online fee", Amount: q.ServiceFeeCents})

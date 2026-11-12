@@ -158,7 +158,7 @@ func (s *Server) floor(h http.HandlerFunc) http.HandlerFunc {
 				return
 			}
 			if d.Kind == device.KindTerminal && !terminalMayUse(r) {
-				s.writeJSON(w, http.StatusForbidden, errCodeMap("a terminal key opens /api/terminal/* and /api/events only", "terminal_only"))
+				s.writeJSON(w, http.StatusForbidden, errCodeMap("a terminal key opens /api/terminal/*, /api/events and GET /api/printers only", "terminal_only"))
 				return
 			}
 			h(w, r.WithContext(context.WithValue(r.Context(), deviceCtxKey{}, d)))
@@ -188,8 +188,8 @@ func integrationMayRead(r *http.Request) bool {
 // unpairing itself.
 func terminalMayUse(r *http.Request) bool {
 	switch p := r.URL.Path; {
-	case r.Method == http.MethodGet && (p == "/api/events" || p == "/api/floor"):
-		return true
+	case r.Method == http.MethodGet && (p == "/api/events" || p == "/api/floor" || p == "/api/printers"):
+		return true // GET /api/printers: the terminal's printer alert (read only)
 	case r.Method == http.MethodPatch && p == "/api/device/self", r.Method == http.MethodPost && p == "/api/device/unpair":
 		return true
 	}

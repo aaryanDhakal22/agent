@@ -87,11 +87,15 @@ type Settings struct {
 	ServiceFeeBps   int   `json:"service_fee_bps"`
 	// Delivery: the fee (untaxed), free from an amount (nil = never), and the
 	// minimum food total after discounts.
-	DeliveryFeeCents      int64   `json:"delivery_fee_cents"`
-	FreeDeliveryOverCents *int64  `json:"free_delivery_over_cents"`
-	DeliveryMinCents      int64   `json:"delivery_min_cents"`
-	Tips                  Tips    `json:"tips"`
-	CardFee               CardFee `json:"card_fee"`
+	DeliveryFeeCents      int64  `json:"delivery_fee_cents"`
+	FreeDeliveryOverCents *int64 `json:"free_delivery_over_cents"`
+	DeliveryMinCents      int64  `json:"delivery_min_cents"`
+	// DeliveryDriverCents is the driver's share of DeliveryFeeCents (the
+	// store keeps the rest; Fees.DriverShare). Not used by the engine: the
+	// quote's delivery fee is the total (DeliverySplit splits it).
+	DeliveryDriverCents int64   `json:"delivery_driver_cents"`
+	Tips                Tips    `json:"tips"`
+	CardFee             CardFee `json:"card_fee"`
 	// Stacking: best (bundles + the one best automatic deal or code), stack
 	// (bundles + every automatic deal + a code), single (one deal per order:
 	// a bundle line rules out automatic deals and codes).

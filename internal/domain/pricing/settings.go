@@ -9,12 +9,44 @@ import (
 )
 
 // Fees are a fee set: the service (online) fee and delivery.
+//
+// The delivery fee is the total the customer pays (DeliveryFeeCents); it is
+// split into the store's share and the driver's share (TERMINAL-PLAN
+// "Delivery fee"): DeliveryDriverCents is the driver's part of it (nil = the
+// default, DefaultDriverShareCents capped at the fee), the store keeps the
+// rest. The split never changes what a customer pays.
 type Fees struct {
 	ServiceFeeCents       int64  `json:"service_fee_cents"`
 	ServiceFeeBps         int    `json:"service_fee_bps"`
 	DeliveryFeeCents      int64  `json:"delivery_fee_cents"`
 	FreeDeliveryOverCents *int64 `json:"free_delivery_over_cents"`
 	DeliveryMinCents      int64  `json:"delivery_min_cents"`
+	DeliveryDriverCents   *int64 `json:"delivery_driver_cents,omitempty"`
+}
+
+// DefaultDriverShareCents is the driver's share of the delivery fee when the
+// store hasn't set one (the owner's default: store $1 + driver $3 of $4).
+const DefaultDriverShareCents = 300
+
+// DriverShare is the driver's part of a delivery fee set (the default when
+// unset), never more than the fee.
+func (f Fees) DriverShare() int64 {
+	d := int64(DefaultDriverShareCents)
+	if f.DeliveryDriverCents != nil {
+		d = *f.DeliveryDriverCents
+	}
+	return min(max(d, 0), max(f.DeliveryFeeCents, 0))
+}
+
+// DeliverySplit splits the delivery fee an order was charged into the
+// store's and the driver's shares: the driver gets his share of it (at most
+// what was charged: a free delivery splits 0 + 0), the store the rest.
+func DeliverySplit(st Settings, chargedCents int64) (storeCents, driverCents int64) {
+	if chargedCents <= 0 {
+		return 0, 0
+	}
+	driverCents = min(max(st.DeliveryDriverCents, 0), chargedCents)
+	return chargedCents - driverCents, driverCents
 }
 
 // StoreSettings are a store's pricing defaults; TaxBps, Stacking and the
@@ -75,7 +107,7 @@ func Effective(s StoreSettings, o KindOverride) Settings {
 	}
 	return Settings{TaxBps: s.TaxBps, Stacking: s.Stacking, ServiceFeeCents: f.ServiceFeeCents, ServiceFeeBps: f.ServiceFeeBps,
 		DeliveryFeeCents: f.DeliveryFeeCents, FreeDeliveryOverCents: f.FreeDeliveryOverCents, DeliveryMinCents: f.DeliveryMinCents,
-		Tips: t, CardFee: c, HalfToppingPrice: s.HalfToppingPrice, HalfSpecialtyOffPct: s.HalfSpecialtyOffPct}
+		DeliveryDriverCents: f.DriverShare(), Tips: t, CardFee: c, HalfToppingPrice: s.HalfToppingPrice, HalfSpecialtyOffPct: s.HalfSpecialtyOffPct}
 }
 
 var ErrBadSettings = errors.New("bad pricing settings")
@@ -116,6 +148,9 @@ func validSets(f *Fees, t *Tips, c *CardFee) error {
 			f.DeliveryFeeCents < 0 || f.DeliveryFeeCents > 10000 || f.DeliveryMinCents < 0 || f.DeliveryMinCents > 100000 ||
 			(f.FreeDeliveryOverCents != nil && (*f.FreeDeliveryOverCents < 0 || *f.FreeDeliveryOverCents > 100000)) {
 			return bad("fees out of range (service ≤ $100 or 30%, delivery ≤ $100, minimum ≤ $1000)")
+		}
+		if d := f.DeliveryDriverCents; d != nil && (*d < 0 || *d > f.DeliveryFeeCents) {
+			return bad("the driver's share of the delivery fee must be 0 up to the fee")
 		}
 	}
 	if t != nil {

@@ -192,3 +192,16 @@ func TestBuildDriverReport_WebGolden(t *testing.T) {
 		}
 	}
 }
+
+// The driver's share of the delivery fees prints under the tips, only when
+// there is one (older slips unchanged).
+func TestBuildDriverReport_DriverShare(t *testing.T) {
+	rep, sc := reportFixture()
+	if s := string(BuildDriverReport(rep, sc, "", "", printed)); strings.Contains(s, "Delivery fee share") {
+		t.Fatal("no share: no line")
+	}
+	rep.DriverShareCents = 900
+	if s := string(BuildDriverReport(rep, sc, "", "", printed)); !strings.Contains(s, leftRight("Delivery fee share", "$9.00", lineWidth)) {
+		t.Fatalf("missing the share line in %q", s)
+	}
+}

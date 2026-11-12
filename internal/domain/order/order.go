@@ -64,6 +64,21 @@ type Fee struct {
 	Type   string `json:"type"`
 	Label  string `json:"label,omitempty"`
 	Amount int64  `json:"amount_cents"`
+	// DriverCents is the driver's share of a delivery fee (main's split of
+	// the store's delivery fee; the store keeps the rest). 0 = no split
+	// known (a vendor order, an older main).
+	DriverCents int64 `json:"driver_cents,omitempty"`
+}
+
+// DeliveryDriverCents is the driver's share of the order's delivery fee(s).
+func (m Money) DeliveryDriverCents() int64 {
+	var n int64
+	for _, f := range m.Fees {
+		if f.Type == "delivery" && f.DriverCents > 0 {
+			n += min(f.DriverCents, max(f.Amount, 0))
+		}
+	}
+	return n
 }
 
 type Discount struct {

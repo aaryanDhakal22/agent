@@ -267,6 +267,10 @@ type DriverReport struct {
 	// DoorTipCents (terminal driver view): the tips he got at the door on
 	// cash / counter deliveries (kept by him; not in TipCents or OwedCents).
 	DoorTipCents int64 `json:"door_tip_cents"`
+	// DriverShareCents: his share of the delivery fees on his orders (main's
+	// split of the store's delivery fee: store share + driver share). Shown
+	// on the report; OwedCents doesn't count it (the store pays it out).
+	DriverShareCents int64 `json:"driver_share_cents"`
 	// 2.3.0: the driver's Driver # (also on a POS driver Quibase doesn't
 	// know: DriverID ""), whether the report was checked against the POS
 	// ledger (nil = the store has no POS hub) and notes for the slip.
@@ -311,6 +315,9 @@ type DriverReportLine struct {
 	// on a cash / counter delivery. In OrderTipCents (the slip's Tip), never
 	// in TipCents: the driver already holds it, the store owes him nothing.
 	DoorTipCents int64 `json:"door_tip_cents,omitempty"`
+	// DriverShareCents: the driver's share of the order's delivery fee (0 =
+	// none, or no split known: a POS check, a vendor order).
+	DriverShareCents int64 `json:"driver_share_cents,omitempty"`
 }
 
 // addDoorTip shows a tip the driver got at the door on the line.
@@ -368,6 +375,9 @@ func NewDriverReportLine(so StoredOrder) DriverReportLine {
 		ExtRef:        so.Status.ExtRef,
 		OutAt:         so.Status.OutAt,
 	}
+	if !so.IsPOS() {
+		l.DriverShareCents = snap.Money.DeliveryDriverCents()
+	}
 	if a := snap.Fulfillment.Address; a != nil {
 		l.Street = StreetOnly(a.Line1)
 		l.Address = strings.TrimSpace(a.Line1)
@@ -400,8 +410,9 @@ func NewDriverReportLine(so StoredOrder) DriverReportLine {
 // Finish fills the report's totals with the store's tip tax.
 func (r *DriverReport) Finish(tipTaxBps int64) {
 	r.Deliveries = len(r.Lines)
-	r.CashCents, r.TipCents, r.PendingTipCents, r.DoorTipCents = 0, 0, 0, 0
+	r.CashCents, r.TipCents, r.PendingTipCents, r.DoorTipCents, r.DriverShareCents = 0, 0, 0, 0, 0
 	for _, l := range r.Lines {
+		r.DriverShareCents += l.DriverShareCents
 		r.CashCents += l.CashCents
 		r.TipCents += l.TipCents
 		r.DoorTipCents += l.DoorTipCents

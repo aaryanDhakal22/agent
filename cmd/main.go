@@ -31,6 +31,7 @@ import (
 	"quiccpos/agent/internal/application/escalation"
 	"quiccpos/agent/internal/application/floorsync"
 	"quiccpos/agent/internal/application/health"
+	"quiccpos/agent/internal/application/lateorders"
 	"quiccpos/agent/internal/application/mapfile"
 	orderApp "quiccpos/agent/internal/application/order"
 	printerApp "quiccpos/agent/internal/application/printer"
@@ -765,6 +766,11 @@ func main() {
 		Setting: func() string { cfg, _ := termStore.Config(); return cfg.AutoCloseAt() },
 		Loc:     storeTZ, Now: time.Now, Ticks: autoCloseTick.C,
 	}, logger)
+
+	// Late online orders: terminal.order.late once each (the terminals' Info feed).
+	lateTick := time.NewTicker(lateorders.Tick)
+	defer lateTick.Stop()
+	go lateorders.New(orderService, broker, logger).Run(ctx, lateTick.C, time.Now)
 
 	<-ctx.Done()
 	logger.Info().Msg("Agent shut down")

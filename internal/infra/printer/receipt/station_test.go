@@ -316,3 +316,18 @@ func TestBuildStation_VoidGolden(t *testing.T) {
 		t.Fatalf("void ticket bytes changed (run with -update if intended)\ngot:  %q\nwant: %q", got, want)
 	}
 }
+
+// TestBuildStation_AddOn (terminal §2.10d): lines added after SEND print
+// under an ADD-ON banner with the order number, nothing else.
+func TestBuildStation_AddOn(t *testing.T) {
+	snap, tk := stationFixture()
+	tk.AddOn, tk.Others, tk.ReroutedFrom = true, nil, ""
+	tk.Mine = tk.Mine[:1]
+	out := string(BuildStation(snap, tk))
+	if !strings.Contains(out, " ADD-ON ") || !strings.Contains(out, "Pepperoni Pizza") {
+		t.Fatalf("add-on ticket:\n%q", out)
+	}
+	if strings.Contains(out, "ITEMS TO OTHER PRINTERS") || strings.Contains(out, "VOID") {
+		t.Fatal("add-on ticket lists other items or says VOID")
+	}
+}

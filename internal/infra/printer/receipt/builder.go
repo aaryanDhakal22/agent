@@ -427,6 +427,9 @@ func buildStation(snap order.Snapshot, t printer.Ticket, prefs order.ReceiptPref
 	if t.Void {
 		writeVoid(w, nl)
 	}
+	if t.AddOn {
+		writeAddOn(w, nl)
+	}
 	if t.Future { // 2.4.0: printed early for a future order
 		writeDoNotMake(w, nl)
 		writeFutureWhen(w, nl, snap)
@@ -732,6 +735,21 @@ func writeVoid(w func(string), nl func()) {
 	w(cmdDoubleSz)
 	w(cmdInvertOn)
 	w(" VOID - REMOVED ")
+	w(cmdInvertOff)
+	w(cmdBaseSz)
+	w(cmdBoldOff)
+	nl()
+	nl()
+}
+
+// writeAddOn prints the inverted "ADD-ON" banner that tops an ADD-ON ticket
+// (lines added to a counter order after SEND, terminal §2.10d).
+func writeAddOn(w func(string), nl func()) {
+	w(cmdCenter)
+	w(cmdBoldOn)
+	w(cmdQuadSz)
+	w(cmdInvertOn)
+	w(" ADD-ON ")
 	w(cmdInvertOff)
 	w(cmdBaseSz)
 	w(cmdBoldOff)

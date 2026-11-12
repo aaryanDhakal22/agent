@@ -366,3 +366,13 @@ func TestPlan_FuturePrintNow(t *testing.T) {
 		}
 	}
 }
+
+func TestPlanAddOn(t *testing.T) {
+	snap := order.Snapshot{Source: order.SourceCounter, Fulfillment: order.Fulfillment{Type: "dine_in"},
+		Items: []order.LineItem{item("Garlic Knots", order.RoutingMatched, "p-pizza")}}
+	tickets, _ := PlanWith(snap, []RosterEntry{front, pizza, wings}, printer.ModeAddOn, DefaultRules())
+	if len(tickets) != 1 || !tickets[0].AddOn || tickets[0].Void || tickets[0].Kind != printer.TicketStation ||
+		tickets[0].TargetID != "p-pizza" || len(tickets[0].Others) != 0 {
+		t.Fatalf("tickets = %+v", tickets)
+	}
+}

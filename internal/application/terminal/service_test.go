@@ -39,6 +39,8 @@ type fakeOrders struct {
 	mu      sync.Mutex
 	printed []order.StoredOrder
 	voids   []order.StoredOrder
+	addOns  [][]order.LineItem
+	voidLns [][]order.LineItem
 	changed int
 	journal int
 }
@@ -51,6 +53,20 @@ func (f *fakeOrders) PrintCounterTickets(_ context.Context, so order.StoredOrder
 func (f *fakeOrders) PrintVoidSlip(_ context.Context, so order.StoredOrder) {
 	f.mu.Lock()
 	f.voids = append(f.voids, so)
+	f.mu.Unlock()
+}
+func (f *fakeOrders) PrintAddOn(_ context.Context, _ order.StoredOrder, items []order.LineItem) {
+	f.mu.Lock()
+	if len(items) > 0 {
+		f.addOns = append(f.addOns, items)
+	}
+	f.mu.Unlock()
+}
+func (f *fakeOrders) PrintVoidLines(_ context.Context, _ order.StoredOrder, items []order.LineItem) {
+	f.mu.Lock()
+	if len(items) > 0 {
+		f.voidLns = append(f.voidLns, items)
+	}
 	f.mu.Unlock()
 }
 func (f *fakeOrders) CounterOrderChanged(context.Context, order.StoredOrder, *order.StoredOrder, bool) {

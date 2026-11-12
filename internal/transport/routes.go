@@ -141,13 +141,13 @@ func (s *Server) routes() []routeDef {
 		{"POST", "/api/batch/close", "device", "Close the batch {force}: 409 lists leftovers unless force (prints driver reports)", s.handleCloseBatch},
 		{"GET", "/api/batches/{id}/driver-reports", "device", "Per-driver delivery/cash/tip reports for a batch (0 = open)", s.handleDriverReports},
 		{"POST", "/api/batches/{id}/driver-reports/print", "device", "Print one driver-report slip per driver (receipt printer)", s.handlePrintDriverReports},
-		{"GET", "/api/printers", "device", "Printer reachability snapshot", s.handleListPrinters},
+		{"GET", "/api/printers", "device", "Printer reachability snapshot (a POS terminal's key may read it too)", s.handleListPrinters},
 		{"GET", "/api/printers/found", "device", "Printers seen on the LAN (TCP 9100) {scanned_at, scanning, printers:[{ip, mac, known, printer_name}]}; ?refresh=1 scans now", s.handlePrintersFound},
 		{"POST", "/api/printers/add", "device", "Add a found printer {name, ip, mac} -> RPC printer.add -> 201 {id, name, ip} | 409 name_taken | 400 | 503 main_offline", s.handlePrinterAdd},
 		{"GET", "/api/app/latest", "device", "Newest Quibase release cached for tablets (204 none)", s.handleAppLatest},
 		{"GET", "/api/app/apk", "device", "Download the cached Quibase APK", s.handleAppAPK},
 		{"GET", "/api/update/status", "device", "Pi update state: versions, latest, pending request, last result, can_update_now/blocked_reason", s.handleUpdateStatus},
-		{"GET", "/api/events", "device", "SSE: order.arrived|added|updated|escalated, drivers.updated|dispatched, driver.route, batch.closed, floor.updated, settings.updated, integration.status|toast, terminal.menu.changed|config.changed|order.placed|order.paid|order.voided|driver.linked|driver.claimed|driver.tip|driver.closed|driver.report", s.handleEvents},
+		{"GET", "/api/events", "device", "SSE: order.arrived|added|updated|escalated, drivers.updated|dispatched, driver.route, batch.closed, floor.updated, settings.updated, integration.status|toast, terminal.menu.changed|config.changed|order.placed|order.paid|order.voided|order.changed|driver.linked|driver.claimed|driver.tip|driver.closed|driver.report", s.handleEvents},
 
 		// Quibase setup + diagnostics — paired tablet (or web-UI session).
 		{"POST", "/api/pairing/code", "device", "Show a 6-digit tablet pairing code (5 min) — web UI or a paired tablet (Pair another tablet)", s.handlePairingCode},
@@ -183,7 +183,9 @@ func (s *Server) routes() []routeDef {
 		{"GET", "/api/terminal/orders/{id}", "terminal", "One counter order with its payments {order, payments} | 404", s.handleTerminalOrder},
 		{"POST", "/api/terminal/orders/{id}/payments", "terminal", "Take a payment {tender, amount_cents, tip_cents?, tendered_cents?, client_key?, ref?, last4?} or give money back {refund: true, reason, manager_pin?} -> {order, payment, duplicate, balance_cents} (order.payment to main) | 400 | 401 login_required | 403 manager_required | 404 | 409 over_balance/refund_too_big/not_payable", s.handleTerminalPayment},
 		{"POST", "/api/terminal/orders/{id}/void", "terminal", "Void a counter order {reason, manager_pin?}: refunds what was paid (over the limit: a manager's PIN), VOID slip, order.void to main -> {order, refunds, refunded_cents, already} | 400 | 401 | 403 manager_required | 404 | 409 not_voidable", s.handleTerminalVoid},
+		{"PUT", "/api/terminal/orders/{id}/cart", "terminal", "Change a placed counter order (kitchen change after SEND) {cart, client_key?, manager_pin?}: re-priced, ADD-ON ticket for added lines, VOID ticket for removed ones, order.changed to main -> {order, added, removed, changed, duplicate, balance_cents} | 400 | 401 login_required | 403 manager_required | 404 | 409 not_editable/refund_first | 422 cart_invalid", s.handleTerminalChangeCart},
 		{"POST", "/api/terminal/journal", "terminal", "Journal a terminal-only action {action (not a Pi one), order_id?, detail?: object <= 4 KB} -> 201 the entry (journal.entries to main) | 400 | 401 login_required", s.handleTerminalJournalPost},
+		{"GET", "/api/terminal/status", "terminal", "The terminal's alerts: {printers: [GET /api/printers' entries], printers_down, main: {state, connected, connected_since, last_event_at, last_error?}, menu_version, menu_fetched_at, config_version, at} (no login needed)", s.handleTerminalStatus},
 		{"GET", "/api/terminal/journal", "terminal", "The action journal, newest first ?limit=N (default 100, max 500)", s.handleTerminalJournal},
 		// The driver view (a driver logged in on the terminal; other roles 403 driver_only).
 		{"GET", "/api/terminal/driver/available", "terminal", "Ready, unassigned deliveries to claim, oldest ready first (never cooking) [{order_id, number, street, address, ready_at, payment, cash_due_cents, total_cents}] | 401 login_required | 403 driver_only", s.handleDriverAvailable},

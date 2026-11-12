@@ -370,3 +370,44 @@ def test_live_main_terminal_routes(admin, main_store):
     assert r.status_code == 200 and "staff" in r.json() and "version" in r.json()
     r = requests.get(f"{MAIN_BASE_URL}/store/v1/agent/counter-menu", headers=h, timeout=10)
     assert r.status_code in (200, 404), r.text
+
+
+def test_kitchen_change_after_send(rig):
+    """§2.10d: PUT the whole new cart → ADD-ON ticket for added lines, VOID
+    for removed ones, order.changed to main; idempotent by client_key."""
+    agent, term, fm, fakes = rig["agent"], rig["term"], rig["fm"], rig["fakes"]
+    base = agent.base
+    placed = place(rig).json()["order"]
+    oid = placed["order"]["id"]
+    assert placed["order"]["source_metadata"]["terminal"]["cart"]["lines"][0]["item_id"] == CHEESE
+    wait_until(lambda: fakes["Pizza"].jobs, what="first station ticket")
+    jobs = len(fakes["Pizza"].jobs)
+    soda = {"item_id": SODA, "qty": 2}
+    body = {"client_key": "chg-key-00001", "cart": {"lines": [pizza_line(), soda]}}
+    r = term.put(f"{base}/api/terminal/orders/{oid}/cart", json=body, timeout=10)
+    assert r.status_code == 200, r.text
+    res = r.json()
+    assert res["changed"] and res["added"] == ["2× Soda"] and res["removed"] == [] and res["balance_cents"] == res["order"]["order"]["money"]["total_cents"]
+    wait_until(lambda: any("ADD-ON" in j.decode("latin-1") for j in fakes["Pizza"].jobs[jobs:]), what="ADD-ON ticket")
+    wait_until(lambda: fm.of_type("order.changed"), what="order.changed synced")
+    ev = fm.of_type("order.changed")[0]
+    assert ev["order_id"] == oid and len(ev["snapshot"]["items"]) == 2 and ev["snapshot"]["fulfillment"]["type"] == "counter"
+    # Same key: the stored answer, no new ticket.
+    n = len(fakes["Pizza"].jobs)
+    again = term.put(f"{base}/api/terminal/orders/{oid}/cart", json=body, timeout=10).json()
+    assert again["duplicate"] and again["added"] == ["2× Soda"]
+    # Take the pizza off: a VOID ticket.
+    r = term.put(f"{base}/api/terminal/orders/{oid}/cart", json={"cart": {"lines": [soda]}}, timeout=10).json()
+    assert r["removed"] and r["removed"][0].startswith("Cheese Pizza")
+    wait_until(lambda: any("VOID" in j.decode("latin-1") for j in fakes["Pizza"].jobs[n:]), what="VOID ticket")
+    # Paid in full, then a smaller cart: refund first.
+    total = r["order"]["order"]["money"]["total_cents"]
+    assert term.post(f"{base}/api/terminal/orders/{oid}/payments", json={"tender": "cash", "amount_cents": total}, timeout=5).status_code == 200
+    r = term.put(f"{base}/api/terminal/orders/{oid}/cart", json={"cart": {"lines": [{"item_id": SODA, "qty": 1}]}}, timeout=10)
+    assert r.status_code == 409 and r.json()["code"] == "refund_first"
+    # Voided: not editable.
+    assert term.post(f"{base}/api/terminal/orders/{oid}/void", json={"reason": "test", "manager_pin": "9876"}, timeout=5).status_code == 200
+    r = term.put(f"{base}/api/terminal/orders/{oid}/cart", json=body | {"client_key": "chg-key-00002"}, timeout=10)
+    assert r.status_code == 409 and r.json()["code"] == "not_editable"
+    actions = [e["action"] for e in term.get(f"{base}/api/terminal/journal", timeout=5).json()]
+    assert actions.count("order.changed") == 2

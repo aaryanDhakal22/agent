@@ -160,6 +160,10 @@ func BuildDriverReport(rep order.DriverReport, sc storeconfig.StoreContext, size
 	nl()
 	w(fmt.Sprintf("  (%s - %s)", dollars(rep.TipCents), percent(rep.TipTaxBps)))
 	nl()
+	if rep.DriverShareCents > 0 { // his share of the delivery fees (not in the owed total)
+		w(leftRight("Delivery fee share", dollars(rep.DriverShareCents), lineWidth))
+		nl()
+	}
 	w(strings.Repeat("=", lineWidth))
 	nl()
 

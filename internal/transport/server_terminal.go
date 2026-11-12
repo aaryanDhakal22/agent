@@ -80,6 +80,10 @@ func (s *Server) terminalError(w http.ResponseWriter, r *http.Request, err error
 		s.writeJSON(w, http.StatusConflict, errCodeMap(err.Error(), "not_payable"))
 	case errors.Is(err, terminal.ErrNotVoidable):
 		s.writeJSON(w, http.StatusConflict, errCodeMap(err.Error(), "not_voidable"))
+	case errors.Is(err, terminal.ErrNotEditable):
+		s.writeJSON(w, http.StatusConflict, errCodeMap(err.Error(), "not_editable"))
+	case errors.Is(err, terminal.ErrRefundFirst):
+		s.writeJSON(w, http.StatusConflict, errCodeMap(err.Error(), "refund_first"))
 	case errors.Is(err, terminal.ErrNotCounterOrder), errors.Is(err, order.ErrNotFound):
 		s.writeJSON(w, http.StatusNotFound, errCodeMap("no such counter order", "not_found"))
 	default:
@@ -236,6 +240,23 @@ func (s *Server) handleTerminalVoid(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	res, err := s.terminalSvc.Void(r.Context(), actor(r), r.PathValue("id"), in)
+	if err != nil {
+		s.terminalError(w, r, err)
+		return
+	}
+	s.writeJSON(w, http.StatusOK, res)
+}
+
+// PUT /api/terminal/orders/{id}/cart - a kitchen change after SEND (§2.10d).
+func (s *Server) handleTerminalChangeCart(w http.ResponseWriter, r *http.Request) {
+	if !s.terminalReady(w) {
+		return
+	}
+	var in terminalApp.ChangeIn
+	if !s.decodeTerminal(w, r, &in) {
+		return
+	}
+	res, err := s.terminalSvc.ChangeCart(r.Context(), actor(r), r.PathValue("id"), in)
 	if err != nil {
 		s.terminalError(w, r, err)
 		return

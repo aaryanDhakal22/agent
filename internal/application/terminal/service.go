@@ -24,6 +24,7 @@ type Repo interface {
 	PlaceCounterOrder(ctx context.Context, in terminal.NewCounterOrder) (order.StoredOrder, bool, error)
 	AddCounterPayment(ctx context.Context, orderID, clientKey string, check terminal.MoneyCheck) (order.StoredOrder, terminal.Payment, bool, error)
 	VoidCounterOrder(ctx context.Context, id, reason, staffID, deviceID string, check terminal.MoneyCheck) (so, prev order.StoredOrder, refunds []terminal.Payment, returned bool, err error)
+	ChangeCounterOrder(ctx context.Context, id, staffID, deviceID string, check terminal.ChangeCheck) (so, prev order.StoredOrder, changed bool, err error)
 	OrderPayments(ctx context.Context, orderID string) ([]terminal.Payment, error)
 	CounterOrders(ctx context.Context) ([]order.StoredOrder, error)
 	AddJournal(ctx context.Context, entries []terminal.Entry) error
@@ -34,6 +35,8 @@ type Repo interface {
 type Orders interface {
 	PrintCounterTickets(ctx context.Context, so order.StoredOrder)
 	PrintVoidSlip(ctx context.Context, so order.StoredOrder)
+	PrintAddOn(ctx context.Context, so order.StoredOrder, items []order.LineItem)
+	PrintVoidLines(ctx context.Context, so order.StoredOrder, items []order.LineItem)
 	CounterOrderChanged(ctx context.Context, so order.StoredOrder, prev *order.StoredOrder, driverReturned bool)
 	JournalWritten()
 	PrepMinutesFor(fulfillment string) int64
@@ -469,7 +472,7 @@ func (s *Service) PlaceOrder(ctx context.Context, a Actor, in OrderIn) (*PlaceRe
 	if err != nil {
 		return nil, err
 	}
-	money := moneyOf(items, p.quote, off, fees)
+	money := moneyOf(items, p, off, fees)
 
 	id := uuid.Must(uuid.NewV7()).String()
 	var pays []terminal.Payment
@@ -503,7 +506,8 @@ func (s *Service) PlaceOrder(ctx context.Context, a Actor, in OrderIn) (*PlaceRe
 		Customer:    order.Customer{DisplayName: strings.TrimSpace(cust.Name), Phone: strings.TrimSpace(cust.Phone)},
 		Fulfillment: ful, Items: items, Notes: note, PlacedAt: now.UTC(), ReceivedAt: now.UTC(),
 		SourceMeta: map[string]any{"terminal": map[string]any{"type": typ, "device_id": a.DeviceID, "device_name": a.DeviceName,
-			"staff_id": st.ID, "staff_name": st.Name(), "client_key": in.ClientKey, "menu_version": ms.Version}}}
+			"staff_id": st.ID, "staff_name": st.Name(), "client_key": in.ClientKey, "menu_version": ms.Version,
+			"cart": in.Cart}}}
 	for _, pay := range pays {
 		snap.Payments = append(snap.Payments, order.PaymentSummary{Method: terminal.MethodOf(pay.Tender), AmountCents: pay.AmountCents, Last4: pay.Last4})
 	}

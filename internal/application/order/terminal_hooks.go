@@ -42,6 +42,38 @@ func (s *Service) PrintVoidSlip(ctx context.Context, so order.StoredOrder) {
 	}
 }
 
+// PrintAddOn prints an ADD-ON ticket for lines added to a counter order
+// after SEND, on the stations they route to (background, terminal §2.10d).
+func (s *Service) PrintAddOn(ctx context.Context, so order.StoredOrder, items []order.LineItem) {
+	if len(items) == 0 {
+		return
+	}
+	snap := printable(so)
+	snap.Items = append([]order.LineItem(nil), items...)
+	snap.RemovedItems = nil
+	s.background(ctx, func(ctx context.Context) {
+		out, err := s.print(ctx, snap, printer.ModeAddOn)
+		if errors.Is(err, printer.ErrNoTickets) {
+			return
+		}
+		s.alertPrintIssues(ctx, so, out, false)
+		if err != nil {
+			s.logger.Warn().Ctx(ctx).Err(err).Str("order_id", so.Order.ID).Msg("Counter ADD-ON ticket not printed")
+			return
+		}
+		s.printEvents(label(so)+" ADD-ON (counter)", out)
+	})
+}
+
+// PrintVoidLines prints a VOID ticket for lines removed from a counter
+// order after SEND, on the stations they printed on (background).
+func (s *Service) PrintVoidLines(ctx context.Context, so order.StoredOrder, items []order.LineItem) {
+	if len(items) == 0 {
+		return
+	}
+	s.printVoid(ctx, so, items)
+}
+
 // CounterOrderChanged tells main (floor sync) and the tablets about a counter
 // order change; prev is the order before it (a pool / run it left).
 func (s *Service) CounterOrderChanged(ctx context.Context, so order.StoredOrder, prev *order.StoredOrder, driverReturned bool) {

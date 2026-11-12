@@ -49,6 +49,10 @@ const (
 	ModeFutureKitchen Mode = "future_kitchen"
 	ModeFutureReceipt Mode = "future_receipt"
 	ModeFutureBoth    Mode = "future_both"
+	// ModeAddOn (terminal §2.10d): lines added to a counter order after
+	// SEND, as station tickets under an ADD-ON banner (only the new lines,
+	// no "other printers" list, no receipt).
+	ModeAddOn Mode = "add_on"
 )
 
 // Ticket is one thing to print for an order. A planned order is a set of
@@ -69,6 +73,8 @@ type Ticket struct {
 	ReroutedFrom string
 	// Void: a VOID ticket (ModeVoid) - the items are what was voided.
 	Void bool
+	// AddOn: an ADD-ON ticket (ModeAddOn) - the items were added after SEND.
+	AddOn bool
 	// Future (ModeFutureEarly): printed early for a future order - a
 	// kitchen ticket says DO NOT MAKE and when it is due, a receipt has a
 	// FUTURE bar on top.
