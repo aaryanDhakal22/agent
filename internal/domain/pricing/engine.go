@@ -126,6 +126,7 @@ type priced struct {
 	size     string
 	sizeName string
 	choice   string // a combined item: the choice's name
+	list     *int64 // a price change: the price the line's own replaced
 	opts     []ResolvedOption
 	issues   []Issue
 }
@@ -138,8 +139,9 @@ type Resolved struct {
 	RateItem   string // the bank item whose tax / printer applies
 	SizeID     string
 	SizeName   string
-	BaseCents  int64 // the item's (size's) price; half and half: the pizza's
-	UnitCents  int64 // with the charged options
+	BaseCents  int64  // the item's (size's) price; half and half: the pizza's (a price change: the line's own)
+	UnitCents  int64  // with the charged options
+	ListCents  *int64 // a price change: the item's own price it replaced
 	Options    []ResolvedOption
 	Issues     []Issue
 }
@@ -161,7 +163,7 @@ type ResolvedOption struct {
 func Resolve(ctx Context, sel Selection, free int) Resolved {
 	p := newEngine(ctx).price(sel, free)
 	return Resolved{Name: p.name, ChoiceName: p.choice, BankItem: p.bankItem, RateItem: p.rateItem, SizeID: p.size, SizeName: p.sizeName,
-		BaseCents: p.base + p.halfUp, UnitCents: p.unit, Options: p.opts, Issues: p.issues}
+		BaseCents: p.base + p.halfUp, UnitCents: p.unit, ListCents: p.list, Options: p.opts, Issues: p.issues}
 }
 
 // portionOf is a pick's portion: first | second | "" (whole); left / right
@@ -386,7 +388,10 @@ func (e *engine) price(sel Selection, free int) priced {
 	}
 	// An open-price item (the counter's "Advance Payment"): the line carries
 	// the cashier's price; only a context with OpenPrices may sell one.
+	// A price change (PriceOverrides, the Pi's counter): the line's own
+	// price replaces the item's, applied once the pizza is priced (below).
 	open := p.bankItem != "" && e.ctx.Items[p.bankItem].OpenPrice
+	override := false
 	switch {
 	case open && !e.ctx.OpenPrices:
 		p.issues = append(p.issues, Issue{Code: IssueOpenPrice, Message: p.name + " can't be ordered here."})
@@ -394,6 +399,10 @@ func (e *engine) price(sel Selection, free int) priced {
 		p.issues = append(p.issues, Issue{Code: IssueOpenPrice, Message: p.name + ": enter a price."})
 	case open:
 		base = *sel.PriceCents
+	case sel.PriceCents != nil && e.ctx.PriceOverrides && (*sel.PriceCents < 0 || *sel.PriceCents > MaxOpenPriceCents):
+		p.issues = append(p.issues, Issue{Code: IssueOpenPrice, Message: p.name + ": a price is $0.00 to " + Money(MaxOpenPriceCents) + "."})
+	case sel.PriceCents != nil && e.ctx.PriceOverrides:
+		override = true
 	case sel.PriceCents != nil:
 		p.issues = append(p.issues, Issue{Code: IssueOpenPrice, Message: p.name + " has a set price."})
 	}
@@ -588,6 +597,11 @@ func (e *engine) price(sel Selection, free int) priced {
 	if spec[1] != nil || spec[2] != nil || only[1] || only[2] {
 		p.halfUp = e.halves(&p, base, spec, only) - base
 	}
+	if override { // the pizza's price (with its halves) becomes the line's own
+		list := base + p.halfUp
+		p.list = &list
+		base, p.halfUp = *sel.PriceCents, 0
+	}
 	p.base = base
 	p.extras += p.halfUp
 	p.unit = base + p.extras
@@ -647,9 +661,11 @@ func Price(ctx Context, cart Cart, at time.Time) Quote {
 			if n := strings.TrimSpace(line.Note); n != "" {
 				mods = append(mods, "“"+n+"”")
 			}
-			q.Lines = append(q.Lines, QuoteLine{Index: i, Name: p.name, Mods: mods, Qty: qty, UnitCents: p.unit, TotalCents: p.unit * int64(qty)})
+			q.Lines = append(q.Lines, QuoteLine{Index: i, Name: p.name, Mods: mods, Qty: qty, UnitCents: p.unit, TotalCents: p.unit * int64(qty), ListCents: p.list})
 			lineTax = append(lineTax, taxed{p.unit * int64(qty), e.rate(p.rateItem)})
-			if p.bankItem != "" && len(p.issues) == 0 {
+			// A price-changed line is left out of the automatic deals: the
+			// cashier's price is the line's price.
+			if p.bankItem != "" && len(p.issues) == 0 && p.list == nil {
 				for k := 0; k < qty; k++ {
 					units = append(units, unit{price: p.unit, item: p.bankItem, category: e.category(p.bankItem), size: p.size})
 				}
@@ -684,6 +700,9 @@ func Price(ctx Context, cart Cart, at time.Time) Quote {
 			p := e.price(pick, slot.IncludedOptions)
 			for _, is := range p.issues {
 				issue(is.Code, is.Message, &idx)
+			}
+			if p.list != nil {
+				issue(IssueOpenPrice, d.Name+": a combo's items keep their prices.", &idx)
 			}
 			if len(p.issues) == 0 && !matches(slot.Eligible, unit{item: p.bankItem, category: e.category(p.bankItem), size: p.size}) {
 				issue(IssueDealSlot, fmt.Sprintf("%s: %s doesn't fit “%s”.", d.Name, p.name, slot.Label), &idx)

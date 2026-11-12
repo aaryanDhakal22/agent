@@ -183,6 +183,59 @@ func (s *Service) manager(a Actor, cfg *terminal.Config, pin string, need *termi
 	return &st, nil
 }
 
+// ManagerCheckIn is POST /api/terminal/manager-check: a manager's PIN for a
+// terminal dialog (a price drop) and what it is for.
+type ManagerCheckIn struct {
+	PIN    string `json:"pin"`
+	Action string `json:"action"`
+}
+
+// ManagerCheckResult answers a manager's PIN.
+type ManagerCheckResult struct {
+	OK    bool            `json:"ok"`
+	Staff terminal.Public `json:"staff"`
+}
+
+var forRe = regexp.MustCompile(`^[a-z][a-z0-9_.]{0,39}$`)
+
+// ManagerCheck tells a terminal whether a PIN is an active manager's (for its
+// dialogs; the order still carries the PIN as manager_pin, which the Pi
+// checks again). Needs a staff member logged in on the terminal; throttled
+// with the terminal's logins (a wrong or non-manager PIN is a miss, 401
+// wrong_pin either way, so it never tells whose PIN it was); journaled.
+func (s *Service) ManagerCheck(ctx context.Context, a Actor, in ManagerCheckIn) (*ManagerCheckResult, error) {
+	st, cfg, err := s.staffOf(a)
+	if err != nil {
+		return nil, err
+	}
+	pin := strings.TrimSpace(in.PIN)
+	if !pinRe.MatchString(pin) {
+		return nil, terminal.ErrBadPIN
+	}
+	what := strings.TrimSpace(in.Action)
+	if what == "" {
+		what = terminal.ActionPriceChange
+	}
+	if !forRe.MatchString(what) {
+		return nil, badRequest("action is 1-40 lowercase letters, digits, underscores or dots")
+	}
+	now := s.now()
+	if wait := s.staff.throttled(a.DeviceID, now); wait > 0 {
+		return nil, &terminal.Throttled{Wait: wait}
+	}
+	mgr, ok := s.staff.match(cfg, pin)
+	if !ok || mgr.Role != terminal.RoleManager {
+		s.staff.miss(a.DeviceID, now)
+		s.journal(ctx, terminal.Entry{StaffID: st.ID, DeviceID: a.DeviceID, Action: terminal.ActionManagerCheck,
+			Detail: detail(map[string]any{"for": what, "ok": false})})
+		return nil, terminal.ErrWrongPIN
+	}
+	s.staff.hit(a.DeviceID)
+	s.journal(ctx, terminal.Entry{StaffID: st.ID, DeviceID: a.DeviceID, Action: terminal.ActionManagerCheck,
+		Detail: detail(map[string]any{"for": what, "ok": true, "manager_id": mgr.ID})})
+	return &ManagerCheckResult{OK: true, Staff: mgr.Public()}, nil
+}
+
 func overrideEntry(a Actor, staff terminal.Staff, mgr *terminal.Staff, need *terminal.ManagerRequired, orderID string) terminal.Entry {
 	return terminal.Entry{StaffID: staff.ID, DeviceID: a.DeviceID, Action: terminal.ActionOverride, OrderID: orderID,
 		Detail: detail(map[string]any{"for": need.Action, "manager_id": mgr.ID, "limit": need.Limit, "requested": need.Requested})}
@@ -278,6 +331,9 @@ type QuoteView struct {
 	MenuVersion  int64 `json:"menu_version"`
 	DiscountPct  int   `json:"discount_pct"`
 	NeedsManager bool  `json:"needs_manager"`
+	// PriceChanges are the lines rung at another price than the menu's,
+	// each with needs_manager for the logged-in staff member.
+	PriceChanges []terminal.PriceChange `json:"price_changes,omitempty"`
 }
 
 // ErrBadRequest wraps a request the terminal must fix.
@@ -310,15 +366,98 @@ func (s *Service) Quote(_ context.Context, a Actor, in QuoteIn) (*QuoteView, err
 	if err != nil {
 		return nil, badRequest(err.Error())
 	}
-	v := &QuoteView{Quote: p.quote, MenuVersion: ms.Version, DiscountPct: p.manualPct}
-	if p.manualCents > 0 {
+	v := &QuoteView{Quote: p.quote, MenuVersion: ms.Version, DiscountPct: p.manualPct, PriceChanges: p.changes}
+	if p.manualCents > 0 || len(p.changes) > 0 {
 		st, cfg, err := s.staffOf(a)
-		v.NeedsManager = err != nil || !withinDiscount(cfg.LimitsOf(st), p.manualPct)
+		if p.manualCents > 0 {
+			v.NeedsManager = err != nil || !withinDiscount(cfg.LimitsOf(st), p.manualPct)
+		}
+		if err != nil { // nobody logged in: any drop would need a manager
+			for i := range v.PriceChanges {
+				v.PriceChanges[i].NeedsManager = v.PriceChanges[i].DropPct > 0
+				v.NeedsManager = v.NeedsManager || v.PriceChanges[i].NeedsManager
+			}
+		} else if checkPrices(cfg, st, v.PriceChanges, nil) != nil {
+			v.NeedsManager = true
+		}
 	}
 	return v, nil
 }
 
 func withinDiscount(l terminal.Limits, pct int) bool { return l.Unlimited || pct <= l.DiscountPct }
+
+// checkPrices marks each price change that lowers a price past the staff
+// member's limit (TERMINAL-PLAN "Item price change": raising is free, a
+// cashier lowers by up to cashier_price_drop_pct, a manager is unlimited)
+// and answers what a manager's PIN must cover (nil = nothing). A change in
+// `kept` (Key → count: the order's earlier cart) was approved already.
+func checkPrices(cfg *terminal.Config, st terminal.Staff, changes []terminal.PriceChange, kept map[string]int) *terminal.ManagerRequired {
+	pct, unlimited := cfg.PriceDropOf(st)
+	var need *terminal.ManagerRequired
+	for i := range changes {
+		c := &changes[i]
+		if k := c.Key(); kept[k] > 0 {
+			kept[k]--
+			c.Approved = true
+			continue
+		}
+		if unlimited || terminal.DropAllowed(c.FromCents, c.ToCents, pct) {
+			continue
+		}
+		c.NeedsManager = true
+		if need == nil {
+			need = &terminal.ManagerRequired{Action: terminal.ActionPriceChange, Limit: int64(pct)}
+		}
+		need.Requested = max(need.Requested, int64(c.DropPct))
+	}
+	return need
+}
+
+// priceEntries journals every new price change (who, from → to, approver).
+func priceEntries(a Actor, st terminal.Staff, changes []terminal.PriceChange, approver *terminal.Staff, orderID string) []terminal.Entry {
+	var out []terminal.Entry
+	for _, c := range changes {
+		if c.Approved {
+			continue
+		}
+		d := map[string]any{"line": c.Line, "item_id": c.ItemID, "item": c.Name, "from_cents": c.FromCents, "to_cents": c.ToCents,
+			"drop_pct": c.DropPct}
+		if c.SizeID != "" {
+			d["size_id"] = c.SizeID
+		}
+		if c.NeedsManager && approver != nil {
+			d["approved_by"] = approver.ID
+		}
+		out = append(out, terminal.Entry{StaffID: st.ID, DeviceID: a.DeviceID, Action: terminal.ActionPriceChange, OrderID: orderID, Detail: detail(d)})
+	}
+	return out
+}
+
+// approve checks one manager's PIN for everything in this request that is
+// over the staff member's limits (nil needs are skipped) and returns the
+// manager (nil when nothing needed one) with an override row per need.
+func (s *Service) approve(a Actor, st terminal.Staff, cfg *terminal.Config, pin, orderID string, needs ...*terminal.ManagerRequired) (*terminal.Staff, []terminal.Entry, error) {
+	var first *terminal.ManagerRequired
+	for _, n := range needs {
+		if n != nil && first == nil {
+			first = n
+		}
+	}
+	if first == nil {
+		return nil, nil, nil
+	}
+	mgr, err := s.manager(a, cfg, pin, first)
+	if err != nil {
+		return nil, nil, err
+	}
+	var rows []terminal.Entry
+	for _, n := range needs {
+		if n != nil {
+			rows = append(rows, overrideEntry(a, st, mgr, n, orderID))
+		}
+	}
+	return mgr, rows, nil
+}
 
 // --- orders ------------------------------------------------------------------------------
 
@@ -456,17 +595,19 @@ func (s *Service) PlaceOrder(ctx context.Context, a Actor, in OrderIn) (*PlaceRe
 	if len(p.quote.Errors) > 0 {
 		return nil, &terminal.CartInvalid{Issues: p.quote.Errors}
 	}
-	journal := []terminal.Entry{}
-	var approver *terminal.Staff
+	var discountNeed *terminal.ManagerRequired
 	if p.manualCents > 0 {
-		lim := cfg.LimitsOf(st)
-		if !withinDiscount(lim, p.manualPct) {
-			need := &terminal.ManagerRequired{Action: terminal.ActionDiscount, Limit: int64(lim.DiscountPct), Requested: int64(p.manualPct)}
-			if approver, err = s.manager(a, cfg, in.ManagerPIN, need); err != nil {
-				return nil, err
-			}
-			journal = append(journal, overrideEntry(a, st, approver, need, ""))
+		if lim := cfg.LimitsOf(st); !withinDiscount(lim, p.manualPct) {
+			discountNeed = &terminal.ManagerRequired{Action: terminal.ActionDiscount, Limit: int64(lim.DiscountPct), Requested: int64(p.manualPct)}
 		}
+	}
+	priceNeed := checkPrices(cfg, st, p.changes, nil)
+	approver, journal, err := s.approve(a, st, cfg, in.ManagerPIN, "", discountNeed, priceNeed)
+	if err != nil {
+		return nil, err
+	}
+	if journal == nil {
+		journal = []terminal.Entry{}
 	}
 	items, off, fees, err := buildItems(m, p)
 	if err != nil {
@@ -513,9 +654,10 @@ func (s *Service) PlaceOrder(ctx context.Context, a Actor, in OrderIn) (*PlaceRe
 	}
 	journal = append(journal, terminal.Entry{StaffID: st.ID, DeviceID: a.DeviceID, Action: terminal.ActionOrderPlaced, OrderID: id,
 		Detail: detail(map[string]any{"type": typ, "total_cents": money.Total, "paid_cents": paidCents, "lines": len(items), "client_key": in.ClientKey})})
+	journal = append(journal, priceEntries(a, st, p.changes, approver, id)...)
 	if p.manualCents > 0 {
 		d := map[string]any{"cents": p.manualCents, "pct": p.manualPct, "reason": strings.TrimSpace(in.Cart.Discount.Reason)}
-		if approver != nil {
+		if approver != nil && discountNeed != nil {
 			d["approved_by"] = approver.ID
 		}
 		journal = append(journal, terminal.Entry{StaffID: st.ID, DeviceID: a.DeviceID, Action: terminal.ActionDiscount, OrderID: id, Detail: detail(d)})

@@ -55,11 +55,15 @@ type priced struct {
 	cart        pricing.Cart
 	manualCents int64
 	manualPct   int // the manual discount as a percent of the food (rounded up)
+	// changes are the lines rung at another price than the menu's.
+	changes []terminal.PriceChange
 }
 
 // priceCart prices a cart with the Pi's engine copy. typ: counter | pickup |
 // delivery (a counter order prices as a pickup). The store takes both types
-// at the counter whatever its online status, so Types is always open.
+// at the counter whatever its online status, so Types is always open. A
+// line's price_cents on a set-price item is an item price change
+// (PriceOverrides: the engine prices it; who may make it is checkPrices').
 func priceCart(menu *terminal.CounterMenu, tz *time.Location, typ string, c Cart, now time.Time) (priced, error) {
 	if err := c.Discount.check(); err != nil {
 		return priced{}, err
@@ -74,11 +78,12 @@ func priceCart(menu *terminal.CounterMenu, tz *time.Location, typ string, c Cart
 	}
 	ctx := menu.Pricing
 	ctx.Types = pricing.Types{Pickup: true, Delivery: true}
+	ctx.PriceOverrides = true
 	if ctx.Timezone == "" && tz != nil {
 		ctx.Timezone = tz.String()
 	}
 	q := pricing.Price(ctx, pc, now)
-	out := priced{quote: q, ctx: ctx, cart: pc}
+	out := priced{quote: q, ctx: ctx, cart: pc, changes: priceChanges(pc, q)}
 	if d := c.Discount; d != nil && len(q.Errors) == 0 {
 		food := q.SubtotalCents
 		for _, x := range q.Discounts {
@@ -113,6 +118,21 @@ func priceCart(menu *terminal.CounterMenu, tz *time.Location, typ string, c Cart
 		}
 	}
 	return out, nil
+}
+
+// priceChanges are the cart's lines whose price_cents replaced a set price
+// (the engine's list_cents on the line).
+func priceChanges(c pricing.Cart, q pricing.Quote) []terminal.PriceChange {
+	var out []terminal.PriceChange
+	for i, l := range c.Lines {
+		if l.DealID != "" || l.PriceCents == nil || i >= len(q.Lines) || q.Lines[i].ListCents == nil {
+			continue
+		}
+		from, to := *q.Lines[i].ListCents, *l.PriceCents
+		out = append(out, terminal.PriceChange{Line: i, ItemID: l.ItemID, SizeID: l.SizeID, ChoiceID: l.ChoiceID, Name: q.Lines[i].Name,
+			FromCents: from, ToCents: to, DropPct: terminal.DropPctOf(from, to)})
+	}
+	return out
 }
 
 // buildItems turns the priced cart into order lines, as main builds a

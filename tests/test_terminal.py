@@ -411,3 +411,38 @@ def test_kitchen_change_after_send(rig):
     assert r.status_code == 409 and r.json()["code"] == "not_editable"
     actions = [e["action"] for e in term.get(f"{base}/api/terminal/journal", timeout=5).json()]
     assert actions.count("order.changed") == 2
+
+
+def test_price_change_and_manager_check(rig):
+    """§2.10h: price_cents on a set-price item = an item price change: raise
+    free, a cashier lowers by up to cashier_price_drop_pct (20), more needs a
+    manager's PIN; each one journaled (and synced). manager-check answers a
+    manager's PIN for the terminal's dialog."""
+    agent, term, fm = rig["agent"], rig["term"], rig["fm"]
+    base = agent.base
+    # The pizza line costs 1999 + 225: 1700 is 15 % off (alone), 1500 is 25 % (a manager).
+    q = term.post(f"{base}/api/terminal/quote", json={"cart": {"lines": [pizza_line() | {"price_cents": 1700}]}}, timeout=5).json()
+    assert q["quote"]["lines"][0]["unit_cents"] == 1925 and q["quote"]["lines"][0]["list_cents"] == 1999 and not q["needs_manager"]
+    assert q["price_changes"][0]["drop_pct"] == 15 and (q["price_changes"][0]["from_cents"], q["price_changes"][0]["to_cents"]) == (1999, 1700)
+    cart = {"lines": [pizza_line() | {"price_cents": 1500}, {"item_id": SODA, "qty": 1, "price_cents": 300}]}
+    q = term.post(f"{base}/api/terminal/quote", json={"cart": cart}, timeout=5).json()
+    assert q["needs_manager"] and [c["needs_manager"] for c in q["price_changes"]] == [True, False]
+    r = place(rig, cart=cart)
+    assert r.status_code == 403 and r.json()["code"] == "manager_required" and r.json()["action"] == "price_change", r.text
+    assert (r.json()["limit"], r.json()["requested"]) == (20, 25)
+    # The dialog's check: a wrong PIN and a cashier's PIN are both 401 wrong_pin.
+    for pin in ("0000", "1234"):
+        r = term.post(f"{base}/api/terminal/manager-check", json={"pin": pin, "action": "price_change"}, timeout=5)
+        assert r.status_code == 401 and r.json()["code"] == "wrong_pin", r.text
+    r = term.post(f"{base}/api/terminal/manager-check", json={"pin": "9876"}, timeout=5)
+    assert r.status_code == 200 and r.json()["ok"] and r.json()["staff"]["id"] == "s-manager" and r.json()["staff"]["role"] == "manager"
+    r = place(rig, cart=cart, manager_pin="9876")
+    assert r.status_code == 201, r.text
+    lines = r.json()["order"]["order"]["items"]
+    assert lines[0]["unit_price_cents"] == 1500 and lines[1]["unit_price_cents"] == 300
+    journal = term.get(f"{base}/api/terminal/journal", timeout=5).json()
+    changes = [e["detail"] for e in journal if e["action"] == "price_change"]
+    assert sorted((c["from_cents"], c["to_cents"], c.get("approved_by")) for c in changes) == [(199, 300, None), (1999, 1500, "s-manager")]
+    assert sum(1 for e in journal if e["action"] == "manager_check") == 3
+    wait_until(lambda: any(e["action"] == "price_change" for ev in fm.of_type("journal.entries") for e in ev["entries"]),
+               what="price_change journaled to main")

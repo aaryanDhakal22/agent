@@ -22,6 +22,12 @@ type Context struct {
 	// OpenPrices: this channel may sell open-price items at the line's own
 	// price (the counter terminal only).
 	OpenPrices bool `json:"open_prices,omitempty"`
+	// PriceOverrides: a line's price_cents may also replace a set price (an
+	// item price change, TERMINAL-PLAN "Item price change"). Only the Pi sets
+	// it, for its counter: the Pi decides who may change a price (a cashier
+	// lowers by up to cashier_price_drop_pct, a manager's PIN for more).
+	// main's own channels never take one.
+	PriceOverrides bool `json:"price_overrides,omitempty"`
 }
 
 // Menu is the part of a channel's menu a quote reads.
@@ -218,7 +224,9 @@ type Selection struct {
 	// on the 1st or 2nd half, priced at the line's size.
 	Halves []Half `json:"halves,omitempty"`
 	// PriceCents is the cashier's price of an open-price item (0 to
-	// MaxOpenPriceCents); refused on any other item.
+	// MaxOpenPriceCents). On any other item it is a price change, taken only
+	// with Context.PriceOverrides (else refused): it replaces the item's
+	// price at its size (half and half: the pizza's), its options still add.
 	PriceCents *int64 `json:"price_cents,omitempty"`
 }
 
@@ -289,6 +297,10 @@ type QuoteLine struct {
 	TotalCents   int64    `json:"total_cents"`
 	RegularCents *int64   `json:"regular_cents"` // a bundle: what its picks cost on their own
 	DealID       string   `json:"deal_id"`
+	// ListCents: a price change (Selection.PriceCents on a set-price item):
+	// the item's own price that the line's price_cents replaced (at its
+	// size; half and half: the pizza's). Absent otherwise.
+	ListCents *int64 `json:"list_cents,omitempty"`
 }
 
 type Discount struct {

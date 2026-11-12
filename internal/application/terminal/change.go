@@ -137,15 +137,18 @@ func (s *Service) ChangeCart(ctx context.Context, a Actor, id string, in ChangeI
 	if len(p.cart.Lines) == 0 {
 		return nil, badRequest("an order keeps at least one line (void it instead)")
 	}
-	var approver *terminal.Staff
 	var need *terminal.ManagerRequired
 	if p.manualCents > 0 {
 		if lim := cfg.LimitsOf(st); !withinDiscount(lim, p.manualPct) {
 			need = &terminal.ManagerRequired{Action: terminal.ActionDiscount, Limit: int64(lim.DiscountPct), Requested: int64(p.manualPct)}
-			if approver, err = s.manager(a, cfg, in.ManagerPIN, need); err != nil {
-				return nil, err
-			}
 		}
+	}
+	// A price change the order had already (same item, size and price) was
+	// approved then: only new ones are checked and journaled.
+	priceNeed := checkPrices(cfg, st, p.changes, keptPrices(cur.Order.Order))
+	approver, overrides, err := s.approve(a, st, cfg, in.ManagerPIN, id, need, priceNeed)
+	if err != nil {
+		return nil, err
 	}
 	items, off, fees, err := buildItems(m, p)
 	if err != nil {
@@ -202,8 +205,9 @@ func (s *Service) ChangeCart(ctx context.Context, a Actor, id string, in ChangeI
 		entries := []terminal.Entry{{StaffID: st.ID, DeviceID: a.DeviceID, Action: terminal.ActionOrderChanged, OrderID: id}}
 		if approver != nil {
 			d["approved_by"] = approver.ID
-			entries = append(entries, overrideEntry(a, st, approver, need, id))
 		}
+		entries = append(entries, overrides...)
+		entries = append(entries, priceEntries(a, st, p.changes, approver, id)...)
 		entries[0].Detail = detail(d)
 		return &snap, entries, nil
 	})
@@ -227,6 +231,29 @@ func (s *Service) ChangeCart(ctx context.Context, a Actor, id string, in ChangeI
 	s.logger.Info().Ctx(ctx).Str("order_id", id).Int64("number", numberOf(so)).Int("added", len(added)).Int("removed", len(removed)).
 		Str("staff_id", st.ID).Str("device_id", a.DeviceID).Msg("Counter order changed")
 	return res, nil
+}
+
+// keptPrices are the price changes on the order's stored cart (Key → count).
+func keptPrices(snap order.Snapshot) map[string]int {
+	tm, ok := snap.SourceMeta["terminal"].(map[string]any)
+	if !ok {
+		return nil
+	}
+	raw, err := json.Marshal(tm["cart"])
+	if err != nil {
+		return nil
+	}
+	var c Cart
+	if json.Unmarshal(raw, &c) != nil {
+		return nil
+	}
+	out := map[string]int{}
+	for _, l := range c.Lines {
+		if l.DealID == "" && l.PriceCents != nil {
+			out[terminal.PriceChange{ItemID: l.ItemID, SizeID: l.SizeID, ChoiceID: l.ChoiceID, ToCents: *l.PriceCents}.Key()]++
+		}
+	}
+	return out
 }
 
 // sameMoney compares two orders' money as they go over the wire (an empty

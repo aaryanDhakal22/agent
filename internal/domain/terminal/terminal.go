@@ -106,6 +106,67 @@ type Settings struct {
 	// AutoCloseBatchAt is when the Pi closes a batch nobody closed ("HH:MM"
 	// store time; "" = off; missing = DefaultAutoCloseAt).
 	AutoCloseBatchAt *string `json:"auto_close_batch_at"`
+	// CashierPriceDropPct: a cashier lowers a rung item's price by up to
+	// this % alone; more needs a manager's PIN (missing = DefaultPriceDropPct).
+	CashierPriceDropPct *int `json:"cashier_price_drop_pct"`
+}
+
+// DefaultPriceDropPct is the cashier's price-drop limit when main's settings
+// don't say (main's own default, TERMINAL-PLAN "Item price change").
+const DefaultPriceDropPct = 20
+
+// PriceDropOf is how far (percent) a staff member may lower a rung item's
+// price without a manager: unlimited for a manager (or anyone main made
+// unlimited), the cashier setting for a cashier, 0 for anyone else. Raising
+// a price is always free.
+func (c *Config) PriceDropOf(s Staff) (pct int, unlimited bool) {
+	if c.LimitsOf(s).Unlimited {
+		return 0, true
+	}
+	if s.Role != RoleCashier {
+		return 0, false
+	}
+	if c != nil && c.parsed.CashierPriceDropPct != nil {
+		return min(max(*c.parsed.CashierPriceDropPct, 0), 100), false
+	}
+	return DefaultPriceDropPct, false
+}
+
+// PriceChange is one cart line whose price_cents replaced the item's own
+// price (TERMINAL-PLAN "Item price change": not a discount; the order total
+// is never set directly).
+type PriceChange struct {
+	Line         int    `json:"line"` // the cart line's index
+	ItemID       string `json:"item_id"`
+	SizeID       string `json:"size_id,omitempty"`
+	ChoiceID     string `json:"choice_id,omitempty"`
+	Name         string `json:"name"`
+	FromCents    int64  `json:"from_cents"` // the item's own price (the engine's list_cents)
+	ToCents      int64  `json:"to_cents"`   // the line's price_cents
+	DropPct      int    `json:"drop_pct"`   // how far it is lowered, rounded up (0 = raised / same)
+	NeedsManager bool   `json:"needs_manager"`
+	// Approved: the same change was on the order already (a kitchen change
+	// keeps it without asking again).
+	Approved bool `json:"-"`
+}
+
+// Key identifies a change across a placed cart and its later edits.
+func (c PriceChange) Key() string {
+	return fmt.Sprintf("%s|%s|%s|%d", c.ItemID, c.SizeID, c.ChoiceID, c.ToCents)
+}
+
+// DropPctOf is how far `to` lowers `from`, in percent rounded up (0 when it
+// is not lower).
+func DropPctOf(from, to int64) int {
+	if to >= from || from <= 0 {
+		return 0
+	}
+	return int(((from-to)*100 + from - 1) / from)
+}
+
+// DropAllowed: lowering from → to stays within pct % (raising always does).
+func DropAllowed(from, to int64, pct int) bool {
+	return to >= from || (from-to)*100 <= from*int64(pct)
 }
 
 // DefaultAutoCloseAt is the batch auto-close time when main's settings
@@ -360,6 +421,11 @@ const (
 	ActionRefund      = "refund"
 	ActionVoid        = "void"
 	ActionOverride    = "override"
+	// ActionPriceChange: a line rung at another price than the menu's
+	// {line, item_id, item, size_id?, from_cents, to_cents, drop_pct, approved_by?}.
+	ActionPriceChange = "price_change"
+	// ActionManagerCheck: POST /api/terminal/manager-check {for, ok, manager_id?}.
+	ActionManagerCheck = "manager_check"
 	// The driver view (contract §2.10b).
 	ActionDriverLinked = "driver.linked"
 	ActionDriverClaim  = "driver.claim"
@@ -370,6 +436,7 @@ const (
 
 var reserved = map[string]bool{ActionLogin: true, ActionLoginFailed: true, ActionLogout: true, ActionOrderPlaced: true,
 	ActionDiscount: true, ActionPayment: true, ActionRefund: true, ActionVoid: true, ActionOverride: true,
+	ActionPriceChange: true, ActionManagerCheck: true,
 	ActionDriverLinked: true, ActionDriverClaim: true, ActionDriverTip: true, ActionDriverClose: true, ActionDriverReport: true}
 
 var actionRe = regexp.MustCompile(`^[a-z][a-z0-9_.]{1,39}$`)
@@ -427,8 +494,8 @@ var (
 // ManagerRequired: the action is over the staff member's limit and needs a
 // manager's PIN in the same request (manager_pin).
 type ManagerRequired struct {
-	Action    string // discount | refund | void
-	Limit     int64  // cents (refund, void) or percent (discount)
+	Action    string // discount | refund | void | price_change
+	Limit     int64  // cents (refund, void) or percent (discount, price_change)
 	Requested int64
 }
 

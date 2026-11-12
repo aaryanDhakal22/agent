@@ -110,6 +110,23 @@ func (s *Server) handleTerminalLogin(w http.ResponseWriter, r *http.Request) {
 	s.writeJSON(w, http.StatusOK, res)
 }
 
+// POST /api/terminal/manager-check {pin, action?}
+func (s *Server) handleTerminalManagerCheck(w http.ResponseWriter, r *http.Request) {
+	if !s.terminalReady(w) {
+		return
+	}
+	var in terminalApp.ManagerCheckIn
+	if !s.decodeTerminal(w, r, &in) {
+		return
+	}
+	res, err := s.terminalSvc.ManagerCheck(r.Context(), actor(r), in)
+	if err != nil {
+		s.terminalError(w, r, err)
+		return
+	}
+	s.writeJSON(w, http.StatusOK, res)
+}
+
 // POST /api/terminal/logout
 func (s *Server) handleTerminalLogout(w http.ResponseWriter, r *http.Request) {
 	if !s.terminalReady(w) {
