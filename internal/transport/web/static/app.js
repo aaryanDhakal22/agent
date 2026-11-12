@@ -309,7 +309,7 @@ function agentApp() {
     autoAccept: false, autoAcceptLoaded: false, autoUpdate: true, autoUpdateLoaded: false, floorForm: { green: '', tiptax: '' }, deliveryForm: { soon: '', target: '' }, timesForm: { pickup: '', delivery: '' },
     route: null, routeForm: null, routeErr: '', routeBusy: false, routeModes: ROUTE_MODES,
     rcpt: null, rcptForm: null, footMode: 'default', customFooter: '', rcptPreview: 'r', rcptErr: '', rcptBusy: '',
-    pair: null, storeCfg: null, storeCfgErr: '', storeCfgErrRaw: '',
+    pair: null, adminCode: null, storeCfg: null, storeCfgErr: '', storeCfgErrRaw: '',
     cp: { current: '', next: '', confirm: '', hint: '', err: '', busy: false },
 
     // ======================================================================
@@ -1339,7 +1339,7 @@ function agentApp() {
         case 'receipts': this.loadReceipt(); this.loadStoreCfg(); this.loadPrinters(); break;
         case 'routing': this.loadRouting(); break;
         case 'clockout': this.loadReset(); break;
-        case 'tablets': this.loadDevices(); this.loadAppLatest(); break;
+        case 'tablets': this.loadDevices(); this.loadAppLatest(); this.loadAdminCode(); break;
         case 'store': this.loadStoreCfg(); break;
         case 'account': this.cp.err = ''; this.loadUpdate(); break;
       }
@@ -1577,6 +1577,27 @@ function agentApp() {
       catch (e) { this.toast(e.message, true); }
     },
     get pairLeft() { return this.pair ? ts(this.pair.expires_at) - this.now : 0; },
+    // A device's last setup / full check (contract 2.10y): "Set up 3:12 pm · ok".
+    setupLine(st) {
+      const what = st.kind === 'full_check' ? 'Checked' : 'Set up';
+      const out = st.outcome === 'ok' ? 'ok' : (st.failed && st.failed.length ? 'not passed: ' + st.failed.join(', ') : 'not passed');
+      return what + ' ' + dateTime(st.at) + ' · ' + out;
+    },
+    // The admin pairing code for counter terminals (2.10y; never shown here).
+    async loadAdminCode() {
+      try { this.adminCode = await this.call('/api/settings/admin-code'); } catch { /* older agent */ }
+    },
+    async saveAdminCode(body) {
+      try { this.adminCode = await this.call('/api/settings/admin-code', { method: 'PUT', body }); this.toast('Admin pairing code saved'); }
+      catch (e) { this.toast(e.message, true); }
+    },
+    async changeAdminCode() {
+      const code = await this.ask({ title: 'New admin pairing code', body: '4 to 8 digits. Counter terminals use it to pair during their setup.', confirmLabel: 'Save', input: { label: 'Code', maxlength: 8 } });
+      if (code == null) return;
+      const c = String(code).trim();
+      if (!/^[0-9]{4,8}$/.test(c)) { this.toast('The code is 4 to 8 digits', true); return; }
+      this.saveAdminCode({ code: c, enabled: true });
+    },
     async revokeDevice(d) {
       const ok = await this.ask({ title: 'Revoke ' + d.name + '?', body: 'The tablet is signed out at once and has to be paired again.', confirmLabel: 'Revoke tablet', danger: true });
       if (!ok) return;
