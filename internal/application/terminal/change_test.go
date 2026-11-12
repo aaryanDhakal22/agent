@@ -1,6 +1,7 @@
 package terminal
 
 import (
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -195,5 +196,112 @@ func TestTypeChangeRules(t *testing.T) {
 		if got != c.want || (err != nil) != c.bad {
 			t.Errorf("%s -> %s: %q %v", c.cur, c.to, got, err)
 		}
+	}
+}
+
+// TERMINAL-FLOWS CHG-14: the customer gave the wrong address after SEND; the order stays a delivery and
+// goes to the new one (a name / phone edit too). Nothing prints; main hears order.changed.
+func TestChangeKeepsTheTypeAndMovesTheAddress(t *testing.T) {
+	r := newRig(t)
+	r.login(t, till, "1234")
+	cart := Cart{Cart: pricing.Cart{Lines: []pricing.Line{pizzaLine()}}}
+	res, err := r.svc.PlaceOrder(r.ctx, till, OrderIn{ClientKey: "k-addr-00001", Type: "delivery", Cart: cart,
+		Customer: &Customer{Name: "Ada Test", Phone: "4105550101", Address: &Address{Line1: "12 Sample Road", City: "Towson"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := res.Order.Order.ID
+	printed := len(r.orders.typeFrom)
+	ch, err := r.svc.ChangeCart(r.ctx, till, id, ChangeIn{ClientKey: tk(), Cart: cart,
+		Customer: &Customer{Address: &Address{Line1: "11 Test Street", City: "Towson", Zip: "21286"}}})
+	if err != nil || !ch.Changed || ch.TypeChanged || len(ch.Added)+len(ch.Removed) != 0 {
+		t.Fatalf("address: %+v %v", ch, err)
+	}
+	snap := ch.Order.Order
+	if snap.Fulfillment.Type != "delivery" || snap.Fulfillment.Address == nil || snap.Fulfillment.Address.Line1 != "11 Test Street" ||
+		snap.Fulfillment.Address.PostalCode != "21286" || snap.Customer.DisplayName != "Ada Test" {
+		t.Fatalf("moved: %+v %+v", snap.Fulfillment, snap.Customer)
+	}
+	// (The real PrintChange prints nothing with no line moved and no type band.)
+	if n := len(r.orders.typeFrom); n != printed+1 || r.orders.typeFrom[n-1] != "" || r.pub.count(EventOrderChanged) != 1 {
+		t.Fatalf("no type band; terminal.order.changed once: %q %d", r.orders.typeFrom, r.pub.count(EventOrderChanged))
+	}
+	// The same address again (or none given) changes nothing; a name alone does.
+	same, err := r.svc.ChangeCart(r.ctx, till, id, ChangeIn{ClientKey: tk(), Cart: cart,
+		Customer: &Customer{Address: &Address{Line1: "11 Test Street", City: "Towson", Zip: "21286"}}})
+	if err != nil || same.Changed {
+		t.Fatalf("same address: %+v %v", same, err)
+	}
+	if none, err := r.svc.ChangeCart(r.ctx, till, id, ChangeIn{ClientKey: tk(), Cart: cart, Customer: &Customer{}}); err != nil || none.Changed ||
+		none.Order.Order.Fulfillment.Address == nil {
+		t.Fatalf("nothing given keeps the address: %+v %v", none, err)
+	}
+	named, err := r.svc.ChangeCart(r.ctx, till, id, ChangeIn{ClientKey: tk(), Cart: cart, Customer: &Customer{Name: "Ada T."}})
+	if err != nil || !named.Changed || named.Order.Order.Customer.DisplayName != "Ada T." || named.Order.Order.Fulfillment.Address.Line1 != "11 Test Street" {
+		t.Fatalf("name: %+v %v", named, err)
+	}
+}
+
+// TERMINAL-FLOWS TAB-16: after a TAKE OVER, the old holder's late SEND / SEND Changes carrying the draft is
+// refused (open_elsewhere) and changes nothing; the new holder's goes through and removes the draft.
+func TestLateSendAfterATakeOverIsRefused(t *testing.T) {
+	r := newRig(t)
+	till2 := Actor{DeviceID: "dev-2", DeviceName: "Till 2"}
+	r.login(t, till, "1234")
+	r.login(t, till2, "55")
+	cart := Cart{Cart: pricing.Cart{Lines: []pricing.Line{pizzaLine()}}}
+	// A new order's draft, taken over by till 2.
+	if _, err := r.svc.PutDraft(r.ctx, till, "d-late-0001", draftIn(false)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.svc.PutDraft(r.ctx, till2, "d-late-0001", DraftIn{Type: "counter", TakeOver: true, Draft: json.RawMessage(`{}`)}); err != nil {
+		t.Fatal(err)
+	}
+	var oe *terminal.OpenElsewhere
+	_, err := r.svc.PlaceOrder(r.ctx, till, OrderIn{ClientKey: "k-late-00001", Type: "counter", Cart: cart, DraftID: "d-late-0001"})
+	if !errors.As(err, &oe) || oe.Holder.DeviceID != till2.DeviceID {
+		t.Fatalf("the old holder's SEND: %v", err)
+	}
+	if list, _ := r.svc.Orders(r.ctx, false); len(list) != 0 {
+		t.Fatalf("nothing placed: %d", len(list))
+	}
+	if _, err := r.svc.PlaceOrder(r.ctx, till2, OrderIn{ClientKey: "k-late-00002", Type: "counter", Cart: cart, DraftID: "d-late-0001"}); err != nil {
+		t.Fatal(err)
+	}
+	if ds, _ := r.svc.Drafts(r.ctx); ds != nil && len(ds.Drafts) != 0 {
+		t.Fatalf("the draft went with the SEND: %+v", ds)
+	}
+	// A sent order open for an edit on till 1, taken over by till 2: till 1's late change is refused.
+	res, err := r.svc.PlaceOrder(r.ctx, till, OrderIn{ClientKey: "k-late-00003", Type: "pickup", Cart: cart,
+		Customer: &Customer{Name: "Ada Test", Phone: "4105550101"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := res.Order.Order.ID
+	in := draftIn(false)
+	in.OrderID = id
+	if _, err := r.svc.PutDraft(r.ctx, till, "d-late-0002", in); err != nil {
+		t.Fatal(err)
+	}
+	in.TakeOver = true
+	if _, err := r.svc.PutDraft(r.ctx, till2, "d-late-0002", in); err != nil {
+		t.Fatal(err)
+	}
+	two := Cart{Cart: pricing.Cart{Lines: []pricing.Line{pizzaLine(), pizzaLine()}}}
+	if _, err := r.svc.ChangeCart(r.ctx, till, id, ChangeIn{ClientKey: tk(), Cart: two, DraftID: "d-late-0002"}); !errors.As(err, &oe) {
+		t.Fatalf("the old holder's change: %v", err)
+	}
+	if got, _ := r.svc.Order(r.ctx, id); len(got.Order.Order.Items) != 1 {
+		t.Fatalf("unchanged: %d lines", len(got.Order.Order.Items))
+	}
+	if ch, err := r.svc.ChangeCart(r.ctx, till2, id, ChangeIn{ClientKey: tk(), Cart: two, DraftID: "d-late-0002"}); err != nil || !ch.Changed {
+		t.Fatalf("the new holder's change: %+v %v", ch, err)
+	}
+	// A held draft (nobody has it open) may be sent by anyone.
+	if _, err := r.svc.PutDraft(r.ctx, till2, "d-late-0003", draftIn(true)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.svc.PlaceOrder(r.ctx, till, OrderIn{ClientKey: "k-late-00004", Type: "counter", Cart: cart, DraftID: "d-late-0003"}); err != nil {
+		t.Fatalf("a held draft: %v", err)
 	}
 }

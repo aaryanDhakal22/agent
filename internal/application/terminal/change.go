@@ -66,6 +66,43 @@ type ChangeResult struct {
 	TypeChanged bool `json:"type_changed"`
 }
 
+// orderAddress is a terminal address as the order keeps it (nil = none given:
+// line1 or city missing).
+func orderAddress(c *Customer) *order.Address {
+	if c == nil || c.Address == nil || strings.TrimSpace(c.Address.Line1) == "" || strings.TrimSpace(c.Address.City) == "" {
+		return nil
+	}
+	ad := c.Address
+	return &order.Address{Line1: strings.TrimSpace(ad.Line1), Line2: strings.TrimSpace(ad.Line2), City: strings.TrimSpace(ad.City),
+		State: strings.TrimSpace(ad.State), PostalCode: strings.TrimSpace(ad.Zip), Country: "US", Notes: strings.TrimSpace(ad.Notes)}
+}
+
+// recustomer applies a customer edit to a sent order whose type stays
+// (TERMINAL-FLOWS CHG-14: "the customer gave the wrong address"): a
+// delivery's new address (line1 + city given), the name, the phone. A field
+// left empty keeps its value. false = nothing differs.
+func recustomer(snap *order.Snapshot, typ string, c *Customer) bool {
+	if c == nil {
+		return false
+	}
+	changed := false
+	if na := orderAddress(c); na != nil && typ == terminal.TypeDelivery {
+		if old := snap.Fulfillment.Address; old == nil || *old != *na {
+			snap.Fulfillment.Address = na
+			changed = true
+		}
+	}
+	if n := strings.TrimSpace(c.Name); n != "" && n != snap.Customer.DisplayName {
+		snap.Customer.DisplayName = n
+		changed = true
+	}
+	if ph := strings.TrimSpace(c.Phone); ph != "" && ph != snap.Customer.Phone {
+		snap.Customer.Phone = ph
+		changed = true
+	}
+	return changed
+}
+
 // retype moves snap to the terminal type [to]: the fulfillment (a
 // delivery's address from c), the customer's name / phone when given, the
 // terminal type and customer id in source_metadata.
@@ -269,10 +306,11 @@ func (s *Service) changeCart(ctx context.Context, a Actor, id string, in ChangeI
 		if to != "" && (cur.Status.DriverID != "" || cur.Status.PoolDriverID != "") {
 			return nil, nil, terminal.ErrTypeLocked
 		}
-		if to == "" && len(added) == 0 && len(removed) == 0 && sameMoney(cur.Order.Money, money) {
+		snap := cur.Order
+		recust := to == "" && recustomer(&snap, typ, in.Customer)
+		if to == "" && !recust && len(added) == 0 && len(removed) == 0 && sameMoney(cur.Order.Money, money) {
 			return nil, nil, nil
 		}
-		snap := cur.Order
 		snap.Items, snap.Money = lines, money
 		if to != "" {
 			retype(&snap, to, in.Customer)
@@ -306,6 +344,9 @@ func (s *Service) changeCart(ctx context.Context, a Actor, id string, in ChangeI
 		}
 		if to != "" {
 			d["type_from"], d["type_to"] = was, to
+		}
+		if recust {
+			d["customer_changed"] = true
 		}
 		entries := []terminal.Entry{{StaffID: st.ID, DeviceID: a.DeviceID, Action: terminal.ActionOrderChanged, OrderID: id}}
 		if approver != nil {

@@ -83,10 +83,8 @@ func (r *OrderRepository) ChangeCounterOrder(ctx context.Context, id, staffID, d
 		if err := insertEvent(ctx, q, evID, id, terminal.EventOrderChanged, now, ev); err != nil {
 			return err
 		}
-		if d := terminal.DraftIDOf(ctx); d != "" { // the draft it came from (contract 2.10s §9)
-			if _, err := q.DeleteTerminalDraft(ctx, d); err != nil {
-				return fmt.Errorf("delete draft: %w", err)
-			}
+		if err := claimDraft(ctx, q, deviceID); err != nil { // the draft it came from (contract 2.10s §9; TAB-16)
+			return err
 		}
 		return insertJournal(ctx, q, now, entries)
 	})

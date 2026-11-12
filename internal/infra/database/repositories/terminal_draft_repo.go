@@ -220,3 +220,28 @@ func (r *OrderRepository) MarkPickedUp(ctx context.Context, id string, journal f
 	})
 	return so, already, err
 }
+
+// claimDraft deletes the shared draft a SEND / cart change came from
+// (contract 2.10s §9), in the order's transaction. A draft another terminal
+// has open (it was TAKEN OVER since this one opened it) refuses the SEND:
+// *terminal.OpenElsewhere, so the old holder's late SEND can't place a
+// second order or write a stale cart over the new holder's
+// (TERMINAL-FLOWS TAB-16). A held draft (nobody has it open), this
+// terminal's own, or one already gone is fine.
+func claimDraft(ctx context.Context, q *models.Queries, deviceID string) error {
+	id := terminal.DraftIDOf(ctx)
+	if id == "" {
+		return nil
+	}
+	cur, err := getDraft(ctx, q, id)
+	if err != nil {
+		return err
+	}
+	if cur != nil && cur.Holder != nil && deviceID != "" && cur.Holder.DeviceID != deviceID {
+		return &terminal.OpenElsewhere{Holder: *cur.Holder}
+	}
+	if _, err := q.DeleteTerminalDraft(ctx, id); err != nil {
+		return fmt.Errorf("delete draft: %w", err)
+	}
+	return nil
+}
