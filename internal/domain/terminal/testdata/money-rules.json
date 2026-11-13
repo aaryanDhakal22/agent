@@ -218,7 +218,7 @@
     {"id": "K06", "note": "the Employee meal is a discount too", "by": "cece", "action": "employee_meal", "pi": {"refused": "not_allowed_for_callcenter", "what": "discount"}},
     {"id": "K07", "note": "a price drop", "by": "cece", "action": "price_drop", "pi": {"refused": "not_allowed_for_callcenter", "what": "price_change"}},
     {"id": "K08", "note": "raising a price is a price change too", "by": "cece", "action": "price_raise", "pi": {"refused": "not_allowed_for_callcenter", "what": "price_change"}},
-    {"id": "K09", "note": "a custom line (Quicc Add / open price)", "by": "cece", "action": "open_price", "pi": {"refused": "not_allowed_for_callcenter", "what": "open_price"}},
+    {"id": "K09", "note": "a custom line (Quick add, owner 2026-11-13: the call center's too; it prints where the store's Quick add item routes)", "by": "cece", "action": "open_price", "pi": "allow"},
     {"id": "K10", "note": "a pay-out from a drawer: not a call-center route", "by": "cece", "action": "pay_out", "pi": {"refused": "not_allowed_for_callcenter", "what": "route"}},
     {"id": "K11", "note": "the day's close: not a call-center route", "by": "cece", "action": "close", "pi": {"refused": "not_allowed_for_callcenter", "what": "route"}},
     {"id": "K12", "note": "cash: the call center takes a typed card only", "by": "cece", "action": "cash_payment", "pi": {"refused": "not_allowed_for_callcenter", "what": "tender"}},

@@ -664,7 +664,7 @@ func TestRelayOnlineOrderEditedFromTheCallCenter(t *testing.T) {
 		"a line removed":     {[]map[string]any{own[0]}, "409 paid_locked"},
 		"a quantity lowered": {[]map[string]any{own[0], with(own[1], "qty", 1)}, "409 paid_locked"},
 		"a note changed":     {[]map[string]any{with(own[0], "note", "no pepperoni"), own[1]}, "409 paid_locked"},
-		"a line renamed":     {[]map[string]any{own[0], with(own[1], "name", "Boneless wings")}, "403 not_allowed_for_callcenter:open_price"},
+		"a line renamed":     {[]map[string]any{own[0], with(own[1], "name", "Boneless wings")}, "409 paid_locked"},
 		"a line re-priced":   {[]map[string]any{own[0], with(own[1], "price_cents", 1)}, "403 not_allowed_for_callcenter:open_price"},
 	} {
 		got := put(paid, c.lines...)
@@ -674,10 +674,6 @@ func TestRelayOnlineOrderEditedFromTheCallCenter(t *testing.T) {
 		if c.want == "409 paid_locked" && !strings.Contains(string(got.Body), `"lines":["`) {
 			t.Errorf("%s: no lines in %s", name, got.Body)
 		}
-	}
-	// (v) a NEW custom line is still refused.
-	if got := put(paid, own[0], own[1], map[string]any{"custom": true, "name": "Extra", "qty": 1, "price_cents": 100}); got.Status != http.StatusForbidden || got.code() != "not_allowed_for_callcenter:open_price" {
-		t.Fatalf("a new custom line: %d %s", got.Status, got.Body)
 	}
 	if now := r.order(t, paid); now.Order.Order.Money.Total != was.Order.Order.Money.Total || len(now.Order.Order.Items) != 2 || now.Order.Status.CashDue != 0 {
 		t.Fatalf("a refused change changes nothing: %+v", now.Order)
@@ -713,8 +709,9 @@ func TestRelayOnlineOrderEditedFromTheCallCenter(t *testing.T) {
 	if got := put(unpaid, lines[0]); got.Status != 200 || !strings.Contains(string(got.Body), `"removed":["2× Wings"]`) {
 		t.Fatalf("a line off an unpaid online order: %d %s", got.Status, got.Body)
 	}
-	if got := put(unpaid, lines[0], map[string]any{"custom": true, "name": "Extra", "qty": 1, "price_cents": 100}); got.code() != "not_allowed_for_callcenter:open_price" {
-		t.Fatalf("a new custom line on an unpaid one: %d %s", got.Status, got.Body)
+	// Quick add (owner 2026-11-13): a new custom line goes on like the terminal's.
+	if got := put(unpaid, lines[0], map[string]any{"custom": true, "name": "Extra", "qty": 1, "price_cents": 100}); got.Status != 200 || !strings.Contains(string(got.Body), `"added":["Extra"]`) {
+		t.Fatalf("a Quick add line on an unpaid one: %d %s", got.Status, got.Body)
 	}
 	// Once a typed card is on it, its lines are locked too.
 	if got := r.relay(t, ccAgent, "POST", "orders/"+unpaid+"/payments", map[string]any{"client_key": ccKey(), "tender": "manual_card", "amount_cents": 500, "last4": "1881"}); got.Status != 200 {

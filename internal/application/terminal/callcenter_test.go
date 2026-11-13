@@ -263,9 +263,6 @@ func TestCallcenterGuards(t *testing.T) {
 		{"no type (= counter)", func(in *OrderIn) { in.Type = "" }, terminal.NotAllowedType},
 		{"a typed discount", func(in *OrderIn) { in.Cart.Discount = &Discount{Pct: 5, Reason: "regular"} }, terminal.NotAllowedDiscount},
 		{"an employee meal", func(in *OrderIn) { in.Cart.Discount = &Discount{Pct: 20, Reason: "staff", Kind: KindEmployeeMeal} }, terminal.NotAllowedDiscount},
-		{"a custom line", func(in *OrderIn) {
-			in.Cart.Lines = append(in.Cart.Lines, pricing.Line{Custom: true, Name: "Extra", Qty: 1, Selection: pricing.Selection{PriceCents: cents(300)}})
-		}, terminal.NotAllowedOpenPrice},
 		{"a price change", func(in *OrderIn) { in.Cart.Lines = []pricing.Line{priced} }, terminal.NotAllowedPriceChange},
 		{"a $0 comp line", func(in *OrderIn) { in.Cart.Lines = []pricing.Line{comp} }, terminal.NotAllowedComp},
 		{"a price on an option", func(in *OrderIn) { in.Cart.Lines = []pricing.Line{optPrice} }, terminal.NotAllowedPriceChange},
@@ -332,8 +329,8 @@ func TestCallcenterGuards(t *testing.T) {
 	_ = card
 }
 
-// A cart change may not bring a new custom line or price; what the stored
-// order already holds rides along.
+// A cart change may not bring a new price; what the stored order already
+// holds rides along. A new custom line (Quick add, owner 2026-11-13) may.
 func TestCallcenterChangeKeepsWhatTheOrderHolds(t *testing.T) {
 	r, seat := ccRig(t)
 	r.login(t, till, "9876") // a manager: any price
@@ -357,15 +354,17 @@ func TestCallcenterChangeKeepsWhatTheOrderHolds(t *testing.T) {
 		cart Cart
 		want string
 	}{
-		"another custom line":   {cartOf(lowered, custom, pricing.Line{Custom: true, Name: "Tip jar", Qty: 1, Selection: pricing.Selection{PriceCents: cents(100)}}), terminal.NotAllowedOpenPrice},
-		"the custom line twice": {cartOf(lowered, custom, custom), terminal.NotAllowedOpenPrice},
-		"its price changed":     {cartOf(lowered, pricing.Line{Custom: true, Name: "Extra sauce", Qty: 1, Selection: pricing.Selection{PriceCents: cents(50)}}), terminal.NotAllowedOpenPrice},
-		"another price":         {cartOf(func() pricing.Line { l := pizzaLine(); l.PriceCents = cents(900); return l }(), custom), terminal.NotAllowedPriceChange},
-		"a discount":            {Cart{Cart: pricing.Cart{Lines: []pricing.Line{lowered, custom}}, Discount: &Discount{AmountCents: 100, Reason: "x"}}, terminal.NotAllowedDiscount},
+		"another price": {cartOf(func() pricing.Line { l := pizzaLine(); l.PriceCents = cents(900); return l }(), custom), terminal.NotAllowedPriceChange},
+		"a discount":    {Cart{Cart: pricing.Cart{Lines: []pricing.Line{lowered, custom}}, Discount: &Discount{AmountCents: 100, Reason: "x"}}, terminal.NotAllowedDiscount},
 	} {
 		if _, err := r.svc.ChangeCart(r.ctx, seat, id, ChangeIn{ClientKey: tk(), Cart: c.cart}); whatOf(err) != c.want {
 			t.Errorf("%s: %s, want %s", name, whatOf(err), c.want)
 		}
+	}
+	// Quick add: a new custom line from the call center goes on like the terminal's.
+	jar := pricing.Line{Custom: true, Name: "Tip jar", Qty: 1, Selection: pricing.Selection{PriceCents: cents(100)}}
+	if ch, err := r.svc.ChangeCart(r.ctx, seat, id, ChangeIn{ClientKey: tk(), Cart: cartOf(lowered, same, sodaLine(1), jar)}); err != nil || !ch.Changed {
+		t.Fatalf("a new Quick add line on a change: %+v %v", ch, err)
 	}
 	if _, err := r.svc.ChangeCart(r.ctx, seat, id, ChangeIn{ClientKey: tk(), Cart: cartOf(lowered, custom), ManagerPIN: "9876"}); whatOf(err) != terminal.NotAllowedManager {
 		t.Errorf("manager_pin on a change: %v", err)
@@ -378,8 +377,8 @@ func TestCallcenterChangeKeepsWhatTheOrderHolds(t *testing.T) {
 		t.Fatalf("adding to an online order: %+v %v", ch, err)
 	}
 	own.Lines = append(own.Lines, pricing.Line{Custom: true, Name: "Made up", Qty: 1, Selection: pricing.Selection{PriceCents: cents(1)}})
-	if _, err := r.svc.ChangeCart(r.ctx, seat, so.Order.ID, ChangeIn{ClientKey: tk(), Cart: own}); whatOf(err) != terminal.NotAllowedOpenPrice {
-		t.Fatalf("a new custom line on an online order: %v", err)
+	if ch, err := r.svc.ChangeCart(r.ctx, seat, so.Order.ID, ChangeIn{ClientKey: tk(), Cart: own}); err != nil || !ch.Changed {
+		t.Fatalf("a new Quick add line on an online order: %+v %v", ch, err)
 	}
 }
 

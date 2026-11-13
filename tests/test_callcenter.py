@@ -177,7 +177,6 @@ def test_guards_paid_lock_and_wrong_role_pin(rig):
         "discount": order_body(cart={"lines": [line], "discount": {"pct": 5, "reason": "regular"}}),
         "price_change": order_body(cart={"lines": [{**line, "price_cents": 500}]}),
         "comp": order_body(cart={"lines": [{**line, "price_cents": 0}]}),
-        "open_price": order_body(cart={"lines": [line, {"custom": True, "name": "Extra", "qty": 1, "price_cents": 300}]}),
         "tender": order_body(payments=[{"tender": "cash", "amount_cents": 100}]),
         "refund": order_body(payments=[{"tender": "manual_card", "amount_cents": 100, "refund": True, "reason": "x"}]),
         "manager": order_body(manager_pin="9876"),
@@ -344,3 +343,40 @@ def test_edit_lock_on_a_sent_order(rig):
     assert r.status_code == 200 and r.json()["removed"] == ["Soda"], r.text
     assert relay(rig, "PUT", "drafts/d-cc-lock-02", lock)["status"] == 200
     assert term.get(f"{base}/api/terminal/drafts", timeout=5).json() == {"drafts": []}
+
+
+def test_quick_add_from_the_call_center_prints_where_the_store_routes_it(rig):
+    """Quick add (owner 2026-11-13: the call center and the store's terminals are its only users): the call center's
+    custom line is placed like the terminal's Quicc Add and printed where main's
+    Quick add item routes (counter menu `quick_add_item_id` + its route): receipt only, then the Pizza station."""
+    from test_terminal import counter_menu
+    agent, term, fm, fakes = rig["agent"], rig["term"], rig["fm"], rig["fakes"]
+    quick = "00000000-0000-4000-8000-000000000a02"
+
+    def use_menu(version: int, route: dict) -> None:
+        menu = counter_menu(rig["pizza_id"], version=version)
+        menu["quick_add_item_id"] = quick
+        menu["routes"][quick] = route
+        fm.counter_menu = menu
+        fm.command("menu.changed", {"version": version})
+        wait_until(lambda: term.get(f"{agent.base}/api/terminal/menu", timeout=5).json()["menu_version"] == version, what=f"menu v{version}")
+
+    ranch = {"custom": True, "name": "Side of ranch", "price_cents": 75, "qty": 3}
+    use_menu(21, {"printer_id": "", "no_kitchen": True})
+    placed = relay(rig, "POST", "orders", order_body(cart={"lines": [pizza_line(), ranch]}))
+    assert placed["status"] == 201, placed
+    cu = placed["body"]["order"]["order"]["items"][1]
+    assert (cu["sku"], cu["routing"], cu.get("menu_item_id")) == ("custom", "none", quick), cu
+    wait_until(lambda: fakes["Pizza"].jobs, what="the pizza station ticket")
+    assert "RANCH" not in fakes["Pizza"].text().upper(), fakes["Pizza"].text()
+
+    use_menu(22, {"printer_id": rig["pizza_id"], "name": "Pizza"})
+    fakes["Pizza"].clear()
+    placed = relay(rig, "POST", "orders", order_body(cart={"lines": [ranch]}))
+    assert placed["status"] == 201, placed
+    cu = placed["body"]["order"]["order"]["items"][0]
+    assert (cu["routing"], cu["printer_id"], cu["menu_item_id"]) == ("matched", rig["pizza_id"], quick), cu
+    wait_until(lambda: "RANCH" in fakes["Pizza"].text().upper(), what="the call center's Quick add line on the Pizza station")
+    # An open-price item's price is still the store's business (a price on a menu line stays refused).
+    refused = relay(rig, "POST", "orders", order_body(cart={"lines": [{**pizza_line(), "price_cents": 500}]}))
+    assert refused["status"] == 403 and refused["body"]["what"] == "price_change", refused
