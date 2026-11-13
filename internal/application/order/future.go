@@ -133,7 +133,7 @@ func (s *Service) PrintNow(ctx context.Context, id string, kitchen, receipt bool
 	case !kitchen:
 		mode = printer.ModeFutureReceipt
 	}
-	out, err := s.print(context.WithoutCancel(ctx), printable(*so), mode)
+	out, err := s.printJob(context.WithoutCancel(ctx), printable(*so), mode)
 	if errors.Is(err, printer.ErrNoTickets) {
 		return nil, out, spanErr(span, ErrNothingForKitchen)
 	}

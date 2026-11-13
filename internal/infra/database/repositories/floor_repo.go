@@ -1301,3 +1301,14 @@ func (s TerminalAppStore) GetAppRelease(ctx context.Context) (string, error) {
 func (s TerminalAppStore) SetAppRelease(ctx context.Context, raw string) error {
 	return models.New(s.R.db).SetTerminalAppRelease(ctx, raw)
 }
+
+// RecordOrderPrinted appends an order.printed floor event (contract
+// §2.10ag): one print job's results, about the order (it waits behind a
+// refused order.placed of the same order).
+func (r *OrderRepository) RecordOrderPrinted(ctx context.Context, ev order.OrderPrintedEvent) (err error) {
+	ctx, _, end := dbSpan(ctx, "floor.record_order_printed")
+	defer end(&err)
+	return r.withTx(ctx, func(q *models.Queries) error {
+		return insertEvent(ctx, q, ev.EventID, ev.OrderID, ev.Type, ev.At, ev)
+	})
+}

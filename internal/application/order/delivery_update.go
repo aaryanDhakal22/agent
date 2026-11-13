@@ -129,7 +129,7 @@ func (s *Service) PrintDeliveryUpdate(ctx context.Context, so order.StoredOrder)
 func (s *Service) printDeliveryUpdate(ctx context.Context, so order.StoredOrder) {
 	snap := printable(so)
 	s.background(ctx, func(ctx context.Context) {
-		out, err := s.print(ctx, snap, printer.ModeDeliveryUpdate)
+		out, err := s.printJob(ctx, snap, printer.ModeDeliveryUpdate)
 		if errors.Is(err, printer.ErrNoTickets) {
 			return
 		}

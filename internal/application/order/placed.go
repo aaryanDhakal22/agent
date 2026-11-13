@@ -97,7 +97,7 @@ func (s *Service) Place(ctx context.Context, id uuid.UUID) (*order.StoredOrder, 
 	var out printer.Outcome
 	perr := printer.ErrNoTickets // no printing wired (tests of other routes)
 	if s.print != nil {
-		out, perr = s.print(pctx, snap, mode)
+		out, perr = s.printJob(pctx, snap, mode)
 	}
 	if errors.Is(perr, printer.ErrNoTickets) {
 		perr = nil

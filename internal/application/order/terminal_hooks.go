@@ -35,7 +35,7 @@ func (s *Service) PrintCounterTicketsThen(ctx context.Context, so order.StoredOr
 			defer done(ctx)
 		}
 		start := time.Now()
-		out, err := s.print(ctx, printable(so), printer.ModeKitchen)
+		out, err := s.printJob(ctx, printable(so), printer.ModeKitchen)
 		s.recordPrintTime(ctx, so, start, out, err)
 		if errors.Is(err, printer.ErrNoTickets) {
 			return
@@ -55,7 +55,7 @@ func (s *Service) PrintCounterTicketsThen(ctx context.Context, so order.StoredOr
 // customer receipt. Nothing printed only alerts.
 func (s *Service) PrintOrderReceipt(ctx context.Context, so order.StoredOrder) {
 	s.background(ctx, func(ctx context.Context) {
-		out, err := s.print(ctx, printable(so), printer.ModeOrderReceipt)
+		out, err := s.printJob(ctx, printable(so), printer.ModeOrderReceipt)
 		if errors.Is(err, printer.ErrNoTickets) {
 			return
 		}
@@ -83,7 +83,7 @@ func (s *Service) ReprintOn(ctx context.Context, id string) (*order.StoredOrder,
 	if s.print == nil {
 		return nil, "", ErrPrintingUnavailable
 	}
-	out, err := s.print(ctx, printable(*so), printer.ModeReceipt)
+	out, err := s.printJob(ctx, printable(*so), printer.ModeReceipt)
 	if errors.Is(err, printer.ErrNoTickets) || (err != nil && len(out.Printed) == 0 && len(out.Failed) == 0) {
 		return nil, "", ErrPrintingUnavailable // no roster: nothing was even tried
 	}
@@ -130,7 +130,7 @@ func (s *Service) PrintChange(ctx context.Context, so order.StoredOrder, added, 
 		snap.RemovedItems = append([]order.LineItem(nil), removed...)
 	}
 	s.background(ctx, func(ctx context.Context) {
-		out, err := s.print(ctx, snap, mode)
+		out, err := s.printJob(ctx, snap, mode)
 		if errors.Is(err, printer.ErrNoTickets) {
 			return
 		}

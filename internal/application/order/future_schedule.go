@@ -82,7 +82,7 @@ func (s *Service) printEarly(ctx context.Context, so order.StoredOrder) {
 		return
 	}
 	s.background(ctx, func(ctx context.Context) {
-		out, err := s.print(ctx, printable(so), printer.ModeFutureEarly)
+		out, err := s.printJob(ctx, printable(so), printer.ModeFutureEarly)
 		if errors.Is(err, printer.ErrNoTickets) {
 			return
 		}

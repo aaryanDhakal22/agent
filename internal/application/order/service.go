@@ -310,7 +310,7 @@ func (s *Service) accept(ctx context.Context, id uuid.UUID, prepMinutes *int, au
 	if so.Status.EarlyReceipt {
 		mode = printer.ModeAcceptKitchen // a future order's receipt printed at its first ACCEPT (2.4.0)
 	}
-	out, err := s.print(context.WithoutCancel(ctx), printable(*so), mode)
+	out, err := s.printJob(context.WithoutCancel(ctx), printable(*so), mode)
 	if mode == printer.ModeAcceptKitchen && errors.Is(err, printer.ErrNoTickets) {
 		err = nil // nothing for the kitchen, and the receipt is out already
 	}
@@ -472,7 +472,7 @@ func (s *Service) PrintSnapshot(ctx context.Context, snap order.Snapshot) error 
 	if strings.EqualFold(snap.Status, "cancelled") || strings.EqualFold(snap.Status, "rejected") { // main's word
 		snap.Voided = voidedLabel(snap)
 	}
-	out, err := s.print(ctx, snap, printer.ModeReceipt)
+	out, err := s.printJob(ctx, snap, printer.ModeReceipt)
 	s.alertPrintIssues(ctx, order.StoredOrder{Order: snap}, out, false)
 	if err != nil {
 		span.RecordError(err)
@@ -543,7 +543,7 @@ func (s *Service) Reprint(ctx context.Context, id uuid.UUID) (*order.StoredOrder
 		return nil, err
 	}
 
-	out, err := s.print(ctx, printable(*so), printer.ModeReceipt)
+	out, err := s.printJob(ctx, printable(*so), printer.ModeReceipt)
 	s.alertPrintIssues(ctx, *so, out, false)
 	if err != nil {
 		span.RecordError(err)
@@ -590,7 +590,7 @@ func (s *Service) ResendKitchen(ctx context.Context, id uuid.UUID) (*order.Store
 		return fail(printer.Outcome{}, fmt.Errorf("%w (state %s)", ErrNotAccepted, so.Status.State))
 	}
 
-	out, err := s.print(ctx, printable(*so), printer.ModeKitchen)
+	out, err := s.printJob(ctx, printable(*so), printer.ModeKitchen)
 	if errors.Is(err, printer.ErrNoTickets) {
 		return fail(out, ErrNothingForKitchen)
 	}

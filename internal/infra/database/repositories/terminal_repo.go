@@ -177,6 +177,15 @@ func placedSnapshot(so order.StoredOrder, in terminal.NewCounterOrder) (map[stri
 		if id, ok := t["customer_id"].(string); ok && id != "" {
 			m["customer_id"] = id
 		}
+		// Who took it on which terminal (2.5.5, §2.10ag): main's "Carlos on
+		// Counter 1" (the paired device's name, the cashier's name as the
+		// Pi had it then).
+		if n, ok := t["device_name"].(string); ok && n != "" {
+			m["device_name"] = n
+		}
+		if n, ok := t["staff_name"].(string); ok && n != "" {
+			m["staff_name"] = n
+		}
 	}
 	if so.Status.EstimatedReadyAt != nil {
 		m["estimated_ready_at"] = so.Status.EstimatedReadyAt.UTC()

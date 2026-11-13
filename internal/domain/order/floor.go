@@ -125,6 +125,9 @@ const (
 	// FloorEventBatchClosed (2.5.0): Close batch - main charges every card
 	// hold left in the batch.
 	FloorEventBatchClosed = "batch.closed"
+	// FloorEventOrderPrinted (2.5.5, contract §2.10ag): what one print job of
+	// an order actually printed, per ticket and printer.
+	FloorEventOrderPrinted = "order.printed"
 )
 
 // Cancel reasons (2.5.0 CANCEL ORDER on a channel order; order.status
@@ -206,6 +209,47 @@ type OrderTipEvent struct {
 	TipCents int64     `json:"tip_cents"`
 	At       time.Time `json:"at"`
 }
+
+// OrderPrintedEvent is the payload of an order.printed floor event (2.5.5,
+// contract §2.10ag): one print job of an order (the accept / placement
+// print, a counter SEND, a reprint, a kitchen resend, a VOID slip, change
+// tickets, a delivery's copies) and what each of its tickets did. main keeps
+// it with the order (append only, idempotent on event_id); an older main
+// answers it invalid and the Pi marks it synced.
+type OrderPrintedEvent struct {
+	EventID string          `json:"event_id"`
+	Type    string          `json:"type"` // order.printed
+	OrderID string          `json:"order_id"`
+	Mode    string          `json:"mode"` // the print job (printer.Mode): accept | placed | kitchen | receipt | void | change | …
+	Tickets []PrintedTicket `json:"tickets"`
+	At      time.Time       `json:"at"`
+}
+
+// PrintedTicket is one ticket of an order.printed job.
+type PrintedTicket struct {
+	// Kind: station | receipt | delivery_copies | reprint | void | change | add_on.
+	Kind string `json:"kind"`
+	// Printer: the printer it was meant for ("" = none: no printers at all).
+	Printer string `json:"printer"`
+	// Result: printed | rerouted (printed on PrintedOn instead) | failed
+	// (printed nowhere) | skipped (no printer to try).
+	Result    string `json:"result"`
+	PrintedOn string `json:"printed_on,omitempty"`
+	// By (rerouted): rule = the store's routing setting picked the stand-in,
+	// auto = the automatic failover.
+	By       string    `json:"by,omitempty"`
+	Attempts int       `json:"attempts"`
+	Error    string    `json:"error,omitempty"`
+	At       time.Time `json:"at"`
+}
+
+// Print results (PrintedTicket.Result).
+const (
+	PrintPrinted  = "printed"
+	PrintRerouted = "rerouted"
+	PrintFailed   = "failed"
+	PrintSkipped  = "skipped"
+)
 
 // BatchClosedEvent is the payload of a batch.closed floor event (2.5.0),
 // written by Close batch after the batch's own order events.

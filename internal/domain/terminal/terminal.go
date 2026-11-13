@@ -716,6 +716,9 @@ func (p Payment) Wire() map[string]any {
 	if p.RefundOf != "" { // a refund through Square: the payment it gave money back on
 		m["refund_of"] = p.RefundOf
 	}
+	if p.Brand != "" { // 2.5.5 (§2.10ag): the card's brand as Square named it (amex | discover | mastercard | visa | other)
+		m["brand"] = p.Brand
+	}
 	return m
 }
 

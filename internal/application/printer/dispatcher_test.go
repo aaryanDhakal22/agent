@@ -131,6 +131,12 @@ func TestExecute_StationDownFailsOverToReceiptPrinter(t *testing.T) {
 	for _, p := range out.Printed {
 		if p.Station == "Pizza" && p.PrintedOn == "Front" && p.ReroutedFrom == "Pizza" {
 			rerouted = true
+			// 2.5.5 (§2.10ag): what main's order.printed reports.
+			if p.Label != printer.LabelStation || p.Attempts != 2 || p.At.IsZero() || p.RerouteBy != "auto" {
+				t.Fatalf("rerouted ticket's record: %+v", p)
+			}
+		} else if p.Attempts != 1 || p.At.IsZero() || p.Label == "" {
+			t.Fatalf("ticket's record: %+v", p)
 		}
 	}
 	if !rerouted {
@@ -157,6 +163,11 @@ func TestExecute_AllDownErrors(t *testing.T) {
 	out, err := d.Execute(context.Background(), routedSnap())
 	if err == nil || !errors.Is(err, ErrPrinterUnreachable) || len(out.Printed) != 0 || len(out.Failed) != 3 {
 		t.Fatalf("err=%v out=%+v", err, out)
+	}
+	for _, f := range out.Failed { // every printer was tried for each ticket
+		if f.Attempts != 3 || f.Err == "" || f.At.IsZero() || f.Skipped {
+			t.Fatalf("failed ticket's record: %+v", f)
+		}
 	}
 }
 

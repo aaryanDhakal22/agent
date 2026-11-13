@@ -1,6 +1,10 @@
 package printer
 
-import "quiccpos/agent/internal/domain/order"
+import (
+	"time"
+
+	"quiccpos/agent/internal/domain/order"
+)
 
 // TicketKind is what a printed ticket is for.
 type TicketKind string
@@ -155,6 +159,49 @@ type TicketResult struct {
 	// automatic failover did (printroute, spec §4.42).
 	RerouteBy string
 	Err       string // non-empty when it printed nowhere
+	// Label is what the ticket is, as main's order.printed names it
+	// (Ticket.Label): station | receipt | delivery_copies | reprint | void |
+	// change | add_on.
+	Label string
+	// Attempts: how many printers were tried (1 = the intended one only).
+	Attempts int
+	// At: when it printed (or when the last try failed).
+	At time.Time
+	// Skipped: there was no printer to try (the intended one is not in the
+	// Pi's roster); Err says why.
+	Skipped bool
+}
+
+// Ticket labels (TicketResult.Label, main's order.printed `kind`).
+const (
+	LabelStation        = "station"
+	LabelReceipt        = "receipt"
+	LabelDeliveryCopies = "delivery_copies"
+	LabelReprint        = "reprint"
+	LabelVoid           = "void"
+	LabelChange         = "change"
+	LabelAddOn          = "add_on"
+)
+
+// Label is what the ticket is for the order's print record (agent contract
+// §2.10ag): a VOID / change / ADD-ON ticket by its banner, else its kind (a
+// legacy full ticket is the receipt; ModeReceipt's is a reprint).
+func (t Ticket) Label() string {
+	switch {
+	case t.Void:
+		return LabelVoid
+	case t.Change || t.TypeOnly:
+		return LabelChange
+	case t.AddOn:
+		return LabelAddOn
+	case t.Kind == TicketDeliveryCopies:
+		return LabelDeliveryCopies
+	case t.Reprint:
+		return LabelReprint
+	case t.Kind == TicketStation:
+		return LabelStation
+	}
+	return LabelReceipt
 }
 
 // Outcome is the result of printing an order's tickets.
