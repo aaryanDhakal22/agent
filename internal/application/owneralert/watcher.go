@@ -130,6 +130,7 @@ func (w *Watcher) env(now time.Time) (Env, *storeconfig.StoreContext) {
 	e := Env{Now: now, Open: OpenAt(sc, now), Settings: SettingsFrom(sc)}
 	if sc != nil {
 		e.Title = sc.StoreName()
+		e.OfflineByMain = sc.OwnerOfflineAlertByMain
 	}
 	return e, sc
 }
@@ -228,6 +229,16 @@ func (w *Watcher) checkLink(ctx context.Context, env Env) {
 		}
 		w.mu.Lock()
 		w.offlineSince, w.offlineTold, w.offlineDone = time.Time{}, false, false
+		w.mu.Unlock()
+		return
+	}
+	if env.OfflineByMain && !told {
+		// main pages the owner for this one (main 4.0.2, contract §2.1e): it
+		// can when the store's internet or the Pi is down, the Pi can't. One
+		// alert, never two. (An outage this Pi already told still gets its
+		// "back online" from here.)
+		w.mu.Lock()
+		w.offlineSince, w.offlineDone = time.Time{}, false
 		w.mu.Unlock()
 		return
 	}

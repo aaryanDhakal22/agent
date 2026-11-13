@@ -7,7 +7,8 @@
 //   - a printer down for printer_down minutes (once per printer per outage,
 //     plus one "working again" when it was told about the outage);
 //   - an order that printed on no printer (once per order);
-//   - the Pi without main for offline minutes (once per outage + recovery);
+//   - the Pi without main for offline minutes (once per outage + recovery;
+//     not when store_config says main pages the owner for it, main 4.0.2);
 //   - orders waiting to be accepted (once per incident);
 //   - yesterday's batch still open in the morning (once a day).
 //

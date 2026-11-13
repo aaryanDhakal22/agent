@@ -59,6 +59,9 @@ type Env struct {
 	Open     bool // inside opening hours (OpenAt)
 	Settings Settings
 	Title    string // the store's name, the message title
+	// OfflineByMain: main pages the owner when this Pi is offline
+	// (store_config owner_offline_alert_by_main): no "store offline" from here.
+	OfflineByMain bool
 }
 
 // state is what survives a restart (StatePath, next to the DB).

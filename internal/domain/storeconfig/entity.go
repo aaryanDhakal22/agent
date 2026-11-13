@@ -22,6 +22,10 @@ type StoreContext struct {
 	// published Website logo, PNG / JPEG / WebP; the bytes from GET
 	// /store/v1/agent/receipt-logo). Absent = none (contract §2.1j).
 	ReceiptLogo *ReceiptLogo `json:"receipt_logo,omitempty"`
+	// OwnerOfflineAlertByMain (main 4.0.2): main pages the store owner when
+	// this Pi goes offline, so the Pi's own "store offline" owner alert stays
+	// quiet (owneralert; contract §2.1e). Absent = false = the Pi alerts.
+	OwnerOfflineAlertByMain bool `json:"owner_offline_alert_by_main,omitempty"`
 }
 
 // ReceiptLogo names the store's receipt logo; ETag is the quoted HTTP ETag

@@ -57,6 +57,7 @@ type rig struct {
 	waiting  []time.Time
 	batch    *Batch
 	cfg      map[string]any
+	byMain   bool // store_config owner_offline_alert_by_main
 }
 
 var ny, _ = time.LoadLocation("America/New_York")
@@ -85,6 +86,7 @@ func newRig(t *testing.T, dir string) *rig {
 			sc.Location.Name = "Lombardi's"
 			sc.Location.Timezone = "America/New_York"
 			sc.Location.Config = r.cfg
+			sc.OwnerOfflineAlertByMain = r.byMain
 			return sc, true
 		},
 		Printers: func() []PrinterState { return r.printers },
@@ -219,6 +221,45 @@ func TestOfflineOncePerOutageAndRecovery(t *testing.T) {
 	r.run(time.Hour)
 	if r.sink.count() != 2 {
 		t.Fatalf("msgs = %v", r.sink.msgs)
+	}
+}
+
+func TestOfflineLeftToMainWhenMainPagesTheOwner(t *testing.T) {
+	r := newRig(t, "")
+	r.byMain = true
+	r.link = Link{Linked: true}
+	r.run(time.Hour)
+	r.link.Connected = true
+	r.run(time.Minute)
+	if r.sink.count() != 0 {
+		t.Fatalf("main pages the owner for an outage: one alert, never two; msgs = %v", r.sink.msgs)
+	}
+	// The other owner alerts are untouched.
+	r.waiting = []time.Time{r.now.Add(-20 * time.Minute)}
+	r.run(Tick)
+	if r.sink.count() != 1 || !strings.Contains(r.sink.last(), "waiting") {
+		t.Fatalf("msgs = %v", r.sink.msgs)
+	}
+}
+
+func TestOfflineToldBeforeMainTookOverStillGetsItsRecovery(t *testing.T) {
+	r := newRig(t, "")
+	r.link = Link{Linked: true}
+	r.run(10 * time.Minute)
+	if r.sink.count() != 1 {
+		t.Fatalf("msgs = %v", r.sink.msgs)
+	}
+	// The reconnect brings a store_config that says main pages from now on.
+	r.byMain = true
+	r.link.Connected = true
+	r.run(time.Minute)
+	if r.sink.count() != 2 || !strings.Contains(r.sink.last(), "back online") {
+		t.Fatalf("msgs = %v", r.sink.msgs)
+	}
+	r.link.Connected = false
+	r.run(time.Hour)
+	if r.sink.count() != 2 {
+		t.Fatalf("the next outage is main's: msgs = %v", r.sink.msgs)
 	}
 }
 
