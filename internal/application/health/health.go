@@ -57,6 +57,9 @@ type Report struct {
 	Pi             SystemHealth   `json:"pi"`                // System, parsed (throttled bits, staleness)
 	Update         any            `json:"update,omitempty"`  // update.Health: versions, update state, last result
 	Tablets        any            `json:"tablets,omitempty"` // 2.2.0: paired tablets + their Quibase version
+	// Terminals (2.5.3): the paired POS terminals, their app version and the
+	// update state they last reported (contract 2.10w "From home").
+	Terminals any `json:"terminals,omitempty"`
 	Problems       []string       `json:"problems,omitempty"`
 }
 
@@ -72,6 +75,8 @@ type Inputs struct {
 	Update func(ctx context.Context) any
 	// Tablets are the paired tablets with their Quibase version (2.2.0).
 	Tablets func(ctx context.Context) any
+	// Terminals: the paired terminals with their update state (2.5.3).
+	Terminals func(ctx context.Context) any
 }
 
 type Heartbeat struct {
@@ -209,6 +214,9 @@ func (h *Heartbeat) collect(ctx context.Context) Report {
 	}
 	if h.in.Tablets != nil {
 		r.Tablets = h.in.Tablets(ctx)
+	}
+	if h.in.Terminals != nil {
+		r.Terminals = h.in.Terminals(ctx)
 	}
 	if b, err := os.ReadFile(h.HealthFile); err == nil {
 		var sys map[string]any

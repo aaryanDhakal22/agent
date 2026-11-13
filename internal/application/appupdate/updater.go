@@ -67,6 +67,9 @@ type Updater struct {
 
 	mu  sync.RWMutex
 	cur *Release
+	// checkMu: one Check at a time (the loop's and an "Update now" from main
+	// share the temp file).
+	checkMu sync.Mutex
 	// onCached runs (in the checking goroutine) after a newer release is
 	// cached.
 	onCached func(Release)
@@ -169,6 +172,8 @@ func validSHA256(s string) bool {
 
 // Check fetches main's newest release and caches it if it is newer.
 func (u *Updater) Check(ctx context.Context) error {
+	u.checkMu.Lock()
+	defer u.checkMu.Unlock()
 	key := u.key()
 	if key == "" {
 		return nil // not provisioned yet

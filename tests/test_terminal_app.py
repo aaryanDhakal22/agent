@@ -98,3 +98,53 @@ def test_terminal_app_cache_and_install_moment(app_rig, admin):
         stop.set()
     finally:
         admin.delete(f"{ADMIN_V1}/app-releases/{code}", params={"app": app}, timeout=5)
+
+
+def test_update_now_from_main(app_rig, admin):
+    """Update from home (contract 2.10w "From home", 2.5.3): a terminal reports its update state (it reaches
+    /api/diag's terminals[] = agent.health's); main's terminals.update_now gets the newest release cached
+    first (none cached before here), announces terminal.app.install {reason: update_now} and answers per
+    terminal."""
+    agent, term, fm, app = app_rig["agent"], app_rig["term"], app_rig["fm"], app_rig["app"]
+    base = agent.base
+    assert term.get(f"{base}/api/terminal/app/latest", timeout=5).status_code == 204
+    r = term.post(f"{base}/api/terminal/app/state", json={"version_name": "0.0.1", "version_code": 1, "state": "up_to_date",
+                                                         "android": "11 (API 30)", "permissions": {"install_packages": True}}, timeout=5)
+    assert r.status_code == 204, r.text
+    apk = b"PK\x03\x04" + secrets.token_bytes(2048)
+    code = int(time.time())
+    r = admin.post(f"{ADMIN_V1}/app-releases", params={"app": app, "version_code": code, "version_name": "0.0.now"},
+                   data=apk, timeout=30)
+    assert r.status_code == 201, r.text
+    try:
+        seen: list[dict] = []
+
+        def listen():
+            with term.get(f"{base}/api/events", stream=True, timeout=(5, 60)) as s:
+                typ = ""
+                for line in s.iter_lines(decode_unicode=True):
+                    if line.startswith("event:"):
+                        typ = line.split(":", 1)[1].strip()
+                    elif line.startswith("data:") and typ == "terminal.app.install":
+                        seen.append(json.loads(line.split(":", 1)[1]))
+                        return
+
+        threading.Thread(target=listen, daemon=True).start()
+
+        def connected():
+            terms = agent.http.get(f"{base}/api/diag", timeout=5).json()["terminals"]
+            return terms if terms and terms[0]["connected"] else None
+        terms = wait_until(connected, timeout=10, what="the terminal on /api/events")
+        assert terms[0]["update"]["state"] == "up_to_date" and terms[0]["update"]["android"] == "11 (API 30)", terms
+
+        fm.rpc["terminals.update_now.reply"] = lambda payload: (200, {})
+        fm.command("terminals.update_now", {"requested_by": "pytest"})
+        reply = wait_until(lambda: next((e for e in fm.rpc_seen if e["type"] == "terminals.update_now.reply"), None),
+                           timeout=30, what="the update_now reply")["payload"]
+        assert reply["ok"] is True and reply["release"]["version_code"] == code, reply
+        assert len(reply["terminals"]) == 1 and reply["terminals"][0]["told"] is True, reply
+        wait_until(lambda: seen, timeout=10, what="terminal.app.install {reason: update_now}")
+        assert seen[0]["reason"] == "update_now" and seen[0]["version_code"] == code
+        assert term.get(f"{base}/api/terminal/app/latest", timeout=5).json()["version_code"] == code
+    finally:
+        admin.delete(f"{ADMIN_V1}/app-releases/{code}", params={"app": app}, timeout=5)

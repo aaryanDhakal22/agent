@@ -95,6 +95,9 @@ type Server struct {
 	// terminalStreams: open /api/events streams per paired terminal id
 	// (terminal.connected, CM-2); under tabletMu.
 	terminalStreams map[string]int
+	// appStates: each terminal's last app-update report (tabletMu; 2.5.3).
+	appStates  map[string]TerminalAppState
+	onAppState func()
 	// stopped is closed once the HTTP server finished its graceful
 	// shutdown (Stopped; hardening F-15).
 	stopped chan struct{}

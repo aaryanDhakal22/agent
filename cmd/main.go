@@ -667,6 +667,12 @@ func main() {
 			}
 			return nil
 		},
+		Terminals: func(rc context.Context) any {
+			if hs := httpRef.Load(); hs != nil {
+				return hs.Terminals(rc)
+			}
+			return nil
+		},
 		DeviceID: func(rc context.Context) string {
 			li, _ := settingsRepo.GetLinkInfo(rc)
 			return li.DeviceID
@@ -858,11 +864,17 @@ func main() {
 	}
 	httpServer.SetAltPort(cfg.HTTPAltPort)
 	httpServer.SetTerminal(termSvc)
+	httpServer.OnTerminalAppState(heartbeat.Wake)
 	// The call center's remote terminal (contract 2.10ab): main relays the
 	// web app's calls as terminal.relay (run off the SSE reader: a relayed
 	// card payment takes seconds), and asks for the terminals' events.
 	registry.RegisterAsync(agentrpc.MsgTerminalRelay, httpServer.HandleTerminalRelay, agentrpc.AsyncOptions{Max: transport.RelayMaxInFlight,
 		Wait: transport.RelayQueueWait, MaxWaiting: transport.RelayMaxWaiting, Busy: transport.RelayBusy()})
+	// "Update now" from main's Store › Devices (contract 2.10w "From home", 2.5.3): the newest
+	// terminal release cached first (a download takes a while: off the SSE reader), then announced.
+	registry.RegisterAsync(agentrpc.MsgTerminalsUpdateNow, httpServer.TerminalsUpdateNow(termAppUpdater.Check, termAppUpdater.Current,
+		func(rel appupdate.Release) { termSvc.AnnounceApp(terminalApp.EventAppInstall, rel, "update_now") }),
+		agentrpc.AsyncOptions{Max: 1, Wait: 2 * time.Second, MaxWaiting: 2})
 	ccEvents := terminalApp.NewEventForwarder(func() (<-chan terminalApp.RelayEvent, func()) { return tapEvents(broker) }, registry.Report, logger)
 	registry.Register(agentrpc.MsgTerminalEventsWant, ccEvents.HandleWant)
 	httpServer.EnsureCallcenterDevice(ctx) // the store's call-center device, on a linked Pi
