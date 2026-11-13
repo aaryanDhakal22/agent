@@ -745,6 +745,14 @@
                 <div class="lblcol"><div class="lbl" id="l-strike">Strike removed items through</div><p class="help">On a kitchen change ticket, a removed item prints crossed out as a small picture. Turn off for a printer that can't print pictures: it prints (VOID) in reverse instead.</p></div>
                 <button type="button" class="sw" role="switch" :class="{ on: rcptForm.strike_images !== false }" :aria-checked="rcptForm.strike_images !== false" aria-labelledby="l-strike" @click="rcptForm.strike_images = rcptForm.strike_images === false"><span></span></button>
               </div>
+              <div class="srow">
+                <div class="lblcol"><div class="lbl" id="l-st-online">Receipt style: online orders</div><p class="help">Orders from the online ordering company. SoftTouch = the store&#39;s slip; Classic = the receipt the Pi printed before.</p></div>
+                <div class="seg" role="radiogroup" aria-labelledby="l-st-online"><template x-for="o in [['softtouch', 'SoftTouch'], ['classic', 'Classic']]" :key="o[0]"><button type="button" role="radio" :aria-checked="(rcptForm.style_online || 'softtouch') === o[0]" :class="{ on: (rcptForm.style_online || 'softtouch') === o[0] }" @click="rcptForm.style_online = o[0]" x-text="o[1]"></button></template></div>
+              </div>
+              <div class="srow">
+                <div class="lblcol"><div class="lbl" id="l-st-store">Receipt style: store orders</div><p class="help">Counter, call center and website orders.</p></div>
+                <div class="seg" role="radiogroup" aria-labelledby="l-st-store"><template x-for="o in [['softtouch', 'SoftTouch'], ['classic', 'Classic']]" :key="o[0]"><button type="button" role="radio" :aria-checked="(rcptForm.style_store || 'softtouch') === o[0]" :class="{ on: (rcptForm.style_store || 'softtouch') === o[0] }" @click="rcptForm.style_store = o[0]" x-text="o[1]"></button></template></div>
+              </div>
               <div class="sfoot">
                 <button type="button" class="btn btn-p" :disabled="!rcptDirty || !!rcptBusy || !!footerError" @click="saveReceipt()" x-text="rcptBusy === 'save' ? 'Saving…' : 'Save'"></button>
                 <button type="button" class="btn" :disabled="!!rcptBusy" @click="printSample()" x-text="rcptBusy === 'sample' ? 'Printing…' : 'Print a sample' + (receiptPrinter ? ' on ' + receiptPrinter.name : '')"></button>

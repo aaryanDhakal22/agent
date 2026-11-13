@@ -48,7 +48,7 @@ func TestVoidedReceipt_StruckThrough(t *testing.T) {
 	prefs.StrikeImages = false
 	got = Build(snap, sc, printer.Ticket{Kind: printer.TicketReceipt}, prefs)
 	if bytes.Count(got, []byte("\x1dv0\x00")) != 1 || bytes.Count(got, []byte(cmdInvertOn+" VOID "+cmdInvertOff)) != 2 ||
-		!bytes.Contains(got, []byte("SODA")) {
+		!bytes.Contains(got, []byte("Soda")) {
 		t.Errorf("fallback: no pictures, a VOID tag per item, the text\n%q", got)
 	}
 	snap.Voided = "CANCELLED"

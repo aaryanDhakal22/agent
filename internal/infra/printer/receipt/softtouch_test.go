@@ -96,7 +96,7 @@ func TestSoftTouchSlipGoldens(t *testing.T) {
 					if hasStoreText == logo {
 						t.Errorf("%s: with a logo the store's details are in the raster, without it text (text: %v)", name, hasStoreText)
 					}
-					for _, want := range []string{"Date: 11/12/26", "Order #: 1104", "Phone      : (410) 555-0100", "Customer Copy", "powered by"} {
+					for _, want := range []string{"Date: 11/12/26", "Order #: 1104", "Phone      : (410) 555-0100", "Customer Copy", "Powered By"} {
 						if !strings.Contains(txt, want) {
 							t.Errorf("%s: no %q\n%s", name, want, txt)
 						}

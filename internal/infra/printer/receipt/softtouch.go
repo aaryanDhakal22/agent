@@ -15,7 +15,7 @@ import (
 //
 //	header (the store's logo left + its details right as one raster, else the
 //	details centred) · Date / Time · Order # (large) · type · LAST , FIRST ·
-//	the labelled block (printed even when empty) · Directions · one payment
+//	the labelled block (printed even when empty) · one payment
 //	block per card · items · Coupons · rule · totals (Total large) · a line per
 //	payment · the signature block (a card order with no tip taken yet) · the
 //	copy label · Order Online · the footer (large) · powered by.
@@ -78,7 +78,7 @@ func softSlip(p *escw, snap order.Snapshot, st deliveryStore, at time.Time, copy
 		num = fmt.Sprintf("%d", *snap.KitchenNumber)
 	}
 	t := "Order #: " + num
-	p.line(strings.Repeat("-", w)) // a full-width rule above and below (the owner, 2026-11-12)
+	p.feed(1) // an empty line above and below (the owner, 2026-11-12, 2.5.2)
 	p.bold(true)
 	if len(dclean(t))*2 <= w {
 		p.raw(gsBig)
@@ -88,7 +88,7 @@ func softSlip(p *escw, snap order.Snapshot, st deliveryStore, at time.Time, copy
 	p.line(t)
 	p.raw(gsNormal)
 	p.bold(false)
-	p.line(strings.Repeat("-", w))
+	p.feed(1)
 	if typ := slipType(snap); typ != "" {
 		p.line(typ)
 	}
@@ -125,17 +125,7 @@ func softSlip(p *escw, snap order.Snapshot, st deliveryStore, at time.Time, copy
 			city = strings.ToUpper(cityLine(a))
 		}
 		always(p, "Street", street)
-		always(p, "City", city)
-		p.feed(1)
-		directions := ""
-		if a := snap.Fulfillment.Address; a != nil {
-			directions = strings.TrimSpace(a.Notes)
-		}
-		if directions == "" {
-			p.line("Directions:")
-		} else {
-			p.wrapped("Directions: "+directions, strings.Repeat(" ", 12))
-		}
+		always(p, "City", city) // no Directions line: drivers go by the street (the owner, 2.5.2)
 	}
 	if n := strings.TrimSpace(snap.Notes); n != "" {
 		p.wrapped("Notes: "+n, strings.Repeat(" ", 7))
@@ -356,7 +346,7 @@ func lastRunes(s string, n int) string {
 // double height (the owner, 2026-11-12).
 func slipPoweredBy(l layout) string {
 	b := poweredByFooter(l)
-	return strings.Replace(b, cmdFontBSz+"powered by", cmdFontBTall+"powered by", 1)
+	return strings.Replace(b, cmdFontBSz+"powered by", cmdFontBTall+"Powered By", 1)
 }
 
 // noOrphan keeps a lone character off a row of its own ("APT" / "4"): the

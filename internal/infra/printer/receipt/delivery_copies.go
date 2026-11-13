@@ -226,6 +226,7 @@ func BuildDeliveryCopies(snap order.Snapshot, sc storeconfig.StoreContext, prefs
 	p := &escw{width: lay.cols, lay: lay, strikeImages: prefs.StrikeImages, boldWords: prefs.BoldChoiceWords}
 	p.raw(cmdInit + cmdNormalSz)
 	st := storeOf(sc, prefs.Normalize())
+	classic := prefs.Normalize().StyleFor(snap.Source) == order.StyleClassic
 	for _, copy := range []string{MerchantCopy, CustomerCopy} {
 		if on.Updated { // printed again after the order changed: the driver drops the old pair
 			for _, l := range []string{"UPDATED", "ACTUALIZADO"} {
@@ -236,6 +237,10 @@ func BuildDeliveryCopies(snap order.Snapshot, sc storeconfig.StoreContext, prefs
 				p.left()
 			}
 			p.feed(1)
+		}
+		if classic { // the classic receipt twice (2.5.2): its own reroute bands, no copy label
+			p.raw(string(buildFull(snap, sc, reroutedFrom, prefs.Normalize(), lay)))
+			continue
 		}
 		if reroutedFrom != "" {
 			for _, l := range RerouteLines(reroutedFrom, lay.cols) {
@@ -325,7 +330,7 @@ func deliveryItems(p *escw, snap order.Snapshot, voided bool) {
 			p.raw(cmdInvertOn + " VOID " + cmdInvertOff + cmdFeed)
 		}
 		p.strike = voided && p.strikeImages // the item, its choices and note struck through
-		name := strings.ToUpper(strings.Join(nonEmpty(strings.TrimSpace(displaySize(it.Size)), strings.TrimSpace(it.Name)), " "))
+		name := slipItemName(it.Size, it.Name)
 		qty := max(it.Quantity, 1)
 		free := it.UnitPrice == 0
 		for _, m := range mods {

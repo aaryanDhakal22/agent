@@ -29,6 +29,8 @@ DEFAULTS = {
     "format": "expanded",  # 2.4.0
     "strike_images": True,  # kitchen change tickets (2026-11-11)
     "bold_choice_words": ["fries", "salad", "soda"],  # 2.5.2: choices printed bold on the customer slips
+    "style_online": "softtouch",  # 2.5.2: the slips' layout for online orders / the store's own
+    "style_store": "softtouch",
 }
 
 
@@ -94,6 +96,7 @@ def test_get_defaults_put_and_reject(store) -> None:
         ({**want, "footer_text": "MERCI CAFÉ"}, "footer_text"),
         ({**want, "bold_choice_words": [f"w{i}" for i in range(11)]}, "at most 10 words"),
         ({**want, "bold_choice_words": ["x" * 21]}, "at most 20 characters"),
+        ({**want, "style_store": "fancy"}, "softtouch or classic"),
     ):
         r = requests.put(f"{a.base}/api/settings/receipt", headers=tab, json=bad, timeout=5)
         assert r.status_code == 400 and r.json()["code"] == "bad_request", (bad, r.text)

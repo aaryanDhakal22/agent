@@ -74,6 +74,30 @@ type ReceiptPrefs struct {
 	// (any case) prints bold. At most MaxBoldWords words of MaxBoldWordLen
 	// plain characters.
 	BoldChoiceWords WordList `json:"bold_choice_words"`
+	// StyleOnline / StyleStore (2.5.2): the customer slips' layout for online
+	// vendor orders (source online) and for the store's own (counter, web,
+	// call center): softtouch (SoftTouch's slip, the default) | classic (the
+	// receipt the Pi printed before it).
+	StyleOnline string `json:"style_online"`
+	StyleStore  string `json:"style_store"`
+}
+
+// The receipt styles.
+const (
+	StyleSoftTouch = "softtouch"
+	StyleClassic   = "classic"
+)
+
+// StyleFor is the slip style for an order from source.
+func (p ReceiptPrefs) StyleFor(source string) string {
+	s := p.StyleStore
+	if source == SourceOnline {
+		s = p.StyleOnline
+	}
+	if s == StyleClassic {
+		return StyleClassic
+	}
+	return StyleSoftTouch
 }
 
 // MaxBoldWords / MaxBoldWordLen bound ReceiptPrefs.BoldChoiceWords.
@@ -165,6 +189,8 @@ func DefaultReceiptPrefs() ReceiptPrefs {
 		Format:            FormatExpanded,
 		StrikeImages:      true,
 		BoldChoiceWords:   NewWordList("fries", "salad", "soda"),
+		StyleOnline:       StyleSoftTouch,
+		StyleStore:        StyleSoftTouch,
 	}
 }
 
@@ -202,6 +228,12 @@ func (p ReceiptPrefs) Normalize() ReceiptPrefs {
 	if p.DriverReportSize == "" {
 		p.DriverReportSize = d.DriverReportSize
 	}
+	if p.StyleOnline == "" {
+		p.StyleOnline = d.StyleOnline
+	}
+	if p.StyleStore == "" {
+		p.StyleStore = d.StyleStore
+	}
 	if p.Format == "" {
 		p.Format = d.Format
 	}
@@ -232,6 +264,9 @@ func (p ReceiptPrefs) Validate() error {
 		if v < 0 || v > MaxSpacingDots {
 			return fmt.Errorf("spacing must be 0-%d dots", MaxSpacingDots)
 		}
+	}
+	if !oneOf(p.StyleOnline, StyleSoftTouch, StyleClassic) || !oneOf(p.StyleStore, StyleSoftTouch, StyleClassic) {
+		return fmt.Errorf("style_online and style_store must be softtouch or classic")
 	}
 	if ws := p.BoldChoiceWords.Words(); len(ws) > MaxBoldWords {
 		return fmt.Errorf("bold_choice_words: at most %d words", MaxBoldWords)

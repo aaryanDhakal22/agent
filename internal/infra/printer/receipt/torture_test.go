@@ -295,9 +295,16 @@ func dumpTortureWidth(t *testing.T, dir string, cols int) {
 	fut.Fulfillment.PromisedAt = &due
 	data := Build(fut, sc, printer.Ticket{Kind: printer.TicketReceipt, Future: true, Cols: cols}, def)
 	put("receipt_delivery_future", data, "receipt", receiptTexts(fut, true), slipTotals...)
+	// the classic receipt (receipt_prefs.style_store / style_online = classic, 2.5.2): buildFull, every choice
+	classic := def
+	classic.StyleStore, classic.StyleOnline = order.StyleClassic, order.StyleClassic
+	cl := tortureSnap("delivery", items...)
+	clTexts := append(textsOf(cl.Items, true), cl.Notes, lastFirst(tCustomer), tStoreName)
+	put("receipt_delivery_classic", Build(cl, sc, printer.Ticket{Kind: printer.TicketReceipt, Cols: cols}, classic), "receipt", clTexts,
+		"Subtotal", "Tax", "Total")
 	// an online delivery's Merchant + Customer Copy (the terminal's layout, §2.10aa)
 	dc := tortureSnap("delivery", items...)
-	dcTexts := append(slipTextsOf(dc, dc.Items, false), tStreet, tApt, tCity, tDirections, tNote300)
+	dcTexts := append(slipTextsOf(dc, dc.Items, false), tStreet, tApt, tCity, tNote300) // no Directions on the slip (2.5.2)
 	put("delivery_copies_torture", Build(dc, sc, printer.Ticket{Kind: printer.TicketDeliveryCopies, Cols: cols}, def),
 		"receipt", dcTexts)
 	put("delivery_copies_rerouted", Build(dc, sc, printer.Ticket{Kind: printer.TicketDeliveryCopies, Cols: cols, ReroutedFrom: tPrinter}, def),
@@ -404,7 +411,7 @@ func dumpTortureWidth(t *testing.T, dir string, cols int) {
 	put("receipt_delivery_injected", Build(inj, sc, printer.Ticket{Kind: printer.TicketReceipt, ReroutedFrom: tInject(tPrinter), Cols: cols}, def),
 		"receipt", append(injTexts[:len(injTexts):len(injTexts)], lastFirst(want.Customer.DisplayName), refClean(tInject(tPrinter))), slipTotals...)
 	put("delivery_copies_injected", Build(inj, sc, printer.Ticket{Kind: printer.TicketDeliveryCopies, Cols: cols}, def),
-		"receipt", append(injTexts[:len(injTexts):len(injTexts)], softName(want.Customer.DisplayName), want.Fulfillment.Address.Notes))
+		"receipt", append(injTexts[:len(injTexts):len(injTexts)], softName(want.Customer.DisplayName)))
 	put("station_injected", Build(inj, sc, printer.Ticket{Kind: printer.TicketStation, TargetID: "p-pizza", Station: tInject("Pizza"),
 		Mine: inj.Items[:1], Others: inj.Items[1:], ReroutedFrom: tInject(tPrinter), Cols: cols}, def), "station",
 		append(textsOf(want.Items[:1], false), want.Notes, lastFirst(want.Customer.DisplayName), want.Items[1].Name, want.Items[2].Name))
