@@ -23,7 +23,22 @@ type Fees struct {
 	FreeDeliveryOverCents *int64 `json:"free_delivery_over_cents"`
 	DeliveryMinCents      int64  `json:"delivery_min_cents"`
 	DeliveryDriverCents   *int64 `json:"delivery_driver_cents,omitempty"`
+	// DeliveryBands: the customer's delivery fee by distance (the owner,
+	// 2026-11-13; Store › Settings › Map and delivery area). Empty = the
+	// flat DeliveryFeeCents. When set, DeliveryFeeCents is kept equal to
+	// the first band's fee (Validate), so a reader that doesn't know bands
+	// (an older Pi or storefront) charges what an unknown distance costs.
+	// Never the driver's pay: DeliveryDriverCents stays as it is.
+	DeliveryBands []DeliveryBand `json:"delivery_bands,omitempty"`
 }
+
+// Delivery fee band limits.
+const (
+	MaxDeliveryBands = 10
+	// MaxBandM: a band reaches at most 50 miles (the delivery radius's own
+	// limit, 80467 m).
+	MaxBandM = 80467
+)
 
 // DefaultDriverShareCents is the driver's share of the delivery fee when the
 // store hasn't set one (the owner's default: store $1 + driver $3 of $4).
@@ -118,7 +133,7 @@ func Effective(s StoreSettings, o KindOverride) Settings {
 	}
 	return Settings{TaxBps: s.TaxBps, Stacking: s.Stacking, ServiceFeeCents: f.ServiceFeeCents, ServiceFeeBps: f.ServiceFeeBps,
 		DeliveryFeeCents: f.DeliveryFeeCents, FreeDeliveryOverCents: f.FreeDeliveryOverCents, DeliveryMinCents: f.DeliveryMinCents,
-		DeliveryDriverCents: f.DriverShare(), Tips: t, CardFee: c, HalfToppingPrice: s.HalfToppingPrice, HalfSpecialtyOffPct: s.HalfSpecialtyOffPct}
+		DeliveryBands: f.DeliveryBands, DeliveryDriverCents: f.DriverShare(), Tips: t, CardFee: c, HalfToppingPrice: s.HalfToppingPrice, HalfSpecialtyOffPct: s.HalfSpecialtyOffPct}
 }
 
 var ErrBadSettings = errors.New("bad pricing settings")
@@ -160,8 +175,29 @@ func validSets(f *Fees, t *Tips, c *CardFee) error {
 			(f.FreeDeliveryOverCents != nil && (*f.FreeDeliveryOverCents < 0 || *f.FreeDeliveryOverCents > 100000)) {
 			return bad("fees out of range (service ≤ $100 or 30%, delivery ≤ $100, minimum ≤ $1000)")
 		}
-		if d := f.DeliveryDriverCents; d != nil && (*d < 0 || *d > f.DeliveryFeeCents) {
-			return bad("the driver's share of the delivery fee must be 0 up to the fee")
+		if len(f.DeliveryBands) > MaxDeliveryBands {
+			return bad("delivery fee by distance: at most 10 rows")
+		}
+		if len(f.DeliveryBands) == 0 {
+			f.DeliveryBands = nil
+		}
+		lowest := f.DeliveryFeeCents
+		for i, b := range f.DeliveryBands {
+			if b.UpToM < 1 || b.UpToM > MaxBandM || b.FeeCents < 0 || b.FeeCents > 10000 {
+				return bad("delivery fee by distance: each row up to 1 m–50 mi, a fee up to $100")
+			}
+			if i > 0 && b.UpToM <= f.DeliveryBands[i-1].UpToM {
+				return bad("delivery fee by distance: each row reaches farther than the one before")
+			}
+			if i == 0 || b.FeeCents < lowest {
+				lowest = b.FeeCents
+			}
+		}
+		if len(f.DeliveryBands) > 0 {
+			f.DeliveryFeeCents = f.DeliveryBands[0].FeeCents // older readers: the unknown-distance fee
+		}
+		if d := f.DeliveryDriverCents; d != nil && (*d < 0 || *d > lowest) {
+			return bad("the driver's share of the delivery fee must be 0 up to the fee (the lowest fee by distance)")
 		}
 	}
 	if t != nil {

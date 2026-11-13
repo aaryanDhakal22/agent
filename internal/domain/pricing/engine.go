@@ -1043,11 +1043,12 @@ func Price(ctx Context, cart Cart, at time.Time) Quote {
 		if len(q.Lines) > 0 && after < st.DeliveryMinCents {
 			issue(IssueDeliveryMin, fmt.Sprintf("Delivery needs a %s minimum. Add %s more or pick it up.", Money(st.DeliveryMinCents), Money(st.DeliveryMinCents-after)), nil)
 		}
-		q.DeliveryFeeCents = st.DeliveryFeeCents
+		fee := DeliveryFeeFor(st.DeliveryFeeCents, st.DeliveryBands, cart.DistanceM)
+		q.DeliveryFeeCents = fee
 		if f := st.FreeDeliveryOverCents; f != nil {
 			if after >= *f {
 				q.DeliveryFeeCents = 0
-			} else if st.DeliveryFeeCents > 0 {
+			} else if fee > 0 {
 				nudge(fmt.Sprintf("Free delivery over %s: add %s.", Money(*f), Money(*f-after)))
 			}
 		}

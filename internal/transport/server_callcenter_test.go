@@ -107,7 +107,10 @@ func ccAgentStaff() map[string]any {
 	return map[string]any{"id": ccAgent, "first_name": "Elena", "last_name": "Vega", "role": "callcenter", "pin_hash": ""}
 }
 
-func newCCRig(t *testing.T) *ccRig {
+func newCCRig(t *testing.T) *ccRig { return newCCRigWith(t, nil) }
+
+// newCCRigWith: edit changes the counter menu's pricing context first.
+func newCCRigWith(t *testing.T, edit func(pricing map[string]any)) *ccRig {
 	t.Helper()
 	s, h, _, db := diagServerDB(t)
 	ctx := context.Background()
@@ -129,7 +132,16 @@ func newCCRig(t *testing.T) *ccRig {
 	if err := json.Unmarshal(raw, &c); err != nil {
 		t.Fatal(err)
 	}
-	menu, _ := json.Marshal(map[string]any{"menu_version": 12, "build": map[string]any{"view": map[string]any{"kind": "counter"}}, "pricing": c.Context})
+	pricingCtx := any(c.Context)
+	if edit != nil {
+		var pc map[string]any
+		if err := json.Unmarshal(c.Context, &pc); err != nil {
+			t.Fatal(err)
+		}
+		edit(pc)
+		pricingCtx = pc
+	}
+	menu, _ := json.Marshal(map[string]any{"menu_version": 12, "build": map[string]any{"view": map[string]any{"kind": "counter"}}, "pricing": pricingCtx})
 	r.config.Store(ccConfig(t, 1, ccAgentStaff()))
 	repo := repositories.NewOrderRepository(db, zerolog.Nop())
 	r.repo = repo
@@ -895,12 +907,12 @@ func TestRelayOutOfArea(t *testing.T) {
 		return v.Order.Order.ID, v.Order.Order.OutOfArea
 	}
 	// The lookup tells the app where each address is (what the warning is built from).
-	if got := r.relay(t, ccAgent, "GET", "customers", nil, func(p map[string]any) { p["query"] = "phone=4105550101" }); !strings.Contains(string(got.Body), `"area":{"state":"out","distance_mi":5}`) {
+	if got := r.relay(t, ccAgent, "GET", "customers", nil, func(p map[string]any) { p["query"] = "phone=4105550101" }); !strings.Contains(string(got.Body), `"area":{"state":"out","distance_mi":5,"distance_m":8058}`) {
 		t.Fatalf("the lookup's area: %s", got.Body)
 	}
 	// The quote of a delivery says where the address is, and is never refused.
 	q := r.relay(t, ccAgent, "POST", "quote", map[string]any{"type": "delivery", "customer": far, "cart": map[string]any{"lines": []map[string]any{{"item_id": ccCheese, "size_id": ccXL, "qty": 1}}}})
-	if q.Status != 200 || !strings.Contains(string(q.Body), `"area":{"distance_mi":5,"state":"out"}`) && !strings.Contains(string(q.Body), `"area":{"state":"out","distance_mi":5}`) ||
+	if q.Status != 200 || !strings.Contains(string(q.Body), `"area":{"distance_mi":5,"state":"out"}`) && !strings.Contains(string(q.Body), `"area":{"state":"out","distance_mi":5,"distance_m":8058}`) ||
 		!strings.Contains(string(q.Body), `"quote":{`) {
 		t.Fatalf("quote with the address: %d %s", q.Status, q.Body)
 	}
@@ -1024,5 +1036,61 @@ func TestRelayOutOfArea(t *testing.T) {
 		if rec.Code != http.StatusCreated || strings.Contains(rec.Body.String(), `"out_of_area":true`) {
 			t.Fatalf("a store terminal, ack %v: %d %s", ack, rec.Code, rec.Body)
 		}
+	}
+}
+
+// The delivery fee by distance (main's fees.delivery_bands, contract 2.10ae):
+// the Pi prices a delivery from where it can place the address (the
+// customer's saved point), else the cart's distance_m (the app's lookup),
+// else the first band.
+func TestDeliveryFeeByDistance(t *testing.T) {
+	r := newCCRigWith(t, func(pc map[string]any) {
+		st := pc["settings"].(map[string]any)
+		st["delivery_fee_cents"] = 300
+		st["delivery_bands"] = []map[string]any{{"up_to_m": 3219, "fee_cents": 300}, {"up_to_m": 8047, "fee_cents": 600}}
+	})
+	in := r.addressAt(t, "4105550111", "1 Close St", 1)
+	mid := r.addressAt(t, "4105550112", "7 Mid Ln", 3.5)
+	fresh := r.addressAt(t, "4105550113", "5 New Rd", 0) // no point yet
+	cart := func(extra map[string]any) map[string]any {
+		c := map[string]any{"lines": []map[string]any{{"item_id": ccCheese, "size_id": ccXL, "qty": 1}}}
+		for k, v := range extra {
+			c[k] = v
+		}
+		return c
+	}
+	fee := func(body map[string]any) float64 {
+		t.Helper()
+		got := r.relay(t, ccAgent, "POST", "quote", body)
+		var v struct {
+			Quote struct {
+				DeliveryFeeCents float64 `json:"delivery_fee_cents"`
+			} `json:"quote"`
+		}
+		if got.Status != 200 || json.Unmarshal(got.Body, &v) != nil {
+			t.Fatalf("quote: %d %s", got.Status, got.Body)
+		}
+		return v.Quote.DeliveryFeeCents
+	}
+	for _, c := range []struct {
+		name string
+		body map[string]any
+		want float64
+	}{
+		{"near address", map[string]any{"type": "delivery", "customer": in, "cart": cart(nil)}, 300},
+		{"farther address", map[string]any{"type": "delivery", "customer": mid, "cart": cart(nil)}, 600},
+		{"the Pi's point wins over the app's distance", map[string]any{"type": "delivery", "customer": mid, "cart": cart(map[string]any{"distance_m": 100})}, 600},
+		{"no point: the app's distance", map[string]any{"type": "delivery", "customer": fresh, "cart": cart(map[string]any{"distance_m": 7000})}, 600},
+		{"unknown: the first band", map[string]any{"type": "delivery", "customer": fresh, "cart": cart(nil)}, 300},
+		{"a pickup: none", map[string]any{"type": "pickup", "cart": cart(map[string]any{"distance_m": 7000})}, 0},
+	} {
+		if got := fee(c.body); got != c.want {
+			t.Errorf("%s: delivery fee %v, want %v", c.name, got, c.want)
+		}
+	}
+	// Placing prices the same.
+	got := r.relay(t, ccAgent, "POST", "orders", map[string]any{"client_key": ccKey(), "type": "delivery", "customer": mid, "cart": cart(nil)})
+	if got.Status != http.StatusCreated || !strings.Contains(string(got.Body), `"type":"delivery","label":"Delivery fee","amount_cents":600`) {
+		t.Fatalf("placed delivery: %d %s", got.Status, got.Body)
 	}
 }

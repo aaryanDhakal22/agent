@@ -431,6 +431,23 @@ func (s *Service) AddressArea(ctx context.Context, cust *Customer) (*terminal.Ar
 	return &terminal.Area{State: terminal.AreaUnknown}, info
 }
 
+// withDistance gives a delivery's cart its distance for the delivery fee by
+// distance (main's fees.delivery_bands, contract 2.10ae): the Pi's own when it
+// can place the address (the customer's saved point, or a located delivery to
+// the same place), else the distance_m the terminal / call center sent (its
+// lookup); unknown = the engine's first band. Not a delivery: none.
+func (s *Service) withDistance(ctx context.Context, typ string, cust *Customer, c Cart) Cart {
+	if typ != terminal.TypeDelivery {
+		c.DistanceM = nil
+		return c
+	}
+	if area, _ := s.AddressArea(ctx, cust); area != nil && area.DistanceM != nil {
+		d := *area.DistanceM
+		c.DistanceM = &d
+	}
+	return c
+}
+
 // CallcenterAreaCheck is the call center's rule for a delivery address
 // (the owner, 2026-11-12: allowed with a warning, no manager's PIN): out of
 // the area without ack → *terminal.OutOfArea (409); with it → the check to

@@ -684,6 +684,10 @@ type QuoteIn struct {
 	// OrderID (contract 2.10s §9): a reopened order's cart, priced as PUT
 	// .../cart would (its lines keep their rung prices, M-15).
 	OrderID string `json:"order_id,omitempty"`
+	// Customer: a delivery's customer (the call center sends it): the Pi
+	// prices the delivery fee by distance from its address when it can
+	// place it (2.10ae), else from the cart's distance_m.
+	Customer *Customer `json:"customer,omitempty"`
 }
 
 // QuoteView is the engine's quote (the manual discount applied) plus what
@@ -750,6 +754,16 @@ func (s *Service) Quote(ctx context.Context, a Actor, in QuoteIn) (*QuoteView, e
 			return s.onlineQuote(m, cur.Order.Order, in.Cart) // §2.10aa
 		}
 		placed = &cur.Order.Order
+	}
+	// The delivery fee by distance (2.10ae): the cart's distance_m (the
+	// terminal's lookup), or the Pi's own for a sent delivery's address.
+	switch {
+	case typ != terminal.TypeDelivery:
+		in.Cart.DistanceM = nil
+	case orderAddress(in.Customer) != nil:
+		in.Cart = s.withDistance(ctx, typ, in.Customer, in.Cart)
+	case placed != nil && placed.Fulfillment.Address != nil:
+		in.Cart = s.withDistance(ctx, typ, customerAt(placed.Fulfillment.Address), in.Cart)
 	}
 	// Rung prices kept, gone items sold as custom lines (rung.go, §2.10u).
 	p, _, err := priceRung(m, s.orders.StoreLocation(), typ, placed, in.Cart, s.now(), s.toppingMax())
@@ -1227,6 +1241,7 @@ func (s *Service) placeOrder(ctx context.Context, a Actor, in OrderIn) (*PlaceRe
 	if err := callcenterCartGuard(a, counterCtx(m, s.orders.StoreLocation(), s.toppingMax()), in.Cart, nil); err != nil {
 		return nil, err
 	}
+	in.Cart = s.withDistance(ctx, typ, &cust, in.Cart) // the delivery fee by distance (2.10ae)
 	p, _, err := priceRung(m, s.orders.StoreLocation(), typ, nil, in.Cart, now, s.toppingMax())
 	if err != nil {
 		return nil, asBadRequest(err)
