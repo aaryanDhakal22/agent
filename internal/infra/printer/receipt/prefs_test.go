@@ -77,10 +77,10 @@ func TestBuild_DefaultsMatchTheDefaultBuilders(t *testing.T) {
 func TestBuild_KitchenItemSize(t *testing.T) {
 	snap := previewDelivery()
 	for size, want := range map[string]string{
-		order.SizeNormal: cmdBoldOn + cmdBaseSz + "1  PEPPERONI PIZZA (LARGE)\n",
-		order.SizeLarge:  cmdBoldOn + cmdDoubleSz + "1  PEPPERONI PIZZA\n   (LARGE)\n",
+		order.SizeNormal: cmdBoldOn + cmdBaseSz + "1  Pepperoni Pizza (Large)\n",
+		order.SizeLarge:  cmdBoldOn + cmdDoubleSz + "1  Pepperoni Pizza\n   (Large)\n",
 		// 16 characters a line at quad size.
-		order.SizeXLarge: cmdBoldOn + cmdQuadSz + "1  PEPPERONI\n   PIZZA (LARGE)\n",
+		order.SizeXLarge: cmdBoldOn + cmdQuadSz + "1  Pepperoni\n   Pizza (Large)\n",
 	} {
 		got := string(Build(snap, previewStore(), stationTicket(), prefsWith(func(p *order.ReceiptPrefs) { p.KitchenItemSize = size })))
 		if !strings.Contains(got, want) {

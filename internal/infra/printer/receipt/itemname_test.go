@@ -26,3 +26,13 @@ func TestSlipItemName(t *testing.T) {
 		}
 	}
 }
+
+// A vendor's all-capitals name reads as Title Case, its acronyms kept.
+func TestTitleWordsShouting(t *testing.T) {
+	for in, want := range map[string]string{"WHOLE WINGS COMBO": "Whole Wings Combo", "BBQ CHICKEN PIZZA": "BBQ Chicken Pizza",
+		"BLT SUB": "BLT Sub", "BBQ chicken": "BBQ Chicken", "12\" MEDIUM": "12\" Medium", "6 PC WINGS": "6 PC Wings"} {
+		if got := titleWords(in); got != want {
+			t.Errorf("%q = %q, want %q", in, got, want)
+		}
+	}
+}

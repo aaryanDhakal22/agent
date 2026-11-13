@@ -121,7 +121,7 @@ def test_channel_order_prints_stations_and_receipt_with_switches_off(web, fakes)
         _ok(post(a, f"/api/orders/{o['id']}/accept", {"prep_minutes": 15}))
         wait_jobs(fakes["Pizza"], 1)
         wait_jobs(fakes["Front"], 1)
-        assert "1  CHEESE PIZZA" in fakes["Pizza"].text(), fakes["Pizza"].text()
+        assert "1  Cheese Pizza" in fakes["Pizza"].text(), fakes["Pizza"].text()
         assert "Total:" in fakes["Front"].text()
     # The same switches leave a vendor card order receipt-only.
     for f in fakes.values():

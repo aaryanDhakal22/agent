@@ -72,6 +72,7 @@ func buildStation(snap order.Snapshot, t printer.Ticket, prefs order.ReceiptPref
 	w := func(s string) { buf.WriteString(toPC437(s)) }
 	nl := func() { buf.WriteString(cmdFeed) }
 	l := layoutFor(t.Cols) // the printer it prints on (width.go)
+	online := snap.Source == order.SourceOnline // an online order's size on its own line (2.5.2)
 
 	added, removed := t.Mine, t.Removed
 	if t.Void {
@@ -151,24 +152,24 @@ func buildStation(snap order.Snapshot, t printer.Ticket, prefs order.ReceiptPref
 		w(cmdLeft)
 		if t.TypeOnly {
 			nl()
-			writeKitchenItems(w, nl, added, t, prefs, l)
+			writeKitchenItems(w, nl, added, t, prefs, l, online)
 			added = nil
 		}
 	}
 	if change {
 		if len(added) > 0 {
 			writeBand(w, nl, "ADD / AGREGAR", l)
-			writeKitchenItems(w, nl, added, t, prefs, l)
+			writeKitchenItems(w, nl, added, t, prefs, l, online)
 		}
 		if len(removed) > 0 {
 			if len(added) > 0 {
 				nl()
 			}
 			writeBand(w, nl, "REMOVE / QUITAR", l)
-			writeRemoved(w, nl, removed, prefs, l)
+			writeRemoved(w, nl, removed, prefs, l, online)
 		}
 	} else {
-		writeKitchenItems(w, nl, added, t, prefs, l)
+		writeKitchenItems(w, nl, added, t, prefs, l, online)
 		w(l.rule(ruleChar))
 		nl()
 		w("Also on this order:")
@@ -308,14 +309,14 @@ func pad(text string, width int) string {
 
 // itemLabel is "2  PEPPERONI PIZZA (LARGE)" (printable turns its \x1f into
 // spaces).
-func itemLabel(it order.LineItem) string {
-	return fmt.Sprintf("%d\x1f\x1f%s", it.Quantity, strings.ToUpper(itemName(it))) // \x1f: a space wordWrap keeps
+func itemLabel(it order.LineItem, online bool) string {
+	return fmt.Sprintf("%d\x1f\x1f%s", it.Quantity, kitchenName(it, online)) // \x1f: a space wordWrap keeps
 }
 
 // writeKitchenItems prints items: quantity + name bold at the store's item
 // size, then every modifier and note on its own "- " line (halves under
 // WHOLE: / 1ST HALF: / 2ND HALF:).
-func writeKitchenItems(w func(string), nl func(), items []order.LineItem, t printer.Ticket, prefs order.ReceiptPrefs, lay layout) {
+func writeKitchenItems(w func(string), nl func(), items []order.LineItem, t printer.Ticket, prefs order.ReceiptPrefs, lay layout, online bool) {
 	sp := prefs.Spacing
 	w(cmdLeft)
 	for i, it := range items {
@@ -324,7 +325,7 @@ func writeKitchenItems(w func(string), nl func(), items []order.LineItem, t prin
 		}
 		w(cmdBoldOn)
 		w(textSize(prefs.KitchenItemSize))
-		for _, line := range wordWrap(itemLabel(it), lay.itemWidth(prefs.KitchenItemSize), itemIndent) {
+		for _, line := range wordWrap(itemLabel(it, online), lay.itemWidth(prefs.KitchenItemSize), itemIndent) {
 			w(printable(line))
 			nl()
 		}
@@ -335,7 +336,7 @@ func writeKitchenItems(w func(string), nl func(), items []order.LineItem, t prin
 			nl()
 		}
 		w(cmdBoldOff)
-		for j, l := range modLines(it) {
+		for j, l := range modLines(it, online) {
 			if j == 0 {
 				w(feedDots(sp.ItemMod))
 			} else {
@@ -351,8 +352,11 @@ func writeKitchenItems(w func(string), nl func(), items []order.LineItem, t prin
 
 // modLines are an item's lines under it: "- Extra cheese", "- (x2) Ranch",
 // the food note "- Well done"; a half-and-half pie's under its headings.
-func modLines(it order.LineItem) []string {
+func modLines(it order.LineItem, online bool) []string {
 	var out []string
+	if sz := kitchenSizeLine(it, online); sz != "" { // an online order's size, first (2.5.2)
+		out = append(out, "- "+sz)
+	}
 	if it.HasHalves() {
 		out = halfLines(it)
 	} else {
@@ -412,15 +416,15 @@ func halfLines(it order.LineItem) []string {
 // writeRemoved prints removed lines: "(VOID) " + the line struck through
 // (its modifiers too, under it), at font A so the 24-dot picture sits in the
 // text line. Without pictures: "(VOID)" in reverse + the text.
-func writeRemoved(w func(string), nl func(), items []order.LineItem, prefs order.ReceiptPrefs, lay layout) {
+func writeRemoved(w func(string), nl func(), items []order.LineItem, prefs order.ReceiptPrefs, lay layout, online bool) {
 	w(cmdLeft)
 	w(cmdSizeReset)
 	w(cmdNormalSz)
 	w(cmdBoldOn)
 	room := lay.cols - len(voidMark)
 	for _, it := range items {
-		lines := []string{itemLabel(it)}
-		for _, l := range modLines(it) {
+		lines := []string{itemLabel(it, online)}
+		for _, l := range modLines(it, online) {
 			lines = append(lines, itemIndent+l)
 		}
 		for i, l := range lines {

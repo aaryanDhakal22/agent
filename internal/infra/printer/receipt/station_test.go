@@ -58,8 +58,8 @@ func TestBuildStation_Content(t *testing.T) {
 		// Printed on a stand-in: the reroute bands, English then Spanish, reverse + double size (2026-11-12).
 		cmdInvertOn + pad("REROUTED FROM OVEN", defaultLayout.big()) + cmdInvertOff,
 		cmdInvertOn + pad("REDIRIGIDO DE OVEN", defaultLayout.big()) + cmdInvertOff,
-		"2  PEPPERONI PIZZA\n   (LARGE)\n", "   - Extra cheese\n", "   - well done\n",
-		"1  MYSTERY\n", "** UNMATCHED **",
+		"2  Pepperoni Pizza\n   (Large)\n", "   - Extra cheese\n", "   - well done\n",
+		"1  Mystery\n", "** UNMATCHED **",
 		"Also on this order:\n   1 Fries\n",
 		"NOTE: Ring the bell twice\n", // the order's note, under the header (the owner, 2026-11-12)
 	} {
@@ -238,7 +238,7 @@ func TestBuildStation_HidesServingSize(t *testing.T) {
 	out := string(BuildStation(snap, printer.Ticket{
 		Kind: printer.TicketStation, TargetID: "p1", Station: "Kitchen", Mine: snap.Items[:1], Others: snap.Items[1:],
 	}))
-	if !strings.Contains(out, "1  TURKEY CLUB\n") || strings.Contains(strings.ToLower(out), "serving") {
+	if !strings.Contains(out, "1  Turkey Club\n") || strings.Contains(strings.ToLower(out), "serving") {
 		t.Errorf("single-size item should print without a size:\n%q", out)
 	}
 	if !strings.Contains(out, "1 Wings (6 Piece)") {
@@ -283,7 +283,7 @@ func TestBuildStation_Void(t *testing.T) {
 	tk.Void, tk.Others, tk.ReroutedFrom = true, nil, ""
 	tk.Mine = tk.Mine[:1]
 	out := string(BuildStation(snap, tk))
-	for _, want := range []string{"REMOVE / QUITAR", "(VOID) " + strikeImage("2  PEPPERONI PIZZA (LARGE)") + "\n",
+	for _, want := range []string{"REMOVE / QUITAR", "(VOID) " + strikeImage("2  Pepperoni Pizza (Large)") + "\n",
 		"          " + strikeImage("- Extra cheese") + "\n"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("void ticket lacks %q:\n%q", want, out)
@@ -309,7 +309,7 @@ func TestBuildStation_AddOn(t *testing.T) {
 	tk.AddOn, tk.Others, tk.ReroutedFrom = true, nil, ""
 	tk.Mine = tk.Mine[:1]
 	out := string(BuildStation(snap, tk))
-	if !strings.Contains(out, "ADD / AGREGAR") || !strings.Contains(out, "2  PEPPERONI PIZZA\n") {
+	if !strings.Contains(out, "ADD / AGREGAR") || !strings.Contains(out, "2  Pepperoni Pizza\n") {
 		t.Fatalf("add-on ticket:\n%q", out)
 	}
 	if strings.Contains(out, "Also on this order") || strings.Contains(out, "VOID") {

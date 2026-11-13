@@ -87,7 +87,7 @@ def test_doubles_custom_line_and_required_warning(rig):
     assert [c["name"] for c in pz["children"]][:2] == ["2x Pepperoni", "2x Mushrooms (1st half)"]
     assert [c["unit_price_cents"] for c in pz["children"]][:2] == [450, 226]
     assert (cu["name"], cu["sku"], cu["quantity"], cu["line_total_cents"], cu["routing"]) == ("Extra dough ball", "custom", 2, 500, "unmatched")
-    wait_until(lambda: "EXTRA DOUGH BALL" in fakes["Pizza"].text(), what="the custom line on the Pizza station (unrouted: every station)")
+    wait_until(lambda: "Extra Dough Ball" in fakes["Pizza"].text(), what="the custom line on the Pizza station (unrouted: every station)")
     wait_until(lambda: "2x Pepperoni" in fakes["Pizza"].text(), what="the double on the Pizza station")
     journal = term.get(f"{base}/api/terminal/journal", timeout=5).json()
     rows = [e for e in journal if e["action"] == "custom_line"]

@@ -3,7 +3,6 @@ package receipt
 import (
 	"bytes"
 	"os"
-	"strings"
 	"testing"
 	"time"
 
@@ -91,7 +90,7 @@ func TestHalves_StationGoldens(t *testing.T) {
 			}
 			snap := halfSnap(c.item)
 			got := BuildStation(snap, printer.Ticket{Kind: printer.TicketStation, TargetID: "p-pizza", Station: "Pizza", Mine: snap.Items})
-			head, lines := cmdBoldOn+cmdDoubleSz+"1  "+strings.ToUpper(c.item.Name), "\n"+cmdSizeReset+cmdBaseSz+cmdBoldOff+c.lines
+			head, lines := cmdBoldOn+cmdDoubleSz+"1  "+titleWords(c.item.Name), "\n"+cmdSizeReset+cmdBaseSz+cmdBoldOff+c.lines
 			if !bytes.Contains(got, []byte(head)) || !bytes.Contains(got, []byte(lines)) {
 				t.Errorf("ticket lacks\n%q\n%q\n%q", head, lines, got)
 			}

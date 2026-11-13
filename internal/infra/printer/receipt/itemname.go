@@ -5,6 +5,8 @@ import (
 	"strings"
 	"unicode"
 	"unicode/utf8"
+
+	"quiccpos/agent/internal/domain/order"
 )
 
 // The item's name on the customer slips (the owner, agent 2.5.2): the size
@@ -23,6 +25,13 @@ var (
 )
 
 func slipItemName(size, name string) string {
+	size, name = inchParts(size, name)
+	return titleWords(strings.Join(nonEmpty(size, name), " "))
+}
+
+// inchParts is the size (the vendor's placeholder dropped) and the name with
+// an inch size marked: 8 Sub -> 8" Sub, a 12 Medium pizza -> 12" Medium.
+func inchParts(size, name string) (string, string) {
 	size, name = strings.TrimSpace(displaySize(size)), strings.TrimSpace(name)
 	if f := strings.Fields(size); len(f) > 0 && allDigits(f[0]) {
 		next := ""
@@ -37,7 +46,30 @@ func slipItemName(size, name string) string {
 	} else if g := strings.Fields(name); size == "" && len(g) > 1 && allDigits(g[0]) && !isUnit(g[1]) && inchKinds.MatchString(name) {
 		name = g[0] + `"` + strings.TrimPrefix(name, g[0])
 	}
-	return titleWords(strings.Join(nonEmpty(size, name), " "))
+	return size, name
+}
+
+// kitchenName is a station ticket's item name (the owner, 2.5.2): Title Case
+// with the inch mark; a store order keeps its size in brackets on the name
+// line ("Pepperoni Pizza (Large)", held together when it wraps), an online
+// vendor order's size goes to its own "- " line (kitchenSizeLine).
+func kitchenName(it order.LineItem, online bool) string {
+	size, name := inchParts(it.Size, it.Name)
+	name = titleWords(name)
+	if size == "" || online {
+		return name
+	}
+	return name + " (" + strings.ReplaceAll(titleWords(size), " ", "\x1f") + ")" // \x1f: a space wordWrap keeps
+}
+
+// kitchenSizeLine is an online order's size under its name ("6 Piece"; the
+// vendor's spaced slash "6 / Piece" reads as a space), "" for none.
+func kitchenSizeLine(it order.LineItem, online bool) string {
+	if !online {
+		return ""
+	}
+	size, _ := inchParts(it.Size, it.Name)
+	return titleWords(strings.Join(strings.Fields(strings.ReplaceAll(size, " / ", " ")), " "))
 }
 
 func allDigits(s string) bool {
@@ -56,9 +88,24 @@ func isUnit(w string) bool {
 	return unitWords[strings.ToLower(strings.Trim(w, ".,()"))]
 }
 
+// acronyms stay in capitals when a name comes all in capitals.
+var acronyms = map[string]bool{"BBQ": true, "BLT": true, "BLTS": true, "PBJ": true, "NY": true, "XL": true, "XXL": true,
+	"PC": true, "PCS": true, "USA": true, "GF": true, "BCR": true, "CBR": true}
+
 // titleWords capitalises the first letter of each word (a unit such as oz
-// aside), leaving the rest.
+// aside), leaving the rest as the menu spells it; a name that comes all in
+// capitals (a vendor's "WHOLE WINGS COMBO") reads as Title Case, its
+// acronyms kept (BBQ, BLT).
 func titleWords(s string) string {
+	if s != strings.ToLower(s) && s == strings.ToUpper(s) {
+		f := strings.Split(s, " ")
+		for i, w := range f {
+			if !acronyms[strings.Trim(w, "(),.\x1f")] && !strings.Contains(w, "\x1f") {
+				f[i] = strings.ToLower(w)
+			}
+		}
+		s = strings.Join(f, " ")
+	}
 	words := strings.Split(s, " ")
 	for i, w := range words {
 		r, n := utf8.DecodeRuneInString(w)
