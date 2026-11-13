@@ -60,7 +60,12 @@ type Report struct {
 	// Terminals (2.5.3): the paired POS terminals, their app version and the
 	// update state they last reported (contract 2.10w "From home").
 	Terminals any `json:"terminals,omitempty"`
-	Problems       []string       `json:"problems,omitempty"`
+	// StoreRound (2.5.5): the store update round as GET /api/store-update
+	// shows the web page (contract 2.10ad; `me` left out), so main's admin
+	// fleet view and the console's ship watch can follow it. Sent again on
+	// every phase change.
+	StoreRound any      `json:"store_round,omitempty"`
+	Problems   []string `json:"problems,omitempty"`
 }
 
 // Inputs are the live readings the heartbeat can't take itself.
@@ -77,6 +82,8 @@ type Inputs struct {
 	Tablets func(ctx context.Context) any
 	// Terminals: the paired terminals with their update state (2.5.3).
 	Terminals func(ctx context.Context) any
+	// StoreRound: the store update round's view (2.5.5; nil = none).
+	StoreRound func() any
 }
 
 type Heartbeat struct {
@@ -217,6 +224,9 @@ func (h *Heartbeat) collect(ctx context.Context) Report {
 	}
 	if h.in.Terminals != nil {
 		r.Terminals = h.in.Terminals(ctx)
+	}
+	if h.in.StoreRound != nil {
+		r.StoreRound = h.in.StoreRound()
 	}
 	if b, err := os.ReadFile(h.HealthFile); err == nil {
 		var sys map[string]any

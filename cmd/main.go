@@ -710,6 +710,13 @@ func main() {
 			}
 			return nil
 		},
+		// The store round (2.5.5) for main's fleet view + the console's ship watch.
+		StoreRound: func() any {
+			if sr := storeRound.Load(); sr != nil {
+				return sr.View(nil)
+			}
+			return nil
+		},
 		DeviceID: func(rc context.Context) string {
 			li, _ := settingsRepo.GetLinkInfo(rc)
 			return li.DeviceID
@@ -998,7 +1005,10 @@ func main() {
 		},
 		PiSupported: updater.Supported,
 		PiResult:    updater.ResultOf,
-		Publish:     broker.Publish,
+		Publish: func(event string, v any) {
+			broker.Publish(event, v)
+			heartbeat.Wake() // main (and a ship watch) sees each phase change at once
+		},
 		Notify: func(rc context.Context, msg string) {
 			if err := notifier.Send(context.WithoutCancel(rc), msg, "siren"); err != nil {
 				logger.Warn().Err(err).Msg("store update notification failed")
