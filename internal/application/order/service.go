@@ -94,6 +94,8 @@ type Service struct {
 	upd deliveryUpdates
 	// dev: the developer-mode event ring (SetDevLog; nil = off).
 	dev atomic.Pointer[devlog.Ring]
+	// onDrivers runs after every roster change (OnDriversChanged).
+	onDrivers atomic.Pointer[func()]
 	// onBatchClosed runs after a Close batch (OnBatchClosed).
 	onBatchClosed atomic.Pointer[func(ctx context.Context)]
 	// onClosed runs right after a successful Close batch, in the background

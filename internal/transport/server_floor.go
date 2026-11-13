@@ -56,6 +56,10 @@ func (s *Server) floorErr(w http.ResponseWriter, r *http.Request, err error) {
 		s.writeJSON(w, http.StatusConflict, map[string]any{"error": err.Error(), "code": "not_ready", "order_ids": nr.IDs})
 	case errors.Is(err, orderApp.ErrBadAction):
 		s.writeJSON(w, http.StatusBadRequest, errCodeMap("bad_action", "bad_action"))
+	case errors.Is(err, order.ErrStaffDriverName):
+		s.writeJSON(w, http.StatusConflict, errCodeMap(err.Error(), "name_in_staff"))
+	case errors.Is(err, order.ErrStaffDriverRemove):
+		s.writeJSON(w, http.StatusConflict, errCodeMap(err.Error(), "staff_driver"))
 	case errors.Is(err, order.ErrDriverNotOut):
 		s.writeJSON(w, http.StatusConflict, errCodeMap(err.Error(), "driver_not_out"))
 	case errors.Is(err, order.ErrNotOutOrDelivered):
@@ -364,9 +368,13 @@ func (s *Server) handleCreateDriver(w http.ResponseWriter, r *http.Request) {
 		s.floorErr(w, r, err)
 		return
 	}
-	d, err := s.service.CreateDriver(r.Context(), req.Name)
+	d, existed, err := s.service.AddDriver(r.Context(), req.Name)
 	if err != nil {
 		s.floorErr(w, r, err)
+		return
+	}
+	if existed { // a Store › Staff driver of that name: him, untouched (§2.1f)
+		s.writeJSON(w, http.StatusOK, d)
 		return
 	}
 	if req.PushoverDevice != "" {

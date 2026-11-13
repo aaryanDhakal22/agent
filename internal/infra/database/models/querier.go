@@ -57,6 +57,8 @@ type Querier interface {
 	// Paired devices (counter tablets) -------------------------------------------
 	CreatePairedDevice(ctx context.Context, arg CreatePairedDeviceParams) error
 	DeactivateDriver(ctx context.Context, id string) (int64, error)
+	// A staff driver switched off in main leaves the roster once he is off.
+	DeactivateOffDriver(ctx context.Context, id string) (int64, error)
 	DeleteAllBatches(ctx context.Context) error
 	DeleteAllCustomerAddresses(ctx context.Context) error
 	DeleteAllCustomers(ctx context.Context) error
@@ -142,6 +144,8 @@ type Querier interface {
 	GetPrintRouting(ctx context.Context) (string, error)
 	GetReceiptPrefs(ctx context.Context) (string, error)
 	GetSessionSecret(ctx context.Context) (string, error)
+	// The staff member a Pi driver is (main's Store > Staff, contract 2.1f).
+	GetStaffOfDriver(ctx context.Context, driverID string) (string, error)
 	GetStoreAPIKey(ctx context.Context) (string, error)
 	// Store config (starter pack from main/'s SSE handshake) --------------------
 	GetStoreConfig(ctx context.Context) (GetStoreConfigRow, error)
@@ -316,6 +320,8 @@ type Querier interface {
 	// ring_at passed: it rings again like a new order. last_alert_at starts the
 	// 2-minute escalation from now, not from the first arrival.
 	RaiseScheduled(ctx context.Context, arg RaiseScheduledParams) (int64, error)
+	// A staff driver switched back on in main: on the roster again, clocked out.
+	ReactivateDriver(ctx context.Context, id string) (int64, error)
 	// 2.4.1: an undelivered order of a recalled run goes back to its driver's
 	// pool, ready, keeping its stop number (run_seq is rewritten on the next run).
 	RecallOrder(ctx context.Context, arg RecallOrderParams) (int64, error)

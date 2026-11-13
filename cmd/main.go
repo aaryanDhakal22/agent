@@ -506,8 +506,13 @@ func main() {
 	})
 	termSvc := terminalApp.NewService(termStore, orderRepo, orderService, broker, logger)
 	termSvc.SetFloor(orderService, orderRepo) // the driver view (§2.10b)
-	termSvc.SetPager(notifier)                // an unbalanced Z, PIN lockouts (hardening M-9 / X-2)
-	termSvc.SetPinRepo(ctx, orderRepo)        // the PIN throttle survives a restart (X-2)
+	// The roster = Store › Staff drivers (§2.1f): a pass at start, on every
+	// terminal config and after every roster change (switched off in main:
+	// off the roster once he clocks out).
+	safego.Go("terminal.driver_sync", func() { termSvc.RunDriverSync(ctx) })
+	orderService.OnDriversChanged(termSvc.KickDriverSync)
+	termSvc.SetPager(notifier)         // an unbalanced Z, PIN lockouts (hardening M-9 / X-2)
+	termSvc.SetPinRepo(ctx, orderRepo) // the PIN throttle survives a restart (X-2)
 	// Close batch closes the drawers and queues the Z report (§2.10k-l):
 	// built right after, and at start for one a crash left pending.
 	termSvc.SetZDrivers(orderService.DriverReports)

@@ -555,6 +555,19 @@ func (q *Queries) DeactivateDriver(ctx context.Context, id string) (int64, error
 	return result.RowsAffected()
 }
 
+const deactivateOffDriver = `-- name: DeactivateOffDriver :execrows
+UPDATE drivers SET active = false WHERE id = ? AND active AND status = 'off'
+`
+
+// A staff driver switched off in main leaves the roster once he is off.
+func (q *Queries) DeactivateOffDriver(ctx context.Context, id string) (int64, error) {
+	result, err := q.db.ExecContext(ctx, deactivateOffDriver, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const deleteAllBatches = `-- name: DeleteAllBatches :exec
 DELETE FROM batches
 `
@@ -1803,6 +1816,18 @@ func (q *Queries) GetSessionSecret(ctx context.Context) (string, error) {
 	var session_secret string
 	err := row.Scan(&session_secret)
 	return session_secret, err
+}
+
+const getStaffOfDriver = `-- name: GetStaffOfDriver :one
+SELECT staff_id FROM terminal_driver_links WHERE driver_id = ?
+`
+
+// The staff member a Pi driver is (main's Store > Staff, contract 2.1f).
+func (q *Queries) GetStaffOfDriver(ctx context.Context, driverID string) (string, error) {
+	row := q.db.QueryRowContext(ctx, getStaffOfDriver, driverID)
+	var staff_id string
+	err := row.Scan(&staff_id)
+	return staff_id, err
 }
 
 const getStoreAPIKey = `-- name: GetStoreAPIKey :one
@@ -5728,6 +5753,19 @@ type RaiseScheduledParams struct {
 // 2-minute escalation from now, not from the first arrival.
 func (q *Queries) RaiseScheduled(ctx context.Context, arg RaiseScheduledParams) (int64, error) {
 	result, err := q.db.ExecContext(ctx, raiseScheduled, arg.LastAlertAt, arg.ID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const reactivateDriver = `-- name: ReactivateDriver :execrows
+UPDATE drivers SET active = true, status = 'off' WHERE id = ? AND NOT active
+`
+
+// A staff driver switched back on in main: on the roster again, clocked out.
+func (q *Queries) ReactivateDriver(ctx context.Context, id string) (int64, error) {
+	result, err := q.db.ExecContext(ctx, reactivateDriver, id)
 	if err != nil {
 		return 0, err
 	}

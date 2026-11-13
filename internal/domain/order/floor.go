@@ -98,6 +98,12 @@ type Driver struct {
 	// RunOrderIDs (2.2.1): a driver who is out — the orders of the run, in
 	// stop order (first stop first). Empty otherwise.
 	RunOrderIDs []string `json:"run_order_ids,omitempty"`
+	// StaffID (2.5.5, contract §2.1f): the staff member in main's Store ›
+	// Staff (role driver) this driver is; "" = a Pi-only driver (made on
+	// the Pi, not in Staff: Quibase tags him "Not in Staff"). InStaff is
+	// StaffID != "" (false = Pi-only; absent from an older Pi).
+	StaffID string `json:"staff_id,omitempty"`
+	InStaff bool   `json:"in_staff"`
 }
 
 // Shift is one clock-in → clock-out period of a driver — a record for reports
@@ -275,6 +281,8 @@ type RosterDriver struct {
 	Name     string `json:"name"`
 	Position int64  `json:"position"`
 	Status   string `json:"status"`
+	// StaffID (2.5.5): the Store › Staff driver he is ("" = Pi-only).
+	StaffID string `json:"staff_id,omitempty"`
 }
 
 // DriverShiftEvent is the payload of a driver.shift floor event (sent on clock
@@ -313,6 +321,11 @@ var (
 	// ErrDriverNotOut: recall needs a driver out on a run (2.4.1).
 	ErrDriverNotOut = fmt.Errorf("driver is not out on a run")
 	ErrNoOrders     = fmt.Errorf("no orders given")
+	// ErrStaffDriverName / ErrStaffDriverRemove (2.5.5, §2.1f): a driver who
+	// is a Store › Staff driver takes his name from main and leaves the
+	// roster when main switches him off; the Pi never renames or removes him.
+	ErrStaffDriverName   = fmt.Errorf("this driver's name comes from Store › Staff on the Quicc website: change it there")
+	ErrStaffDriverRemove = fmt.Errorf("this driver is in Store › Staff on the Quicc website: switch him off there")
 )
 
 // FloorSettings are the floor counters shown to staff.
@@ -594,6 +607,12 @@ type FloorRepository interface {
 	SetDriverPushoverDevice(ctx context.Context, id, device string) error
 	// RemoveDriver also returns the orders its pool held (back to unassigned).
 	RemoveDriver(ctx context.Context, id string) ([]StoredOrder, error)
+	// DriverStaffID (2.5.5, §2.1f): the Store › Staff id a driver is ("" = Pi-only).
+	DriverStaffID(ctx context.Context, id string) (string, error)
+	// ReactivateDriver / RetireOffDriver: a staff driver switched on / off in
+	// main (retire only while he is off); changed = the roster moved.
+	ReactivateDriver(ctx context.Context, id string) (bool, error)
+	RetireOffDriver(ctx context.Context, id string) (bool, error)
 	ReorderDrivers(ctx context.Context, ids []string) error
 	// ClockIn puts an off driver into the queue (back) and opens a shift;
 	// ClockOut takes an available driver out of the queue and closes it

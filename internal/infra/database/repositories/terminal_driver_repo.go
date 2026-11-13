@@ -52,7 +52,10 @@ func (r *OrderRepository) LinkTerminalDriver(ctx context.Context, staffID, drive
 		if err := q.DeleteTerminalDriverLinkOfDriver(ctx, models.DeleteTerminalDriverLinkOfDriverParams{DriverID: driverID, StaffID: staffID}); err != nil {
 			return err
 		}
-		return q.UpsertTerminalDriverLink(ctx, models.UpsertTerminalDriverLinkParams{StaffID: staffID, DriverID: driverID, LinkedAt: fmtTS(now)})
+		if err := q.UpsertTerminalDriverLink(ctx, models.UpsertTerminalDriverLinkParams{StaffID: staffID, DriverID: driverID, LinkedAt: fmtTS(now)}); err != nil {
+			return err
+		}
+		return recordRoster(ctx, q, now) // main's mirror learns his staff_id
 	})
 }
 

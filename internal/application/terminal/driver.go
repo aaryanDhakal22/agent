@@ -42,6 +42,11 @@ const MaxClaim = 20
 type Floor interface {
 	ListDrivers(ctx context.Context) ([]order.Driver, error)
 	CreateDriver(ctx context.Context, name string) (*order.Driver, error)
+	// The staff sync (§2.1f): a staff driver's name from main, switched on /
+	// off in main.
+	SyncDriverName(ctx context.Context, id, name string) error
+	ReactivateDriver(ctx context.Context, id string) (bool, error)
+	RetireOffDriver(ctx context.Context, id string) (bool, error)
 	OpenDeliveries(ctx context.Context) ([]order.StoredOrder, error)
 	UnassignedDelivered(ctx context.Context) ([]order.StoredOrder, error)
 	ListByBatch(ctx context.Context, batchID int64, offset, limit int) ([]order.StoredOrder, error)
@@ -65,11 +70,127 @@ type driverView struct {
 	floor  Floor
 	links  DriverLinks
 	linkMu sync.Mutex
+	// kick wakes RunDriverSync (a new terminal config is in use).
+	kick chan struct{}
 }
 
 // SetFloor wires the driver view (cmd/main.go): the floor and the link store.
 func (s *Service) SetFloor(f Floor, links DriverLinks) {
 	s.drv.floor, s.drv.links = f, links
+}
+
+// DriverSyncEvery is how often the staff sync runs besides every new
+// terminal config (a staff driver switched off in main while clocked in
+// leaves the roster at the next pass after he is off).
+const DriverSyncEvery = time.Minute
+
+// KickDriverSync asks RunDriverSync for a pass now (never blocks).
+func (s *Service) KickDriverSync() { s.kickDriverSync() }
+
+func (s *Service) kickDriverSync() {
+	select {
+	case s.drv.kick <- struct{}{}:
+	default:
+	}
+}
+
+// RunDriverSync keeps the roster = main's Store › Staff drivers (§2.1f): at
+// start, on every new terminal config and every DriverSyncEvery, until ctx ends.
+func (s *Service) RunDriverSync(ctx context.Context) {
+	t := time.NewTicker(DriverSyncEvery)
+	defer t.Stop()
+	for {
+		if _, err := s.SyncStaffDrivers(ctx); err != nil && ctx.Err() == nil {
+			s.logger.Warn().Ctx(ctx).Err(err).Msg("staff driver sync failed (next pass retries)")
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-s.drv.kick:
+		case <-t.C:
+		}
+	}
+}
+
+// SyncResult is what one staff sync changed.
+type SyncResult struct {
+	Linked      []string `json:"linked"`      // staff ids linked to an existing Pi driver by name
+	Created     []string `json:"created"`     // staff ids that got a new Pi driver
+	Renamed     []string `json:"renamed"`     // driver ids renamed to their name in main
+	Reactivated []string `json:"reactivated"` // driver ids back on the roster
+	Retired     []string `json:"retired"`     // driver ids off the roster (switched off in main)
+}
+
+// SyncStaffDrivers makes the roster follow main's Store › Staff (contract
+// §2.1f): every active staff member with the role driver is a roster driver
+// (linked by staff id; at the first sync an existing Pi driver of his name
+// is linked, so its id, history and Pushover device stay; else a new one,
+// off), named as main names him; a linked driver whose staff member is no
+// longer an active driver leaves the roster once he is off (the link stays:
+// switched on again = the same driver). Pi-only drivers are left alone.
+func (s *Service) SyncStaffDrivers(ctx context.Context) (*SyncResult, error) {
+	f, links := s.drv.floor, s.drv.links
+	if f == nil || links == nil {
+		return nil, nil
+	}
+	cfg, _ := s.store.Config()
+	if cfg == nil {
+		return nil, nil // no terminal config yet: nothing to follow
+	}
+	res := &SyncResult{}
+	want := map[string]terminal.Staff{}
+	var queue []terminal.Staff
+	for _, st := range cfg.Staff {
+		if st.Role == terminal.RoleDriver && st.IsActive() && st.ID != "" {
+			want[st.ID] = st
+			queue = append(queue, st)
+		}
+	}
+	all, err := links.TerminalDriverLinks(ctx)
+	if err != nil {
+		return nil, err
+	}
+	// Linked ones first (so a name match never takes a driver someone has),
+	// then the rest in config order.
+	sort.SliceStable(queue, func(i, j int) bool { return all[queue[i].ID] != "" && all[queue[j].ID] == "" })
+	for _, st := range queue {
+		before := all[st.ID]
+		d, created, err := s.ensureDriverFor(ctx, Actor{}, st, res)
+		if err != nil {
+			return res, err
+		}
+		if before == "" {
+			if created {
+				res.Created = append(res.Created, st.ID)
+			} else {
+				res.Linked = append(res.Linked, st.ID)
+			}
+		}
+		if want := rosterName(st); d.Name != want {
+			if err := f.SyncDriverName(ctx, d.ID, want); err != nil {
+				return res, err
+			}
+			res.Renamed = append(res.Renamed, d.ID)
+		}
+	}
+	for staffID, driverID := range all {
+		if _, ok := want[staffID]; ok {
+			continue
+		}
+		changed, err := f.RetireOffDriver(ctx, driverID)
+		if err != nil {
+			return res, err
+		}
+		if changed {
+			res.Retired = append(res.Retired, driverID)
+			s.logger.Info().Ctx(ctx).Str("staff_id", staffID).Str("driver_id", driverID).Msg("Staff driver switched off in main: off the roster")
+		}
+	}
+	if len(res.Linked)+len(res.Created)+len(res.Renamed)+len(res.Reactivated)+len(res.Retired) > 0 {
+		s.logger.Info().Ctx(ctx).Int("linked", len(res.Linked)).Int("created", len(res.Created)).Int("renamed", len(res.Renamed)).
+			Int("reactivated", len(res.Reactivated)).Int("retired", len(res.Retired)).Msg("Roster follows Store › Staff")
+	}
+	return res, nil
 }
 
 var errNoFloor = errors.New("the driver view isn't running")
@@ -103,33 +224,51 @@ func rosterName(st terminal.Staff) string {
 	return n
 }
 
-// ensureDriver is the staff member's Pi driver: the linked one, else an
-// unlinked active driver with the same name ("First Last", "First L.", or
-// the first name when only one driver has it), else a new one. Linked by
-// staff id; journaled + announced when a link is made.
+// ensureDriver is the staff member's Pi driver (ensureDriverFor).
 func (s *Service) ensureDriver(ctx context.Context, a Actor, st terminal.Staff) (*order.Driver, error) {
+	d, _, err := s.ensureDriverFor(ctx, a, st, nil)
+	return d, err
+}
+
+// ensureDriverFor is the staff member's Pi driver: the linked one (back on
+// the roster if it had left it), else an unlinked active driver with the
+// same name ("First Last", "First L.", or the first name when only one
+// driver has it; a first-name-only staff member and roster driver match on
+// that name), else a new one (off). Linked by staff id; journaled +
+// announced when a link is made. res (the sync's) collects reactivations.
+func (s *Service) ensureDriverFor(ctx context.Context, a Actor, st terminal.Staff, res *SyncResult) (*order.Driver, bool, error) {
 	f, links := s.drv.floor, s.drv.links
 	if f == nil || links == nil {
-		return nil, errNoFloor
+		return nil, false, errNoFloor
 	}
 	s.drv.linkMu.Lock()
 	defer s.drv.linkMu.Unlock()
-	drivers, err := f.ListDrivers(ctx)
-	if err != nil {
-		return nil, err
-	}
 	linked, err := links.TerminalDriverLink(ctx, st.ID)
 	if err != nil {
-		return nil, err
+		return nil, false, err
+	}
+	if linked != "" {
+		// Switched off before (or removed on an older Pi): back on the roster.
+		back, err := f.ReactivateDriver(ctx, linked)
+		if err != nil {
+			return nil, false, err
+		}
+		if back && res != nil {
+			res.Reactivated = append(res.Reactivated, linked)
+		}
+	}
+	drivers, err := f.ListDrivers(ctx)
+	if err != nil {
+		return nil, false, err
 	}
 	for i := range drivers {
 		if drivers[i].ID == linked {
-			return &drivers[i], nil
+			return &drivers[i], false, nil
 		}
 	}
 	all, err := links.TerminalDriverLinks(ctx)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	taken := map[string]bool{}
 	for staff, drv := range all {
@@ -161,18 +300,19 @@ func (s *Service) ensureDriver(ctx context.Context, a Actor, st terminal.Staff) 
 	if pick == nil {
 		d, err := f.CreateDriver(ctx, rosterName(st))
 		if err != nil {
-			return nil, err
+			return nil, false, err
 		}
 		pick, created = d, true
 	}
 	if err := links.LinkTerminalDriver(ctx, st.ID, pick.ID); err != nil {
-		return nil, err
+		return nil, false, err
 	}
+	pick.StaffID, pick.InStaff = st.ID, true
 	s.journal(ctx, terminal.Entry{StaffID: st.ID, DeviceID: a.DeviceID, Action: terminal.ActionDriverLinked,
 		Detail: detail(map[string]any{"driver_id": pick.ID, "driver_name": pick.Name, "created": created})})
 	s.publish(EventDriverLinked, map[string]any{"staff_id": st.ID, "driver_id": pick.ID, "driver_name": pick.Name, "created": created})
 	s.logger.Info().Ctx(ctx).Str("staff_id", st.ID).Str("driver_id", pick.ID).Bool("created", created).Msg("Driver staff linked to the roster")
-	return pick, nil
+	return pick, created, nil
 }
 
 // driverOf is the driver logged in on the terminal and his Pi driver

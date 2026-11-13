@@ -115,6 +115,7 @@ type Service struct {
 func NewService(store *Store, repo Repo, orders Orders, pub Publisher, logger zerolog.Logger) *Service {
 	s := &Service{store: store, repo: repo, orders: orders, pub: pub, logger: logger.With().Str("module", "terminal").Logger(),
 		staff: newStaffBook(), now: time.Now, cm: observability.Counter()}
+	s.drv.kick = make(chan struct{}, 1)
 	store.OnConfig(s.configChanged)
 	// Online orders are placed with a terminal SEND's default prep (§2.10aa).
 	if ps, ok := orders.(interface {
@@ -157,6 +158,7 @@ const EventSessionEnded = "terminal.session.ended"
 // announced and journaled (session.ended) right away.
 func (s *Service) configChanged(cfg *terminal.Config) {
 	ended := s.staff.configChanged(cfg)
+	s.kickDriverSync() // the roster follows Store › Staff (§2.1f)
 	ctx := context.Background()
 	for _, e := range ended {
 		s.publish(EventSessionEnded, e)

@@ -1068,6 +1068,18 @@ DELETE FROM terminal_driver_links WHERE driver_id = sqlc.arg(driver_id) AND staf
 INSERT INTO terminal_driver_links (staff_id, driver_id, linked_at) VALUES (?, ?, ?)
 ON CONFLICT (staff_id) DO UPDATE SET driver_id = excluded.driver_id, linked_at = excluded.linked_at;
 
+-- name: GetStaffOfDriver :one
+-- The staff member a Pi driver is (main's Store > Staff, contract 2.1f).
+SELECT staff_id FROM terminal_driver_links WHERE driver_id = ?;
+
+-- name: ReactivateDriver :execrows
+-- A staff driver switched back on in main: on the roster again, clocked out.
+UPDATE drivers SET active = true, status = 'off' WHERE id = ? AND NOT active;
+
+-- name: DeactivateOffDriver :execrows
+-- A staff driver switched off in main leaves the roster once he is off.
+UPDATE drivers SET active = false WHERE id = ? AND active AND status = 'off';
+
 -- name: GetAutoCloseLast :one
 SELECT auto_close_last FROM settings WHERE id = 1;
 
