@@ -68,14 +68,15 @@ func TestSlipChoicesAndBoldWords(t *testing.T) {
 					t.Errorf("%s: %q printed = %v", name, x, strings.Contains(txt, x))
 				}
 			}
-			// bold: fries (priced) and salad (stamped $0) when they print, never Pepperoni
-			for _, x := range []string{"Side of Fries", "House Salad", "Pepperoni"} {
-				if !containsAny(c.shown, x) {
+			// bold: the item's own line (2.5.2), fries (priced) and salad (stamped $0) when they print, never
+			// Pepperoni or the note
+			for _, x := range []string{"Large Cheese Pizza", "Side of Fries", "House Salad", "Pepperoni", "Note: cut in squares"} {
+				if !containsAny(c.shown, x) && x != "Large Cheese Pizza" && x != "Note: cut in squares" {
 					continue
 				}
 				i := strings.Index(string(b), x)
 				bold := strings.LastIndex(string(b[:i]), cmdBoldOn) > strings.LastIndex(string(b[:i]), cmdBoldOff)
-				if want := x != "Pepperoni"; bold != want {
+				if want := x != "Pepperoni" && x != "Note: cut in squares"; bold != want {
 					t.Errorf("%s: %q bold = %v, want %v", name, x, bold, want)
 				}
 			}

@@ -340,6 +340,7 @@ func deliveryItems(p *escw, snap order.Snapshot, voided bool) {
 		if !free {
 			price = moneyC(int64(qty) * it.UnitPrice)
 		}
+		p.bold(true) // the item's own lines bold (the owner, 2.5.2); its choices follow the bold words
 		for i, l := range dwrap(dclean(name), nameW, "") {
 			head := "    " + l
 			if i == 0 {
@@ -351,6 +352,7 @@ func deliveryItems(p *escw, snap order.Snapshot, voided bool) {
 				p.line(head)
 			}
 		}
+		p.bold(false)
 		for _, m := range deliveryModLines(mods) {
 			amt := ""
 			if m.unit != 0 {
