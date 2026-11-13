@@ -219,6 +219,9 @@ func (s *Server) floor(h http.HandlerFunc) http.HandlerFunc {
 				s.writeJSON(w, http.StatusForbidden, errCodeMap("a terminal key opens /api/terminal/*, /api/events and GET /api/printers only", "terminal_only"))
 				return
 			}
+			if !s.appGate(w, r, d) { // below the Pi's compatibility floor (§2.10ad)
+				return
+			}
 			h(w, r.WithContext(context.WithValue(r.Context(), deviceCtxKey{}, d)))
 			return
 		}
@@ -249,6 +252,9 @@ func terminalMayUse(r *http.Request) bool {
 	case r.Method == http.MethodGet && (p == "/api/events" || p == "/api/floor" || p == "/api/printers"):
 		return true // GET /api/printers: the terminal's printer alert (read only)
 	case r.Method == http.MethodPatch && p == "/api/device/self", r.Method == http.MethodPost && p == "/api/device/unpair":
+		return true
+	// The store update round (contract §2.10ad).
+	case p == "/api/store-update" && r.Method == http.MethodGet, p == "/api/store-update/ready" && r.Method == http.MethodPost:
 		return true
 	// The setup wizard (contract 2.10y): Pi health, network printers, test
 	// slips with no failover, its setup report.
@@ -283,6 +289,9 @@ func (s *Server) terminal(h http.HandlerFunc) http.HandlerFunc {
 		}
 		switch {
 		case ok && d.Kind == device.KindTerminal:
+			if !s.appGate(w, r, d) { // below the Pi's compatibility floor (§2.10ad)
+				return
+			}
 			r = r.WithContext(context.WithValue(r.Context(), deviceCtxKey{}, d))
 			// A key alone doesn't read the store's data: a staff member is
 			// logged in on the terminal (server_security.go).

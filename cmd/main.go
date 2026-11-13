@@ -45,6 +45,7 @@ import (
 	"quiccpos/agent/internal/application/revoke"
 	ssecontroller "quiccpos/agent/internal/application/sseclient"
 	"quiccpos/agent/internal/application/statesync"
+	"quiccpos/agent/internal/application/storeupdate"
 	terminalApp "quiccpos/agent/internal/application/terminal"
 	"quiccpos/agent/internal/application/update"
 	"quiccpos/agent/internal/application/watchdog"
@@ -610,6 +611,10 @@ func main() {
 	}, orderRepo.CountOpenBatchOrders, settingsRepo, registry.Report, notifier.Send,
 		update.NewLatest(update.ManifestURL(cfg.UtilityURL, manifestEnv), exe), logger)
 	updater.Load(ctx)
+	// The store update round (contract 2.10ad), built below once the HTTP
+	// server (the devices) and the APK caches exist: main's agent.update
+	// starts a round (the Pi + its tablets + terminals together).
+	var storeRound atomic.Pointer[storeupdate.Coordinator]
 	updateCmd := func(action string) agentrpc.CommandHandler {
 		return func(rc context.Context, payload json.RawMessage) (any, error) {
 			var p struct {
@@ -618,6 +623,9 @@ func main() {
 				RequestedBy string `json:"requested_by"`
 			}
 			_ = json.Unmarshal(payload, &p)
+			if sr := storeRound.Load(); action == update.ActionUpdate && sr != nil {
+				return sr.Nudge(rc, p.RequestedBy, p.ID), nil
+			}
 			// Replies at once: the root updater does the work, the status
 			// loop reports its progress (agent.update.status).
 			return updater.Request(rc, action, p.Force, p.RequestedBy, p.ID), nil
@@ -637,6 +645,12 @@ func main() {
 			if rel := termAppUpdater.Current(); rel != nil {
 				termSvc.AnnounceApp(terminalApp.EventAppInstall, *rel, "batch_closed")
 			}
+		}
+		if sr := storeRound.Load(); sr != nil {
+			// Rounds update the Pi at any quiet moment (2.10ad); a close is
+			// one: look now.
+			sr.Wake()
+			return
 		}
 		rep, reason := updater.AfterClose(rc)
 		switch {
@@ -889,7 +903,12 @@ func main() {
 	// "Update now" from main's Store › Devices (contract 2.10w "From home", 2.5.3): the newest
 	// terminal release cached first (a download takes a while: off the SSE reader), then announced.
 	registry.RegisterAsync(agentrpc.MsgTerminalsUpdateNow, httpServer.TerminalsUpdateNow(termAppUpdater.Check, termAppUpdater.Current,
-		func(rel appupdate.Release) { termSvc.AnnounceApp(terminalApp.EventAppInstall, rel, "update_now") }),
+		func(rel appupdate.Release) {
+			termSvc.AnnounceApp(terminalApp.EventAppInstall, rel, "update_now") // terminals before the round protocol
+			if sr := storeRound.Load(); sr != nil {
+				sr.Nudge(context.WithoutCancel(ctx), "update_now", "") // 1.0.5+: the whole store, one round
+			}
+		}),
 		agentrpc.AsyncOptions{Max: 1, Wait: 2 * time.Second, MaxWaiting: 2})
 	ccEvents := terminalApp.NewEventForwarder(func() (<-chan terminalApp.RelayEvent, func()) { return tapEvents(broker) }, registry.Report, logger)
 	registry.Register(agentrpc.MsgTerminalEventsWant, ccEvents.HandleWant)
@@ -912,6 +931,77 @@ func main() {
 	})
 	httpServer.SetMap(mapFile)
 	httpServer.SetUpdates(updater, printerWatcher)
+	round := storeupdate.New(storeupdate.Deps{
+		Path:    storeupdate.StatePath(cfg.AgentDBPath),
+		Version: version,
+		OwnSHA:  updater.OwnSHA,
+		Logger:  logger.With().Str("module", "storeupdate").Logger(),
+		Devices: httpServer.StoreUpdateDevices,
+		Manifest: func(rc context.Context, refresh bool) (storeupdate.Manifest, bool) {
+			m, ok := updater.Manifest(rc, refresh)
+			if !ok {
+				return storeupdate.Manifest{}, false
+			}
+			return storeupdate.Manifest{AgentVersion: m.AgentVersion(), AgentSHA: m.AgentSHA(),
+				MinQuibase: m.Header["min_quibase"], MinTerminal: m.Header["min_terminal"],
+				Quibase: m.Header["quibase_version"], Terminal: m.Header["terminal_version"]}, true
+		},
+		Cached: func(app string) *storeupdate.Release {
+			u := appUpdater
+			if app == storeupdate.AppTerminal {
+				u = termAppUpdater
+			}
+			if rel := u.Current(); rel != nil {
+				return &storeupdate.Release{VersionCode: rel.VersionCode, VersionName: rel.VersionName}
+			}
+			return nil
+		},
+		CheckApps: func(rc context.Context) {
+			cctx, cancel := context.WithTimeout(rc, 2*time.Minute)
+			defer cancel()
+			_ = appUpdater.Check(cctx)
+			_ = termAppUpdater.Check(cctx)
+		},
+		AutoOn: func(rc context.Context) bool { on, err := updater.AutoUpdate(rc); return err != nil || on },
+		Busy: func(rc context.Context) string {
+			if arrived, err := orderService.ListArrived(rc); err != nil || len(arrived) > 0 {
+				return "an order is waiting to be accepted"
+			}
+			if phonePay.OpenCount(rc) > 0 {
+				return "a phone charge is open"
+			}
+			if dispatcher.Printing() {
+				return "printing"
+			}
+			if httpServer.WritesInFlight() > 0 {
+				return "a request is being handled"
+			}
+			if updater.InProgress() {
+				return "a Pi update or rollback is already running"
+			}
+			return ""
+		},
+		PiUpdate: func(rc context.Context, id, by string) (bool, string) {
+			if !updater.Supported() {
+				return false, update.CodeNotSupported
+			}
+			rep := updater.RequestNow(rc, id, by)
+			return rep.Accepted, rep.Code
+		},
+		PiSupported: updater.Supported,
+		PiResult:    updater.ResultOf,
+		Publish:     broker.Publish,
+		Notify: func(rc context.Context, msg string) {
+			if err := notifier.Send(context.WithoutCancel(rc), msg, "siren"); err != nil {
+				logger.Warn().Err(err).Msg("store update notification failed")
+			}
+		},
+		Event: func(level, text string) { devRing.Add(level, devlog.KindUpdate, text) },
+	})
+	round.Load()
+	httpServer.SetStoreUpdate(round)
+	storeRound.Store(round)
+	safego.Go("storeupdate", func() { round.Run(ctx) })
 	httpServer.SetDiag(transport.DiagDeps{
 		Dispatcher:  dispatcher,
 		Health:      heartbeat,

@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"quiccpos/agent/internal/application/appupdate"
@@ -22,6 +23,7 @@ import (
 	"quiccpos/agent/internal/application/printernet"
 	"quiccpos/agent/internal/application/recovery"
 	"quiccpos/agent/internal/application/sseclient"
+	"quiccpos/agent/internal/application/storeupdate"
 	terminalApp "quiccpos/agent/internal/application/terminal"
 	"quiccpos/agent/internal/application/update"
 	"quiccpos/agent/internal/domain/device"
@@ -50,6 +52,10 @@ const (
 var eventsWriteTimeout = 10 * time.Second
 
 type Server struct {
+	// storeUpdate runs the store update round (contract §2.10ad; nil = none);
+	// writesInFlight counts write requests for its quiet check.
+	storeUpdate    *storeupdate.Coordinator
+	writesInFlight atomic.Int64
 	// problemHooks add GET /api/diag problem codes (AddProblems).
 	problemHooks  []func(ctx context.Context) []string
 	service       *orderApp.Service
@@ -257,7 +263,7 @@ func (s *Server) Stopped() <-chan struct{} { return s.stopped }
 // the mux's route, CM-1), panic recovery (F-1), the body cap and the
 // X-Trace-Id echo. Exposed for tests.
 func (s *Server) Handler(mux http.Handler, opts ...otelhttp.Option) http.Handler {
-	return otelhttp.NewHandler(recoverPanics(s.logger, capBodies(traceIDHeader(mux))), "agent-http",
+	return otelhttp.NewHandler(recoverPanics(s.logger, capBodies(traceIDHeader(s.countWrites(mux)))), "agent-http",
 		append([]otelhttp.Option{otelhttp.WithServerName("quicc-agent")}, opts...)...,
 	)
 }

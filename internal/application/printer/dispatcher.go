@@ -72,7 +72,13 @@ type Dispatcher struct {
 	// is saved and who hears it changed (state sync).
 	routingStore   RoutingStore
 	routingChanged func()
+	// jobs counts the print jobs running now (Printing: the store update
+	// round waits for none, contract §2.10ad).
+	jobs atomic.Int64
 }
+
+// Printing: a job (order tickets or a document) is printing now.
+func (d *Dispatcher) Printing() bool { return d.jobs.Load() > 0 }
 
 // SetDownAfter wires how long a printer must fail without a break before it
 // counts as down (printer_down_after_seconds; call before the first Apply).
@@ -222,6 +228,8 @@ func (d *Dispatcher) Execute(ctx context.Context, snap order.Snapshot) (printer.
 // order with only receipt-only items) returns printer.ErrNoTickets without
 // printing anything or counting a failure.
 func (d *Dispatcher) ExecuteMode(ctx context.Context, snap order.Snapshot, mode printer.Mode) (printer.Outcome, error) {
+	d.jobs.Add(1)
+	defer d.jobs.Add(-1)
 	// Bound the whole job: with the network down every candidate times out,
 	// and staff are waiting on the accept.
 	ctx, cancel := context.WithTimeout(ctx, printBudget)
@@ -431,6 +439,8 @@ func rerouteBy(rule map[string]bool, id string) string {
 // the printer it was meant for when it printed on a fallback ("" otherwise).
 // label identifies the job in logs and spans.
 func (d *Dispatcher) PrintDocument(ctx context.Context, label string, build func(on printer.Paper) []byte) (printer.TicketResult, error) {
+	d.jobs.Add(1)
+	defer d.jobs.Add(-1)
 	ctx, cancel := context.WithTimeout(ctx, printBudget)
 	defer cancel()
 	d.mu.RLock()

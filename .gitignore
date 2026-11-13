@@ -34,6 +34,7 @@ sql/*.db-wal
 sql/*.db-shm
 # Owner-alert state next to each dev DB (2.5.2).
 sql/*.owner-alerts.json*
+sql/*.store-update.json*
 
 # Python.
 __pycache__/

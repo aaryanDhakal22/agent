@@ -6,7 +6,7 @@
   * X-Quibase-Version recorded per tablet: /api/diag tablets, /api/devices;
   * delivery settings: the nearby rule fields, GET /api/deliveries/next-check,
     delivery_radius_m through main (RPC location.radius);
-  * GET/PUT /api/settings/auto-update and the auto-update after Close batch
+  * GET/PUT /api/settings/auto-update and the auto-update store round
     (AGENT_UPDATE_ENABLED + a fake manifest: the test plays the root updater).
 
 The nearby rules themselves need located orders (main's order.geo) and are
@@ -24,7 +24,7 @@ from conftest import STORE_V1, manager_session, provision, wait_until
 from test_floor import arrive, floor, post  # noqa: F401  (floor is a fixture)
 from test_updates import utility  # noqa: F401  (fixture)
 
-QUIBASE = "1.7.0+1761480000"
+QUIBASE = "2.1.0+1761480000"  # at the Pi's floor (2.10ad): older is 426
 
 NEW_ROUTES = {
     ("GET", "/api/deliveries/next-check"): "device",
@@ -159,9 +159,9 @@ def test_tablet_versions(floor) -> None:  # noqa: F811
     finally:
         sse.stop()
     # A newer Quibase is recorded at once.
-    newer = dict(tablet, **{"X-Quibase-Version": "1.7.1+1761490000"})
+    newer = dict(tablet, **{"X-Quibase-Version": "2.1.1+1761490000"})
     requests.get(f"{a.base}/api/floor", headers=newer, timeout=5)
-    assert a.http.get(f"{a.base}/api/devices", timeout=5).json()[0]["app_version"] == "1.7.1+1761490000"
+    assert a.http.get(f"{a.base}/api/devices", timeout=5).json()[0]["app_version"] == "2.1.1+1761490000"
 
 
 def test_delivery_settings_next_check_and_radius(admin, floor) -> None:  # noqa: F811
@@ -213,7 +213,10 @@ def _after_close_runs(a) -> int:
     return log.count("Driver reports printed after close") + log.count("driver reports after close failed")
 
 
-def test_auto_update_after_close(main_store, spawn_agent, tmp_path, utility) -> None:  # noqa: F811
+def test_auto_update_store_round(main_store, spawn_agent, tmp_path, utility) -> None:  # noqa: F811
+    """Since 2.5.4 the auto-update is a store round (contract 2.10ad): any quiet moment, not only after
+    Close batch. With no tablet or terminal paired the round freezes at once and hands the Pi's own
+    update to the root updater (requested_by store-update)."""
     upd = tmp_path / "upd"
     upd.mkdir()
     a = spawn_agent(AGENT_UPDATE_ENABLED="1", AGENT_UPDATE_DIR=str(upd), UTILITY_URL=utility)
@@ -224,20 +227,43 @@ def test_auto_update_after_close(main_store, spawn_agent, tmp_path, utility) -> 
     r = a.http.put(f"{a.base}/api/settings/auto-update", json={"auto_update": False}, timeout=5)
     assert r.status_code == 200 and r.json() == {"auto_update": False}
     assert a.http.put(f"{a.base}/api/settings/auto-update", json={}, timeout=5).status_code == 400
+    st = lambda: a.http.get(f"{a.base}/api/store-update", timeout=5).json()  # noqa: E731
+    wait_until(lambda: a.http.get(f"{a.base}/api/update/status", timeout=5).json()["latest_version"] == "9.9.9",
+               timeout=15, what="manifest check")
 
-    # Off: Close batch updates nothing. The auto-update check runs right after
-    # the background driver-report print, so wait for that line in the log.
+    # Off: a close (a quiet moment the round looks at) starts nothing.
     assert a.http.post(f"{a.base}/api/batch/close", json={}, timeout=15).status_code == 200
     wait_until(lambda: _after_close_runs(a) >= 1, timeout=15, interval=0.1, what="the after-close driver reports")
-    assert not req.exists(), "auto-update ran while off"
+    assert st()["phase"] == "idle" and not req.exists(), "auto-update ran while off"
 
-    # On: right after Close batch the newer manifest (9.9.9) is requested as "auto".
+    # On: the next look (the close's wake, else the round's 30 s tick) starts the round and, the
+    # store being quiet with no device to ask, requests the Pi's update.
     assert a.http.put(f"{a.base}/api/settings/auto-update", json={"auto_update": True}, timeout=5).status_code == 200
     assert a.http.post(f"{a.base}/api/batch/close", json={}, timeout=15).status_code == 200
-    wait_until(req.exists, timeout=20, what="update.request after Close batch")
+    wait_until(req.exists, timeout=45, what="update.request from the store round")
     body = json.loads(req.read_text())
-    assert body["action"] == "update" and body["requested_by"] == "auto" and body["id"]
-    st = a.http.get(f"{a.base}/api/update/status", timeout=5).json()
-    assert st["state"] == "requested" and st["pending"]["requested_by"] == "auto"
+    assert body["action"] == "update" and body["requested_by"] == "store-update" and body["id"].startswith("su-")
+    v = st()
+    assert v["phase"] == "pi_installing" and v["agent"]["to"] == "9.9.9" and v["id"] == body["id"], v
+    assert v.get("me") is None and v["min"]["quibase"] and v["min"]["terminal"]
     ev = a.http.get(f"{a.base}/api/dev/events", timeout=5).json()["events"]
-    assert any("Auto-update after Close batch requested" in e["text"] and e["kind"] == "update" for e in ev), ev
+    assert any("Store update" in e["text"] and e["kind"] == "update" for e in ev), ev
+
+
+def test_store_update_floor_and_routes(floor) -> None:  # noqa: F811
+    """A tablet below the Pi's compatibility floor is refused (426 app_update_required) everywhere but
+    the update routes; GET /api/store-update tells it it is locked (contract 2.10ad)."""
+    a = floor
+    tablet = pair(a, "Old tablet")
+    old = dict(tablet, **{"X-Quibase-Version": "2.0.5+1761000000"})
+    r = requests.get(f"{a.base}/api/floor", headers=old, timeout=5)
+    assert r.status_code == 426 and r.json()["code"] == "app_update_required" and r.json()["min_version"], r.text
+    r = requests.get(f"{a.base}/api/store-update", headers=old, timeout=5)
+    assert r.status_code == 200 and r.json()["me"]["locked"] is True, r.text
+    assert requests.get(f"{a.base}/api/app/latest", headers=old, timeout=5).status_code in (200, 204)
+    # At the floor: open, not locked; a ready answer outside a round is 409.
+    assert requests.get(f"{a.base}/api/floor", headers=tablet, timeout=5).status_code == 200
+    me = requests.get(f"{a.base}/api/store-update", headers=tablet, timeout=5).json()["me"]
+    assert me["locked"] is False and me["kind"] == "tablet"
+    r = requests.post(f"{a.base}/api/store-update/ready", json={"id": "su-none", "ready": True}, headers=tablet, timeout=5)
+    assert r.status_code == 409 and r.json()["code"] == "not_preparing", r.text
