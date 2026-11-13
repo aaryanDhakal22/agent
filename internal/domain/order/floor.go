@@ -428,8 +428,22 @@ func NewDriverReportLine(so StoredOrder) DriverReportLine {
 		l.setSlipMoney(base, l.TipCents)
 		return l
 	}
-	if due := snap.CashDue(); due > 0 {
-		l.Cash, l.CashCents = true, max(due-snap.Money.Tip, 0)
+	due := snap.CashDue()
+	if so.Status.TerminalMoney { // a terminal took money on it: the balance after it (contract 2.10i / 2.10aa)
+		due = max(so.Status.CashDueCents, 0)
+	}
+	// The part of the tip inside the cash due (the driver keeps it from the
+	// cash): all of it on an order that arrived unpaid; on an order edited at
+	// a terminal, at most the cash it arrived with (an order that arrived paid
+	// by card has its tip on the card, 2.5.2: flow bug 3).
+	tipInCash := snap.Money.Tip
+	if ob := snap.OnlineBase(); ob != nil {
+		tipInCash = min(tipInCash, max(ob.Money.Total-ob.PaidCents, 0))
+	}
+	if due > 0 {
+		l.Cash, l.CashCents = true, max(due-tipInCash, 0)
+		// a tip that went on the card is a card tip (his, with the tip tax)
+		l.TipCents = max(snap.Money.Tip-tipInCash, 0)
 		l.setSlipMoney(snap.Money.Total-snap.Money.Tip, snap.Money.Tip) // an online total includes the tip
 		return l
 	}

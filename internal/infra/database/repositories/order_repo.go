@@ -256,6 +256,7 @@ func toStored(row models.Order) (order.StoredOrder, error) {
 		// An online pickup a terminal took money on (contract 2.10i): the
 		// balance left after those payments (the snapshot stays main's).
 		st.CashDueCents, st.TipCents = row.CashDueCents.Int64, row.TipCents.Int64
+		st.TerminalMoney = true
 	}
 	// 00019: finishing.
 	if st.FinishedAt, err = optTS(row.FinishedAt); err != nil {

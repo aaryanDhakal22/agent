@@ -210,7 +210,7 @@ func TestBuildSample(t *testing.T) {
 	if n := strings.Count(got, "CUSTOMER , SAMPLE"); n != 2 {
 		t.Errorf("two receipt copies (SoftTouch's slip), got %d", n)
 	}
-	for _, want := range []string{"Order #: 1234\n", cmdHugeSz + "1234\n", "CUSTOMER, SAMPLE\n", "   - extra ranch please\n", "Also on this order:", "SAMPLE - not a real order", "XXXXXXXXXXXX4242 Card"} {
+	for _, want := range []string{"Order #: 1234\n", cmdHugeSz + "1234\n", "CUSTOMER, SAMPLE\n", "   Note: extra ranch please\n", "Also on this order:", "SAMPLE - not a real order", "XXXXXXXXXXXX4242 Card"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("sample missing %q", want)
 		}

@@ -58,7 +58,7 @@ func TestBuildStation_Content(t *testing.T) {
 		// Printed on a stand-in: the reroute bands, English then Spanish, reverse + double size (2026-11-12).
 		cmdInvertOn + pad("REROUTED FROM OVEN", defaultLayout.big()) + cmdInvertOff,
 		cmdInvertOn + pad("REDIRIGIDO DE OVEN", defaultLayout.big()) + cmdInvertOff,
-		"2  Pepperoni Pizza\n   (Large)\n", "   - Extra cheese\n", "   - well done\n",
+		"2  Pepperoni Pizza\n   (Large)\n", "   - Extra cheese\n", "   Note: well done\n",
 		"1  Mystery\n", "** UNMATCHED **",
 		"Also on this order:\n   1 Fries\n",
 		"NOTE: Ring the bell twice\n", // the order's note, under the header (the owner, 2026-11-12)

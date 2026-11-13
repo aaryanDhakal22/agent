@@ -135,7 +135,7 @@ def test_print_sample(store, fakes) -> None:
     assert job.count(b"CUSTOMER, SAMPLE") == 1, "the kitchen ticket"
     assert job.count(b"THANK YOU") == 2
     assert job.count(CUT) == 3, "2 copies x 1 cut + the kitchen ticket's cut"
-    for want in (b"Order #: 1234", b"   - extra ranch please", b"SAMPLE - not a real order", b"XXXXXXXXXXXX4242 Card"):
+    for want in (b"Order #: 1234", b"   Note: extra ranch please", b"SAMPLE - not a real order", b"XXXXXXXXXXXX4242 Card"):
         assert want in job, want
 
     # A chosen printer; the settings in force are the saved ones.

@@ -129,3 +129,33 @@ func TestDriverReportLine_TerminalTipOnOnlineOrder(t *testing.T) {
 		t.Fatalf("online cash: %+v", c)
 	}
 }
+
+// Flow bug 3 (2.5.2): an online order edited at a terminal. The tip is inside the cash only when the
+// order arrived unpaid; a card-paid order's tip stays on the card (a card tip on his report).
+func TestDriverReportLine_EditedOnlineOrders(t *testing.T) {
+	edited := func(arrivedTotal, arrivedTip, paid, total int64, pays []PaymentSummary) Snapshot {
+		return Snapshot{Source: "online", Money: Money{Total: total, Tip: arrivedTip}, Payments: pays,
+			SourceMeta: map[string]any{MetaPi: map[string]any{"online": OnlineBase{Money: Money{Total: arrivedTotal, Tip: arrivedTip}, PaidCents: paid}}}}
+	}
+	visa := []PaymentSummary{{Method: "card", AmountCents: 1499}}
+	for _, tc := range []struct {
+		name  string
+		so    StoredOrder
+		cash  bool
+		cashC int64
+		tipC  int64
+	}{
+		// 14.99 incl. a 2.00 tip paid by Visa, a Can Coke added (+1.35) left for the door
+		{"card + tip + added item collected at the door", StoredOrder{Order: edited(1499, 200, 1499, 1634, visa)}, true, 135, 200},
+		// the same, the 1.35 charged by card at the terminal
+		{"card + tip + added item charged by card", StoredOrder{Order: edited(1499, 200, 1499, 1634, visa),
+			Status: Status{TerminalMoney: true, CashDueCents: 0}}, false, 0, 200},
+		{"online cash + tip", StoredOrder{Order: Snapshot{Source: "online", Money: Money{Total: 3000, Tip: 500}}}, true, 2500, 0},
+		{"online cash + tip + added item", StoredOrder{Order: edited(3000, 500, 0, 3300, nil)}, true, 2800, 0},
+	} {
+		l := NewDriverReportLine(tc.so)
+		if l.Cash != tc.cash || l.CashCents != tc.cashC || l.TipCents != tc.tipC {
+			t.Errorf("%s: cash=%v %d tip %d, want cash=%v %d tip %d", tc.name, l.Cash, l.CashCents, l.TipCents, tc.cash, tc.cashC, tc.tipC)
+		}
+	}
+}

@@ -342,12 +342,24 @@ func writeKitchenItems(w func(string), nl func(), items []order.LineItem, t prin
 			} else {
 				w(feedDots(sp.ModMod))
 			}
-			for _, line := range wordWrap(itemIndent+l, lay.cols, itemIndent+"  ") {
+			for _, line := range wordWrap(itemIndent+l, lay.cols, modIndent(l)) {
 				w(printable(line))
 				nl()
 			}
 		}
 	}
+}
+
+// noteMark starts an item's food note on the kitchen ticket ("Note: Please
+// make well done"), so it never reads as a choice ("- Well done").
+const noteMark = "Note: "
+
+// modIndent is where a wrapped choice / note line goes on: under its text.
+func modIndent(l string) string {
+	if strings.HasPrefix(l, noteMark) {
+		return itemIndent + strings.Repeat(" ", len(noteMark))
+	}
+	return itemIndent + "  "
 }
 
 // modLines are an item's lines under it: "- Extra cheese", "- (x2) Ranch",
@@ -364,8 +376,8 @@ func modLines(it order.LineItem, online bool) []string {
 			out = append(out, "- "+modName(c))
 		}
 	}
-	if note := strings.TrimSpace(it.Notes); note != "" {
-		out = append(out, "- "+note)
+	if note := strings.TrimSpace(it.Notes); note != "" { // the food note, told from a choice (the owner, 2.5.2)
+		out = append(out, noteMark+note)
 	}
 	return out
 }
@@ -428,7 +440,7 @@ func writeRemoved(w func(string), nl func(), items []order.LineItem, prefs order
 			lines = append(lines, itemIndent+l)
 		}
 		for i, l := range lines {
-			for j, part := range wordWrap(l, room, itemIndent+"  ") {
+			for j, part := range wordWrap(l, room, modIndent(strings.TrimPrefix(l, itemIndent))) {
 				switch {
 				case i == 0 && j == 0 && prefs.StrikeImages:
 					w(voidMark)
