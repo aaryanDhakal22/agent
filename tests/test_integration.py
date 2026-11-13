@@ -213,8 +213,14 @@ def test_future_order_actions(kitchen, fakes) -> None:  # noqa: F811
 
     # The store's colours.
     look = a.http.get(f"{a.base}/api/settings/look", timeout=5).json()
-    assert look == {"accent": "#AC94F4", "tickets": {"delivery": "#3B82F6", "pickup": "#3B82F6", "counter": "#3B82F6"}}
+    assert look == {"accent": "#AC94F4", "tickets": {"delivery": "#3B82F6", "pickup": "#3B82F6", "counter": "#3B82F6"},
+                    "chime": "bell"}
     r = a.http.put(f"{a.base}/api/settings/look", json={"tickets": {"delivery": "#7C3AED"}}, timeout=5)
     assert r.status_code == 200 and r.json()["tickets"]["delivery"] == "#7C3AED" and r.json()["tickets"]["pickup"] == "#3B82F6"
     assert a.http.put(f"{a.base}/api/settings/look", json={"accent": "blue"}, timeout=5).status_code == 400
     assert a.http.get(f"{a.base}/api/floor", timeout=5).json()["settings"]["look"]["tickets"]["delivery"] == "#7C3AED"
+    # The store's one-time chime (2026-11-13): saved alone, the colours kept; not a name -> 400.
+    r = a.http.put(f"{a.base}/api/settings/look", json={"chime": "beeps"}, timeout=5)
+    assert r.status_code == 200 and r.json()["chime"] == "beeps" and r.json()["tickets"]["delivery"] == "#7C3AED"
+    assert a.http.put(f"{a.base}/api/settings/look", json={"chime": "Big Bell!"}, timeout=5).status_code == 400
+    assert a.http.get(f"{a.base}/api/floor", timeout=5).json()["settings"]["look"]["chime"] == "beeps"

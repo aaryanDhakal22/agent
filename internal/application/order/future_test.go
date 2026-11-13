@@ -229,3 +229,41 @@ func TestLookSettings(t *testing.T) {
 		t.Fatalf("not stored: %s", got)
 	}
 }
+
+// The store's one-time chime (2026-11-13): the bell by default, a stored look
+// from before it reads the bell, a PUT of the chime alone keeps the colours,
+// a name that isn't one is refused.
+func TestLookChime(t *testing.T) {
+	ctx := context.Background()
+	svc, _, _, _, _ := newIntegService(t)
+	if got := svc.IntegrationSettings().Look.Chime; got != order.DefaultChime {
+		t.Fatalf("default chime = %q", got)
+	}
+	old, err := order.DecodeLook([]byte(`{"accent":"#112233","tickets":{"delivery":"#7C3AED","pickup":"#3B82F6","counter":"#3B82F6"}}`))
+	if err != nil || old.Chime != order.DefaultChime || old.Accent != "#112233" {
+		t.Fatalf("stored before the chime = %+v %v", old, err)
+	}
+	if _, err := svc.UpdateIntegrationSettings(ctx, func(x *order.IntegrationSettings) error {
+		return json.Unmarshal([]byte(`{"accent":"#112233"}`), &x.Look)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	set, err := svc.UpdateIntegrationSettings(ctx, func(x *order.IntegrationSettings) error {
+		return json.Unmarshal([]byte(`{"chime":"beeps"}`), &x.Look)
+	})
+	if err != nil || set.Look.Chime != "beeps" || set.Look.Accent != "#112233" {
+		t.Fatalf("chime alone = %+v %v", set.Look, err)
+	}
+	for _, bad := range []string{"", "Bell", "../x", "a-very-long-sound-name-indeed"} {
+		if _, err := svc.UpdateIntegrationSettings(ctx, func(x *order.IntegrationSettings) error {
+			x.Look.Chime = bad
+			return nil
+		}); !errors.Is(err, ErrBadRequest) {
+			t.Fatalf("chime %q = %v", bad, err)
+		}
+	}
+	svc.LoadIntegrationSettings(ctx)
+	if got := svc.IntegrationSettings().Look.Chime; got != "beeps" {
+		t.Fatalf("not stored: %s", got)
+	}
+}
