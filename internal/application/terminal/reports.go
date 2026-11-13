@@ -326,7 +326,7 @@ type DayCloseResult struct {
 // manager's): a manager logged in, or anyone with a manager's PIN. The Pi's
 // Close batch then runs as from the tablet (driver reports, Z report).
 // Journaled batch.close {batch_id, forced, approved_by?}.
-func (s *Service) CloseBatch(ctx context.Context, a Actor, force bool, pin string) (*DayCloseResult, error) {
+func (s *Service) CloseBatch(ctx context.Context, a Actor, force bool, pin string, printsUnpaid bool) (*DayCloseResult, error) {
 	st, cfg, err := s.staffOf(a)
 	if err != nil {
 		return nil, err
@@ -342,7 +342,14 @@ func (s *Service) CloseBatch(ctx context.Context, a Actor, force bool, pin strin
 		}
 		s.journal(ctx, overrideEntry(a, st, approver, need, ""))
 	}
-	closed, finished, err := s.reports.CloseBatch(order.WithCloseTrigger(ctx, "terminal"), force)
+	// Who closed: a forced close writes unpaid counter checks off in their
+	// name (journal void.waste, order.void staff_id / approved_by).
+	by := order.CloseActor{StaffID: st.ID, StaffName: st.Name(), DeviceID: a.DeviceID, DeviceName: a.DeviceName,
+		Trigger: "terminal", PrintsHere: printsUnpaid}
+	if approver != nil {
+		by.ApprovedBy = approver.ID
+	}
+	closed, finished, err := s.reports.CloseBatch(order.WithCloseActor(order.WithCloseTrigger(ctx, "terminal"), by), force)
 	if err != nil {
 		return nil, err
 	}
@@ -352,6 +359,9 @@ func (s *Service) CloseBatch(ctx context.Context, a Actor, force bool, pin strin
 	d := map[string]any{"forced": force}
 	if closed != nil {
 		d["batch_id"] = closed.ID
+		if u := closed.UnpaidAtClose; u != nil {
+			d["unpaid_written_off"], d["unpaid_written_off_cents"] = u.Count, u.TotalCents
+		}
 	}
 	if approver != nil {
 		d["approved_by"] = approver.ID

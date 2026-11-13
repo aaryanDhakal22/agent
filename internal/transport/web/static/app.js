@@ -1123,11 +1123,28 @@ function agentApp() {
       });
       if (ok) await this.doCloseBatch(false);
     },
-    async doCloseBatch(force) {
+    async doCloseBatch(force, forceUnpaid) {
       this.busy.close = true;
       try {
-        const res = await this.api('/api/batch/close', { method: 'POST', body: { force } });
+        const res = await this.api('/api/batch/close', { method: 'POST', body: { force, force_unpaid: !!forceUnpaid } });
         const b = await res.json().catch(() => ({}));
+        if (res.status === 409 && b.code === 'unsettled_checks') {
+          // The owner, 2026-11-13: say what force does (the store's close_unpaid_counter_action).
+          const f = b.force || {}, money = c => '$' + ((c || 0) / 100).toFixed(2);
+          const list = (b.checks || []).map(c => '#' + c.number + ' ' + money(c.due_cents) + ' due' + (c.on_force === 'carry' ? ' (carried over)' : c.on_force === 'waste' ? ' (written off)' : ''));
+          const parts = [];
+          if (f.waste_count) parts.push('write off ' + f.waste_count + ' check' + (f.waste_count === 1 ? '' : 's') + ' as waste (' + money(f.waste_cents) + ', "Unpaid at close")');
+          if (f.carry_count) parts.push('carry ' + f.carry_count + ' check' + (f.carry_count === 1 ? '' : 's') + ' over (still payable' + (f.waste_count ? ', partly paid' : '') + ')');
+          this.busy.close = false;
+          if (!b.force_action) { this.toast(b.error || 'Unpaid counter checks are open: pay or void them first', true); return; }
+          const again = await this.ask({
+            title: (b.checks || []).length + ' unpaid counter check' + ((b.checks || []).length === 1 ? ' is' : 's are') + ' open',
+            body: 'Take the payment or void them on a terminal, or force close: it will ' + parts.join(' and ') + '.',
+            list, confirmLabel: 'Force close', cancelLabel: 'Keep it open', danger: true,
+          });
+          if (again) return this.doCloseBatch(force, true);
+          return;
+        }
         if (res.status === 409 && b.code === 'batch_has_leftovers') {
           const list = (b.leftovers || []).map(so => displayNumber(so) + ' ' + custName(so.order) + ' — ' + ({ arrived: 'waiting to be accepted', accepted: 'still cooking', ready: 'ready, not sent out', on_delivery: 'still out with a driver' }[so.status.state] || so.status.state));
           this.busy.close = false;
@@ -1136,11 +1153,12 @@ function agentApp() {
             body: 'Closing anyway marks orders in progress as done; orders nobody accepted are CANCELLED.',
             list, confirmLabel: 'Close anyway', cancelLabel: 'Keep it open', danger: true,
           });
-          if (again) return this.doCloseBatch(true);
+          if (again) return this.doCloseBatch(true, forceUnpaid);
           return;
         }
         if (!res.ok) { this.toast(b.error || 'Close failed', true); return; }
-        this.toast('Batch ' + b.closed.id + ' closed — printing driver reports');
+        const u = b.unpaid_at_close;
+        this.toast('Batch ' + b.closed.id + ' closed — printing driver reports' + (u && u.count ? '; ' + u.count + ' unpaid check' + (u.count === 1 ? '' : 's') + ' written off ($' + (u.total_cents / 100).toFixed(2) + '), Unpaid at close list printing' : ''));
         this.reportBatch = 'current';
         this.loadFloor(); this.loadBatches(); this.loadReports();
       } catch (e) { this.toast(e.message, true); } finally { this.busy.close = false; }

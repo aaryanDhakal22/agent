@@ -202,6 +202,7 @@ func (s *Service) ReturnDriver(ctx context.Context, driverID string) ([]order.St
 func (s *Service) CloseBatch(ctx context.Context, force bool) (*order.Batch, []order.StoredOrder, error) {
 	ctx, span := s.span(ctx, "batch.close", attribute.Bool("force", force))
 	defer span.End()
+	ctx = order.WithCloseUnpaid(ctx, s.CloseUnpaidAction())
 	closed, finished, err := s.repo.CloseBatch(ctx, force)
 	cm := observability.Counter()
 	trigger := order.CloseTriggerOf(ctx)
@@ -228,6 +229,7 @@ func (s *Service) CloseBatch(ctx context.Context, force bool) (*order.Batch, []o
 	for _, so := range finished {
 		s.publishUpdated(so)
 	}
+	s.unpaidWrittenOff(ctx, closed.UnpaidAtClose)
 	if s.broker != nil {
 		opened, err := s.repo.OpenBatch(ctx)
 		if err == nil {
@@ -247,6 +249,19 @@ func (s *Service) CloseBatch(ctx context.Context, force bool) (*order.Batch, []o
 	s.devEvent(devlog.Info, devlog.KindOrder, "Batch %d closed (%d auto-finished)", closed.ID, len(finished))
 	s.printReportsAfterClose(ctx, closed.ID, s.afterClose)
 	return closed, finished, nil
+}
+
+// SetCloseUnpaidAction wires the store's close_unpaid_counter_action (main's
+// terminal setting: waste | carry; cmd/main.go).
+func (s *Service) SetCloseUnpaidAction(fn func() string) { s.closeUnpaid.Store(&fn) }
+
+// CloseUnpaidAction is what a forced close / the auto-close does with an
+// unpaid counter check: waste (the default) or carry.
+func (s *Service) CloseUnpaidAction() string {
+	if fn := s.closeUnpaid.Load(); fn != nil && *fn != nil {
+		return order.UnpaidActionOf((*fn)())
+	}
+	return order.UnpaidWaste
 }
 
 // OnBatchClosed registers the hook run after a successful Close batch, once

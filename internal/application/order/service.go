@@ -99,6 +99,9 @@ type Service struct {
 	// onClosed runs right after a successful Close batch, in the background
 	// (the terminals: closed drawers announced + the Z report built).
 	onClosed atomic.Pointer[func(ctx context.Context, closed order.Batch)]
+	// closeUnpaid reads the store's close_unpaid_counter_action
+	// (SetCloseUnpaidAction; unset = waste).
+	closeUnpaid atomic.Pointer[func() string]
 	// autoMu: one auto-assign at a time (autoassign.go).
 	autoMu sync.Mutex
 	// preview: the callout PREVIEW "on this tablet" audio (2.3.2,

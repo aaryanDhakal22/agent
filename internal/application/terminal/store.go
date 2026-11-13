@@ -35,7 +35,7 @@ const (
 	EventConfigChanged = "terminal.config.changed"
 	EventOrderPlaced   = "terminal.order.placed"
 	EventOrderPaid     = "terminal.order.paid"
-	EventOrderVoided   = "terminal.order.voided"
+	EventOrderVoided   = terminal.EventOrderVoided
 )
 
 // ErrMainUnsupported: main has no such route yet (404).

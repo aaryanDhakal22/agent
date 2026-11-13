@@ -61,3 +61,22 @@ func TestCounterStartStaysBelowKitchenNumbers(t *testing.T) {
 		}
 	}
 }
+
+// The owner's X of 2026-11-13: what a forced close does with an unpaid
+// counter check (main's close_unpaid_counter_action; missing = waste).
+func TestCloseUnpaidCounterAction(t *testing.T) {
+	var none *Config
+	if none.CloseUnpaidCounterAction() != "waste" {
+		t.Fatal("no config yet: waste")
+	}
+	for raw, want := range map[string]string{`{}`: "waste", `{"close_unpaid_counter_action":"carry"}`: "carry",
+		`{"close_unpaid_counter_action":"waste"}`: "waste", `{"close_unpaid_counter_action":"keep"}`: "waste"} {
+		cfg, err := ParseConfig([]byte(`{"version":1,"staff":[],"settings":` + raw + `}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := cfg.CloseUnpaidCounterAction(); got != want {
+			t.Errorf("%s: %s, want %s", raw, got, want)
+		}
+	}
+}

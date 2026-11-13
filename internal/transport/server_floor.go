@@ -30,7 +30,14 @@ func (s *Server) floorErr(w http.ResponseWriter, r *http.Request, err error) {
 	switch {
 	case errors.As(err, &un):
 		// contract 2.10s §4: a manual close over an unpaid counter check.
-		s.writeJSON(w, http.StatusConflict, map[string]any{"error": err.Error(), "code": "unsettled_checks", "checks": un.Checks})
+		// The owner, 2026-11-13: the answer says what force does (the
+		// store's close_unpaid_counter_action; a partly paid check carried).
+		action := un.ForceAction
+		if action == "" {
+			action = order.UnpaidWaste
+		}
+		s.writeJSON(w, http.StatusConflict, map[string]any{"error": err.Error(), "code": "unsettled_checks", "checks": un.Checks,
+			"force_action": action, "force": un.Force})
 	case errors.As(err, &lo):
 		s.writeJSON(w, http.StatusConflict, map[string]any{"error": err.Error(), "code": "batch_has_leftovers", "leftovers": lo.Orders})
 	case errors.As(err, &re):
@@ -555,14 +562,20 @@ func (s *Server) handleUnpairSelf(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleCloseBatch(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Force bool `json:"force"`
+		// ForceUnpaid passes the unpaid counter checks only (the store's
+		// close_unpaid_counter_action), not the leftovers.
+		ForceUnpaid bool `json:"force_unpaid"`
 	}
 	if err := decodeBody(r, &req); err != nil {
 		s.floorErr(w, r, err)
 		return
 	}
-	ctx := r.Context()
-	if _, ok := r.Context().Value(deviceCtxKey{}).(*device.Device); !ok {
+	ctx := order.WithForceUnpaid(r.Context(), req.ForceUnpaid)
+	if d, ok := r.Context().Value(deviceCtxKey{}).(*device.Device); ok {
+		ctx = order.WithCloseActor(ctx, order.CloseActor{DeviceID: d.ID, DeviceName: d.Name, Trigger: "tablet"})
+	} else {
 		ctx = order.WithCloseTrigger(ctx, "web") // the Pi page (a session)
+		ctx = order.WithCloseActor(ctx, order.CloseActor{DeviceID: "pi", DeviceName: "Pi page", Trigger: "web"})
 	}
 	closed, finished, err := s.service.CloseBatch(ctx, req.Force)
 	if err != nil {
@@ -578,7 +591,7 @@ func (s *Server) handleCloseBatch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.writeJSON(w, http.StatusOK, map[string]any{"closed": closed, "opened": opened.Batch, "auto_finished": finished,
-		"unsettled": closed.Unsettled})
+		"unsettled": closed.Unsettled, "unpaid_at_close": closed.UnpaidAtClose})
 }
 
 // POST /api/drivers/{id}/undo-return — 409 invalid_state when it isn't the

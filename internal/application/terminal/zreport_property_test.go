@@ -41,9 +41,18 @@ func TestZReportMoneyReconciles(t *testing.T) {
 	r := newRig(t)
 	for day := 0; day < days; day++ {
 		m := runDay(t, r, rng, day)
-		// Auto-close: never refused over unpaid counter checks (they are
-		// carried, contract 2.10s §4; the model doesn't touch them again).
-		closed, _, err := r.repo.CloseBatch(order.WithCloseKind(r.ctx, order.CloseAuto), true)
+		// Auto-close: never refused over unpaid counter checks. The store's
+		// close_unpaid_counter_action (the owner, 2026-11-13) alternates:
+		// waste on odd days (an unpaid counter check with no payment row is
+		// written off, the model drops it from the day's sales), carry on
+		// even days (carried, contract 2.10s §4; the model doesn't touch them
+		// again; a later waste day writes them off on its own Waste section).
+		action := order.UnpaidCarry
+		if day%2 == 1 {
+			action = order.UnpaidWaste
+			m.wasteUnpaidCounters()
+		}
+		closed, _, err := r.repo.CloseBatch(order.WithCloseUnpaid(order.WithCloseKind(r.ctx, order.CloseAuto), action), true)
 		if err != nil {
 			t.Fatalf("seed %d day %d: close batch: %v", seed, day, err)
 		}
@@ -72,8 +81,19 @@ type mOrder struct {
 	typ      string
 	total    int64
 	voided   bool
+	wasted   bool // written off at the close (Unpaid at close)
 	pays     []mPay
 	terminal Actor
+}
+
+// wasteUnpaidCounters: what a waste close does - every unpaid counter check
+// with no payment row at all is written off (a partly paid one is carried).
+func (m *model) wasteUnpaidCounters() {
+	for _, o := range m.orders {
+		if o.typ == "counter" && !o.voided && len(o.pays) == 0 && o.total > 0 {
+			o.wasted = true
+		}
+	}
 }
 
 func (o *mOrder) net() (amt, tip int64) {
@@ -423,7 +443,7 @@ func (m *model) check(t *testing.T, where string, z *terminal.Z) {
 	want := map[string]*tot{}
 	var sales, unpaid, driverCash, tips, onCancelled, cashOutside int64
 	var counts terminal.ZCounts
-	var general terminal.ZAmount
+	var general, wasted terminal.ZAmount
 	for _, g := range m.general {
 		w := want[g.tender]
 		if w == nil {
@@ -465,6 +485,11 @@ func (m *model) check(t *testing.T, where string, z *terminal.Z) {
 			}
 		}
 		tips += tip
+		if o.wasted {
+			wasted.Count++
+			wasted.Cents += o.total
+			continue // cancelled: no sale, nothing due, no money on it
+		}
 		if o.voided {
 			counts.Voided++
 			onCancelled += amt
@@ -492,6 +517,17 @@ func (m *model) check(t *testing.T, where string, z *terminal.Z) {
 		z.CashOutside != cashOutside {
 		t.Fatalf("%s: sales %d/%d unpaid %d/%d tips %d/%d on cancelled %d/%d cash outside %d/%d", where, z.Sales.TotalCents, sales,
 			z.Unpaid.Cents, unpaid, rec.TipsCents, tips, rec.OnCancelledCents, onCancelled, z.CashOutside, cashOutside)
+	}
+	// A waste close's write-offs are on the Waste section as Unpaid at close
+	// (with any carried check of an earlier day it also wrote off).
+	var atClose terminal.ZAmount
+	for _, wr := range z.Waste.Reasons {
+		if wr.Reason == order.UnpaidAtCloseReason {
+			atClose = terminal.ZAmount{Count: wr.Count, Cents: wr.Cents}
+		}
+	}
+	if atClose.Count < wasted.Count || atClose.Cents < wasted.Cents {
+		t.Fatalf("%s: unpaid at close %+v, model at least %+v", where, atClose, wasted)
 	}
 	if z.Counts.Orders != counts.Orders || z.Counts.Counter != counts.Counter || z.Counts.Pickup != counts.Pickup ||
 		z.Counts.Delivery != counts.Delivery || z.Counts.Voided != counts.Voided || z.Voids.Count != counts.Voided {
