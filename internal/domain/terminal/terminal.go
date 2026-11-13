@@ -799,6 +799,10 @@ var (
 	ErrWrongPIN        = errors.New("wrong PIN")
 	ErrManagerPINWrong = errors.New("that isn't a manager's PIN")
 	ErrNotCounterOrder = errors.New("not a counter order")
+	// ErrPaidOnline (agent 2.5.3): an online vendor order with money paid
+	// online (all or part) isn't voided at a terminal: the online ordering
+	// company refunds it (409 paid_online).
+	ErrPaidOnline = errors.New("paid online: the online ordering company refunds it")
 	ErrNotPayable      = errors.New("this order can't take a payment")
 	// ErrTipCardOnly (the owner, 2026-11-12): a tip goes on a card payment
 	// only - a cash or comp payment with a tip is 400 tip_card_only.

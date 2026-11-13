@@ -102,3 +102,24 @@ func TestAutoCloseSkipsARecentBatchAndAMissedSlot(t *testing.T) {
 		t.Fatal("nothing may close")
 	}
 }
+
+// A Pi that was off at the slot catches up when it is back within the window (2 h): its first check
+// closes the batch (and so opens the terminals' install window, contract 2.10w); later than that it skips
+// the day (never a close mid-service).
+func TestAutoCloseCatchesUpWithinTheWindow(t *testing.T) {
+	ctx := context.Background()
+	svc, repo, _ := newPoolService(t)
+	readyDelivery(t, svc, time.Minute)
+	first, _ := repo.OpenBatch(ctx)
+	utc := time.UTC
+	boot := time.Now().Add(26 * time.Hour)                                    // the first check after the Pi is back
+	at := boot.Add(-(AutoCloseWindow - 10*time.Minute)).UTC().Format("15:04") // the slot was 1 h 50 ago
+	res, err := svc.AutoCloseDue(ctx, boot, utc, at)
+	if err != nil || res.Outcome != AutoCloseClosed || res.BatchID != first.ID {
+		t.Fatalf("catch-up: %+v %v", res, err)
+	}
+	svc.WaitBackground()
+	if cur, _ := repo.OpenBatch(ctx); cur.ID == first.ID {
+		t.Fatal("a new (empty) batch must be open: the install window")
+	}
+}

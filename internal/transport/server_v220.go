@@ -160,6 +160,10 @@ type TabletInfo struct {
 	// Setup (contract 2.10y): the device's last setup / full-check result
 	// from its report; absent = none kept.
 	Setup *device.SetupResult `json:"setup,omitempty"`
+	// Update (terminals, 2.5.3): the app-update state the terminal last
+	// reported (POST /api/terminal/app/state); absent = none since the Pi
+	// started.
+	Update *TerminalAppState `json:"update,omitempty"`
 }
 
 // Tablets lists the paired (not revoked) tablets with their Quibase version
@@ -205,6 +209,11 @@ func (s *Server) devicesOfKind(ctx context.Context, kind string, withSetup bool)
 			LastSeenAt: d.LastSeenAt, Connected: on[d.ID]}
 		if res, ok := setups[d.ID]; ok {
 			t.Setup = &res
+		}
+		if kind == device.KindTerminal {
+			if st, ok := s.terminalAppState(d.ID); ok {
+				t.Update = &st
+			}
 		}
 		out = append(out, t)
 	}

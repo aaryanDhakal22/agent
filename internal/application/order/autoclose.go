@@ -81,7 +81,11 @@ func (s *Service) AutoCloseDue(ctx context.Context, now time.Time, loc *time.Loc
 		return res, s.repo.SetAutoCloseLast(ctx, slot)
 	}
 	if now.Sub(slot) > AutoCloseWindow {
-		return skip(AutoCloseMissed, "the Pi wasn't running at that time")
+		// The slot was over 2 h ago when the Pi first looked at it: it was off
+		// then, or had no terminal settings yet (Setting "" = off, the slot
+		// not stored), or this is its first check after a start. Never a
+		// close mid-service; the next slot closes as usual.
+		return skip(AutoCloseMissed, "the slot passed more than 2 h before the Pi checked it (off, or no terminal settings yet)")
 	}
 	b, err := s.repo.OpenBatch(ctx)
 	if err != nil {

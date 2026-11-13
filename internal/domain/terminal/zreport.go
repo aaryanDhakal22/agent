@@ -284,7 +284,9 @@ type ZInput struct {
 }
 
 func isVoided(so order.StoredOrder) bool {
-	return so.Order.Source == order.SourceCounter && so.Status.State == order.StateCancelled && so.Status.CancelReason == VoidReason
+	// a counter order, or an online cash order voided at a terminal (2.5.3)
+	src := so.Order.Source
+	return (src == order.SourceCounter || src == order.SourceOnline) && so.Status.State == order.StateCancelled && so.Status.CancelReason == VoidReason
 }
 
 // BuildZ builds the Z report (pure).

@@ -499,8 +499,8 @@ func (r *OrderRepository) VoidCounterOrder(ctx context.Context, id, reason, wast
 			return err
 		}
 		prev = cur
-		if cur.Order.Source != order.SourceCounter {
-			return terminal.ErrNotCounterOrder
+		if err := terminal.VoidableSource(cur.Order); err != nil { // a counter order, or an online cash one (2.5.3)
+			return err
 		}
 		if cur.Status.State == order.StateCancelled && (cur.Status.CancelReason == terminal.VoidReason || cur.Status.CancelReason == terminal.WasteReason) {
 			so = cur
