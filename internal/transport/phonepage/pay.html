@@ -190,7 +190,7 @@ function renderDone(c) {
 }
 
 function offWords(r) {
-  return ({square_not_linked: "Square isn't connected for this store (main › Store › Payments).",
+  return ({square_not_linked: "Square isn't connected for this store (Store › Settings › Payments on the Quicc website).",
     no_callback_url: "Square's callback page isn't set up yet (ask the developer).",
     main_unsupported: "The server needs an update for Send to phone.",
     main_unreachable: "The Pi can't reach the server right now.", not_linked: "This Pi isn't set up yet."})[r] || "Ask the developer (" + (r || "unknown") + ").";

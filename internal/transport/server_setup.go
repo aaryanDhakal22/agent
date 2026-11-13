@@ -395,6 +395,9 @@ func (s *Server) handleTerminalSetup(w http.ResponseWriter, r *http.Request) {
 	sc := s.storeContext()
 	loc := sc.Location
 	out := map[string]any{"at": time.Now().UTC()}
+	if s.mainClient != nil { // the wizard's "change it in main" links (settings map, contract 2.10af)
+		out["main_url"] = strings.TrimRight(s.mainClient.BaseURL(), "/")
+	}
 
 	var roster []terminalApp.RosterPrinter
 	printers := []setupPrinter{}

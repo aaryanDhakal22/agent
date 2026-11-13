@@ -117,6 +117,9 @@ type diagMain struct {
 	// ClockSkewS (hardening F-13): main's clock minus the Pi's at the last
 	// connect, seconds (absent until a connect carried a Date header).
 	ClockSkewS *float64 `json:"clock_skew_s,omitempty"`
+	// URL is main's base URL as this Pi reaches it: the apps build their
+	// "change it in main" links on it (settings map, contract 2.10af).
+	URL string `json:"url,omitempty"`
 }
 
 type diagHealth struct {
@@ -218,6 +221,7 @@ func (s *Server) handleDiag(w http.ResponseWriter, r *http.Request) {
 	}
 	if s.mainClient != nil {
 		out.Main.Reachable = s.mainReach.reachable(ctx, s.mainClient.BaseURL())
+		out.Main.URL = strings.TrimRight(s.mainClient.BaseURL(), "/")
 	}
 
 	// The Pi itself.

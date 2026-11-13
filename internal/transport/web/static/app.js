@@ -315,6 +315,7 @@ function agentApp() {
     rcpt: null, rcptForm: null, footMode: 'default', customFooter: '', rcptPreview: 'r', rcptErr: '', rcptBusy: '',
     pair: null, adminCode: null, pinGuard: null, storeCfg: null, storeCfgErr: '', storeCfgErrRaw: '',
     cp: { current: '', next: '', confirm: '', hint: '', err: '', busy: false },
+    settingsMap: null, // main's settings map (/static/settings-map.json, a byte copy of main's: contract main §2.5zm)
 
     // ======================================================================
     init() {
@@ -325,6 +326,7 @@ function agentApp() {
       } catch { /* old browser: light */ }
       this.readHash(false);
       window.addEventListener('hashchange', () => this.readHash(true));
+      fetch('/static/settings-map.json').then(r => r.json()).then(m => { this.settingsMap = m; }).catch(() => { /* the static fallbacks stay */ });
       setInterval(() => this.tick(), 1000);
       const unlock = () => { unlockAudio(); this.syncSound(); };
       document.addEventListener('pointerdown', unlock, true);
@@ -953,6 +955,22 @@ function agentApp() {
       } catch (e) { this.toast(e.message, true); } finally { this.parkBusy = ''; }
     },
     parkedWhat(d) { return (PARKED_TYPES[d.type] || d.type) + (d.subject && d.subject.indexOf(':') < 0 ? ' · order' : ''); },
+    // --- main's settings map: "Store › Printers" + the deep link on the store's main ---------------
+    mainPlace(id) {
+      for (const p of (this.settingsMap && this.settingsMap.pages) || []) {
+        if (p.id === id) return { words: p.crumb, path: p.path };
+        const f = p.fields.find(x => x.id === id);
+        if (f) return { words: p.crumb + ' › ' + f.label, path: p.path + '#' + f.anchor };
+      }
+      return null;
+    },
+    /** main's words for a page / field id (fallback: what the page says before the map loads). */
+    mainWords(id, fallback) { const p = this.mainPlace(id); return p ? p.words : fallback; },
+    /** The link to it on the store's main ('' until /api/diag named main's URL). */
+    mainLink(id) {
+      const p = this.mainPlace(id), base = ((this.diag && this.diag.main && this.diag.main.url) || '').replace(/\/+$/, '');
+      return p && base ? base + p.path : '';
+    },
     async loadDiag() {
       try { this.diag = await this.call('/api/diag'); this.diagErr = false; } catch { this.diagErr = true; /* cards: "Couldn't check" */ }
     },
@@ -1036,7 +1054,7 @@ function agentApp() {
       const ps = (this.diag && this.diag.printers) || [];
       if (this.diagErr) return { tone: 'warn', t: "Couldn't check", s: 'retrying…' };
       if (!this.diag) return { tone: 'mute', t: '—', s: 'checking…' };
-      if (!ps.length) return { tone: 'warn', t: 'No printers', s: 'Add them in main → Store' };
+      if (!ps.length) return { tone: 'warn', t: 'No printers', s: 'Add them on the Quicc website: ' + this.mainWords('printers', 'Store › Printers') };
       const up = ps.filter(p => p.up).length, checked = Math.max(0, ...ps.map(p => ts(p.last_checked)));
       return { tone: up === ps.length ? 'ok' : 'bad', t: up + ' / ' + ps.length + ' ready', s: checked ? 'checked ' + agoText(checked, this.now) : 'not checked yet' };
     },
