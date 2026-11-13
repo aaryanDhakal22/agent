@@ -45,6 +45,14 @@ func TestReceiptStyles(t *testing.T) {
 			!strings.Contains(txt, "1111") {
 			t.Errorf("%d: classic copies\n%s", cols, txt)
 		}
+		// No Directions on any slip (the owner, 2.5.2: drivers go by the street): the classic layout never
+		// printed the address's notes; keep it so.
+		if store.Fulfillment.Address == nil || store.Fulfillment.Address.Notes == "" {
+			t.Fatal("the fixture needs directions")
+		}
+		if strings.Contains(textOf(got)+txt, store.Fulfillment.Address.Notes) || strings.Contains(textOf(got)+txt, "Directions") {
+			t.Errorf("%d: classic prints the directions", cols)
+		}
 		golden(t, fmt.Sprintf("testdata/slips/classic_receipt_%d.golden", cols), got)
 		golden(t, fmt.Sprintf("testdata/slips/classic_copies_%d.golden", cols), copies)
 	}
