@@ -38,6 +38,7 @@ import (
 	phoneApp "quiccpos/agent/internal/application/phonepay"
 	printerApp "quiccpos/agent/internal/application/printer"
 	"quiccpos/agent/internal/application/printernet"
+	"quiccpos/agent/internal/application/receiptlogo"
 	"quiccpos/agent/internal/application/recovery"
 	"quiccpos/agent/internal/application/retention"
 	"quiccpos/agent/internal/application/revoke"
@@ -318,6 +319,20 @@ func main() {
 	mapFile := mapfile.New(filepath.Join(filepath.Dir(cfg.AgentDBPath), mapfile.FileName), orderRepo, logger)
 	mapFile.Load(ctx)
 
+	// Receipt logo (contract §2.1j): kept next to the DB, refetched from main
+	// when store_config's receipt_logo ETag changes; the key comes from the
+	// SSE controller once it exists.
+	var logoKey atomic.Pointer[func() string]
+	logoMain := mainclient.New(cfg.MainServerURL)
+	receiptLogo := receiptlogo.New(filepath.Dir(cfg.AgentDBPath), func(rc context.Context, inm string) (int, []byte, string, error) {
+		kf := logoKey.Load()
+		if kf == nil || (*kf)() == "" {
+			return 0, nil, "", fmt.Errorf("not linked to a store")
+		}
+		return logoMain.DownloadIfNoneMatch(rc, (*kf)(), "/store/v1/agent/receipt-logo", inm)
+	}, logger)
+	receiptLogo.Load()
+
 	if saved, err := storeConfigRepo.Get(ctx); err == nil && saved != nil {
 		storeCtx.Store(*saved)
 		notifier.SetOwnerDevices(ownerDevices(*saved))
@@ -337,6 +352,15 @@ func main() {
 	// --- Order service + mobile-facing SSE broker -------------------------
 	broker := ssebroker.New()
 	orderService := orderApp.NewService(orderRepo, settingsRepo, printFn, notifier, broker, logger, meters)
+	// A changed delivery's UPDATED pair waits this long for the difference to
+	// be charged (contract §2.10aa; ops knob, default 90s).
+	if v := os.Getenv("AGENT_DELIVERY_UPDATE_WAIT"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil && d > 0 {
+			orderService.SetDeliveryUpdateWait(d)
+		} else {
+			logger.Warn().Str("value", v).Msg("AGENT_DELIVERY_UPDATE_WAIT is not a duration (90s, 2m): the default is used")
+		}
+	}
 	orderService.SetDevLog(devRing)
 	// §2.10aa: every order from main is placed on arrival. AGENT_TEST_ACCEPT_STEP=1 (dev only, the
 	// older pytest suites of the kept accept path) lets arrivals wait for the auto-accept setting.
@@ -401,6 +425,7 @@ func main() {
 		repo:       storeConfigRepo,
 		dispatcher: dispatcher,
 		mapFile:    mapFile,
+		logo:       receiptLogo,
 		onApplied:  broker.PublishFloorChanged,
 		storeCtx:   &storeCtx,
 		logger:     logger.With().Str("module", "storeconfig-sink").Logger(),
@@ -433,6 +458,8 @@ func main() {
 
 	sseCtrl := ssecontroller.New(ctx, cfg.MainServerURL, orderService, sink, registry, logger, meters)
 	rpcPoster.key = sseCtrl.CurrentKey
+	keyFn := sseCtrl.CurrentKey
+	logoKey.Store(&keyFn)
 
 	// POS terminals (terminal stage 0d): the counter menu + terminal config
 	// snapshots main sends (kept in SQLite, refetched at connect and on
@@ -1265,6 +1292,7 @@ type storeConfigApplier struct {
 	repo       storeconfig.Repository
 	dispatcher *printerApp.Dispatcher
 	mapFile    *mapfile.Downloader
+	logo       *receiptlogo.Keeper
 	// onApplied tells the tablets to refetch /api/floor (store pin, map).
 	onApplied func()
 	// notifier gets the store owner's Pushover devices (location config).
@@ -1292,6 +1320,9 @@ func (a *storeConfigApplier) Apply(ctx context.Context, sc storeconfig.StoreCont
 	a.dispatcher.Apply(ctx, sc.Printers)
 	if a.mapFile != nil {
 		a.mapFile.Want(sc.Location.Map) // downloads only when the version changed
+	}
+	if a.logo != nil {
+		a.logo.Want(ctx, sc.ReceiptLogo) // downloads only when the ETag changed
 	}
 	if a.onApplied != nil {
 		a.onApplied()

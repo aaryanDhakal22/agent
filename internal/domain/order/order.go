@@ -237,6 +237,99 @@ type PaymentSummary struct {
 	AmountCents int64  `json:"amount_cents"`
 	Last4       string `json:"last4,omitempty"`
 	AuthCode    string `json:"auth_code,omitempty"`
+	// What the printed copies of one of the store's own orders show (a counter /
+	// call-center order, 2026-11-12; omitempty: older snapshots and main's
+	// orders are unchanged): the tip taken with this payment (refund negative;
+	// a counter order's tips stay on its payments, never in Money.Tip), the
+	// tender (card | manual_card | square_app | cash | comp), how the card was
+	// read (contactless | chip | swiped | keyed) and its processor reference
+	// (Square's payment id, else the terminal's ref).
+	TipCents int64  `json:"tip_cents,omitempty"`
+	Tender   string `json:"tender,omitempty"`
+	Entry    string `json:"entry,omitempty"`
+	Ref      string `json:"ref,omitempty"`
+	// The payment's id on the Pi ("Payment #"), when it was taken and the
+	// card's brand (visa | mastercard | amex | discover | other), for the
+	// printed copies (SoftTouch's payment block, 2026-11-12).
+	ID    string     `json:"id,omitempty"`
+	At    *time.Time `json:"at,omitempty"`
+	Brand string     `json:"brand,omitempty"`
+}
+
+// BrandName is the card's brand as the printed copies name it ("Visa"), else "Card".
+func (p PaymentSummary) BrandName() string {
+	switch strings.ToLower(strings.TrimSpace(p.Brand)) {
+	case "visa":
+		return "Visa"
+	case "mastercard", "master_card":
+		return "Mastercard"
+	case "amex", "american_express":
+		return "Amex"
+	case "discover", "discover_diners":
+		return "Discover"
+	case "", "other":
+		return "Card"
+	}
+	b := strings.TrimSpace(p.Brand)
+	return strings.ToUpper(b[:1]) + strings.ToLower(b[1:])
+}
+
+// PaymentTips is the tips taken with the payments of one of the store's own
+// orders (source counter: a terminal's or the call center's), which stay on
+// the payments and never in Money (main's rule): the printed copies add them
+// to the Tip line and the Total. 0 for any other order, whose Money already
+// carries its tip.
+func (s Snapshot) PaymentTips() int64 {
+	if s.Source != SourceCounter {
+		return 0
+	}
+	var t int64
+	for _, p := range s.Payments {
+		t += p.TipCents
+	}
+	return t
+}
+
+// TenderCents is what a payment line prints: the amount, plus the tip taken
+// with it on one of the store's own orders (what the card was charged).
+func (s Snapshot) TenderCents(p PaymentSummary) int64 {
+	if s.Source == SourceCounter {
+		return p.AmountCents + p.TipCents
+	}
+	return p.AmountCents
+}
+
+// TransactionRef is the printed "Transaction ID": the processor reference of
+// the last card payment (Square's payment id), else the order's own key.
+func (s Snapshot) TransactionRef() string {
+	for i := len(s.Payments) - 1; i >= 0; i-- {
+		p := s.Payments[i]
+		if p.AmountCents > 0 && p.Method == "card" && strings.TrimSpace(p.Ref) != "" {
+			return strings.TrimSpace(p.Ref)
+		}
+	}
+	return strings.TrimSpace(s.SourceEventID)
+}
+
+// EntryLabel is how a card payment was taken, in the terminal's words
+// (printouts.dart entryLabel): MANUALLY ENTERED for a typed card, SQUARE APP
+// (- TAP TO PAY) for the Square app, the reader's entry otherwise; "" when
+// not a card or unknown.
+func (p PaymentSummary) EntryLabel() string {
+	entry := strings.ToLower(strings.TrimSpace(p.Entry))
+	switch {
+	case p.Tender == "square_app" && entry == "contactless":
+		return "SQUARE APP - TAP TO PAY"
+	case p.Tender == "square_app":
+		return "SQUARE APP"
+	case entry == "keyed":
+		return "MANUALLY ENTERED"
+	case entry != "":
+		return strings.ToUpper(strings.ReplaceAll(entry, "_", " "))
+	case p.Tender == "manual_card":
+		return "MANUALLY ENTERED"
+	}
+	return ""
 }
 
 // SourceCounter is Snapshot.Source of an order placed at one of the store's

@@ -119,8 +119,9 @@ func TestPoweredByFooter_Widths(t *testing.T) {
 func TestWidthGoldens(t *testing.T) {
 	sc := previewStore()
 	at := time.Date(2026, 11, 12, 18, 0, 0, 0, time.UTC)
+	prevNow := deliveryNow
 	deliveryNow = func() time.Time { return at }
-	defer func() { deliveryNow = time.Now }()
+	defer func() { deliveryNow = prevNow }()
 	for _, cols := range []int{Cols80, Cols72, Cols58} {
 		on := printer.Paper{Cols: cols}
 		rerouted := printer.Paper{Cols: cols, ReroutedFrom: "Pizza"}

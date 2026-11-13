@@ -69,8 +69,9 @@ func textOf(b []byte) string {
 }
 
 func TestDeliveryCopies(t *testing.T) {
+	prevNow := deliveryNow
 	deliveryNow = func() time.Time { return time.Date(2026, 11, 12, 22, 41, 0, 0, time.UTC) }
-	defer func() { deliveryNow = time.Now }()
+	defer func() { deliveryNow = prevNow }()
 	prefs := order.DefaultReceiptPrefs()
 	for _, card := range []bool{true, false} {
 		name := "cash"
@@ -80,9 +81,12 @@ func TestDeliveryCopies(t *testing.T) {
 		got := Build(deliverySnap(card), deliveryStoreCtx(), printer.Ticket{Kind: printer.TicketDeliveryCopies}, prefs)
 		golden(t, "testdata/delivery_copies_"+name+".golden", got)
 		txt := textOf(got)
-		for _, want := range []string{"Merchant Copy", "Customer Copy", "Order #: 1104", "DELIVERY", "MARIA LOPEZ",
-			"Phone      : (410) 555-0100", "Street     : 12 Test St", "APT 4B", "City       : TOWSON, MD 21204",
-			"Directions : Side door", "Notes      : Ring twice", "Date: 11/12/26", "Time: 5:41 pm", "Transaction ID: V-5521",
+		// SoftTouch's slip (the owner, 2026-11-12): the labelled block even when empty, Directions,
+		// LAST , FIRST, the padded time.
+		for _, want := range []string{"Merchant Copy", "Customer Copy", "Order #: 1104", "DELIVERY", "LOPEZ , MARIA",
+			"Company    :", "Phone      : (410) 555-0100", "Street     : 12 Test St, APT 4B", "City       : TOWSON, MD 21204",
+			"Complex    :", "Zone Code  :", "Gate Code  :",
+			"Directions: Side door", "Notes: Ring twice", "Date: 11/12/26", "Time: 05:41 pm",
 			"LARGE CHEESE PIZZA", "Pepperoni", "Note: extra hot", "Delivery:", "Tip:", "Order Online", "lombardis.example"} {
 			if !strings.Contains(txt, want) {
 				t.Errorf("%s: no %q in\n%s", name, want, txt)
@@ -95,7 +99,7 @@ func TestDeliveryCopies(t *testing.T) {
 			t.Errorf("%s: %d cuts, want 2", name, strings.Count(string(got), cmdCut))
 		}
 		collect := strings.Contains(txt, "Collect Cash $27.90")
-		if collect == card || (card && !strings.Contains(txt, "Card XXXX1881 $27.90")) {
+		if collect == card || (card && (!strings.Contains(txt, "Card $27.90") || !strings.Contains(txt, "XXXXXXXXXXXX1881 Card"))) {
 			t.Errorf("%s: payment lines wrong:\n%s", name, txt)
 		}
 	}

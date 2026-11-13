@@ -15,10 +15,9 @@ import (
 // The delivery tickets of an online delivery (agent contract §2.10aa, the
 // owner 2026-11-12: "the online order will use the same receipt printing ...
 // as the POS one. No difference"): the Merchant Copy (stapled on the bag) and
-// the Customer Copy, in one job, each cut. A port of the terminal's
-// printouts.dart deliveryTicket (and the helpers it uses), line for line, so
-// an online delivery's tickets read like a phone delivery's: keep the two in
-// step when either changes.
+// the Customer Copy, in one job, each cut, in SoftTouch's layout (softSlip,
+// the owner 2026-11-12) like the terminal's own delivery copies: keep the two
+// in step when either changes.
 
 // The copy labels.
 const (
@@ -216,6 +215,16 @@ func BuildDeliveryCopies(snap order.Snapshot, sc storeconfig.StoreContext, prefs
 	p.raw(cmdInit + cmdNormalSz)
 	st := storeOf(sc, prefs.Normalize())
 	for _, copy := range []string{MerchantCopy, CustomerCopy} {
+		if on.Updated { // printed again after the order changed: the driver drops the old pair
+			for _, l := range []string{"UPDATED", "ACTUALIZADO"} {
+				p.center()
+				p.raw(cmdInvertOn + cmdBoldOn + gsTall)
+				p.line(" " + l + " ")
+				p.raw(gsNormal + cmdInvertOff + cmdBoldOff)
+				p.left()
+			}
+			p.feed(1)
+		}
 		if reroutedFrom != "" {
 			for _, l := range RerouteLines(reroutedFrom, lay.cols) {
 				p.center()
@@ -225,192 +234,30 @@ func BuildDeliveryCopies(snap order.Snapshot, sc storeconfig.StoreContext, prefs
 				p.left()
 			}
 		}
-		deliveryTicket(p, snap, st, at, copy)
+		softSlip(p, snap, st, at, copy, headerFor(sc, lay))
 	}
 	return p.buf.Bytes()
 }
 
-// deliveryTicket is printouts.dart deliveryTicket (no DUPLICATE: the Pi
-// prints them once, at arrival).
-func deliveryTicket(p *escw, snap order.Snapshot, st deliveryStore, at time.Time, copy string) {
-	w := p.width
-	voided := snap.Voided != ""
-	if voided {
-		p.center()
-		p.bold(true)
-		p.raw(gsBig + cmdInvertOn + " VOID " + cmdInvertOff)
-		p.feed(2)
-		p.raw(gsNormal)
-		p.bold(false)
-		p.left()
+// BuildCustomerReceipt is the customer receipt of any order (pickup / takeout
+// / delivery, a Reprint too): one SoftTouch slip, Customer Copy (contract
+// §2.1j), the bands the caller asks for on top.
+func BuildCustomerReceipt(snap order.Snapshot, sc storeconfig.StoreContext, prefs order.ReceiptPrefs, on printer.Paper) []byte {
+	snap, sc, prefs, on = scrubSnapshot(snap), scrubStore(sc), scrubPrefs(prefs), scrubPaper(on)
+	lay := layoutFor(on.Cols)
+	snap = localize(snap, sc)
+	at := deliveryNow()
+	if loc, err := time.LoadLocation(sc.Location.Timezone); sc.Location.Timezone != "" && err == nil {
+		at = at.In(loc)
 	}
-	// storeHeader
-	p.center()
-	if st.name != "" {
-		p.raw(gsTall)
-		p.wrapped(st.name, "")
-		p.raw(gsNormal)
+	p := &escw{width: lay.cols, lay: lay}
+	p.raw(cmdInit + cmdNormalSz)
+	if on.ReroutedFrom != "" { // the receipt's own bands (writeRerouted), as on every slip of a stand-in
+		writeRerouted(p.raw, func() { p.raw(cmdFeed) }, on.ReroutedFrom, lay)
+		p.raw(cmdNormalSz)
 	}
-	for _, l := range st.addressLines {
-		if strings.TrimSpace(l) != "" {
-			p.wrapped(l, "")
-		}
-	}
-	if st.phone != "" {
-		p.line(phoneParens(st.phone))
-	}
-	p.left()
-	p.feed(1)
-	// dateTimeLine
-	d := "Date: " + shortDate(at)
-	pad := w / 2
-	if pad < len(d)+2 {
-		pad = len(d) + 2
-	}
-	p.line(d + strings.Repeat(" ", pad-len(d)) + "Time: " + shortTime(at))
-	// orderNumber
-	num := snap.SourceEventID
-	if snap.KitchenNumber != nil {
-		num = fmt.Sprintf("%d", *snap.KitchenNumber)
-	}
-	t := "Order #: " + num
-	p.bold(true)
-	if len(dclean(t))*2 <= w {
-		p.raw(gsBig)
-	} else {
-		p.raw(gsTall)
-	}
-	p.line(t)
-	p.raw(gsNormal)
-	p.bold(false)
-	p.line("DELIVERY")
-	if by := strings.TrimSpace(snap.TakenBy); by != "" { // a call-center order (contract §2.10ab)
-		p.wrapped(by, "")
-	}
-	if snap.OutOfArea { // outside the store's area, taken after the warning (contract §2.10ab)
-		p.bold(true)
-		p.line("OUT OF AREA")
-		p.bold(false)
-	}
-	if due := snap.Fulfillment.PromisedAt; due != nil && !due.IsZero() {
-		p.bold(true)
-		p.wrapped("FUTURE: for "+shortDate(*due)+" "+shortTime(*due), "")
-		p.bold(false)
-	}
-	if n := strings.TrimSpace(snap.Customer.DisplayName); n != "" {
-		p.wrapped(strings.ToUpper(n), "")
-	}
-	phone := strings.TrimSpace(snap.Customer.Phone)
-	if phone != "" {
-		phone = phoneParens(phone)
-	}
-	labelled(p, "Phone", phone)
-	if a := snap.Fulfillment.Address; a != nil {
-		labelled(p, "Street", a.Line1)
-		if l2 := strings.TrimSpace(a.Line2); l2 != "" {
-			p.wrapped(apt(l2), "")
-		}
-		labelled(p, "City", strings.ToUpper(cityLine(a)))
-		if notes := strings.TrimSpace(a.Notes); notes != "" {
-			p.feed(1)
-			labelled(p, "Directions", notes)
-		}
-	}
-	if n := strings.TrimSpace(snap.Notes); n != "" {
-		labelled(p, "Notes", n)
-	}
-	p.feed(1)
-	pays := snap.Payments
-	var last *order.PaymentSummary
-	for i := range pays {
-		if pays[i].AmountCents > 0 {
-			last = &pays[i]
-		}
-	}
-	if last != nil {
-		p.wrapped("Payment Date Time: "+shortDate(at)+" "+shortTime(at), "  ")
-	}
-	if ref := strings.TrimSpace(snap.SourceEventID); ref != "" {
-		p.wrapped("Transaction ID: "+ref, strings.Repeat(" ", 16))
-	}
-	p.line(strings.Repeat("-", w))
-	deliveryItems(p, snap, voided)
-	if len(snap.Money.Discounts) > 0 {
-		p.bold(true)
-		p.line("Adjustments")
-		p.bold(false)
-		for _, dc := range snap.Money.Discounts {
-			amt := paren(dc.Amount)
-			label := dc.Label
-			if label == "" {
-				label = dc.Type
-			}
-			for i, l := range dwrap(dclean(label), w-len(amt)-1, "") {
-				if i == 0 {
-					p.line(dleftRight(l, amt, w))
-				} else {
-					p.line(l)
-				}
-			}
-		}
-	}
-	p.line(strings.Repeat("-", w))
-	p.feed(1)
-	deliveryTotals(p, snap)
-	p.feed(1)
-	paid := int64(0)
-	for _, x := range pays {
-		paid += x.AmountCents
-	}
-	due := min(max(snap.Money.Total-paid, 0), max(snap.Money.Total, 0))
-	if len(pays) == 0 {
-		due = snap.CashDue()
-	}
-	if !voided && due > 0 {
-		p.bold(true)
-		p.wrapped("Collect Cash "+moneyC(due), "")
-		p.bold(false)
-	} else {
-		for _, x := range pays {
-			name := tenderName(x)
-			if x.AmountCents < 0 {
-				p.wrapped("Refund "+name+" -"+moneyC(-x.AmountCents), "  ")
-				continue
-			}
-			p.wrapped(name+" "+moneyC(x.AmountCents), "  ")
-		}
-	}
-	p.feed(1)
-	p.center()
-	p.line(copy)
-	p.left()
-	p.feed(1)
-	// storeFooter
-	p.center()
-	if st.website != "" {
-		p.line("Order Online")
-		p.wrapped(st.website, "")
-		p.feed(1)
-	}
-	i := 0
-	for _, l := range strings.Split(st.footer, "\n") {
-		if l = strings.TrimSpace(l); l == "" {
-			continue
-		}
-		if i == 0 {
-			p.raw(gsTall)
-		}
-		p.wrapped(l, "")
-		if i == 0 {
-			p.raw(gsNormal)
-		}
-		i++
-	}
-	p.left()
-	p.raw(poweredByFooter(p.lay))
-	p.raw(cmdNormalSz)
-	p.feed(3)
-	p.raw(cmdCut)
+	softSlip(p, snap, storeOf(sc, prefs.Normalize()), at, CustomerCopy, headerFor(sc, lay))
+	return p.buf.Bytes()
 }
 
 // tenderName is a payment as the terminal names it on the delivery tickets:
@@ -444,23 +291,6 @@ func nonEmpty(ss ...string) []string {
 		}
 	}
 	return out
-}
-
-// labelled is "Phone      : (667) 403-0865", only when value says something;
-// a long value wraps under itself.
-func labelled(p *escw, label, value string) {
-	value = strings.TrimSpace(value)
-	if value == "" {
-		return
-	}
-	head := fmt.Sprintf("%-10s : ", label)
-	for i, l := range dwrap(dclean(value), p.width-len(head), "") {
-		if i == 0 {
-			p.line(head + l)
-		} else {
-			p.line(strings.Repeat(" ", len(head)) + l)
-		}
-	}
 }
 
 // deliveryItems is itemLines: quantity, the name in capitals (size first),
@@ -605,10 +435,13 @@ func deliveryTotals(p *escw, snap order.Snapshot) {
 	if deliveryFee > 0 {
 		pair("Delivery:", moneyC(deliveryFee))
 	}
-	if m.Tip > 0 {
-		pair("Tip:", moneyC(m.Tip))
+	// The store's own orders keep their tips on the payments (main's rule):
+	// the copy shows them as the Tip and inside the Total that was charged.
+	tips := snap.PaymentTips()
+	if tip := m.Tip + tips; tip > 0 {
+		pair("Tip:", moneyC(tip))
 	}
-	total := dclean(moneyC(m.Total))
+	total := dclean(moneyC(m.Total + tips))
 	p.bold(true)
 	if len("Total:")+1+len(total) <= w/2 {
 		p.raw(gsBig)

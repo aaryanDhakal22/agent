@@ -18,6 +18,18 @@ type StoreContext struct {
 	Tenant   TenantContext    `json:"tenant"`
 	Location LocationContext  `json:"location"`
 	Printers []PrinterContext `json:"printers"`
+	// ReceiptLogo is the store's logo for the top of the receipts (main's
+	// published Website logo, PNG / JPEG / WebP; the bytes from GET
+	// /store/v1/agent/receipt-logo). Absent = none (contract §2.1j).
+	ReceiptLogo *ReceiptLogo `json:"receipt_logo,omitempty"`
+}
+
+// ReceiptLogo names the store's receipt logo; ETag is the quoted HTTP ETag
+// main answers with (sent back as If-None-Match).
+type ReceiptLogo struct {
+	ID          string `json:"id"`
+	ETag        string `json:"etag"`
+	ContentType string `json:"content_type"`
 }
 
 type TenantContext struct {

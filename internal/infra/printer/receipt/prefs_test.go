@@ -44,7 +44,9 @@ func prefsWith(edit func(*order.ReceiptPrefs)) order.ReceiptPrefs {
 
 func strPtr(s string) *string { return &s }
 
-func receiptTicket() printer.Ticket { return printer.Ticket{Kind: printer.TicketReceipt} }
+// receiptTicket is the full receipt (buildFull: the legacy full ticket + BuildWith; the customer
+// receipt itself is SoftTouch's slip since 2026-11-12, softtouch.go).
+func receiptTicket() printer.Ticket { return printer.Ticket{Kind: printer.TicketFull} }
 
 func stationTicket() printer.Ticket {
 	snap := previewDelivery()
@@ -205,10 +207,10 @@ func TestBuildSample(t *testing.T) {
 	if n := strings.Count(got, "THANK YOU"); n != 2 {
 		t.Errorf("footer on both receipt copies, got %d", n)
 	}
-	if n := strings.Count(got, " CUSTOMER, SAMPLE "); n != 2 {
-		t.Errorf("two receipt copies, got %d", n)
+	if n := strings.Count(got, "CUSTOMER , SAMPLE"); n != 2 {
+		t.Errorf("two receipt copies (SoftTouch's slip), got %d", n)
 	}
-	for _, want := range []string{"#1234\n", cmdHugeSz + "1234\n", "CUSTOMER, SAMPLE\n", "   - extra ranch please\n", "Also on this order:", "SAMPLE - not a real order", "PAID - CARD"} {
+	for _, want := range []string{"Order #: 1234\n", cmdHugeSz + "1234\n", "CUSTOMER, SAMPLE\n", "   - extra ranch please\n", "Also on this order:", "SAMPLE - not a real order", "XXXXXXXXXXXX4242 Card"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("sample missing %q", want)
 		}
@@ -216,8 +218,8 @@ func TestBuildSample(t *testing.T) {
 	if strings.Contains(got, "UNMATCHED") {
 		t.Error("the sample kitchen ticket has no unmatched items")
 	}
-	// 2 receipt copies x 2 cuts + the kitchen ticket's cut.
-	if n := strings.Count(got, cmdCut); n != 5 {
-		t.Errorf("cuts: got %d want 5", n)
+	// 2 receipt copies (one cut each) + the kitchen ticket's cut.
+	if n := strings.Count(got, cmdCut); n != 3 {
+		t.Errorf("cuts: got %d want 3", n)
 	}
 }

@@ -106,9 +106,9 @@ def test_station_tickets_and_receipt(kitchen, fakes) -> None:
     assert "$" not in pizza, "station tickets carry no prices"
     # Wings station mirrors it.
     assert "1  HOT WINGS" in wings and "\n   1 Pepperoni Pizza (Large)\n" in wings
-    # Front = the full customer receipt only (v1 layout: size on the price
-    # line, the item name under it).
-    assert len(fakes["Front"].jobs) == 1 and "Total:" in front and "1   Large" in front and "    Pepperoni Pizza\n" in front
+    # Front = the customer receipt only, in SoftTouch's layout (2026-11-12):
+    # quantity, the size and name in capitals, the price on the right.
+    assert len(fakes["Front"].jobs) == 1 and "Total:" in front and "1   LARGE PEPPERONI PIZZA " in front, front
     assert "REROUTED" not in pizza + wings + front
 
 
@@ -127,7 +127,7 @@ def test_items_on_the_receipt_printer_print_only_on_the_receipt(kitchen, fakes) 
     _wait_jobs(fakes["Front"], 1)
     intentional_sleep(1.5, "absence: nothing else may print")
     assert len(fakes["Front"].jobs) == 1, "Front must print only the receipt"
-    assert "Total:" in fakes["Front"].text() and "Can Soda" in fakes["Front"].text()
+    assert "Total:" in fakes["Front"].text() and "CAN SODA" in fakes["Front"].text()
     pizza = fakes["Pizza"].text()
     # 2.4.0: a receipt-only item isn't listed for the cooks.
     assert "1  PEPPERONI PIZZA" in pizza and "Can Soda" not in pizza, pizza

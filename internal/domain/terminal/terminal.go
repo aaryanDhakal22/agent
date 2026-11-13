@@ -662,6 +662,24 @@ func (p Payment) Wire() map[string]any {
 }
 
 // Signed is the payment's effect on the balance (a refund counts negative).
+// Summary is the payment as the order's snapshot lists it (what the Pi's
+// printed copies read): signed amount and tip, the card's last four, auth
+// code, tender, entry and processor reference (Square's payment id first).
+func (p Payment) Summary() order.PaymentSummary {
+	amt, tip := p.Signed()
+	ref := strings.TrimSpace(p.SquarePaymentID)
+	if ref == "" {
+		ref = strings.TrimSpace(p.Ref)
+	}
+	s := order.PaymentSummary{Method: MethodOf(p.Tender), AmountCents: amt, Last4: p.Last4, AuthCode: p.AuthCode,
+		TipCents: tip, Tender: p.Tender, Entry: p.Entry, Ref: ref, ID: p.ID, Brand: p.Brand}
+	if !p.At.IsZero() {
+		at := p.At.UTC()
+		s.At = &at
+	}
+	return s
+}
+
 func (p Payment) Signed() (amount, tip int64) {
 	if p.Refund {
 		return -p.AmountCents, -p.TipCents

@@ -89,11 +89,18 @@ func PlanWith(snap order.Snapshot, roster []RosterEntry, mode printer.Mode, rule
 	fullTicket := printer.Ticket{Kind: printer.TicketFull, TargetID: receipt.ID, Station: receipt.Name}
 
 	switch mode {
-	case printer.ModeReceipt:
+	case printer.ModeReceipt: // every caller is a Reprint: the receipt says so
 		if !isRouted(snap) {
+			fullTicket.Reprint = true
 			return []printer.Ticket{fullTicket}, nil
 		}
+		receiptTicket.Reprint = true
 		return []printer.Ticket{receiptTicket}, nil
+	case printer.ModeDeliveryUpdate:
+		if !strings.EqualFold(snap.Fulfillment.Type, "delivery") {
+			return nil, nil
+		}
+		return []printer.Ticket{{Kind: printer.TicketDeliveryCopies, TargetID: receipt.ID, Station: receipt.Name, Updated: true}}, nil
 	case printer.ModeKitchen:
 		return stationTickets(snap, roster, receipt)
 	case printer.ModePlaced:

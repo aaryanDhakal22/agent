@@ -141,6 +141,7 @@ func (s *Service) PrintChange(ctx context.Context, so order.StoredOrder, added, 
 		}
 		s.printEvents(label(so)+" change (counter)", out)
 	})
+	s.deferDeliveryUpdate(ctx, so) // the driver's copies: one UPDATED pair, after the charge (delivery_update.go)
 }
 
 // CounterOrderChanged tells main (floor sync) and the tablets about a counter

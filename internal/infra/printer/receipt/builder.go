@@ -47,14 +47,24 @@ const (
 func Build(snap order.Snapshot, sc storeconfig.StoreContext, t printer.Ticket, prefs order.ReceiptPrefs) []byte {
 	snap, sc, t, prefs = scrubSnapshot(snap), scrubStore(sc), scrubTicket(t), scrubPrefs(prefs) // scrub.go
 	if t.Kind == printer.TicketDeliveryCopies {
-		return BuildDeliveryCopies(snap, sc, prefs, printer.Paper{Cols: t.Cols, ReroutedFrom: t.ReroutedFrom})
+		return BuildDeliveryCopies(snap, sc, prefs, printer.Paper{Cols: t.Cols, ReroutedFrom: t.ReroutedFrom, Updated: t.Updated})
 	}
 	snap = localize(snap, sc)
 	prefs = prefs.Normalize()
 	if t.Kind == printer.TicketStation {
 		return buildStation(snap, t, prefs)
 	}
-	out := buildFull(snap, sc, t.ReroutedFrom, prefs, layoutFor(t.Cols))
+	var out []byte
+	if t.Kind == printer.TicketReceipt && snap.Voided == "" {
+		// The customer receipt = SoftTouch's slip (the owner, 2026-11-12; softtouch.go);
+		// a voided one keeps buildFull's struck-through lines.
+		out = BuildCustomerReceipt(snap, sc, prefs, printer.Paper{Cols: t.Cols, ReroutedFrom: t.ReroutedFrom})
+	} else {
+		out = buildFull(snap, sc, t.ReroutedFrom, prefs, layoutFor(t.Cols))
+	}
+	if t.Reprint { // the band goes right after the printer's init, above the store's header
+		out = reprintTop(out, layoutFor(t.Cols))
+	}
 	if t.Future { // a future order's receipt printed early (2.4.0)
 		out = futureReceiptTop(out, layoutFor(t.Cols))
 	}
@@ -250,6 +260,48 @@ func buildFull(snap order.Snapshot, sc storeconfig.StoreContext, reroutedFrom st
 	case !hasCardPayment(snap.Payments):
 		// Paid another way (a third party, an invoice): nothing to collect.
 		w("PAID")
+	case snap.Source == order.SourceCounter:
+		// The store's own order (a terminal's or the call center's): one line
+		// per card with what it was charged (its tip too), how it was taken
+		// and Square's id; several cards, a tip added afterwards and a
+		// refund each get their line.
+		w("PAID - CARD")
+		w(cmdBaseSz)
+		w(cmdLeft)
+		nl()
+		for _, p := range snap.Payments {
+			if p.Method != "card" {
+				continue
+			}
+			name := "Card"
+			if p.Last4 != "" {
+				name = "Card ****" + p.Last4
+			}
+			switch {
+			case p.AmountCents < 0:
+				w(leftRight("Refund "+name, "-"+dollars(-snap.TenderCents(p)), l.cols))
+				nl()
+				continue
+			case p.AmountCents == 0 && p.TipCents != 0:
+				w(leftRight(name+" tip", dollars(p.TipCents), l.cols))
+				nl()
+				continue
+			}
+			w(leftRight(name, dollars(snap.TenderCents(p)), l.cols))
+			nl()
+			if e := p.EntryLabel(); e != "" { // MANUALLY ENTERED, SQUARE APP, the reader's entry
+				w(e)
+				nl()
+			}
+			if p.AuthCode != "" {
+				w("AuthCode: " + p.AuthCode)
+				nl()
+			}
+			if ref := strings.TrimSpace(p.Ref); ref != "" {
+				w(wrapJoin("Transaction ID: "+ref, l.cols, "  "))
+				nl()
+			}
+		}
 	default:
 		// First card payment drives the displayed last4/auth code.
 		card := firstCardPayment(snap.Payments)
@@ -259,6 +311,10 @@ func buildFull(snap order.Snapshot, sc storeconfig.StoreContext, reroutedFrom st
 		nl()
 		if card.Last4 != "" {
 			w("Card: ****" + card.Last4)
+			nl()
+		}
+		if e := card.EntryLabel(); e != "" { // MANUALLY ENTERED for a typed card (the terminal's words)
+			w(e)
 			nl()
 		}
 		if card.AuthCode != "" {
@@ -408,8 +464,9 @@ func buildFull(snap order.Snapshot, sc storeconfig.StoreContext, reroutedFrom st
 		w(l.rightPair("Tax:", dollars(snap.Money.Tax)))
 		nl()
 	}
-	if snap.Money.Tip > 0 {
-		w(l.rightPair("Tips :", dollars(snap.Money.Tip)))
+	payTips := snap.PaymentTips() // the store's own orders: tips stay on the payments
+	if tip := snap.Money.Tip + payTips; tip > 0 {
+		w(l.rightPair("Tips :", dollars(tip)))
 		nl()
 	}
 	for _, d := range snap.Money.Discounts {
@@ -422,7 +479,7 @@ func buildFull(snap order.Snapshot, sc storeconfig.StoreContext, reroutedFrom st
 			nl()
 		}
 	}
-	w(l.rightPair("Total:", dollars(snap.Money.Total)))
+	w(l.rightPair("Total:", dollars(snap.Money.Total+payTips)))
 
 	nl()
 	w(l.rule("-"))
@@ -434,7 +491,7 @@ func buildFull(snap order.Snapshot, sc storeconfig.StoreContext, reroutedFrom st
 	if cashDue > 0 {
 		w(wrapJoin("Collect Cash: "+dollars(cashDue), l.big(), ""))
 	} else {
-		w(wrapJoin("Order Total:"+dollars(snap.Money.Total), l.big(), ""))
+		w(wrapJoin("Order Total:"+dollars(snap.Money.Total+payTips), l.big(), "")) // = the Total above
 	}
 	w(cmdBoldOff)
 	w(cmdBaseSz)
@@ -489,13 +546,28 @@ func writeVoided(w func(string), nl func(), label string, l layout) {
 // futureReceiptTop puts an inverted FUTURE bar at the very top of a
 // customer receipt printed early for a future order (2.4.0), right after
 // the printer reset that starts it.
+// reprintTop puts the REPRINT / REIMPRESION band above the receipt (right
+// after the printer's init): a Reprint is never taken for the first copy.
+// (PC437 has no capital Ó: the Spanish word prints without its accent.)
+func reprintTop(out []byte, l layout) []byte {
+	band := cmdCenter + cmdBoldOn + cmdDoubleSz + cmdInvertOn + pad("REPRINT", min(12, l.big())) + cmdInvertOff + cmdFeed +
+		cmdInvertOn + pad("REIMPRESION", min(12, l.big())) + cmdInvertOff + cmdBaseSz + cmdBoldOff + cmdFeed + cmdFeed
+	for _, head := range []string{cmdInit + cmdBaseSz, cmdInit + cmdNormalSz} {
+		if bytes.HasPrefix(out, []byte(head)) {
+			return append(append([]byte(head), band...), out[len(head):]...)
+		}
+	}
+	return append([]byte(band), out...)
+}
+
 func futureReceiptTop(out []byte, l layout) []byte {
 	bar := cmdCenter + cmdBoldOn + cmdDoubleSz + cmdInvertOn + pad("FUTURE", min(12, l.big())) + cmdInvertOff + cmdBaseSz + cmdBoldOff + cmdFeed + cmdFeed
-	head := cmdInit + cmdBaseSz
-	if !bytes.HasPrefix(out, []byte(head)) {
-		return append([]byte(bar), out...)
+	for _, head := range []string{cmdInit + cmdBaseSz, cmdInit + cmdNormalSz} {
+		if bytes.HasPrefix(out, []byte(head)) {
+			return append(append([]byte(head), bar...), out[len(head):]...)
+		}
 	}
-	return append(append([]byte(head), bar...), out[len(head):]...)
+	return append([]byte(bar), out...)
 }
 
 // textSize maps a receipt-settings size onto its ESC/POS size command:

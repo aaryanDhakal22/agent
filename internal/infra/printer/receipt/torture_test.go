@@ -218,6 +218,7 @@ func dumpTortureWidth(t *testing.T, dir string, cols int) {
 	sc := tortureSC()
 	def := order.DefaultReceiptPrefs()
 	totals := []string{"Subtotal", "Tax", "Total"}
+	slipTotals := []string{"Sub-total", "Tax", "Total"} // SoftTouch's slip (softtouch.go, 2026-11-12)
 
 	receiptTexts := func(s order.Snapshot, sizes bool) []string {
 		x := append(textsOf(s.Items, sizes), s.Notes)
@@ -225,6 +226,9 @@ func dumpTortureWidth(t *testing.T, dir string, cols int) {
 			x = append(x, a.Line1, a.Line2, a.City)
 		}
 		for _, f := range s.Money.Fees {
+			if s.Voided == "" && f.Type == "delivery" {
+				continue // the slip prints it as "Delivery:" (SoftTouch's words)
+			}
 			if f.Type != "delivery" || s.Fulfillment.Type == "delivery" {
 				x = append(x, f.Label)
 			}
@@ -247,6 +251,10 @@ func dumpTortureWidth(t *testing.T, dir string, cols int) {
 		// a voided slip's items are struck-through pictures: the verifier reads them back (ocr.py)
 		if rerouted != "" {
 			x = append(x, rerouted)
+		}
+		if s.Voided == "" {
+			put(name, data, "receipt", x, slipTotals...)
+			return
 		}
 		put(name, data, "receipt", x, totals...)
 	}
@@ -271,12 +279,12 @@ func dumpTortureWidth(t *testing.T, dir string, cols int) {
 	tiny.Money = order.Money{Subtotal: 100, Total: 100}
 	tiny.Payments = nil
 	put("receipt_pickup_tiny", Build(tiny, sc, printer.Ticket{Kind: printer.TicketReceipt, Cols: cols}, def), "receipt",
-		[]string{"Q"}, "Subtotal", "Total")
+		[]string{"Q"}, "Sub-total", "Total")
 	fut := tortureSnap("delivery", items[:3]...)
 	due := fut.PlacedAt.Add(26 * time.Hour)
 	fut.Fulfillment.PromisedAt = &due
 	data := Build(fut, sc, printer.Ticket{Kind: printer.TicketReceipt, Future: true, Cols: cols}, def)
-	put("receipt_delivery_future", data, "receipt", receiptTexts(fut, true), totals...)
+	put("receipt_delivery_future", data, "receipt", receiptTexts(fut, true), slipTotals...)
 	// an online delivery's Merchant + Customer Copy (the terminal's layout, §2.10aa)
 	dc := tortureSnap("delivery", items...)
 	dcTexts := append(textsOf(dc.Items, false), tStreet, tApt, tCity, tDirections, tNote300)
@@ -369,9 +377,9 @@ func dumpTortureWidth(t *testing.T, dir string, cols int) {
 		[]string{tName120, tModLong, tCustomer, tStaff, tUnicode1, tPrinter, tStoreName})
 	put("test_slip_long_names", BuildTestSlip(tPrinter, sc, "Front Counter Tablet by the Register (Left)", closed, cols), "test_slip",
 		[]string{tPrinter, "Front Counter Tablet by the Register (Left)"})
-	put("sample_receipt", BuildSample(sc, def, closed, cols), "sample", nil, totals...)
+	put("sample_receipt", BuildSample(sc, def, closed, cols), "sample", nil, slipTotals...)
 	put("future_sample_kitchen", BuildFutureSample(sc, def, closed, true, cols), "station", nil)
-	put("future_sample_receipt", BuildFutureSample(sc, def, closed, false, cols), "sample", nil, totals...)
+	put("future_sample_receipt", BuildFutureSample(sc, def, closed, false, cols), "sample", nil, slipTotals...)
 
 	// --- printer commands typed into the texts (the security review, H3; scrub.go): ESC p (drawer kick),
 	// DLE DC4, GS V (cut), ESC @ in the customer, the notes, the address, the item / modifier names, the
@@ -384,9 +392,9 @@ func dumpTortureWidth(t *testing.T, dir string, cols int) {
 	injTexts := append(textsOf(want.Items, false), want.Notes, want.Fulfillment.Address.Line1, want.Fulfillment.Address.Line2,
 		want.Fulfillment.Address.City)
 	put("receipt_delivery_injected", Build(inj, sc, printer.Ticket{Kind: printer.TicketReceipt, ReroutedFrom: tInject(tPrinter), Cols: cols}, def),
-		"receipt", append(injTexts[:len(injTexts):len(injTexts)], lastFirst(want.Customer.DisplayName), refClean(tInject(tPrinter))), totals...)
+		"receipt", append(injTexts[:len(injTexts):len(injTexts)], lastFirst(want.Customer.DisplayName), refClean(tInject(tPrinter))), slipTotals...)
 	put("delivery_copies_injected", Build(inj, sc, printer.Ticket{Kind: printer.TicketDeliveryCopies, Cols: cols}, def),
-		"receipt", append(injTexts[:len(injTexts):len(injTexts)], want.Customer.DisplayName, want.Fulfillment.Address.Notes))
+		"receipt", append(injTexts[:len(injTexts):len(injTexts)], softName(want.Customer.DisplayName), want.Fulfillment.Address.Notes))
 	put("station_injected", Build(inj, sc, printer.Ticket{Kind: printer.TicketStation, TargetID: "p-pizza", Station: tInject("Pizza"),
 		Mine: inj.Items[:1], Others: inj.Items[1:], ReroutedFrom: tInject(tPrinter), Cols: cols}, def), "station",
 		append(textsOf(want.Items[:1], false), want.Notes, lastFirst(want.Customer.DisplayName), want.Items[1].Name, want.Items[2].Name))

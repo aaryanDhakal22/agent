@@ -365,7 +365,10 @@ func TestScrubNoteCannotForgeALine(t *testing.T) {
 					t.Errorf("%s %q at %d: %v", name, note, cols, a.bad)
 				}
 				for _, l := range a.lines {
-					if s := strings.TrimSpace(l); strings.HasPrefix(s, "PAID") {
+					// A forged line starts where a line of the slip starts (column 0, or the receipt's
+					// margin); a word wrapped onto a continuation line is indented under its label.
+					lead := len(l) - len(strings.TrimLeft(l, " "))
+					if s := strings.TrimSpace(l); strings.HasPrefix(s, "PAID") && lead <= marginSpaces {
 						t.Errorf("%s at %d columns, note %q: the slip has a line %q the store never printed", name, cols, note, s)
 					}
 				}
