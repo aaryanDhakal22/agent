@@ -22,6 +22,11 @@ name: Build and Release arm64 binary
 # newer push to the same branch cancels the older run (never for tags).
 #
 # Each release carries agent-linux-arm64 + agent-linux-arm64.sha256.
+#
+# Gate attestation (SHIP-PLAN.md item 7): a commit whose `quicc/gate` status
+# is success (posted by quicc-ops scripts/gate-attest.sh after a green full
+# gate on clean, pushed trees) skips the test job: the gate ran those tests
+# and more. Builds, images and releases always run.
 # ─────────────────────────────────────────────────────────────────────────
 
 on:
@@ -33,6 +38,7 @@ on:
 permissions:
   contents: write # create releases + upload assets
   actions: read   # find the branch run a tag can reuse
+  statuses: read  # the quicc/gate status (gate job)
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -74,12 +80,37 @@ jobs:
           echo "no tested build of this tree: full build"
 
   # ──────────────────────────────────────────────────────────────────────
-  # Verify — go vet + go test.
+  # Gate — did quicc-ops' release gate already test this exact commit?
+  # ──────────────────────────────────────────────────────────────────────
+  gate:
+    name: Gate attestation (quicc/gate)
+    runs-on: ubuntu-latest
+    permissions:
+      statuses: read
+    outputs:
+      tested: ${{ steps.check.outputs.tested }}
+    steps:
+      - id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          s=$(gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/status" \
+                --jq '[.statuses[] | select(.context == "quicc/gate")][0] | "\(.state) \(.description)"' 2>/dev/null || true)
+          if [ "${s%% *}" = success ]; then
+            echo "tested=true" >> "$GITHUB_OUTPUT"
+            echo "::notice title=Tests skipped::quicc/gate is green on ${GITHUB_SHA::7} (${s#* }): the release gate ran these tests"
+            echo "Tests skipped: quicc/gate is green on \`${GITHUB_SHA::7}\` (${s#* })." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "no quicc/gate success on ${GITHUB_SHA::7}: the tests run"
+          fi
+
+  # ──────────────────────────────────────────────────────────────────────
+  # Verify — go vet + go test (skipped when the gate already passed it).
   # ──────────────────────────────────────────────────────────────────────
   verify:
     name: Verify (go vet + go test)
-    needs: reuse
-    if: ${{ !cancelled() && needs.reuse.outputs.run == '' }}
+    needs: [reuse, gate]
+    if: ${{ !cancelled() && needs.reuse.outputs.run == '' && needs.gate.outputs.tested != 'true' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -151,8 +182,10 @@ jobs:
   # ──────────────────────────────────────────────────────────────────────
   release-staging:
     name: Publish rolling staging release
-    needs: [verify, build]
-    if: ${{ !cancelled() && github.ref == 'refs/heads/staging' && needs.verify.result == 'success' && needs.build.result == 'success' }}
+    needs: [gate, verify, build]
+    if: >-
+      !cancelled() && github.ref == 'refs/heads/staging' && needs.build.result == 'success' &&
+      (needs.verify.result == 'success' || needs.gate.outputs.tested == 'true')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
@@ -176,11 +209,12 @@ jobs:
   # ──────────────────────────────────────────────────────────────────────
   release-production:
     name: Publish production release
-    needs: [reuse, verify, build]
+    needs: [reuse, gate, verify, build]
     if: >-
       !cancelled() && github.ref_type == 'tag' && startsWith(github.ref, 'refs/tags/v') &&
       needs.reuse.result == 'success' &&
-      (needs.reuse.outputs.run != '' || (needs.verify.result == 'success' && needs.build.result == 'success'))
+      (needs.reuse.outputs.run != '' ||
+       (needs.build.result == 'success' && (needs.verify.result == 'success' || needs.gate.outputs.tested == 'true')))
     runs-on: ubuntu-latest
     steps:
       - name: Binary from the reused run
