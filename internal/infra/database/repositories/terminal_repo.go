@@ -89,7 +89,14 @@ func (r *OrderRepository) PlaceCounterOrder(ctx context.Context, in terminal.New
 		if err != nil {
 			return err
 		}
+		// The tips: the order's own plus those taken with the payments placed with
+		// it (a card tip at SEND, the call center's keyed card with its tip):
+		// the driver report reads this column (2.5.2; it was the cart's alone).
 		due, tips := snap.CashDue(), snap.Money.Tip
+		for _, p := range in.Payments {
+			_, t := p.Signed()
+			tips += t
+		}
 		now := in.Now
 		ins := models.InsertCounterOrderParams{ID: snap.ID, TenantID: snap.TenantID, LocationID: snap.LocationID,
 			Source: snap.Source, SourceEventID: snap.SourceEventID, Snapshot: string(raw), ArrivalDate: fmtTS(now),
@@ -305,7 +312,7 @@ func applyPayments(ctx context.Context, q *models.Queries, so order.StoredOrder,
 		paidAt = nullTS(*so.Status.PaidAt)
 	}
 	err = q.SetCounterMoney(ctx, models.SetCounterMoneyParams{Snapshot: string(raw), Paid: due == 0,
-		CashDueCents: sql.NullInt64{Int64: due, Valid: true}, TipCents: sql.NullInt64{Int64: tipsOf(ctx, q, so.Order.ID), Valid: true}, PaidAt: paidAt, ID: so.Order.ID})
+		CashDueCents: sql.NullInt64{Int64: due, Valid: true}, TipCents: sql.NullInt64{Int64: snap.Money.Tip + tipsOf(ctx, q, so.Order.ID), Valid: true}, PaidAt: paidAt, ID: so.Order.ID})
 	return snap, err
 }
 

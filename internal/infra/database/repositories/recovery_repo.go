@@ -210,6 +210,13 @@ func (r *OrderRepository) Restore(ctx context.Context, data order.RestoreData) (
 			if err := restorePayments(ctx, q, ro, batchID, &res); err != nil {
 				return err
 			}
+			if snap.Source == order.SourceCounter { // the tips taken with its payments too (the driver report reads it)
+				if t := tipsOf(ctx, q, snap.ID); t != 0 {
+					if _, err := q.Raw().ExecContext(ctx, `UPDATE orders SET tip_cents = ? WHERE id = ?`, snap.Money.Tip+t, snap.ID); err != nil {
+						return fmt.Errorf("restore order %s tips: %w", snap.ID, err)
+					}
+				}
+			}
 			res.Orders++
 			if st.State == order.StateArrived {
 				res.Waiting++

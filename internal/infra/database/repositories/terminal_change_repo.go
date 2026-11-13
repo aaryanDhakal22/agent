@@ -66,7 +66,7 @@ func (r *OrderRepository) ChangeCounterOrder(ctx context.Context, id, staffID, d
 			paidAt = nullTS(*cur.Status.PaidAt)
 		}
 		if err := q.SetCounterMoney(ctx, models.SetCounterMoneyParams{Snapshot: string(raw), Paid: due == 0,
-			CashDueCents: sql.NullInt64{Int64: due, Valid: true}, TipCents: sql.NullInt64{Int64: tipsOf(ctx, q, id), Valid: true},
+			CashDueCents: sql.NullInt64{Int64: due, Valid: true}, TipCents: sql.NullInt64{Int64: snap.Money.Tip + tipsOf(ctx, q, id), Valid: true},
 			PaidAt: paidAt, ID: id}); err != nil {
 			return fmt.Errorf("change order: %w", err)
 		}

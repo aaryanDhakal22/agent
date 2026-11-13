@@ -114,3 +114,18 @@ func TestDriverReport_Settlement(t *testing.T) {
 		t.Fatalf("capped share = %d", got)
 	}
 }
+
+// A tip a terminal took on an online / website card order (a tip added at the counter or afterwards:
+// Status.TipCents) is the driver's too (2.5.2); a cash order's stays out.
+func TestDriverReportLine_TerminalTipOnOnlineOrder(t *testing.T) {
+	card := []PaymentSummary{{Method: "card", AmountCents: 3000}}
+	l := NewDriverReportLine(StoredOrder{Order: Snapshot{Source: "online", Money: Money{Total: 3000, Tip: 500}, Payments: card},
+		Status: Status{TipCents: 300}})
+	if l.TipCents != 800 || l.Cash {
+		t.Fatalf("online card + terminal tip: %+v", l)
+	}
+	c := NewDriverReportLine(StoredOrder{Order: Snapshot{Source: "online", Money: Money{Total: 3000}}, Status: Status{TipCents: 300}})
+	if !c.Cash || c.TipCents != 0 {
+		t.Fatalf("online cash: %+v", c)
+	}
+}

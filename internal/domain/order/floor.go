@@ -433,7 +433,9 @@ func NewDriverReportLine(so StoredOrder) DriverReportLine {
 		l.setSlipMoney(snap.Money.Total-snap.Money.Tip, snap.Money.Tip) // an online total includes the tip
 		return l
 	}
-	tip := snap.Money.Tip
+	// The tips taken with a terminal's payments on it (a card tip added at the
+	// counter or afterwards; Status.TipCents, 2.5.2) are his too.
+	tip := snap.Money.Tip + max(so.Status.TipCents, 0)
 	if so.IsChannel() { // 2.5.0: the checkout tip + the tip added on the tablet
 		tip += so.Status.AddedTipCents
 		l.AddedTipCents, l.TipPending = so.Status.AddedTipCents, !so.Status.TipLocked
