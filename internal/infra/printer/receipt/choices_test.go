@@ -27,13 +27,23 @@ func choicesSnap(source, typ string) order.Snapshot {
 			{Name: "Mushrooms", Quantity: 1, UnitPrice: 100, Portion: order.PortionSecond},
 			{Name: "Side of Fries", Quantity: 1, UnitPrice: 399},
 			{Name: "House Salad", Quantity: 1, ShowOnDriverTicket: &yes},
+			// 2.5.7: the vendor's way (never stamped): a can the driver hands over, a cooking choice, a NO.
+			{Name: "Can of Ice Tea", Quantity: 1, Notes: "add"},
+			{Name: "Add Mayo", Quantity: 1, Notes: "add"},
+			{Name: "No Dip", Quantity: 1, Notes: "add"},
 		}}}
+	if source == order.SourceOnline { // the Pi never stamps an online vendor order
+		for i := range d.Items[0].Children {
+			d.Items[0].Children[i].ShowOnDriverTicket = nil
+		}
+	}
 	return d
 }
 
-// The customer slips' choice rule (the owner, agent 2.5.2): a priced choice always prints; a $0 one only
-// when our menu stamped it show_on_driver_ticket, never on an online vendor order; pickup and delivery
-// alike; the item note stays. A choice holding a bold word prints bold. 48 / 42 / 32 columns; goldens
+// The customer slips' choice rule (the owner, agent 2.5.2; 2.5.7): a priced choice always prints; a $0 one
+// only when the driver hands it over: our menu stamped it show_on_driver_ticket, or (not a NO) its name
+// holds a hand-over word ("Can of Ice Tea", "House Salad"), for an online vendor order too (never
+// stamped); pickup and delivery alike; the item note stays. A choice holding a bold word prints bold. 48 / 42 / 32 columns; goldens
 // testdata/slips/choices_*.golden.
 func TestSlipChoicesAndBoldWords(t *testing.T) {
 	sc, prefs := deliveryStoreCtx(), order.DefaultReceiptPrefs()
@@ -42,11 +52,11 @@ func TestSlipChoicesAndBoldWords(t *testing.T) {
 			source, typ string
 			shown       []string
 		}{
-			{order.SourceCounter, "pickup", []string{"Pepperoni", "Well Done", "2nd: Mushrooms", "Side of Fries", "House Salad"}},
-			{order.SourceCounter, "delivery", []string{"Pepperoni", "Well Done", "2nd: Mushrooms", "Side of Fries", "House Salad"}},
-			{order.SourceWeb, "pickup", []string{"Pepperoni", "Well Done", "2nd: Mushrooms", "Side of Fries", "House Salad"}},
-			{order.SourceOnline, "pickup", []string{"Pepperoni", "2nd: Mushrooms", "Side of Fries"}},
-			{order.SourceOnline, "delivery", []string{"Pepperoni", "2nd: Mushrooms", "Side of Fries"}},
+			{order.SourceCounter, "pickup", []string{"Pepperoni", "Well Done", "2nd: Mushrooms", "Side of Fries", "House Salad", "Can of Ice Tea"}},
+			{order.SourceCounter, "delivery", []string{"Pepperoni", "Well Done", "2nd: Mushrooms", "Side of Fries", "House Salad", "Can of Ice Tea"}},
+			{order.SourceWeb, "pickup", []string{"Pepperoni", "Well Done", "2nd: Mushrooms", "Side of Fries", "House Salad", "Can of Ice Tea"}},
+			{order.SourceOnline, "pickup", []string{"Pepperoni", "2nd: Mushrooms", "Side of Fries", "House Salad", "Can of Ice Tea"}},
+			{order.SourceOnline, "delivery", []string{"Pepperoni", "2nd: Mushrooms", "Side of Fries", "House Salad", "Can of Ice Tea"}},
 		} {
 			name := fmt.Sprintf("%s_%s_%d", c.source, c.typ, cols)
 			snap := choicesSnap(c.source, c.typ)
@@ -62,7 +72,8 @@ func TestSlipChoicesAndBoldWords(t *testing.T) {
 					t.Errorf("%s: %q missing\n%s", name, want, txt)
 				}
 			}
-			all := []string{"Pepperoni", "Well Done", "Light Sauce", "Regular Crust", "No Sauce", "Mushrooms", "Side of Fries", "House Salad"}
+			all := []string{"Pepperoni", "Well Done", "Light Sauce", "Regular Crust", "No Sauce", "Mushrooms", "Side of Fries", "House Salad",
+				"Can of Ice Tea", "Add Mayo", "No Dip"}
 			for _, x := range all {
 				if strings.Contains(txt, x) != containsAny(c.shown, x) {
 					t.Errorf("%s: %q printed = %v", name, x, strings.Contains(txt, x))

@@ -32,6 +32,8 @@ func StoreInfo(sc storeconfig.StoreContext, prefs order.ReceiptPrefs) map[string
 		"footer": prefs.Footer(str("receipt_footer")),
 		// a printed choice holding one of these words prints bold (receipt_prefs, 2.5.2)
 		"bold_choice_words": prefs.BoldChoiceWords.Words(),
+		// a $0 choice holding one of these whole words is one the driver hands over (2.5.7)
+		"handover_choice_words": prefs.HandoverChoiceWords.Words(),
 		// the slips' layout per kind of order (softtouch | classic, 2.5.2)
 		"receipt_style_online": prefs.StyleFor(order.SourceOnline), "receipt_style_store": prefs.StyleFor(order.SourceCounter)}
 }

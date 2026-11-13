@@ -45,7 +45,7 @@ def test_print_results_brand_and_taken_by_reach_main(rig):  # noqa: F811
 
     wait_until(synced, timeout=30, what="the order and its print results on main")
     jobs = detail["prints"]
-    assert [j["mode"] for j in jobs] == ["kitchen"], jobs
+    assert [j["mode"] for j in jobs] == ["placed"], jobs  # a SEND prints the placement plan (stations + a delivery's copies, 2.5.7)
     t = jobs[0]["tickets"]
     assert len(t) == 1, t
     assert t[0]["kind"] == "station" and t[0]["printer"] == "Pizza" and t[0]["result"] == "rerouted", t

@@ -19,7 +19,7 @@ func TestBuild_CondensedReceipt(t *testing.T) {
 		defaultLayout.itemLine(1, "Large Pepperoni Pizza", 2199), // 18.99 + 2.00 + 1.00
 		"    - Extra cheese\n",
 		defaultLayout.itemLine(2, "10 pc Buffalo Wings", 2598),
-		"    - Hot\n",
+		"    - Ranch dressing\n", // 2.5.7: a delivery's $0 choices are the hand-over ones
 		"    Note: extra ranch please\n",
 		"Subtotal:", "Total:", "PAID - CARD",
 	} {
@@ -27,7 +27,7 @@ func TestBuild_CondensedReceipt(t *testing.T) {
 			t.Errorf("condensed receipt lacks %q:\n%q", want, got)
 		}
 	}
-	for _, not := range []string{"Garlic crust", "Well done", "Sum:"} {
+	for _, not := range []string{"Garlic crust", "Well done", "    - Hot\n", "Sum:"} {
 		if strings.Contains(got, not) {
 			t.Errorf("condensed receipt has %q:\n%q", not, got)
 		}

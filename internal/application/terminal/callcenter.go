@@ -504,17 +504,6 @@ func takenBy(a Actor, st terminal.Staff, snap *order.Snapshot) {
 	}
 }
 
-// printCallcenterReceipt: a call-center order has no terminal printer, so
-// the Pi prints its customer receipt / delivery ticket on the store's
-// receipt printer (background; the station tickets printed as any SEND's).
-func (s *Service) printCallcenterReceipt(ctx context.Context, so order.StoredOrder) {
-	if p, ok := s.orders.(interface {
-		PrintOrderReceipt(ctx context.Context, so order.StoredOrder)
-	}); ok {
-		p.PrintOrderReceipt(ctx, so)
-	}
-}
-
 // --- reprint (every terminal kind) ---------------------------------------------------
 
 // Reprinter prints an order's customer receipt again on the store's receipt

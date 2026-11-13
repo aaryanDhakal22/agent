@@ -58,7 +58,7 @@ func TestBuildStation_Content(t *testing.T) {
 		// Printed on a stand-in: the reroute bands, English then Spanish, reverse + double size (2026-11-12).
 		cmdInvertOn + pad("REROUTED FROM OVEN", defaultLayout.big()) + cmdInvertOff,
 		cmdInvertOn + pad("REDIRIGIDO DE OVEN", defaultLayout.big()) + cmdInvertOff,
-		"2  Pepperoni Pizza\n   (Large)\n", "   - Extra cheese\n", "   Note: well done\n",
+		"2  Pepperoni Pizza\n   (Large)\n", H8 + "- Extra cheese\n", H8 + "Note: well done\n",
 		"1  Mystery\n", "** UNMATCHED **",
 		"Also on this order:\n   1 Fries\n",
 		"NOTE: Ring the bell twice\n", // the order's note, under the header (the owner, 2026-11-12)
@@ -91,7 +91,7 @@ func TestBuildStation_NoPrices(t *testing.T) {
 	snap, tk := stationFixture()
 	tk.Mine[0].Children = []order.LineItem{{Name: "Extra cheese", Quantity: 1, UnitPrice: 200}, {Name: "Ranch", Quantity: 2}}
 	got := string(BuildStation(snap, tk))
-	if !strings.Contains(got, "   - Extra cheese\n") || !strings.Contains(got, "   - (x2) Ranch\n") || strings.Contains(got, "$") {
+	if !strings.Contains(got, H8+"- Extra cheese\n") || !strings.Contains(got, H8+"- (x2) Ranch\n") || strings.Contains(got, "$") {
 		t.Fatalf("modifiers without prices: %q", got)
 	}
 }
@@ -110,13 +110,15 @@ func receiptFixture() order.Snapshot {
 }
 
 func TestBuildWith_LooksLikeTheV1Receipt(t *testing.T) {
-	got := string(BuildWith(receiptFixture(), storeconfigEmpty()))
+	snap := receiptFixture()
+	snap.Items[0].Children[1].Name = "Can of Coke" // a $0 choice the driver hands over (2.5.7: a delivery prints only those)
+	got := string(BuildWith(snap, storeconfigEmpty()))
 	for _, want := range []string{
 		cmdQuadSz + "#1104\n",            // the kitchen number in the vendor number's place
 		" GONZALEZ, MARIA ANA ",          // LAST, FIRST
 		"2   Large",                      // qty + size on the price line …
 		"    Pepperoni Pizza\n",          // … the item name on its own line
-		"     Well done\n",               // free modifier: no price
+		"     Can of Coke\n",             // free modifier: no price
 		"Extra cheese",                   // paid modifier keeps its price
 		cmdBoldOn + "     Side of Fries", // sides in bold
 		"Sum: $42.97",                    // 2 x $18.99 + modifiers, as v1 adds it
@@ -127,7 +129,7 @@ func TestBuildWith_LooksLikeTheV1Receipt(t *testing.T) {
 			t.Errorf("receipt missing %q", want)
 		}
 	}
-	if strings.Contains(got, "Well done                    $0.00") || strings.Contains(got, "Order #4417") {
+	if strings.Contains(got, "Can of Coke                  $0.00") || strings.Contains(got, "Well done") || strings.Contains(got, "Order #4417") {
 		t.Error("no $0.00 modifiers and no vendor order number on the receipt")
 	}
 }

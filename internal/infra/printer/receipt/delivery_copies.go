@@ -46,6 +46,9 @@ type escw struct {
 	// boldWords: a printed choice holding one of them prints bold
 	// (receipt_prefs.bold_choice_words, 2.5.2).
 	boldWords order.WordList
+	// handoverWords: a $0 choice holding one of them prints on the slip
+	// (receipt_prefs.handover_choice_words, 2.5.7, handedOver).
+	handoverWords order.WordList
 }
 
 func (p *escw) raw(s string) { p.buf.WriteString(s) }
@@ -223,7 +226,8 @@ func BuildDeliveryCopies(snap order.Snapshot, sc storeconfig.StoreContext, prefs
 	if loc, err := time.LoadLocation(sc.Location.Timezone); sc.Location.Timezone != "" && err == nil {
 		at = at.In(loc)
 	}
-	p := &escw{width: lay.cols, lay: lay, strikeImages: prefs.StrikeImages, boldWords: prefs.BoldChoiceWords}
+	p := &escw{width: lay.cols, lay: lay, strikeImages: prefs.StrikeImages, boldWords: prefs.BoldChoiceWords,
+		handoverWords: prefs.HandoverChoiceWords}
 	p.raw(cmdInit + cmdNormalSz)
 	st := storeOf(sc, prefs.Normalize())
 	classic := prefs.Normalize().StyleFor(snap.Source) == order.StyleClassic
@@ -267,7 +271,8 @@ func BuildCustomerReceipt(snap order.Snapshot, sc storeconfig.StoreContext, pref
 	if loc, err := time.LoadLocation(sc.Location.Timezone); sc.Location.Timezone != "" && err == nil {
 		at = at.In(loc)
 	}
-	p := &escw{width: lay.cols, lay: lay, strikeImages: prefs.StrikeImages, boldWords: prefs.BoldChoiceWords}
+	p := &escw{width: lay.cols, lay: lay, strikeImages: prefs.StrikeImages, boldWords: prefs.BoldChoiceWords,
+		handoverWords: prefs.HandoverChoiceWords}
 	p.raw(cmdInit + cmdNormalSz)
 	if on.ReroutedFrom != "" { // the receipt's own bands (writeRerouted), as on every slip of a stand-in
 		writeRerouted(p.raw, func() { p.raw(cmdFeed) }, on.ReroutedFrom, lay)
@@ -312,9 +317,8 @@ func nonEmpty(ss ...string) []string {
 
 // deliveryItems is itemLines: quantity, the name in capitals (size first),
 // the line's price at the right; modifiers indented under it with their own
-// price (half-pie modifiers by half); a line's note under them. $0 choices
-// stamped not-for-the-driver are left off (a delivery's tickets go with the
-// driver, §2.1g).
+// price (half-pie modifiers by half); a line's note under them. A $0 choice
+// prints only when the driver hands it over (slipShowsChoice, §2.1j).
 func deliveryItems(p *escw, snap order.Snapshot, voided bool) {
 	w := p.width
 	const priceW = 10
@@ -322,7 +326,7 @@ func deliveryItems(p *escw, snap order.Snapshot, voided bool) {
 	for _, it := range snap.Items {
 		var mods []order.LineItem
 		for _, c := range it.Children {
-			if slipShowsChoice(snap, c) {
+			if slipShowsChoice(c, p.handoverWords) {
 				mods = append(mods, c)
 			}
 		}
@@ -385,19 +389,42 @@ func deliveryItems(p *escw, snap order.Snapshot, voided bool) {
 	}
 }
 
-// slipShowsChoice is the customer slips' rule for a choice (the owner,
-// 2026-11-12, agent 2.5.2; kitchen tickets keep every choice): a priced one
-// always prints; a $0 one prints only when our menu stamped it
-// show_on_driver_ticket true (unstamped = hidden), never on an online vendor
-// order (source online). Pickup and delivery alike.
-func slipShowsChoice(snap order.Snapshot, c order.LineItem) bool {
-	if c.UnitPrice != 0 {
+// slipShowsChoice is the customer slips' rule for a choice (kitchen tickets
+// keep every choice; pickup and delivery alike, reprints too): a priced one
+// always prints; a $0 one prints only when the driver hands it over
+// (handedOver). Agent 2.5.2 hid every $0 choice of an online vendor order,
+// which left the cans and the fries off its delivery ticket (Lombardi's,
+// 2026-11-13: "15 pc Chicken Tender" printed alone); 2.5.7 reads the
+// vendor's names with the store's hand-over words.
+func slipShowsChoice(c order.LineItem, words order.WordList) bool {
+	return c.UnitPrice != 0 || handedOver(c, words)
+}
+
+// handedOver (agent 2.5.7, the owner 2026-11-13: "only the ones the driver
+// hands over": drinks, sides, sauces, dressings, never a cooking choice such
+// as "Well Done"): our menu stamped the choice show_on_driver_ticket true,
+// or it isn't a NO and its name holds one of the store's hand-over words
+// (receipt_prefs.handover_choice_words) as a whole word. The vendor's
+// choices are never stamped: the words decide for them.
+func handedOver(c order.LineItem, words order.WordList) bool {
+	if c.ShowOnDriverTicket != nil && *c.ShowOnDriverTicket {
 		return true
 	}
-	if snap.Source == order.SourceOnline {
+	if isNoChoice(c) {
 		return false
 	}
-	return c.ShowOnDriverTicket != nil && *c.ShowOnDriverTicket
+	// A half of a half-and-half pie (its specialty or topping) is what the
+	// pizza is: it always shows (the owner 2026-11-13: "its halves must show").
+	return c.Portion == order.PortionFirst || c.Portion == order.PortionSecond ||
+		words.MatchesWord(halfSuffix.ReplaceAllString(c.Name, ""))
+}
+
+// isNoChoice: a NO (our mode no, the vendor's "remove" note, a name that
+// starts with "No ").
+func isNoChoice(c order.LineItem) bool {
+	n := strings.ToLower(strings.TrimSpace(c.Name))
+	return c.Mode == order.ModeNo || strings.EqualFold(strings.TrimSpace(c.Notes), "remove") ||
+		n == "no" || strings.HasPrefix(n, "no ")
 }
 
 type modLine struct {

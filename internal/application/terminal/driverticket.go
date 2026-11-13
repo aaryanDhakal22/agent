@@ -2,6 +2,7 @@ package terminal
 
 import (
 	"encoding/json"
+	"regexp"
 	"strings"
 	"sync/atomic"
 
@@ -29,6 +30,7 @@ type driverIndex map[string]map[string]bool
 // driverBuild is the part of the counter-menu build the stamping reads.
 type driverBuild struct {
 	Categories []struct {
+		Name  string `json:"name"`
 		Items []struct {
 			ID     string `json:"id"`
 			Anchor struct {
@@ -93,6 +95,7 @@ func driverIndexOf(build json.RawMessage) driverIndex {
 	}
 	idx := driverIndex{}
 	for _, c := range b.Categories {
+		drinks := drinkCategory.MatchString(c.Name)
 		for _, it := range c.Items {
 			ids := append([]string{it.ID}, it.Anchor.ItemIDs...)
 			for _, ch := range it.Choices {
@@ -110,7 +113,7 @@ func driverIndexOf(build json.RawMessage) driverIndex {
 				}
 				for _, gid := range it.ModifierGroupIDs {
 					for k, v := range groups[strings.ToLower(gid)] {
-						m[k] = m[k] || v
+						m[k] = m[k] || v || drinks
 					}
 				}
 			}
@@ -118,6 +121,15 @@ func driverIndexOf(build json.RawMessage) driverIndex {
 	}
 	return idx
 }
+
+// drinkCategory (agent 2.5.7, the owner 2026-11-13: "drink choices are
+// very important, so the driver knows which drinks the customer got"):
+// every choice of an item in a drink category (Lombardi's "Beverages")
+// counts as stamped on, whatever its toggle in main says, so a drink group
+// added later never stays off the driver's ticket by mistake. A drink
+// inside another item (the tenders combo's can) is main's toggle, else the
+// hand-over words (receipt package).
+var drinkCategory = regexp.MustCompile(`(?i)\b(beverages?|drinks?|sodas?|fountain)\b`)
 
 func optionKey(name string) string { return strings.ToLower(strings.Join(strings.Fields(name), " ")) }
 

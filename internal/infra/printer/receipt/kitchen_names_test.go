@@ -33,8 +33,8 @@ func TestKitchenItemNames(t *testing.T) {
 			txt := got
 			var want []string
 			if src == order.SourceOnline {
-				want = []string{"2  Whole Wings Combo\n", "   - 6 Piece\n   - Can of Ginger Ale\n   - Side of Fries\n",
-					"1  Garlic Knots\n", "   - 2 Piece\n", "1  Turkey Club\n", "1  Cheese Pizza\n", "   - 12\" Medium\n", "1  8\" Sub\n"}
+				want = []string{"2  Whole Wings Combo\n", H8 + "- 6 Piece\n" + H8 + "- Can of Ginger Ale\n" + H8 + "- Side of Fries\n",
+					"1  Garlic Knots\n", H8 + "- 2 Piece\n", "1  Turkey Club\n", "1  Cheese Pizza\n", H8 + "- 12\" Medium\n", "1  8\" Sub\n"}
 			} else {
 				want = []string{"2  Whole Wings", "(6 / Piece)", "1  Turkey Club\n", "1  8\" Sub\n", "Cheese Pizza", "(12\" Medium)"}
 				if strings.Contains(txt, "6 /\n") || strings.Contains(txt, "(12\"\n") || strings.Contains(txt, "(Large\n") {

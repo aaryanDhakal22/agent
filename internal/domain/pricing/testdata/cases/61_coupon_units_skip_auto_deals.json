@@ -599,6 +599,22 @@
  "name": "Coupons: a coupon's units take no automatic deal (the mix counts the two cans left)",
  "quote": {
   "card_fee_cents": 0,
+  "coupon_offers": [
+   {
+    "card": [
+     "2 can sodas"
+    ],
+    "id": "00000000-0000-0000-0000-000000000ee6",
+    "lines": [
+     2,
+     2
+    ],
+    "name": "Two sodas",
+    "price_cents": 400,
+    "regular_cents": 300,
+    "total_cents": 400
+   }
+  ],
   "coupons": [
    {
     "card": [

@@ -21,8 +21,11 @@ import (
 // telling the tablets and main about a change, the default times.
 
 // PrintCounterTickets prints a new counter order's station tickets in the
-// background (the Resend-to-kitchen plan: stations only, never the receipt,
-// which prints on the terminal's own printer). Nothing printed only alerts.
+// background, and a delivery's Merchant + Customer Copy on the store's
+// receipt printer (ModePlaced, agent 2.5.7: every delivery's tickets print
+// there, a terminal's and the call center's alike; a pickup's or a counter
+// order's receipt prints on the terminal's own printer at its Cash Out).
+// Nothing printed only alerts.
 func (s *Service) PrintCounterTickets(ctx context.Context, so order.StoredOrder) {
 	s.PrintCounterTicketsThen(ctx, so, nil)
 }
@@ -39,7 +42,7 @@ func (s *Service) PrintCounterTicketsThen(ctx context.Context, so order.StoredOr
 		if done != nil {
 			settle = func(ctx context.Context, _ printer.Outcome, _ error) { done(ctx) }
 		}
-		out, err := s.printJobThen(ctx, printable(so), printer.ModeKitchen, settle)
+		out, err := s.printJobThen(ctx, printable(so), printer.ModePlaced, settle)
 		s.recordPrintTime(ctx, so, start, out, err)
 		if errors.Is(err, printer.ErrNoTickets) {
 			return
@@ -50,25 +53,6 @@ func (s *Service) PrintCounterTicketsThen(ctx context.Context, so order.StoredOr
 			return
 		}
 		s.printEvents(label(so)+" (counter)", out)
-	})
-}
-
-// PrintOrderReceipt prints an order's customer paper on the store's receipt
-// printer in the background (a call-center order has no terminal printer,
-// contract §2.10ab): a delivery's Merchant + Customer Copy, a pickup's
-// customer receipt. Nothing printed only alerts.
-func (s *Service) PrintOrderReceipt(ctx context.Context, so order.StoredOrder) {
-	s.background(ctx, func(ctx context.Context) {
-		out, err := s.printJob(ctx, printable(so), printer.ModeOrderReceipt)
-		if errors.Is(err, printer.ErrNoTickets) {
-			return
-		}
-		s.alertPrintIssues(ctx, so, out, false)
-		if err != nil {
-			s.logger.Warn().Ctx(ctx).Err(err).Str("order_id", so.Order.ID).Msg("Call-center order: no receipt printed")
-			return
-		}
-		s.printEvents(label(so)+" receipt (call center)", out)
 	})
 }
 

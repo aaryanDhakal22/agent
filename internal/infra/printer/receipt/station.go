@@ -71,7 +71,7 @@ func buildStation(snap order.Snapshot, t printer.Ticket, prefs order.ReceiptPref
 	var buf bytes.Buffer
 	w := func(s string) { buf.WriteString(toPC437(s)) }
 	nl := func() { buf.WriteString(cmdFeed) }
-	l := layoutFor(t.Cols) // the printer it prints on (width.go)
+	l := layoutFor(t.Cols)                      // the printer it prints on (width.go)
 	online := snap.Source == order.SourceOnline // an online order's size on its own line (2.5.2)
 
 	added, removed := t.Mine, t.Removed
@@ -336,13 +336,14 @@ func writeKitchenItems(w func(string), nl func(), items []order.LineItem, t prin
 			nl()
 		}
 		w(cmdBoldOff)
+		base := kitchenModIndent(prefs.KitchenItemSize, lay)
 		for j, l := range modLines(it, online) {
 			if j == 0 {
 				w(feedDots(sp.ItemMod))
 			} else {
 				w(feedDots(sp.ModMod))
 			}
-			for _, line := range wordWrap(itemIndent+l, lay.cols, modIndent(l)) {
+			for _, line := range l.wrap(base, lay.cols) {
 				w(printable(line))
 				nl()
 			}
@@ -350,34 +351,63 @@ func writeKitchenItems(w func(string), nl func(), items []order.LineItem, t prin
 	}
 }
 
+// kitchenModIndent is where an item's choices start on a kitchen ticket
+// (agent 2.5.7, the owner 2026-11-13: "every item's modifiers indented under
+// the item"): two columns past the start of the item's name, which prints
+// at the store's item size ("1  " at double width = 6 columns), so a
+// choice never starts left of its item. The name's start is capped at 6
+// columns (xlarge items on 58 mm paper keep room for the choices).
+func kitchenModIndent(size string, lay layout) int {
+	wide := 1
+	if c := lay.sizeCols(size); c > 0 {
+		wide = max(lay.cols/c, 1) // 1 normal, 2 double, 3 quad, 4 huge
+	}
+	return min(len(itemIndent)*wide, 6) + 2
+}
+
+// ticketModLine is one line under an item on a kitchen ticket: a choice ("- X"),
+// the food note ("Note: ..."), a half heading ("1ST HALF:"), or a topping
+// of a half (level 1: nested under its heading).
+type ticketModLine struct {
+	text  string
+	level int
+}
+
+// wrap lays the line out from column base (+ 2 per level); a wrapped line
+// goes on under its text ("- " and "Note: " hang).
+func (m ticketModLine) wrap(base, cols int) []string {
+	lead := strings.Repeat(" ", base+2*m.level)
+	hang := ""
+	switch {
+	case strings.HasPrefix(m.text, "- "):
+		hang = "  "
+	case strings.HasPrefix(m.text, noteMark):
+		hang = strings.Repeat(" ", len(noteMark))
+	}
+	return wordWrap(lead+m.text, cols, lead+hang)
+}
+
 // noteMark starts an item's food note on the kitchen ticket ("Note: Please
 // make well done"), so it never reads as a choice ("- Well done").
 const noteMark = "Note: "
 
-// modIndent is where a wrapped choice / note line goes on: under its text.
-func modIndent(l string) string {
-	if strings.HasPrefix(l, noteMark) {
-		return itemIndent + strings.Repeat(" ", len(noteMark))
-	}
-	return itemIndent + "  "
-}
-
 // modLines are an item's lines under it: "- Extra cheese", "- (x2) Ranch",
-// the food note "- Well done"; a half-and-half pie's under its headings.
-func modLines(it order.LineItem, online bool) []string {
-	var out []string
+// the food note; a half-and-half pie's under its headings, each half's
+// toppings nested under its heading.
+func modLines(it order.LineItem, online bool) []ticketModLine {
+	var out []ticketModLine
 	if sz := kitchenSizeLine(it, online); sz != "" { // an online order's size, first (2.5.2)
-		out = append(out, "- "+sz)
+		out = append(out, ticketModLine{text: "- " + sz})
 	}
 	if it.HasHalves() {
-		out = halfLines(it)
+		out = append(out, halfLines(it)...)
 	} else {
 		for _, c := range it.Children {
-			out = append(out, "- "+modName(c))
+			out = append(out, ticketModLine{text: "- " + modName(c)})
 		}
 	}
 	if note := strings.TrimSpace(it.Notes); note != "" { // the food note, told from a choice (the owner, 2.5.2)
-		out = append(out, noteMark+note)
+		out = append(out, ticketModLine{text: noteMark + note})
 	}
 	return out
 }
@@ -393,8 +423,8 @@ func modName(c order.LineItem) string {
 // whole pie), then 1ST HALF: and 2ND HALF: always ("- nothing added" when a
 // half has nothing). Each topping on its own line: a specialty or topping by
 // name, "NO X", and "X ONLY" (ONLY after the topping it applies to).
-func halfLines(it order.LineItem) []string {
-	var parts [3][]string
+func halfLines(it order.LineItem) []ticketModLine {
+	var parts [3][]ticketModLine
 	for _, c := range it.Children {
 		k, name := halfIndex(c.Portion), bareName(c)
 		switch c.Mode {
@@ -406,19 +436,19 @@ func halfLines(it order.LineItem) []string {
 		if c.Quantity > 1 {
 			name = fmt.Sprintf("(x%d) %s", c.Quantity, name)
 		}
-		parts[k] = append(parts[k], "- "+name)
+		parts[k] = append(parts[k], ticketModLine{text: "- " + name, level: 1})
 	}
-	var out []string
+	var out []ticketModLine
 	if len(parts[0]) > 0 {
-		out = append(append(out, "WHOLE:"), parts[0]...)
+		out = append(append(out, ticketModLine{text: "WHOLE:"}), parts[0]...)
 	}
 	for k, head := range []string{"", "1ST HALF:", "2ND HALF:"} {
 		if k == 0 {
 			continue
 		}
-		out = append(out, head)
+		out = append(out, ticketModLine{text: head})
 		if len(parts[k]) == 0 {
-			out = append(out, "- nothing added")
+			out = append(out, ticketModLine{text: "- nothing added", level: 1})
 		}
 		out = append(out, parts[k]...)
 	}
@@ -434,13 +464,14 @@ func writeRemoved(w func(string), nl func(), items []order.LineItem, prefs order
 	w(cmdNormalSz)
 	w(cmdBoldOn)
 	room := lay.cols - len(voidMark)
+	base := kitchenModIndent(order.SizeNormal, lay) // the removed lines print at the normal size
 	for _, it := range items {
-		lines := []string{itemLabel(it, online)}
+		parts := [][]string{wordWrap(itemLabel(it, online), room, itemIndent)}
 		for _, l := range modLines(it, online) {
-			lines = append(lines, itemIndent+l)
+			parts = append(parts, l.wrap(base, room))
 		}
-		for i, l := range lines {
-			for j, part := range wordWrap(l, room, modIndent(strings.TrimPrefix(l, itemIndent))) {
+		for i, wrapped := range parts {
+			for j, part := range wrapped {
 				switch {
 				case i == 0 && j == 0 && prefs.StrikeImages:
 					w(voidMark)

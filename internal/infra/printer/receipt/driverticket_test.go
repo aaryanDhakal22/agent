@@ -1,7 +1,6 @@
 package receipt
 
 import (
-	"bytes"
 	"strings"
 	"testing"
 
@@ -9,8 +8,10 @@ import (
 )
 
 // show_on_driver_ticket (the canonical-menu merge, 2026-11-12): a delivery's
-// receipt leaves off a $0 child stamped false; stamped true or unset prints
-// as before; kitchen tickets and pickup receipts never change.
+// receipt leaves off a $0 child stamped false; kitchen tickets and pickup
+// receipts never change. 2.5.7: an unstamped $0 child prints only when the
+// driver hands it over (a hand-over word, not a NO): "W Can Pepsi" yes,
+// "Well done" / "Hot" no.
 
 func boolp(v bool) *bool { return &v }
 
@@ -34,12 +35,13 @@ func comboDelivery() order.Snapshot {
 
 func TestDriverTicket_DeliveryExpanded(t *testing.T) {
 	got := string(Build(comboDelivery(), previewStore(), receiptTicket(), order.DefaultReceiptPrefs()))
-	for _, want := range []string{"W Can Pepsi", "Slushie Cherry", "Extra Cheese", "Well done", "Hot"} {
-		if !strings.Contains(got, want) { // "Well done" / "Hot": the unstamped $0 children of the other lines
+	for _, want := range []string{"W Can Pepsi", "Slushie Cherry", "Extra Cheese"} {
+		if !strings.Contains(got, want) {
 			t.Errorf("delivery receipt lacks %q:\n%s", want, got)
 		}
 	}
-	for _, not := range []string{"Well Done", "NO Onion"} {
+	// "Well done" / "Hot": the unstamped $0 cooking choices of the other lines (2.5.7: off).
+	for _, not := range []string{"Well Done", "NO Onion", "Well done", "    Hot"} {
 		if strings.Contains(got, not) {
 			t.Errorf("delivery receipt has the hidden %q:\n%s", not, got)
 		}
@@ -98,9 +100,10 @@ func TestDriverTicket_PickupAndKitchenUnchanged(t *testing.T) {
 	}
 }
 
-// Unset stamps (vendor and older orders) print byte for byte as before, and
-// a stamped-true child prints the same as an unstamped one.
-func TestDriverTicket_UnsetIsUnchanged(t *testing.T) {
+// Unset stamps (vendor and older orders, 2.5.7): a $0 child prints when the
+// driver hands it over (a hand-over word, not a NO), else it is left off; a
+// stamped-true child always prints.
+func TestDriverTicket_UnsetFollowsTheHandoverWords(t *testing.T) {
 	strip := func(s order.Snapshot) order.Snapshot {
 		items := make([]order.LineItem, len(s.Items))
 		for i, it := range s.Items {
@@ -115,31 +118,37 @@ func TestDriverTicket_UnsetIsUnchanged(t *testing.T) {
 		s.Items = items
 		return s
 	}
+	got := string(Build(strip(comboDelivery()), previewStore(), receiptTicket(), order.DefaultReceiptPrefs()))
+	for _, want := range []string{"W Can Pepsi", "Extra Cheese", "Slushie Cherry"} { // a drink by its name
+		if !strings.Contains(got, want) {
+			t.Errorf("unstamped delivery lacks %q:\n%s", want, got)
+		}
+	}
+	for _, not := range []string{"Well Done", "NO Onion"} {
+		if strings.Contains(got, not) {
+			t.Errorf("unstamped delivery has %q:\n%s", not, got)
+		}
+	}
+	// No hand-over words: only the priced child and the stamped ones.
+	none := prefsWith(func(p *order.ReceiptPrefs) { p.HandoverChoiceWords = order.NewWordList() })
+	if got := string(Build(strip(comboDelivery()), previewStore(), receiptTicket(), none)); strings.Contains(got, "W Can Pepsi") {
+		t.Errorf("no words: the unstamped can is off:\n%s", got)
+	}
+	if got := string(Build(comboDelivery(), previewStore(), receiptTicket(), none)); !strings.Contains(got, "W Can Pepsi") {
+		t.Errorf("no words: the stamped can still prints:\n%s", got)
+	}
 	marked := previewDelivery()
 	for i := range marked.Items {
 		for j := range marked.Items[i].Children {
 			marked.Items[i].Children[j].ShowOnDriverTicket = boolp(true)
 		}
 	}
-	for _, prefs := range []order.ReceiptPrefs{order.DefaultReceiptPrefs(), prefsWith(func(p *order.ReceiptPrefs) { p.Format = order.FormatCondensed })} {
-		a := Build(previewDelivery(), previewStore(), receiptTicket(), prefs)
-		b := Build(strip(comboDelivery()), previewStore(), receiptTicket(), prefs)
-		if bytes.Equal(a, b) {
-			t.Fatal("fixture: the combo must show")
-		}
-		// Expanded: all true = unset. Condensed: true children add lines, so
-		// only the expanded format is compared there.
-		if prefs.Format == order.FormatExpanded {
-			if c := Build(marked, previewStore(), receiptTicket(), prefs); !bytes.Equal(a, c) {
-				t.Errorf("stamped-true children changed the expanded receipt")
+	all := string(Build(marked, previewStore(), receiptTicket(), order.DefaultReceiptPrefs()))
+	for _, it := range marked.Items {
+		for _, c := range it.Children {
+			if !strings.Contains(all, c.Name) {
+				t.Errorf("stamped true: %q missing:\n%s", c.Name, all)
 			}
-		}
-	}
-	// An unstamped combo on a delivery keeps every child (as before the flag).
-	got := string(Build(strip(comboDelivery()), previewStore(), receiptTicket(), order.DefaultReceiptPrefs()))
-	for _, want := range []string{"Well Done", "NO Onion", "W Can Pepsi"} {
-		if !strings.Contains(got, want) {
-			t.Errorf("unstamped delivery lacks %q", want)
 		}
 	}
 }

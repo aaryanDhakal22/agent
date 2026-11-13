@@ -97,15 +97,16 @@ def test_feed_long_poll(kitchen) -> None:  # noqa: F811
     assert r.status_code == 400
 
 
-def test_online_cash_pickup_follows_its_switch(kitchen, fakes) -> None:  # noqa: F811
-    """H3: an online cash pickup prints its kitchen tickets by its own switch
-    (no "only while the hub inserts it into the POS" rule); the hub's status
-    still shows in /api/floor."""
+def test_online_cash_delivery_follows_its_switch(kitchen, fakes) -> None:  # noqa: F811
+    """H3: an online cash delivery prints its kitchen tickets by its own switch
+    (no "only while the hub inserts it into the POS" rule; 2.5.7: a pickup
+    prints its station tickets whatever the switches say, never a receipt);
+    the hub's status still shows in /api/floor."""
     a, ids = kitchen["agent"], kitchen["ids"]
     hub = _hub(kitchen)
 
-    def cash_pickup() -> str:
-        snap = _snap(kitchen["main_store"], [_item("Pepperoni", ids["Pizza"])])
+    def cash_delivery() -> str:
+        snap = _snap(kitchen["main_store"], [_item("Pepperoni", ids["Pizza"])])  # a delivery
         snap.pop("payments")  # no payments = a cash order
         assert _accept(a, snap).status_code == 200
         return snap["id"]
@@ -114,12 +115,12 @@ def test_online_cash_pickup_follows_its_switch(kitchen, fakes) -> None:  # noqa:
         for f in fakes.values():
             f.clear()
 
-    cash_pickup()  # default switch on: kitchen ticket + receipt
+    cash_delivery()  # default switch on: kitchen ticket + receipt
     wait_until(lambda: len(fakes["Pizza"].jobs) == 1 and len(fakes["Front"].jobs) == 1, timeout=10, what="ticket + receipt")
-    r = a.http.put(f"{a.base}/api/settings/tickets", json={"online_cash_pickup": False}, timeout=5)
-    assert r.status_code == 200 and r.json()["online_cash_pickup"] is False and "pos_takeout" not in r.json()
+    r = a.http.put(f"{a.base}/api/settings/tickets", json={"online_cash_delivery": False}, timeout=5)
+    assert r.status_code == 200 and r.json()["online_cash_delivery"] is False and "pos_takeout" not in r.json()
     clear()
-    cash_pickup()
+    cash_delivery()
     wait_until(lambda: len(fakes["Front"].jobs) == 1, timeout=10, what="receipt")
     intentional_sleep(0.5, "absence: the switch is off, no kitchen ticket may follow")
     assert not fakes["Pizza"].jobs, "switch off: receipt only"

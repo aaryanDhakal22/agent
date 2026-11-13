@@ -118,15 +118,22 @@ def test_channel_order_prints_stations_and_receipt_with_switches_off(web, fakes)
         o = place(a, kind, method, token)
         got = _ok(a.http.get(f"{a.base}/api/orders/{o['id']}", timeout=5))
         assert got["order"]["source"] == kind
-        _ok(post(a, f"/api/orders/{o['id']}/accept", {"prep_minutes": 15}))
+        _ok(post(a, f"/api/orders/{o['id']}/accept", {"prep_minutes": 15}))  # the accept answers once it printed
         wait_jobs(fakes["Pizza"], 1)
-        wait_jobs(fakes["Front"], 1)
         assert "1  Cheese Pizza" in fakes["Pizza"].text(), fakes["Pizza"].text()
-        assert "Total:" in fakes["Front"].text()
-    # The same switches leave a vendor card order receipt-only.
+        # 2.5.7 (the owner, 2026-11-13): a pickup's customer receipt never prints on the receipt printer.
+        assert fakes["Front"].jobs == [], fakes["Front"].text()
+    # A website delivery prints its receipt too, whatever the switches say.
     for f in fakes.values():
         f.clear()
-    oid = resend(a, "online", "pickup", card=True)
+    oid = resend(a, "web", "delivery", card=True)
+    _ok(post(a, f"/api/orders/{oid}/accept"))
+    wait_jobs(fakes["Front"], 1)
+    assert "Total:" in fakes["Front"].text()
+    # The same switches leave a vendor card delivery receipt-only; a vendor pickup prints its stations only (2.5.7).
+    for f in fakes.values():
+        f.clear()
+    oid = resend(a, "online", "delivery", card=True)
     _ok(post(a, f"/api/orders/{oid}/accept"))
     wait_jobs(fakes["Front"], 1)
     intentional_sleep(1.0, "absence: nothing else may print")
@@ -202,8 +209,7 @@ def test_cancel_order_after_accept_voids_and_main_cancels(admin, web, fakes) -> 
     a = web
     o = place(a)
     _ok(post(a, f"/api/orders/{o['id']}/accept", {"prep_minutes": 15}))
-    wait_jobs(fakes["Pizza"], 1)
-    wait_jobs(fakes["Front"], 1)  # the accept's receipt, so it can't land after the clear below
+    wait_jobs(fakes["Pizza"], 1)  # the accept's tickets (a pickup: no receipt since 2.5.7), before the clear below
     for f in fakes.values():
         f.clear()
     assert post(a, f"/api/orders/{o['id']}/cancel-order", {"reason": "because"}).json()["code"] == "bad_request"
@@ -274,7 +280,6 @@ def test_tablet_key_drives_tip_cancel_and_online(web, fakes) -> None:
     o = place(a)
     _ok(tpost(f"/api/orders/{o['id']}/accept", {"prep_minutes": 15}))
     wait_jobs(fakes["Pizza"], 1)
-    wait_jobs(fakes["Front"], 1)
     assert _ok(tpost(f"/api/orders/{o['id']}/tip", {"tip_cents": 300}))["status"]["added_tip_cents"] == 300
     # Same tip again: answered, nothing new for main (the repo tests pin the event count).
     assert _ok(tpost(f"/api/orders/{o['id']}/tip", {"tip_cents": 300}))["status"]["added_tip_cents"] == 300

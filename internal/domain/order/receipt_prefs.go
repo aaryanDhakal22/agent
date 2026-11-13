@@ -74,6 +74,15 @@ type ReceiptPrefs struct {
 	// (any case) prints bold. At most MaxBoldWords words of MaxBoldWordLen
 	// plain characters.
 	BoldChoiceWords WordList `json:"bold_choice_words"`
+	// HandoverChoiceWords (agent 2.5.7, the owner 2026-11-13: the delivery
+	// ticket shows "only the ones the driver hands over": drinks, sides,
+	// sauces, dressings, never a cooking choice such as "Well Done"): a $0
+	// choice on a customer slip prints when its name holds one of these as
+	// a whole word (any case) and it isn't a NO, or our menu stamped it
+	// show_on_driver_ticket. The online vendor's choices are never stamped,
+	// so for them these words decide. At most MaxHandoverWords words of
+	// MaxBoldWordLen plain characters.
+	HandoverChoiceWords WordList `json:"handover_choice_words"`
 	// StyleOnline / StyleStore (2.5.2): the customer slips' layout for online
 	// vendor orders (source online) and for the store's own (counter, web,
 	// call center): softtouch (SoftTouch's slip, the default) | classic (the
@@ -107,11 +116,30 @@ func (p ReceiptPrefs) StyleFor(source string) string {
 	return StyleSoftTouch
 }
 
-// MaxBoldWords / MaxBoldWordLen bound ReceiptPrefs.BoldChoiceWords.
+// MaxBoldWords / MaxBoldWordLen bound ReceiptPrefs.BoldChoiceWords;
+// MaxHandoverWords (and MaxBoldWordLen) ReceiptPrefs.HandoverChoiceWords.
 const (
-	MaxBoldWords   = 10
-	MaxBoldWordLen = 20
+	MaxBoldWords     = 10
+	MaxBoldWordLen   = 20
+	MaxHandoverWords = 80
 )
+
+// DefaultHandoverWords are the hand-over words a Pi starts with (Lombardi's
+// online vendor and counter names, 2026-11-13): every drink name the owner's
+// menu uses (cans, 2 liters, fountain half & half / lemonade / triple mix,
+// shakes, ice; the owner: "drink choices are very important"),
+// sides, dips and dressings, desserts. Sauces as such are left out ("Add
+// Ketchup Sauce" goes on a sub): our menu flags the sauce cups
+// (show_on_driver_ticket), the vendor names them "... Dip".
+var DefaultHandoverWords = []string{
+	"can", "cans", "soda", "pepsi", "coke", "sprite", "ginger ale", "ice tea", "iced tea", "tea", "dr pepper",
+	"root beer", "mtn dew", "mountain dew", "lemonade", "fruit punch", "punch", "water", "juice", "2 liter", "liter",
+	"bottle", "drink", "half/half", "half & half", "half and half", "triple mix", "shake", "lassi", "lasi", "slushie",
+	"ice", "orange", "grape",
+	"fries", "side", "salad", "chips", "celery", "rice", "naan", "roti",
+	"dip", "dressing", "marinara", "chutney",
+	"dessert", "cake", "cheesecake", "cannoli", "brownie", "cookie",
+}
 
 // WordList is a short list of words kept comparable (ReceiptPrefs is compared
 // with ==): JSON is an array of strings.
@@ -136,6 +164,35 @@ func (l WordList) Words() []string {
 	return strings.Split(l.joined, "\n")
 }
 
+// MatchesWord: name holds one of the words as a whole word (or words), any
+// case: "can" is in "Can of Ice Tea" and "W Can Pepsi", never in "American".
+func (l WordList) MatchesWord(name string) bool {
+	if l.joined == "" {
+		return false
+	}
+	n := strings.ToLower(name)
+	for _, w := range l.Words() {
+		w = strings.ToLower(w)
+		for from := 0; from < len(n); {
+			i := strings.Index(n[from:], w)
+			if i < 0 {
+				break
+			}
+			i += from
+			end := i + len(w)
+			if (i == 0 || !wordByte(n[i-1])) && (end == len(n) || !wordByte(n[end])) {
+				return true
+			}
+			from = i + 1
+		}
+	}
+	return false
+}
+
+func wordByte(c byte) bool {
+	return c >= 'a' && c <= 'z' || c >= '0' && c <= '9' || c >= 0x80
+}
+
 // Matches: name holds one of the words, any case.
 func (l WordList) Matches(name string) bool {
 	if l.joined == "" {
@@ -158,15 +215,15 @@ func (l *WordList) UnmarshalJSON(b []byte) error {
 	}
 	var ws []string
 	if err := json.Unmarshal(b, &ws); err != nil {
-		return fmt.Errorf("bold_choice_words must be a list of words")
+		return fmt.Errorf("a word list must be a list of words")
 	}
 	for _, w := range ws {
 		if strings.Contains(w, "\n") {
-			return fmt.Errorf("bold_choice_words: a word can't hold a line break")
+			return fmt.Errorf("a word list: a word can't hold a line break")
 		}
 	}
-	if len(ws) > 4*MaxBoldWords { // Validate gives the real limit; this only bounds the work
-		return fmt.Errorf("bold_choice_words: at most %d words", MaxBoldWords)
+	if len(ws) > 4*MaxHandoverWords { // Validate gives the real limit per list; this only bounds the work
+		return fmt.Errorf("a word list: at most %d words", MaxHandoverWords)
 	}
 	*l = NewWordList(ws...)
 	return nil
@@ -185,19 +242,20 @@ const MaxSpacingDots = 48
 // DefaultReceiptPrefs are the settings that print like the agent always did.
 func DefaultReceiptPrefs() ReceiptPrefs {
 	return ReceiptPrefs{
-		KitchenItemSize:   SizeLarge,
-		KitchenNumberSize: SizeXLarge,
-		FooterSize:        SizeXLarge,
-		Copies:            1,
-		ShowStoreAddress:  true,
-		ShowPhone:         true,
-		ExtraPaper:        true,
-		DriverReportSize:  SizeNormal,
-		Format:            FormatExpanded,
-		StrikeImages:      true,
-		BoldChoiceWords:   NewWordList("fries", "salad", "soda"),
-		StyleOnline:       StyleSoftTouch,
-		StyleStore:        StyleSoftTouch,
+		KitchenItemSize:     SizeLarge,
+		KitchenNumberSize:   SizeXLarge,
+		FooterSize:          SizeXLarge,
+		Copies:              1,
+		ShowStoreAddress:    true,
+		ShowPhone:           true,
+		ExtraPaper:          true,
+		DriverReportSize:    SizeNormal,
+		Format:              FormatExpanded,
+		StrikeImages:        true,
+		BoldChoiceWords:     NewWordList("fries", "salad", "soda"),
+		HandoverChoiceWords: NewWordList(DefaultHandoverWords...),
+		StyleOnline:         StyleSoftTouch,
+		StyleStore:          StyleSoftTouch,
 	}
 }
 
@@ -247,6 +305,26 @@ func (p ReceiptPrefs) Normalize() ReceiptPrefs {
 	return p
 }
 
+// validWords checks one word list setting: at most max words of
+// MaxBoldWordLen plain characters.
+func validWords(key string, l WordList, max int) error {
+	ws := l.Words()
+	if len(ws) > max {
+		return fmt.Errorf("%s: at most %d words", key, max)
+	}
+	for _, w := range ws {
+		if len(w) > MaxBoldWordLen {
+			return fmt.Errorf("%s: a word is at most %d characters", key, MaxBoldWordLen)
+		}
+		for i := 0; i < len(w); i++ {
+			if c := w[i]; c < 0x20 || c > 0x7e {
+				return fmt.Errorf("%s may only use plain letters, digits, spaces and punctuation", key)
+			}
+		}
+	}
+	return nil
+}
+
 // Validate returns a plain reason when a setting is out of range.
 func (p ReceiptPrefs) Validate() error {
 	if !oneOf(p.KitchenItemSize, SizeNormal, SizeLarge, SizeXLarge) {
@@ -275,19 +353,11 @@ func (p ReceiptPrefs) Validate() error {
 	if !oneOf(p.StyleOnline, StyleSoftTouch, StyleClassic) || !oneOf(p.StyleStore, StyleSoftTouch, StyleClassic) {
 		return fmt.Errorf("style_online and style_store must be softtouch or classic")
 	}
-	if ws := p.BoldChoiceWords.Words(); len(ws) > MaxBoldWords {
-		return fmt.Errorf("bold_choice_words: at most %d words", MaxBoldWords)
-	} else {
-		for _, w := range ws {
-			if len(w) > MaxBoldWordLen {
-				return fmt.Errorf("bold_choice_words: a word is at most %d characters", MaxBoldWordLen)
-			}
-			for i := 0; i < len(w); i++ {
-				if c := w[i]; c < 0x20 || c > 0x7e {
-					return errors.New("bold_choice_words may only use plain letters, digits, spaces and punctuation")
-				}
-			}
-		}
+	if err := validWords("bold_choice_words", p.BoldChoiceWords, MaxBoldWords); err != nil {
+		return err
+	}
+	if err := validWords("handover_choice_words", p.HandoverChoiceWords, MaxHandoverWords); err != nil {
+		return err
 	}
 	if f := p.FooterText; f != nil {
 		if len(*f) > MaxFooterLen {

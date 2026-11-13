@@ -380,12 +380,12 @@ func buildFull(snap order.Snapshot, sc storeconfig.StoreContext, reroutedFrom st
 		}
 	}
 	delivery := isDelivery(snap)
-	if delivery { // the driver's copy: $0 choices main keeps off it
-		snap.Items = driverItems(snap.Items)
+	if delivery { // the driver's copy: only the $0 choices he hands over (2.5.7)
+		snap.Items = driverItems(snap.Items, prefs.HandoverChoiceWords)
 	}
 	snap.Items = couponOrder(snap.Items)
 	if prefs.Format == order.FormatCondensed {
-		writeCondensedItems(w, nl, snap.Items, sp, delivery, l)
+		writeCondensedItems(w, nl, snap.Items, sp, delivery, l, prefs.HandoverChoiceWords)
 	}
 	for i, item := range snap.Items {
 		if prefs.Format == order.FormatCondensed {
@@ -873,9 +873,9 @@ func truncRunes(s string, n int) string {
 //
 // On a delivery (driver) the hidden children are already gone
 // (driverItems), so the first modifier is the first one the driver may see,
-// and every child stamped show_on_driver_ticket follows it: the driver must
+// and every child he hands over follows it (handedOver): the driver must
 // see the drinks.
-func writeCondensedItems(w func(string), nl func(), items []order.LineItem, sp order.LineSpacing, driver bool, lay layout) {
+func writeCondensedItems(w func(string), nl func(), items []order.LineItem, sp order.LineSpacing, driver bool, lay layout, words order.WordList) {
 	for i, item := range items {
 		if i > 0 {
 			w(feedDots(sp.ItemItem))
@@ -904,7 +904,7 @@ func writeCondensedItems(w func(string), nl func(), items []order.LineItem, sp o
 		} else if len(item.Children) > 0 {
 			w(feedDots(sp.ItemMod))
 			for k, mod := range item.Children {
-				if k > 0 && !(driver && mod.ShownOnDriverTicket()) {
+				if k > 0 && !(driver && handedOver(mod, words)) {
 					continue
 				}
 				label := mod.Name
@@ -965,20 +965,20 @@ func isDelivery(snap order.Snapshot) bool {
 }
 
 // driverItems are a delivery's lines without the modifier children the
-// driver doesn't need: a $0 choice stamped show_on_driver_ticket false
-// (order.LineItem.HiddenOnDriverTicket). Unstamped children (vendor and
-// older orders) stay, so those print exactly as before. A copy.
-func driverItems(items []order.LineItem) []order.LineItem {
+// driver doesn't need: a $0 choice he doesn't hand over (slipShowsChoice,
+// 2.5.7; before, only a $0 choice stamped show_on_driver_ticket false was
+// left off). A copy.
+func driverItems(items []order.LineItem, words order.WordList) []order.LineItem {
 	out := make([]order.LineItem, len(items))
 	for i, it := range items {
 		hidden := false
 		for _, c := range it.Children {
-			hidden = hidden || c.HiddenOnDriverTicket()
+			hidden = hidden || !slipShowsChoice(c, words)
 		}
 		if hidden {
 			kids := make([]order.LineItem, 0, len(it.Children))
 			for _, c := range it.Children {
-				if !c.HiddenOnDriverTicket() {
+				if slipShowsChoice(c, words) {
 					kids = append(kids, c)
 				}
 			}

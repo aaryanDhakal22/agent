@@ -130,15 +130,22 @@ def test_relay_places_like_a_phone_order(rig):
     checks = relay(rig, "GET", "checks", query="batch=current&device_id=callcenter")
     assert checks["status"] == 200 and [(c["order_id"], c["taken_by"], c["staff_id"]) for c in checks["body"]["checks"]] == [(oid, TAKEN_BY, AGENT)]
 
-    # A pickup: the customer receipt prints at the store.
+    assert placed["body"]["delivery_tickets"] == "pi"  # the Pi printed them: a terminal doesn't (2.5.7)
+
+    # A pickup (agent 2.5.7, the owner 2026-11-13): its station tickets only; nothing on the receipt
+    # ("Online") printer, which prints only deliveries. Its receipt prints at its Cash Out on a terminal.
     fakes["Front"].clear()
+    pizza_jobs = len(fakes["Pizza"].jobs)
     pick = relay(rig, "POST", "orders", order_body("pickup"))
     assert pick["status"] == 201, pick
+    assert "delivery_tickets" not in pick["body"]
     pid = pick["body"]["order"]["order"]["id"]
-    wait_until(lambda: TAKEN_BY in text_of(fakes["Front"]), what="the pickup's customer receipt on the store's receipt printer")
-    assert "Merchant Copy" not in text_of(fakes["Front"])
+    wait_until(lambda: len(fakes["Pizza"].jobs) > pizza_jobs, what="the pickup's station ticket")
+    from gatemark import intentional_sleep
+    intentional_sleep(1.0, "absence: no receipt of a pickup on the receipt printer")
+    assert not fakes["Front"].jobs, text_of(fakes["Front"])
 
-    # Reprint (the new route, every terminal kind): the customer receipt on the receipt printer.
+    # Reprint (the new route, every terminal kind, a person's ask): the customer receipt on the receipt printer.
     jobs = len(fakes["Front"].jobs)
     rp = relay(rig, "POST", f"orders/{pid}/reprint")
     assert rp["status"] == 200 and rp["body"] == {"ok": True, "printed_on": "Front"}, rp
@@ -383,9 +390,10 @@ def test_quick_add_from_the_call_center_prints_where_the_store_routes_it(rig):
 
 
 def test_takeout_two_customer_copies(rig):
-    """main's takeout_two_copies (Store › Settings › Receipts and printing, the owner 2026-11-13; contract §2.10ah):
-    on, a call-center pickup's customer receipt prints two Customer Copies in its one job (each cut); a reprint
-    prints one; a delivery keeps its Merchant + Customer Copy; off again, a pickup prints one. Fake printers only."""
+    """main's takeout_two_copies (Store › Settings › Receipts and printing, the owner 2026-11-13; contract §2.10ah).
+    Agent 2.5.7: the Pi prints no pickup receipt at placement any more (it prints at Cash Out on a terminal,
+    which doubles it); on the Pi the setting never doubles a reprint, and a delivery keeps its Merchant +
+    Customer Copy. Fake printers only."""
     agent, term, fm, fakes = rig["agent"], rig["term"], rig["fm"], rig["fakes"]
     base = agent.base
 
@@ -401,29 +409,22 @@ def test_takeout_two_customer_copies(rig):
 
     config(3, True)
     fakes["Front"].clear()
+    pizza_jobs = len(fakes["Pizza"].jobs)
     pick = relay(rig, "POST", "orders", order_body("pickup"))
     assert pick["status"] == 201, pick
     pid = pick["body"]["order"]["order"]["id"]
-    wait_until(lambda: fakes["Front"].jobs, what="the pickup's customer receipt")
-    assert len(fakes["Front"].jobs) == 1  # both copies in one job
-    job = last_job()
-    assert job.count(TAKEN_BY) == 2 and job.count("Customer Copy") == 2 and "Merchant Copy" not in job, job
+    wait_until(lambda: len(fakes["Pizza"].jobs) > pizza_jobs, what="the pickup's station ticket")
 
-    # A reprint keeps printing one copy.
+    # A reprint (a person's ask) prints one copy.
     rp = relay(rig, "POST", f"orders/{pid}/reprint")
     assert rp["status"] == 200, rp
-    wait_until(lambda: len(fakes["Front"].jobs) == 2, what="the reprinted receipt")
+    wait_until(lambda: fakes["Front"].jobs, what="the reprinted receipt")
+    assert len(fakes["Front"].jobs) == 1, "nothing printed on Front for the pickup but its reprint"
     assert last_job().count("Customer Copy") == 1
 
     # A delivery: its Merchant + Customer Copy, unchanged.
     dl = relay(rig, "POST", "orders", order_body("delivery"))
     assert dl["status"] == 201, dl
-    wait_until(lambda: len(fakes["Front"].jobs) == 3, what="the delivery tickets")
+    wait_until(lambda: len(fakes["Front"].jobs) == 2, what="the delivery tickets")
     job = last_job()
     assert job.count("Merchant Copy") == 1 and job.count("Customer Copy") == 1, job
-
-    # Off again: a pickup prints one Customer Copy.
-    config(4, False)
-    relay(rig, "POST", "orders", order_body("pickup"))
-    wait_until(lambda: len(fakes["Front"].jobs) == 4, what="the next pickup's receipt")
-    assert last_job().count("Customer Copy") == 1
