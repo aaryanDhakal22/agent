@@ -52,6 +52,7 @@ import (
 	"quiccpos/agent/internal/domain/order"
 	domainprinter "quiccpos/agent/internal/domain/printer"
 	"quiccpos/agent/internal/domain/storeconfig"
+	domainterminal "quiccpos/agent/internal/domain/terminal"
 	"quiccpos/agent/internal/infra/database"
 	"quiccpos/agent/internal/infra/database/repositories"
 	"quiccpos/agent/internal/infra/discovery"
@@ -504,6 +505,21 @@ func main() {
 	safego.Go("terminal.pending_z", func() { termSvc.BuildPendingZ(ctx) })
 	// M-11: counter orders a restart cut off between commit and print.
 	safego.Go("terminal.kitchen_pending", func() { termSvc.ResumeKitchenPrints(ctx) })
+	// Quibase shows a counter terminal's order only over the store's X with a
+	// kitchen line (2.5.4, order.StoredOrder.ShownOnTablet): the broker filters
+	// the tablets' frames, the list routes ask it; a new X makes the tablets
+	// refetch (floor.updated).
+	broker.SetTabletFilter(func(so order.StoredOrder) bool {
+		cfg, _ := termStore.Config()
+		return so.ShownOnTablet(cfg.QuibaseCounterMinCents())
+	})
+	var quibaseMin atomic.Int64
+	quibaseMin.Store(-1)
+	termStore.OnConfig(func(c *domainterminal.Config) {
+		if old := quibaseMin.Swap(c.QuibaseCounterMinCents()); old >= 0 && old != c.QuibaseCounterMinCents() {
+			broker.PublishFloorChanged()
+		}
+	})
 	termStore.Load(ctx)
 	orderService.SetArrivalStamp(termStore.StampDriverTicket) // show_on_driver_ticket on channel orders
 	registry.Register(terminalApp.MsgMenuChanged, termStore.HandleMenuChanged)

@@ -62,8 +62,8 @@ func (s *Server) baseRoutes() []routeDef {
 
 		// Floor — paired tablet (X-Agent-Device-Key) or web-UI session.
 		{"GET", "/api/floor", "device", "Open batch, kitchen counter, prep quick-picks, sync backlog, delivery settings, store pin + map, settings {features, tickets, times}, integration (hub status)", s.handleFloor},
-		{"GET", "/api/orders", "device", "Orders newest-first (?batch=current|all|<id>, default current)", s.handleListOrders},
-		{"GET", "/api/orders/arrived", "device", "Orders awaiting acceptance (oldest-first)", s.handleListArrived},
+		{"GET", "/api/orders", "device", "Orders newest-first (?batch=current|all|<id>, default current); a paired tablet gets only the orders it shows (2.5.4: a counter terminal's order over the store's quibase_counter_min_cents with a kitchen line), offset/limit counting those", s.handleListOrders},
+		{"GET", "/api/orders/arrived", "device", "Orders awaiting acceptance (oldest-first; a tablet: the ones it shows)", s.handleListArrived},
 		{"GET", "/api/orders/{id}", "device", "One local order by canonical UUID", s.handleGetOrder},
 		{"POST", "/api/orders/{id}/accept", "device", "Accept {prep_minutes?}: kitchen #, print tickets (reverted if nothing printed)", s.handleAccept},
 		{"POST", "/api/orders/{id}/ready", "device", "Mark an accepted order ready {callout?: false = READY held on the tablet, the hub doesn't call it out (2.4.0)}", s.handleReady},
@@ -151,7 +151,7 @@ func (s *Server) baseRoutes() []routeDef {
 		{"GET", "/api/app/latest", "device", "Newest Quibase release cached for tablets (204 none)", s.handleAppLatest},
 		{"GET", "/api/app/apk", "device", "Download the cached Quibase APK", s.handleAppAPK},
 		{"GET", "/api/update/status", "device", "Pi update state: versions, latest, pending request, last result, can_update_now/blocked_reason", s.handleUpdateStatus},
-		{"GET", "/api/events", "device", "SSE: order.arrived|updated|escalated, drivers.updated|dispatched, driver.route, batch.closed, floor.updated, settings.updated, integration.status, terminal.menu.changed|config.changed|order.placed|order.paid|order.voided|order.changed|order.picked_up|draft.changed|draft.removed|draft.taken|customer.changed|customers.synced|driver.linked|driver.claimed|driver.tip|driver.closed|driver.report|drawer.changed|z.report, sync.parked, routing.updated", s.handleEvents},
+		{"GET", "/api/events", "device", "SSE: order.arrived|updated|escalated, drivers.updated|dispatched, driver.route, batch.closed, floor.updated, settings.updated, integration.status, terminal.menu.changed|config.changed|order.placed|order.paid|order.voided|order.changed|order.picked_up|draft.changed|draft.removed|draft.taken|customer.changed|customers.synced|driver.linked|driver.claimed|driver.tip|driver.closed|driver.report|drawer.changed|z.report, sync.parked, routing.updated (a paired tablet: order frames only for the orders it shows, floor.updated when one it showed turns hidden, 2.5.4)", s.handleEvents},
 
 		// Quibase setup + diagnostics — paired tablet (or web-UI session).
 		{"POST", "/api/pairing/code", "device", "Show a 6-digit pairing code (5 min) {kind?, username?, password?} — web UI (any kind) or a paired tablet (tablets; a terminal with the store manager login, 2.10y)", s.handlePairingCode},

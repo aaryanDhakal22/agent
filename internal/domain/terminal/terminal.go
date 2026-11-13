@@ -124,6 +124,23 @@ type Settings struct {
 	// WasteReasons: the store's Void waste reasons (contract 2.10s §5;
 	// missing / empty = DefaultWasteReasons).
 	WasteReasons []string `json:"waste_reasons"`
+	// QuibaseCounterMinCents (2.5.4, the owner's X): a terminal order shows
+	// on Quibase only over this total with a kitchen line (missing =
+	// DefaultQuibaseCounterMinCents; order.StoredOrder.ShownOnTablet).
+	QuibaseCounterMinCents *int64 `json:"quibase_counter_min_cents"`
+}
+
+// DefaultQuibaseCounterMinCents is main's own default for
+// quibase_counter_min_cents (the owner, 2026-11-13: over $5).
+const DefaultQuibaseCounterMinCents = 500
+
+// QuibaseCounterMinCents is the total a terminal order must be over to show
+// on Quibase (bounded 0-100,000 cents; no config yet = the default).
+func (c *Config) QuibaseCounterMinCents() int64 {
+	if c == nil || c.parsed.QuibaseCounterMinCents == nil {
+		return DefaultQuibaseCounterMinCents
+	}
+	return min(max(*c.parsed.QuibaseCounterMinCents, 0), 100_000)
 }
 
 // DefaultDrawerStartCents is the starting cash in each drawer when main's
@@ -405,6 +422,11 @@ type CounterMenu struct {
 	// its category's default; absent = no printer: the line prints on every
 	// station).
 	Routes map[string]Route `json:"routes"`
+	// QuickAddItemID: the store's "Quick add" bank item (main 4.0.5): a
+	// custom line (Quicc Add) is routed by it like any item (its printer,
+	// its category's, "no kitchen ticket" = receipt only). "" (an older
+	// main) = no route: such a line prints on every station.
+	QuickAddItemID string `json:"quick_add_item_id,omitempty"`
 }
 
 // Route is one bank item's kitchen routing. Name is the printer's name
