@@ -62,6 +62,9 @@ type Dispatcher struct {
 	rules func() Rules
 	// downAfter (SetDownAfter): printer_down_after_seconds, read per probe.
 	downAfter func() time.Duration
+	// adminCool: the developer's printer-down Pushovers, once per 15 min
+	// per printer (2.5.2); kept across roster rebuilds.
+	adminCool *notify.Cooldown
 	// routing is the store's routing + emergency reroute setting
 	// (routing.go), read per ticket; nil = mode none.
 	routing atomic.Pointer[printroute.Routing]
@@ -149,6 +152,7 @@ func NewDispatcher(
 		printerDelay:    keepCheckDelay,
 		build:           build,
 		byID:            make(map[string]rosterSlot),
+		adminCool:       notify.NewCooldown(notify.AdminCooldown),
 	}
 }
 
@@ -186,6 +190,7 @@ func (d *Dispatcher) Apply(ctx context.Context, printers []storeconfig.PrinterCo
 		svc := NewService(dev, d.registry, d.logger, d.meters)
 		svc.onStatus = d.statusHook
 		svc.downAfter = d.downAfter
+		svc.adminCool = d.adminCool
 		if hook := d.probeHook; hook != nil {
 			id := p.ID
 			svc.onProbe = func(ctx context.Context, ip string, up bool) { hook(ctx, id, ip, up) }

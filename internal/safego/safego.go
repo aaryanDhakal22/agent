@@ -237,3 +237,19 @@ func Short(s string) string {
 	}
 	return s
 }
+
+// StartPageDue (2.5.2) reports whether this start may page the developer
+// ("Agent started", a crash, a crash loop): at most once per gap across
+// restarts (systemd restarts a crash-looping agent every 3-60 s, and every
+// start used to page twice). The stamp is dir/start-paged.
+func StartPageDue(dir string, now time.Time, gap time.Duration) bool {
+	path := filepath.Join(dir, "start-paged")
+	if b, err := os.ReadFile(path); err == nil {
+		if t, err := time.Parse(time.RFC3339, strings.TrimSpace(string(b))); err == nil && now.Sub(t) < gap && !now.Before(t) {
+			return false
+		}
+	}
+	_ = os.MkdirAll(dir, 0o700)
+	_ = os.WriteFile(path, []byte(now.UTC().Format(time.RFC3339)+"\n"), 0o600)
+	return true
+}

@@ -485,7 +485,9 @@ func (s *Service) EscalateOverdue(ctx context.Context, now time.Time, after time
 			int(waiting.Minutes()), formatServiceType(so.Order.Fulfillment.Type), so.Order.SourceEventID, who)
 		s.logger.Warn().Ctx(ctx).Str("order_id", so.Order.ID).
 			Msgf("Order %s not accepted for %d min", devlog.Short(so.Order.ID), int(waiting.Minutes()))
-		if s.notifier != nil {
+		// The tablets are nagged every `after`; the developer's Pushover at
+		// most once per 15 min per order (2.5.2).
+		if s.notifier != nil && s.adminCool.Allow("escalate:"+so.Order.ID, now) {
 			if err := s.notifier.SendFloor(ctx, msg, "siren"); err != nil {
 				s.logger.Warn().Ctx(ctx).Err(err).Msg("Pushover escalation failed (non-fatal)")
 			}

@@ -13,6 +13,7 @@ import (
 
 	"quiccpos/agent/internal/domain/order"
 	"quiccpos/agent/internal/domain/terminal"
+	"quiccpos/agent/internal/infra/notify"
 	"quiccpos/agent/internal/observability"
 
 	"github.com/google/uuid"
@@ -95,6 +96,8 @@ type Service struct {
 	cm *observability.CounterMeters
 	// pager: the owner's Pushover (unbalanced Z, PIN lockouts).
 	pager Pager
+	// pageCool: one page per text per 15 min (SetPager, 2.5.2).
+	pageCool *notify.Cooldown
 	// pinRepo keeps the PIN throttle across restarts (X-2).
 	pinRepo PinRepo
 	// approvals: single-use manager approvals (X-5).

@@ -56,8 +56,14 @@ type Service struct {
 	logger   zerolog.Logger
 	// routeUnscopedWarned: the "no admin device" warning is logged once.
 	routeUnscopedWarned atomic.Bool
-	tracer              trace.Tracer
-	meters              observability.Meters
+	// adminCool (2.5.2): the developer's repeat alerts — the same reroute on
+	// every order, an order still waiting — at most once per 15 min per key.
+	adminCool *notify.Cooldown
+	// onNothingPrinted (2.5.2): an order's first print came out on no
+	// printer — the owner's alert (application/owneralert).
+	onNothingPrinted atomic.Pointer[func(orderID, label string)]
+	tracer           trace.Tracer
+	meters           observability.Meters
 	// onFloorEvent is called after every committed floor change so the sync
 	// sender pushes it to main right away (set via OnFloorEvent).
 	// Set by cmd/main after the SSE client may already be running: atomic.
@@ -130,16 +136,22 @@ func NewService(
 	meters observability.Meters,
 ) *Service {
 	return &Service{
-		repo:     repo,
-		settings: settings,
-		print:    print,
-		notifier: notifier,
-		broker:   broker,
-		logger:   logger.With().Str("module", "order-service").Logger(),
-		tracer:   otel.Tracer(tracerName),
-		meters:   meters,
+		repo:      repo,
+		settings:  settings,
+		print:     print,
+		notifier:  notifier,
+		broker:    broker,
+		logger:    logger.With().Str("module", "order-service").Logger(),
+		tracer:    otel.Tracer(tracerName),
+		meters:    meters,
+		adminCool: notify.NewCooldown(notify.AdminCooldown),
 	}
 }
+
+// OnNothingPrinted registers the hook told when an order's first print
+// (accept, placement, a counter SEND) printed on no printer (2.5.2: the
+// owner's alert).
+func (s *Service) OnNothingPrinted(fn func(orderID, label string)) { s.onNothingPrinted.Store(&fn) }
 
 // OnFloorEvent registers the hook run after each committed floor change
 // (cmd/main.go wires the floorsync sender's Wake).
@@ -709,7 +721,18 @@ func (s *Service) alertPrintIssues(ctx context.Context, so order.StoredOrder, ou
 		return
 	}
 	s.logger.Warn().Ctx(ctx).Str("order_id", snap.ID).Strs("issues", parts).Msg("Print trouble on " + what)
+	if withUnrouted && len(out.Printed) == 0 && len(out.Failed) > 0 {
+		if fn := s.onNothingPrinted.Load(); fn != nil && *fn != nil {
+			(*fn)(snap.ID, what)
+		}
+	}
 	if s.notifier == nil {
+		return
+	}
+	// 2.5.2: a dead printer reroutes every order the same way; the developer
+	// hears about the same trouble once per 15 min. A ticket that printed
+	// nowhere is always told (each one is food someone must re-enter).
+	if len(out.Failed) == 0 && !s.adminCool.Allow("print:"+strings.Join(parts, "; "), time.Now()) {
 		return
 	}
 	// The order's number only, never the customer (hardening L-4).

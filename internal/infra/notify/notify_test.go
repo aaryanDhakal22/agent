@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"sync"
 	"testing"
+	"time"
 )
 
 func recorder(t *testing.T) (*Notifier, *[]string) {
@@ -37,22 +38,51 @@ func TestSendGoesToTheOwnerOnly(t *testing.T) {
 	}
 }
 
-func TestSendFloorGoesToOwnerAndBoss(t *testing.T) {
+// 2.5.2: floor problems go to the admin only; the owner + boss get SendOwner.
+func TestSendFloorIsAdminOnly(t *testing.T) {
 	n, users := recorder(t)
 	if err := n.SendFloor(context.Background(), "NOT ACCEPTED", "siren"); err != nil {
 		t.Fatal(err)
 	}
-	if len(*users) != 2 || (*users)[0] != "owner" || (*users)[1] != "boss" {
+	if len(*users) != 1 || (*users)[0] != "owner" {
 		t.Fatalf("users = %v", *users)
 	}
 }
 
-func TestNoBossKeyMeansOwnerOnly(t *testing.T) {
-	n, users := recorder(t)
-	n.bossKey = ""
-	n.SendFloor(context.Background(), "x", "siren")
-	if len(*users) != 1 {
-		t.Fatalf("users = %v", *users)
+func TestSendOwnerGoesToOwnerDevicesAndBoss(t *testing.T) {
+	n, got := forms(t, 200, `{"status":1}`)
+	n.SetAdminDevices([]string{"AaryanPhone"})
+	if n.SendOwner(context.Background(), "Lombardi's", "x", ""); len(*got) != 1 || (*got)[0].Get("user") != "boss" ||
+		(*got)[0].Has("device") || (*got)[0].Get("title") != "Lombardi's" {
+		t.Fatalf("boss only = %v", *got)
+	}
+	n.SetOwnerDevices([]string{"OwnerPhone"})
+	n.SendOwner(context.Background(), "", "y", "")
+	if len(*got) != 3 || (*got)[1].Get("user") != "owner" || (*got)[1].Get("device") != "OwnerPhone" || (*got)[2].Get("user") != "boss" {
+		t.Fatalf("owner devices + boss = %v", *got)
+	}
+	if !n.OwnerConfigured() {
+		t.Fatal("OwnerConfigured")
+	}
+}
+
+// Never the whole account: no owner devices and no separate boss key = no
+// owner message (drivers' phones share the account).
+func TestSendOwnerNeverUnscoped(t *testing.T) {
+	n, got := forms(t, 200, `{"status":1}`)
+	n.SetKeys("app", "owner", "owner") // boss = the shared account
+	n.SendOwner(context.Background(), "", "x", "")
+	n.SetKeys("app", "owner", "")
+	n.SendOwner(context.Background(), "", "x", "")
+	if len(*got) != 0 || n.OwnerConfigured() {
+		t.Fatalf("sent %v", *got)
+	}
+	// Outside prod, nothing until admin devices are known (2.4.1).
+	n.SetKeys("app", "owner", "boss")
+	n.SetStrictScope(true)
+	n.SendOwner(context.Background(), "", "x", "")
+	if len(*got) != 0 {
+		t.Fatalf("strict sent %v", *got)
 	}
 }
 
@@ -93,18 +123,15 @@ func TestScopedAudiences(t *testing.T) {
 	n.SetOwnerDevices([]string{"OwnerPhone", "AaryanPhone"})
 	n.Send(context.Background(), "Agent started", "classical")
 	n.SendFloor(context.Background(), "NOT ACCEPTED", "siren")
-	if len(*got) != 3 {
+	if len(*got) != 2 {
 		t.Fatalf("posts = %d", len(*got))
 	}
-	sys, floor, boss := (*got)[0], (*got)[1], (*got)[2]
+	sys, floor := (*got)[0], (*got)[1]
 	if sys.Get("user") != "owner" || sys.Get("device") != "AaryanPhone" {
 		t.Fatalf("system = %v", sys)
 	}
-	if floor.Get("user") != "owner" || floor.Get("device") != "AaryanPhone,OwnerPhone" || floor.Get("sound") != "siren" {
+	if floor.Get("user") != "owner" || floor.Get("device") != "AaryanPhone" || floor.Get("sound") != "siren" {
 		t.Fatalf("floor = %v", floor)
-	}
-	if boss.Get("user") != "boss" || boss.Has("device") {
-		t.Fatalf("boss = %v", boss)
 	}
 }
 
@@ -169,5 +196,17 @@ func TestStrictScope(t *testing.T) {
 	d := (*got)[len(*got)-1]
 	if d.Get("device") != "abdul" || d.Get("priority") != "1" || d.Get("title") != "Come back to the store" || d.Has("sound") {
 		t.Fatalf("driver message = %v", d)
+	}
+}
+
+func TestCooldown(t *testing.T) {
+	c := NewCooldown(AdminCooldown)
+	t0 := time.Unix(1_700_000_000, 0)
+	if !c.Allow("a", t0) || c.Allow("a", t0.Add(14*time.Minute)) || !c.Allow("b", t0) || !c.Allow("a", t0.Add(15*time.Minute)) {
+		t.Fatal("cooldown")
+	}
+	var nilC *Cooldown
+	if !nilC.Allow("x", t0) {
+		t.Fatal("nil cooldown must allow")
 	}
 }
