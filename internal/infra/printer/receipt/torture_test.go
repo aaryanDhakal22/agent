@@ -217,7 +217,6 @@ func dumpTortureWidth(t *testing.T, dir string, cols int) {
 	on := func(rerouted string) printer.Paper { return printer.Paper{Cols: cols, ReroutedFrom: rerouted} }
 	sc := tortureSC()
 	def := order.DefaultReceiptPrefs()
-	totals := []string{"Subtotal", "Tax", "Total"}
 	slipTotals := []string{"Sub-total", "Tax", "Total"} // SoftTouch's slip (softtouch.go, 2026-11-12)
 
 	receiptTexts := func(s order.Snapshot, sizes bool) []string {
@@ -226,7 +225,7 @@ func dumpTortureWidth(t *testing.T, dir string, cols int) {
 			x = append(x, a.Line1, a.Line2, a.City)
 		}
 		for _, f := range s.Money.Fees {
-			if s.Voided == "" && f.Type == "delivery" {
+			if f.Type == "delivery" {
 				continue // the slip prints it as "Delivery:" (SoftTouch's words)
 			}
 			if f.Type != "delivery" || s.Fulfillment.Type == "delivery" {
@@ -252,11 +251,7 @@ func dumpTortureWidth(t *testing.T, dir string, cols int) {
 		if rerouted != "" {
 			x = append(x, rerouted)
 		}
-		if s.Voided == "" {
-			put(name, data, "receipt", x, slipTotals...)
-			return
-		}
-		put(name, data, "receipt", x, totals...)
+		put(name, data, "receipt", x, slipTotals...) // every receipt is the slip, a voided one too
 	}
 
 	items := tortureItems()

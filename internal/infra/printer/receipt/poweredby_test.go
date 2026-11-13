@@ -66,6 +66,7 @@ func TestPoweredBy_Raster(t *testing.T) {
 func TestPoweredBy_OnlyCustomerReceipts(t *testing.T) {
 	sc := previewStore()
 	foot := []byte(poweredByFooter(defaultLayout))
+	slipFoot := []byte(slipPoweredBy(defaultLayout)) // the slip's: "powered by" one size up
 	two := prefsWith(func(p *order.ReceiptPrefs) { p.Copies = 2 })
 	for name, c := range map[string]struct {
 		b    []byte
@@ -83,7 +84,7 @@ func TestPoweredBy_OnlyCustomerReceipts(t *testing.T) {
 			return BuildDriverReport(rep, rsc, "", printer.Paper{}, printed)
 		}(), 0},
 	} {
-		if n := bytes.Count(c.b, foot); n != c.want {
+		if n := bytes.Count(c.b, foot) + bytes.Count(c.b, slipFoot); n != c.want {
 			t.Errorf("%s: powered by %d times, want %d", name, n, c.want)
 		}
 	}

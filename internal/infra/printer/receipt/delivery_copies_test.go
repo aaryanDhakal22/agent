@@ -81,16 +81,24 @@ func TestDeliveryCopies(t *testing.T) {
 		got := Build(deliverySnap(card), deliveryStoreCtx(), printer.Ticket{Kind: printer.TicketDeliveryCopies}, prefs)
 		golden(t, "testdata/delivery_copies_"+name+".golden", got)
 		txt := textOf(got)
-		// SoftTouch's slip (the owner, 2026-11-12): the labelled block even when empty, Directions,
-		// LAST , FIRST, the padded time.
+		// SoftTouch's slip (the owner, 2026-11-12): Phone / Street / City (Company, Complex, Zone
+		// Code, Gate Code went after the owner saw it printed), Directions, LAST , FIRST, the padded
+		// time, a rule above and below the Order #, the Transaction ID's last 10 characters.
 		for _, want := range []string{"Merchant Copy", "Customer Copy", "Order #: 1104", "DELIVERY", "LOPEZ , MARIA",
-			"Company    :", "Phone      : (410) 555-0100", "Street     : 12 Test St, APT 4B", "City       : TOWSON, MD 21204",
-			"Complex    :", "Zone Code  :", "Gate Code  :",
+			"Phone      : (410) 555-0100", "Street     : 12 Test St, APT 4B", "City       : TOWSON, MD 21204",
 			"Directions: Side door", "Notes: Ring twice", "Date: 11/12/26", "Time: 05:41 pm",
 			"LARGE CHEESE PIZZA", "Pepperoni", "Note: extra hot", "Delivery:", "Tip:", "Order Online", "lombardis.example"} {
 			if !strings.Contains(txt, want) {
 				t.Errorf("%s: no %q in\n%s", name, want, txt)
 			}
+		}
+		for _, gone := range []string{"Company", "Complex", "Zone Code", "Gate Code"} {
+			if strings.Contains(txt, gone) {
+				t.Errorf("%s: %q is gone from the slip", name, gone)
+			}
+		}
+		if rule := strings.Repeat("-", 48); !strings.Contains(txt, rule+"\nOrder #: 1104\n"+rule+"\n") {
+			t.Errorf("%s: the Order # between two rules\n%s", name, txt)
 		}
 		if strings.Contains(txt, "Well Done") {
 			t.Errorf("%s: a $0 choice not for the driver printed", name)

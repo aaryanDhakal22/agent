@@ -38,10 +38,11 @@ func softSlip(p *escw, snap order.Snapshot, st deliveryStore, at time.Time, copy
 	if voided {
 		p.center()
 		p.bold(true)
-		p.raw(gsBig + cmdInvertOn + " " + strings.ToUpper(snap.Voided) + " " + cmdInvertOff) // VOID / CANCELLED
-		p.feed(2)
-		p.raw(gsNormal)
+		p.raw(gsBig + cmdInvertOn + "  " + strings.ToUpper(snap.Voided) + "  " + cmdInvertOff) // VOID / CANCELLED
+		p.raw(gsNormal + cmdFeed)
 		p.bold(false)
+		p.wrapped("Nothing on this order is charged", "")
+		p.feed(1)
 		p.left()
 	}
 	// The header: the logo raster, or the store's details centred.
@@ -77,6 +78,7 @@ func softSlip(p *escw, snap order.Snapshot, st deliveryStore, at time.Time, copy
 		num = fmt.Sprintf("%d", *snap.KitchenNumber)
 	}
 	t := "Order #: " + num
+	p.line(strings.Repeat("-", w)) // a full-width rule above and below (the owner, 2026-11-12)
 	p.bold(true)
 	if len(dclean(t))*2 <= w {
 		p.raw(gsBig)
@@ -86,6 +88,7 @@ func softSlip(p *escw, snap order.Snapshot, st deliveryStore, at time.Time, copy
 	p.line(t)
 	p.raw(gsNormal)
 	p.bold(false)
+	p.line(strings.Repeat("-", w))
 	if typ := slipType(snap); typ != "" {
 		p.line(typ)
 	}
@@ -111,7 +114,6 @@ func softSlip(p *escw, snap order.Snapshot, st deliveryStore, at time.Time, copy
 	if phone != "" {
 		phone = phoneParens(phone)
 	}
-	always(p, "Company", "")
 	always(p, "Phone", phone)
 	if delivery {
 		street, city := "", ""
@@ -124,9 +126,6 @@ func softSlip(p *escw, snap order.Snapshot, st deliveryStore, at time.Time, copy
 		}
 		always(p, "Street", street)
 		always(p, "City", city)
-		always(p, "Complex", "")
-		always(p, "Zone Code", "")
-		always(p, "Gate Code", "")
 		p.feed(1)
 		directions := ""
 		if a := snap.Fulfillment.Address; a != nil {
@@ -156,10 +155,12 @@ func softSlip(p *escw, snap order.Snapshot, st deliveryStore, at time.Time, copy
 			when = x.At.In(at.Location())
 		}
 		p.wrapped("Payment Date Time: "+shortDate(when)+" "+shortTimePadded(when), "  ")
-		if ref := strings.TrimSpace(x.Ref); ref != "" {
-			p.wrapped("Transaction ID: "+ref, strings.Repeat(" ", 16))
-		} else if ref := strings.TrimSpace(snap.SourceEventID); ref != "" && snap.Source == order.SourceCounter {
-			p.wrapped("Transaction ID: "+ref, strings.Repeat(" ", 16))
+		ref := strings.TrimSpace(x.Ref)
+		if ref == "" && snap.Source == order.SourceCounter {
+			ref = strings.TrimSpace(snap.SourceEventID)
+		}
+		if ref != "" { // its last 10 characters, one line (the owner, 2026-11-12)
+			p.line("Transaction ID: " + lastRunes(dclean(ref), min(10, max(p.width-16, 1))))
 		}
 		if cashier != "" {
 			p.wrapped("Cashier: "+cashier, strings.Repeat(" ", 9))
@@ -225,6 +226,11 @@ func softSlip(p *escw, snap order.Snapshot, st deliveryStore, at time.Time, copy
 	if len(snap.Payments) == 0 {
 		due = snap.CashDue()
 	}
+	if voided {
+		p.bold(true)
+		p.wrapped(strings.ToUpper(snap.Voided)+" - NOT CHARGED", "")
+		p.bold(false)
+	}
 	if !voided && due > 0 {
 		p.bold(true)
 		p.wrapped("Collect Cash "+moneyC(due), "")
@@ -282,7 +288,8 @@ func softSlip(p *escw, snap order.Snapshot, st deliveryStore, at time.Time, copy
 		p.raw(gsNormal)
 	}
 	p.left()
-	p.raw(poweredByFooter(p.lay))
+	p.feed(2) // powered by and what follows sit 2 lines lower (the owner, 2026-11-12)
+	p.raw(slipPoweredBy(p.lay))
 	p.raw(cmdNormalSz)
 	p.feed(3)
 	p.raw(cmdCut)
@@ -331,6 +338,25 @@ func always(p *escw, label, value string) {
 			p.line(strings.Repeat(" ", len(head)) + l)
 		}
 	}
+}
+
+// cmdFontBTall: font B, double height.
+const cmdFontBTall = "\x1b\x21\x11"
+
+// lastRunes is the last n characters of s.
+func lastRunes(s string, n int) string {
+	r := []rune(s)
+	if len(r) <= n {
+		return s
+	}
+	return string(r[len(r)-n:])
+}
+
+// slipPoweredBy is poweredByFooter with "powered by" one size up: font B at
+// double height (the owner, 2026-11-12).
+func slipPoweredBy(l layout) string {
+	b := poweredByFooter(l)
+	return strings.Replace(b, cmdFontBSz+"powered by", cmdFontBTall+"powered by", 1)
 }
 
 // noOrphan keeps a lone character off a row of its own ("APT" / "4"): the

@@ -126,3 +126,31 @@ func foldASCII(s string) string {
 	}
 	return b.String()
 }
+
+// from437 reads a dclean'd line (one PC437 byte a character) back as text:
+// the struck pictures of the slip draw from it (strikeRaster folds to ASCII).
+func from437(s string) string {
+	inv := from437Map()
+	var b strings.Builder
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c < 0x80 {
+			b.WriteByte(c)
+		} else if r, ok := inv[c]; ok {
+			b.WriteRune(r)
+		} else {
+			b.WriteByte('?')
+		}
+	}
+	return b.String()
+}
+
+func from437Map() map[byte]rune {
+	m := make(map[byte]rune, 128)
+	i := 0
+	for _, r := range cp437High {
+		m[byte(0x80+i)] = r
+		i++
+	}
+	return m
+}
