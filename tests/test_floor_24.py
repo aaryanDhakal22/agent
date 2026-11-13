@@ -108,13 +108,24 @@ def test_future_early_tickets(kitchen, fakes) -> None:  # noqa: F811
     assert r.status_code == 200, r.text
     promised = datetime.now(timezone.utc) + timedelta(hours=2)
     later = _snap(kitchen["main_store"], [_item("Pepperoni", ids["Pizza"]), _item("Can Coke", ids["Front"])])
-    later["fulfillment"] = {"type": "pickup", "promised_at": promised.isoformat()}
+    # 2.5.7: a future pickup's early print is the kitchen's only (its receipt prints at its Cash Out).
+    pick = _snap(kitchen["main_store"], [_item("Pepperoni", ids["Pizza"])])
+    pick["fulfillment"] = {"type": "pickup", "promised_at": promised.isoformat()}
+    assert a.http.post(f"{a.base}/api/resend", json=pick, timeout=15).status_code == 200
+    assert a.http.post(f"{a.base}/api/orders/{pick['id']}/schedule", json={"lead_minutes": 20}, timeout=5).status_code == 200
+    wait_until(lambda: fakes["Pizza"].jobs, timeout=10, what="the pickup's early kitchen ticket")
+    wait_until(lambda: _order(a, pick["id"])["status"].get("early_kitchen") is True, timeout=5, what="early kitchen flag")
+    assert not fakes["Front"].jobs and not _order(a, pick["id"])["status"].get("early_receipt"), "no early receipt for a pickup"
+    for f in fakes.values():
+        f.clear()
+    # A future delivery: the early kitchen ticket and its receipt with FUTURE on the receipt printer.
+    later["fulfillment"] = {"type": "delivery", "promised_at": promised.isoformat(), "address": {"line1": "1 Main St"}}
     assert a.http.post(f"{a.base}/api/resend", json=later, timeout=15).status_code == 200
     r = a.http.post(f"{a.base}/api/orders/{later['id']}/schedule", json={"lead_minutes": 20}, timeout=5)
     assert r.status_code == 200, r.text
     wait_until(lambda: fakes["Pizza"].jobs and fakes["Front"].jobs, timeout=10, what="the early tickets")
     pizza = fakes["Pizza"].text()
-    assert pizza.count("MAKE AT ") == 1 and " READY " in pizza and "\x1d!\x11PICKUP\n" in pizza
+    assert pizza.count("MAKE AT ") == 1 and " READY " in pizza and "\x1d!\x11DELIVERY\n" in pizza
     assert "Can Coke" not in pizza, "a receipt-only item isn't listed for the cooks"
     assert "FUTURE" in fakes["Front"].text()
     wait_until(lambda: _order(a, later["id"])["status"].get("early_receipt") is True, timeout=5, what="early flags")

@@ -109,13 +109,13 @@ func textsOf(items []order.LineItem, sizes bool) []string {
 	return out
 }
 
-// slipTextsOf: textsOf for a customer slip, whose $0 choices follow slipShowsChoice (2.5.2).
+// slipTextsOf: textsOf for a customer slip, whose $0 choices follow slipShowsChoice (2.5.7: the default hand-over words).
 func slipTextsOf(snap order.Snapshot, items []order.LineItem, sizes bool) []string {
 	shown := make([]order.LineItem, len(items))
 	for i, it := range items {
 		it.Children = nil
 		for _, c := range items[i].Children {
-			if slipShowsChoice(snap, c) {
+			if slipShowsChoice(c, order.DefaultReceiptPrefs().HandoverChoiceWords) {
 				it.Children = append(it.Children, c)
 			}
 		}
@@ -295,11 +295,12 @@ func dumpTortureWidth(t *testing.T, dir string, cols int) {
 	fut.Fulfillment.PromisedAt = &due
 	data := Build(fut, sc, printer.Ticket{Kind: printer.TicketReceipt, Future: true, Cols: cols}, def)
 	put("receipt_delivery_future", data, "receipt", receiptTexts(fut, true), slipTotals...)
-	// the classic receipt (receipt_prefs.style_store / style_online = classic, 2.5.2): buildFull, every choice
+	// the classic receipt (receipt_prefs.style_store / style_online = classic, 2.5.2): buildFull; a delivery's
+	// $0 choices are the ones the driver hands over (2.5.7, slipShowsChoice)
 	classic := def
 	classic.StyleStore, classic.StyleOnline = order.StyleClassic, order.StyleClassic
 	cl := tortureSnap("delivery", items...)
-	clTexts := append(textsOf(cl.Items, true), cl.Notes, lastFirst(tCustomer), tStoreName)
+	clTexts := append(slipTextsOf(cl, cl.Items, true), cl.Notes, lastFirst(tCustomer), tStoreName)
 	put("receipt_delivery_classic", Build(cl, sc, printer.Ticket{Kind: printer.TicketReceipt, Cols: cols}, classic), "receipt", clTexts,
 		"Subtotal", "Tax", "Total")
 	// an online delivery's Merchant + Customer Copy (the terminal's layout, §2.10aa)

@@ -594,8 +594,10 @@ func TestCallcenterOrderIsTakenByTheAgent(t *testing.T) {
 	if so.Status.State != order.StateAccepted || so.Status.KitchenNumber == nil || len(r.orders.printed) != 1 {
 		t.Fatalf("accepted at once: %s, tickets %d", so.Status.State, len(r.orders.printed))
 	}
-	if got := receiptsOf(r.orders); len(got) != 1 || got[0].Order.ID != so.Order.ID || got[0].Order.TakenBy != so.Order.TakenBy {
-		t.Fatalf("the Pi prints the receipt / delivery ticket: %d", len(got))
+	// 2.5.7: the delivery's tickets ride in the same print as its station
+	// tickets (the counter print, ModePlaced); no separate receipt print.
+	if got := receiptsOf(r.orders); len(got) != 0 || res.DeliveryTickets != DeliveryTicketsOnPi {
+		t.Fatalf("one print for a call-center delivery (stations + its copies): %d separate, delivery_tickets %q", len(got), res.DeliveryTickets)
 	}
 	raw, _ := json.Marshal(so.Order)
 	var wire map[string]any
@@ -669,6 +671,11 @@ func TestCallcenterOrderIsTakenByTheAgent(t *testing.T) {
 				t.Fatalf("a store order: %q %q", o.Order.TakenBy, o.Order.DeviceKind)
 			}
 		}
+	}
+	// 2.5.7: a call-center pickup gets no paper from the Pi but its station
+	// tickets (the receipt prints at its Cash Out on a terminal).
+	if pick := ccPlace(t, r, seat, "pickup", nil, pizzaLine()); pick.DeliveryTickets != "" || len(receiptsOf(r.orders)) != 0 {
+		t.Fatalf("a call-center pickup: no receipt from the Pi: %q", pick.DeliveryTickets)
 	}
 }
 

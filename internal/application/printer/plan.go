@@ -51,6 +51,10 @@ func PlanFor(snap order.Snapshot, roster []RosterEntry, mode printer.Mode) (tick
 //     reported in unrouted). Each station with items gets a station ticket
 //     (its items + the rest of the order listed small), and the receipt
 //     printer gets the full customer receipt.
+//   - 2.5.7: a pickup / takeout / counter / dine-in order prints its station tickets only (an
+//     unrouted line on every station): no customer receipt on the receipt
+//     printer (isDeliverySnap, onlyDeliveriesOnReceipt). The rest of this
+//     list is a delivery's.
 //   - The kitchen-ticket switches (rules.Tickets) pick, per kind of online
 //     order, between that and the customer receipt ONLY: online card (no cash
 //     due), online cash delivery, online cash pickup (H3: the old "only while
@@ -105,23 +109,31 @@ func PlanWith(snap order.Snapshot, roster []RosterEntry, mode printer.Mode, rule
 		return stationTickets(snap, roster, receipt)
 	case printer.ModePlaced:
 		tickets, unrouted = stationTickets(snap, roster, receipt)
-		if strings.EqualFold(snap.Fulfillment.Type, "delivery") {
+		if isDeliverySnap(snap) {
 			tickets = append(tickets, printer.Ticket{Kind: printer.TicketDeliveryCopies, TargetID: receipt.ID, Station: receipt.Name})
 		}
 		return tickets, unrouted
 	case printer.ModeOrderReceipt:
-		if strings.EqualFold(snap.Fulfillment.Type, "delivery") {
+		// 2.5.7: only a delivery's paper goes to the receipt (Online)
+		// printer on its own; a pickup's receipt prints at its Cash Out on
+		// the terminal's printer (onlyDeliveriesOnReceipt).
+		if isDeliverySnap(snap) {
 			return []printer.Ticket{{Kind: printer.TicketDeliveryCopies, TargetID: receipt.ID, Station: receipt.Name}}, nil
 		}
-		if !isRouted(snap) {
+		if notDelivery(snap) {
+			return nil, nil
+		}
+		if !isRouted(snap) { // no type at all: as before
 			return []printer.Ticket{fullTicket}, nil
 		}
 		return []printer.Ticket{receiptTicket}, nil
 	case printer.ModeFutureEarly, printer.ModeFutureKitchen, printer.ModeFutureReceipt, printer.ModeFutureBoth:
 		kitchen := mode == printer.ModeFutureKitchen || mode == printer.ModeFutureBoth ||
 			(mode == printer.ModeFutureEarly && rules.Tickets.FutureKitchen)
+		// The early receipt by the store's switch is a delivery's only
+		// (2.5.7, onlyDeliveriesOnReceipt); staff's PRINT NOW asks for it.
 		receiptToo := mode == printer.ModeFutureReceipt || mode == printer.ModeFutureBoth ||
-			(mode == printer.ModeFutureEarly && rules.Tickets.FutureReceipt)
+			(mode == printer.ModeFutureEarly && rules.Tickets.FutureReceipt && !notDelivery(snap))
 		if kitchen {
 			if !isRouted(snap) {
 				tickets = []printer.Ticket{{Kind: printer.TicketStation, TargetID: receipt.ID, Station: receipt.Name, Mine: snap.Items}}
@@ -174,6 +186,13 @@ func PlanWith(snap order.Snapshot, roster []RosterEntry, mode printer.Mode, rule
 		return tickets, unrouted
 	}
 
+	if notDelivery(snap) {
+		// 2.5.7 (the owner, 2026-11-13): no customer receipt of a pickup,
+		// counter or dine-in order on the receipt printer at accept: the
+		// kitchen gets its tickets (an unrouted line goes to every station)
+		// and the receipt prints at Cash Out on the terminal.
+		return stationTickets(snap, roster, receipt)
+	}
 	if !snap.IsChannel() && receiptOnly(snap, rules) {
 		return []printer.Ticket{receiptTicket}, nil
 	}
@@ -282,6 +301,30 @@ func stationTickets(snap order.Snapshot, roster []RosterEntry, receipt RosterEnt
 		})
 	}
 	return tickets, unrouted
+}
+
+// isDeliverySnap: the order is a delivery (fulfillment delivery).
+//
+// onlyDeliveriesOnReceipt (agent 2.5.7, the owner 2026-11-13): the receipt
+// printer (Lombardi's "Online" printer) prints, of an order's own paper,
+// only a delivery's tickets (the Merchant + Customer Copy the driver takes),
+// whatever the source: online, website, call center, a terminal. A pickup /
+// takeout / counter order's customer receipt prints only when it is paid,
+// on the terminal's own printer (the terminal does that at Cash Out). What
+// still reaches the receipt printer for a pickup is asked for by a person:
+// Reprint (ModeReceipt) and a future order's PRINT NOW receipt.
+func isDeliverySnap(snap order.Snapshot) bool {
+	return strings.EqualFold(strings.TrimSpace(snap.Fulfillment.Type), "delivery")
+}
+
+// notDelivery: the order says it is a pickup / takeout / counter / dine-in
+// one (an order with no type at all prints as before 2.5.7).
+func notDelivery(snap order.Snapshot) bool {
+	switch strings.ToLower(strings.TrimSpace(snap.Fulfillment.Type)) {
+	case "pickup", "takeout", "counter", "dine_in":
+		return true
+	}
+	return false
 }
 
 // isPickupCash: a pickup the customer pays (some) cash for — the one cash

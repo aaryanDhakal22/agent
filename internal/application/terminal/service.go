@@ -1158,7 +1158,14 @@ type PlaceResult struct {
 	Number      int64             `json:"number"`
 	Duplicate   bool              `json:"duplicate"`
 	ChangeCents int64             `json:"change_cents"`
+	// DeliveryTickets (2.5.7) is "pi" on a delivery: the Pi prints its
+	// Merchant + Customer Copy on the store's receipt printer with the
+	// station tickets, so a terminal doesn't print them on its own printer.
+	DeliveryTickets string `json:"delivery_tickets,omitempty"`
 }
+
+// DeliveryTicketsOnPi is PlaceResult.DeliveryTickets of a delivery.
+const DeliveryTicketsOnPi = "pi"
 
 func numberOf(so order.StoredOrder) int64 {
 	if so.Status.KitchenNumber != nil {
@@ -1349,12 +1356,11 @@ func (s *Service) placeOrder(ctx context.Context, a Actor, in OrderIn) (*PlaceRe
 	if !created {
 		return s.duplicateOrder(ctx, in.ClientKey, hash)
 	}
+	// The station tickets, and a delivery's Merchant + Customer Copy on the
+	// store's receipt printer, in one job (agent 2.5.7: every delivery's
+	// tickets print there, a terminal's and the call center's; a pickup's
+	// receipt prints at its Cash Out on a terminal's own printer).
 	s.printKitchen(ctx, so)
-	if a.Callcenter {
-		// No terminal printer for it: the Pi prints the customer receipt /
-		// delivery ticket on the store's receipt printer (§2.10ab).
-		s.printCallcenterReceipt(ctx, so)
-	}
 	s.orders.CounterOrderChanged(ctx, so, nil, false)
 	if s.cust != nil {
 		s.cust.NoteOrder(ctx, cust.ID, cust.Phone, now)
@@ -1363,7 +1369,11 @@ func (s *Service) placeOrder(ctx context.Context, a Actor, in OrderIn) (*PlaceRe
 	s.orders.DevEvent(fmt.Sprintf("Counter order #%d placed (%s)", numberOf(so), typ))
 	s.logger.Info().Ctx(ctx).Str("order_id", so.Order.ID).Int64("number", numberOf(so)).Str("type", typ).
 		Str("staff_id", st.ID).Str("device_id", a.DeviceID).Msg("Counter order placed")
-	return &PlaceResult{Order: so, Number: numberOf(so), ChangeCents: change}, nil
+	res := &PlaceResult{Order: so, Number: numberOf(so), ChangeCents: change}
+	if so.IsDelivery() {
+		res.DeliveryTickets = DeliveryTicketsOnPi
+	}
+	return res, nil
 }
 
 // OrderView is one counter order with its payments.

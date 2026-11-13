@@ -210,3 +210,25 @@ func TestDriverTicket_JSON(t *testing.T) {
 		t.Fatalf("unset must be omitted: %s", b)
 	}
 }
+
+// Agent 2.5.7 (the owner, 2026-11-13: "drink choices are very important"):
+// every choice of an item in a drink category counts as on, whatever main's
+// toggle says (a drink group added later never stays off); a non-drink
+// item's choices still follow the toggle.
+func TestDriverIndex_DrinkCategoryDefaultsOn(t *testing.T) {
+	build := json.RawMessage(`{
+	 "categories": [
+	  {"name": "Beverages", "items": [{"id": "i-fountain", "modifier_group_ids": ["g-fountain"]}]},
+	  {"name": "Sides", "items": [{"id": "i-tender", "modifier_group_ids": ["g-soda", "g-sauce"]}]}],
+	 "modifier_groups": [
+	  {"id": "g-fountain", "options": [{"name": "Half & Half Lemon"}, {"name": "No Ice"}]},
+	  {"id": "g-soda", "options": [{"name": "W Can Pepsi", "show_on_driver_ticket": true}, {"name": "Med Half/Half"}]},
+	  {"id": "g-sauce", "options": [{"name": "Ranch"}]}]}`)
+	idx := driverIndexOf(build)
+	on, off := true, false
+	want(t, idx.show("i-fountain", "", "Half & Half Lemon"), &on, "a new fountain choice (no toggle)")
+	want(t, idx.show("i-fountain", "", "No Ice"), &on, "a fountain drink's ice")
+	want(t, idx.show("i-tender", "", "W Can Pepsi"), &on, "the tenders combo's flagged can")
+	want(t, idx.show("i-tender", "", "Med Half/Half"), &off, "an unflagged drink in a combo: main's toggle (the hand-over words still print it)")
+	want(t, idx.show("i-tender", "", "Ranch"), &off, "a sauce: main's toggle")
+}

@@ -266,8 +266,8 @@ func TestRelayRunsTheTerminalHandlers(t *testing.T) {
 		t.Fatalf("place: %d %s", placed.Status, placed.Body)
 	}
 	id := pv.Order.Order.ID
-	if len(r.floor.receipts) != 1 || r.floor.receipts[0] != id {
-		t.Fatalf("the Pi prints the receipt of a call-center order: %v", r.floor.receipts)
+	if len(r.floor.receipts) != 0 { // 2.5.7: a delivery's copies ride with its station tickets, a pickup has none
+		t.Fatalf("no separate receipt print for a call-center order: %v", r.floor.receipts)
 	}
 	dup := r.relay(t, ccAgent, "POST", "orders", ccOrder("cc-key-000001"))
 	if dup.Status != http.StatusOK || !strings.Contains(string(dup.Body), `"duplicate":true`) {

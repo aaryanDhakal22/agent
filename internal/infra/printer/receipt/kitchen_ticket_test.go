@@ -114,8 +114,8 @@ func TestKitchenTicket_Layout(t *testing.T) {
 	}
 	for _, want := range []string{
 		"ANA\n",
-		"2  Pepperoni Pizza\n   (Large)\n", "   - Extra cheese\n", "   - Well done\n",
-		"1  Garlic Knots\n", "   - Side of ranch\n",
+		"2  Pepperoni Pizza\n   (Large)\n", H8 + "- Extra cheese\n", H8 + "- Well done\n",
+		"1  Garlic Knots\n", H8 + "- Side of ranch\n",
 		strings.Repeat("-", Cols80) + "\nAlso on this order:\n   1 Fries\n   1 2L Coke\n",
 	} {
 		if !strings.Contains(got, want) {
@@ -225,6 +225,13 @@ func TestKitchenTicket_Change(t *testing.T) {
 	}
 }
 
+// The choices' columns under a large (double width) item (2.5.7): 8 = two
+// past the item's name, 10 = a half's topping nested under its heading.
+const (
+	H8  = "        "
+	H10 = "          "
+)
+
 func TestKitchenTicket_Halves(t *testing.T) {
 	snap := kitchenSnap("dine_in", order.SourceCounter, "Ada", 13, kitchenLine(1, "Cheese Pizza", "X-Large", "p-pizza",
 		order.LineItem{Name: "Extra cheese", Quantity: 1},
@@ -232,7 +239,7 @@ func TestKitchenTicket_Halves(t *testing.T) {
 		order.LineItem{Name: "NO Onion (2nd half)", Portion: order.PortionSecond, Mode: order.ModeNo, Quantity: 1}))
 	got := string(BuildStation(snap, pizzaTicket(snap)))
 	want := "1  Cheese Pizza\n   (X-Large)\n" + cmdSizeReset + cmdBaseSz + cmdBoldOff +
-		"   WHOLE:\n   - Extra cheese\n   1ST HALF:\n   - Pepperoni ONLY\n   2ND HALF:\n   - NO Onion\n"
+		H8 + "WHOLE:\n" + H10 + "- Extra cheese\n" + H8 + "1ST HALF:\n" + H10 + "- Pepperoni ONLY\n" + H8 + "2ND HALF:\n" + H10 + "- NO Onion\n"
 	if !strings.Contains(got, want) {
 		t.Fatalf("halves:\n%q", got)
 	}

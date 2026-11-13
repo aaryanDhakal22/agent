@@ -86,7 +86,11 @@ func (s *Service) duplicateOrder(ctx context.Context, key, hash string) (*PlaceR
 			}
 		}
 	}
-	return &PlaceResult{Order: *prev, Number: numberOf(*prev), Duplicate: true, ChangeCents: change}, nil
+	res := &PlaceResult{Order: *prev, Number: numberOf(*prev), Duplicate: true, ChangeCents: change}
+	if prev.IsDelivery() {
+		res.DeliveryTickets = DeliveryTicketsOnPi
+	}
+	return res, nil
 }
 
 // duplicatePayment answers a payment whose key was taken already.

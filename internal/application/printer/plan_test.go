@@ -150,23 +150,27 @@ func TestPlan_PickupCashPrintsLikeAnyOrder(t *testing.T) {
 	snap := func(kind string, pays ...order.PaymentSummary) order.Snapshot {
 		return order.Snapshot{Items: items, Fulfillment: order.Fulfillment{Type: kind}, Money: order.Money{Total: 2500}, Payments: pays}
 	}
-	// H3: with the default switches every online order prints its station
-	// tickets + the receipt - a cash pickup too (no POS keys it any more).
+	// 2.5.7 (the owner, 2026-11-13): a pickup prints its station tickets
+	// only, cash or card, whatever the switches say; a delivery its station
+	// tickets + the receipt.
 	for _, s := range []order.Snapshot{snap("pickup"), snap("Pickup", order.PaymentSummary{Method: "cash", AmountCents: 2500}),
-		snap("pickup", order.PaymentSummary{Method: "card", AmountCents: 2500}), snap("delivery")} {
-		if tk, _ := Plan(s, roster); len(tk) != 3 {
-			t.Fatalf("%s: want 2 stations + receipt, got %+v", s.Fulfillment.Type, tk)
+		snap("pickup", order.PaymentSummary{Method: "card", AmountCents: 2500})} {
+		if tk, _ := Plan(s, roster); !reflect.DeepEqual(kinds(tk), []string{"station:p-pizza", "station:p-wings"}) {
+			t.Fatalf("%s: want the 2 stations only, got %v", s.Fulfillment.Type, kinds(tk))
 		}
 	}
-	// The online_cash_pickup switch off: just the receipt, also on a
-	// single-printer store.
+	if tk, _ := Plan(snap("delivery"), roster); len(tk) != 3 {
+		t.Fatalf("delivery: want 2 stations + receipt, got %v", kinds(tk))
+	}
 	off := Rules{Tickets: order.DefaultTicketToggles()}
 	off.Tickets.OnlineCashPickup = false
-	if tk, un := PlanWith(snap("pickup"), roster, printer.ModeAccept, off); len(un) != 0 || len(tk) != 1 || tk[0].Kind != printer.TicketReceipt || tk[0].TargetID != front.ID {
-		t.Fatalf("pickup cash, switch off: want only the receipt on Front, got %+v", tk)
+	if tk, _ := PlanWith(snap("pickup"), roster, printer.ModeAccept, off); !reflect.DeepEqual(kinds(tk), []string{"station:p-pizza", "station:p-wings"}) {
+		t.Fatalf("pickup cash, switch off: still the stations only, got %v", kinds(tk))
 	}
-	if tk, _ := PlanWith(snap("pickup"), []RosterEntry{front}, printer.ModeAccept, off); len(tk) != 1 || tk[0].Kind != printer.TicketReceipt {
-		t.Fatalf("single printer pickup cash: %+v", tk)
+	// A single-printer store: the receipt printer is the kitchen, so the
+	// station ticket prints there, never the customer receipt.
+	if tk, _ := PlanWith(snap("pickup"), []RosterEntry{front}, printer.ModeAccept, off); !reflect.DeepEqual(kinds(tk), []string{"station:p-front"}) {
+		t.Fatalf("single printer pickup cash: %v", kinds(tk))
 	}
 }
 
@@ -228,8 +232,8 @@ func TestPlanKitchen_PickupCashStillPrintsStations(t *testing.T) {
 	roster := []RosterEntry{front, pizza, wings}
 	off := Rules{Tickets: order.DefaultTicketToggles()}
 	off.Tickets.OnlineCashPickup = false
-	if tk, _ := PlanWith(snap, roster, printer.ModeAccept, off); !reflect.DeepEqual(kinds(tk), []string{"receipt:p-front"}) {
-		t.Fatalf("accept of pickup cash with its switch off should be receipt only: %v", kinds(tk))
+	if tk, _ := PlanWith(snap, roster, printer.ModeAccept, off); !reflect.DeepEqual(kinds(tk), []string{"station:p-pizza", "station:p-wings"}) {
+		t.Fatalf("accept of pickup cash with its switch off: the stations only (2.5.7): %v", kinds(tk))
 	}
 	if tk, _ := PlanFor(snap, roster, printer.ModeKitchen); !reflect.DeepEqual(kinds(tk), []string{"station:p-pizza", "station:p-wings"}) {
 		t.Fatalf("kitchen resend of pickup cash: %v", kinds(tk))
@@ -484,15 +488,16 @@ func TestPlanPlaced_StationsAndDeliveryCopies(t *testing.T) {
 }
 
 // ModeOrderReceipt (contract 2.10ab: a call-center order has no terminal
-// printer): a delivery's Merchant + Customer Copy, anything else's customer
-// receipt, on the receipt printer; never a station ticket.
+// printer): a delivery's Merchant + Customer Copy on the receipt printer;
+// since 2.5.7 nothing for a pickup (its receipt prints at Cash Out on a
+// terminal); never a station ticket.
 func TestPlan_OrderReceipt(t *testing.T) {
 	roster := []RosterEntry{front, pizza, wings}
 	snap := order.Snapshot{Fulfillment: order.Fulfillment{Type: "pickup"}, Items: []order.LineItem{
 		item("Pepperoni", order.RoutingMatched, pizza.ID), item("Ranch", order.RoutingMatched, wings.ID)}}
 	tk, un := PlanFor(snap, roster, printer.ModeOrderReceipt)
-	if un != nil || len(tk) != 1 || tk[0].Kind != printer.TicketReceipt || tk[0].TargetID != front.ID {
-		t.Fatalf("a pickup: the customer receipt on the receipt printer: %+v %v", tk, un)
+	if un != nil || len(tk) != 0 {
+		t.Fatalf("a pickup: nothing on the receipt printer: %+v %v", tk, un)
 	}
 	snap.Fulfillment.Type = "delivery"
 	tk, _ = PlanFor(snap, roster, printer.ModeOrderReceipt)
@@ -500,8 +505,12 @@ func TestPlan_OrderReceipt(t *testing.T) {
 		t.Fatalf("a delivery: the delivery ticket: %+v", tk)
 	}
 	legacy := order.Snapshot{Fulfillment: order.Fulfillment{Type: "pickup"}, Items: []order.LineItem{item("Pepperoni", "", "")}}
-	if tk, _ = PlanFor(legacy, roster, printer.ModeOrderReceipt); len(tk) != 1 || tk[0].Kind != printer.TicketFull {
-		t.Fatalf("an unrouted order: the full receipt: %+v", tk)
+	if tk, _ = PlanFor(legacy, roster, printer.ModeOrderReceipt); len(tk) != 0 {
+		t.Fatalf("an unrouted pickup: nothing: %+v", tk)
+	}
+	untyped := order.Snapshot{Items: []order.LineItem{item("Pepperoni", "", "")}}
+	if tk, _ = PlanFor(untyped, roster, printer.ModeOrderReceipt); len(tk) != 1 || tk[0].Kind != printer.TicketFull {
+		t.Fatalf("an order with no type: the full receipt as before: %+v", tk)
 	}
 	if tk, _ = PlanFor(snap, nil, printer.ModeOrderReceipt); len(tk) != 0 {
 		t.Fatalf("no printers: nothing: %+v", tk)
