@@ -24,7 +24,7 @@ func reportFixture() (order.DriverReport, storeconfig.StoreContext) {
 			{Customer: "Lee H.", Address: "9 Oak Ave", Street: "9 Oak Ave", TipCents: 400, OrderTipCents: 400, SlipTotalCents: 3000},
 			{KitchenNumber: &k3, Source: "web", Customer: "Customer", Street: "5 Pine Rd", TipCents: 500, OrderTipCents: 500, SlipTotalCents: 2900}, // website card
 		}}
-	rep.Finish(600)
+	rep.Finish(600, 300)
 	sc := storeconfig.StoreContext{Location: storeconfig.LocationContext{Name: "Lombardi's Pizza", Timezone: "America/New_York"}}
 	return rep, sc
 }
@@ -71,11 +71,13 @@ func TestBuildDriverReport_Content(t *testing.T) {
 		leftRight("Tip: $5.00", "Total: $29.00", W),
 		leftRight("Card tips", "$9.00", W),
 		leftRight("Deliveries", "4", W),
-		leftRight("Total cash owed", "$40.99", W),
-		leftRight("Total tip (A/T)", "$8.46", W),
+		// the owner's settlement (2.5.2): cash - $3 x every delivery - card tips after 6%
+		leftRight("Cash collected", "$40.99", W),
+		leftRight("Delivery pay", "-$12.00", W), "($3.00 x 4)",
+		leftRight("Card tips after 6%", "-$8.46", W),
 		"($9.00 - 6%)",
-		"OWED TO STORE", "$33.00", // $32.53 rounded, large and centred
-		"exact $32.53",
+		"HAND IN", "$21.00", // $20.53 rounded, large and centred
+		"exact $20.53",
 	} {
 		if !strings.Contains(s, want) {
 			t.Errorf("missing %q", want)
@@ -93,7 +95,7 @@ func TestBuildDriverReport_Content(t *testing.T) {
 	}
 	// Title, name and the owed amount large again (owner, 2026-10-27); the
 	// delivery lines in the report's text size (normal = font A).
-	for _, big := range []string{cmdDoubleSz + "DRIVER REPORT", cmdQuadSz + "ABDUL", cmdQuadSz + "$33.00", cmdNormalSz + cmdBoldOn + "1104 12 Main St"} {
+	for _, big := range []string{cmdDoubleSz + "DRIVER REPORT", cmdQuadSz + "ABDUL", cmdQuadSz + "$21.00", cmdNormalSz + cmdBoldOn + "1104 12 Main St"} {
 		if !strings.Contains(s, big) {
 			t.Errorf("missing %q in %q", big, s)
 		}
@@ -121,15 +123,16 @@ func TestBuildDriverReport_Sizes(t *testing.T) {
 func TestBuildDriverReport_StoreOwesAndEmpty(t *testing.T) {
 	rep := order.DriverReport{BatchID: 1, BatchOpenedAt: printed, DriverName: "Carlos",
 		Lines: []order.DriverReportLine{{Customer: "Sam T.", TipCents: 1000}}} // card only
-	rep.Finish(600)
+	rep.Finish(600, 300)
 	s := string(BuildDriverReport(rep, storeconfig.StoreContext{}, "", printer.Paper{}, printed))
-	if !strings.Contains(s, "STORE OWES DRIVER") || !strings.Contains(s, "$9.00") || !strings.Contains(s, "exact $9.40") || strings.Contains(s, "-$") {
+	// his $3 + his tip after 6%: $12.40 (the deduction lines carry a "-", the total never does)
+	if !strings.Contains(s, "STORE OWES DRIVER") || !strings.Contains(s, "$12.00") || !strings.Contains(s, "exact $12.40") || strings.Contains(s, "-$12.00") {
 		t.Errorf("store-owes slip wrong:\n%s", s)
 	}
 	empty := order.DriverReport{BatchID: 1, BatchOpenedAt: printed, DriverName: "Deep", Lines: []order.DriverReportLine{}}
-	empty.Finish(600)
+	empty.Finish(600, 300)
 	s = string(BuildDriverReport(empty, storeconfig.StoreContext{}, "", printer.Paper{}, printed))
-	for _, want := range []string{"No deliveries this batch", leftRight("Deliveries", "0", defaultLayout.cols), "OWED TO STORE", "$0.00", " - open"} {
+	for _, want := range []string{"No deliveries this batch", leftRight("Deliveries", "0", defaultLayout.cols), "HAND IN", "$0.00", " - open"} {
 		if !strings.Contains(s, want) {
 			t.Errorf("empty slip missing %q", want)
 		}
@@ -159,7 +162,7 @@ func webReportFixture() order.DriverReport {
 				AddedTipCents: 200}, // charged at an earlier clock-out
 			{KitchenNumber: &k3, Street: "7 Pine Rd", Cash: true, CashCents: 1800, SlipTotalCents: 1800},
 		}}
-	rep.Finish(600)
+	rep.Finish(600, 300)
 	return rep
 }
 
@@ -197,15 +200,12 @@ func TestBuildDriverReport_WebGolden(t *testing.T) {
 	}
 }
 
-// The driver's share of the delivery fees prints under the tips, only when
-// there is one (older slips unchanged).
-func TestBuildDriverReport_DriverShare(t *testing.T) {
+// The delivery pay line is always there (2.5.2): the per-delivery pay times the deliveries, taken off.
+func TestBuildDriverReport_DeliveryPayLine(t *testing.T) {
 	rep, sc := reportFixture()
-	if s := string(BuildDriverReport(rep, sc, "", printer.Paper{}, printed)); strings.Contains(s, "Delivery fee share") {
-		t.Fatal("no share: no line")
-	}
-	rep.DriverShareCents = 900
-	if s := string(BuildDriverReport(rep, sc, "", printer.Paper{}, printed)); !strings.Contains(s, leftRight("Delivery fee share", "$9.00", defaultLayout.cols)) {
-		t.Fatalf("missing the share line in %q", s)
+	rep.Finish(600, 250) // another store's pay
+	s := string(BuildDriverReport(rep, sc, "", printer.Paper{}, printed))
+	if !strings.Contains(s, leftRight("Delivery pay", "-$10.00", defaultLayout.cols)) || !strings.Contains(s, "($2.50 x 4)") || strings.Contains(s, "Delivery fee share") {
+		t.Fatalf("delivery pay line:\n%s", s)
 	}
 }

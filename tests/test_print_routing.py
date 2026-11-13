@@ -114,7 +114,7 @@ def test_one_emergency_printer_takes_the_downed_station(routed, fakes) -> None:
     spare = fakes["Spare"].jobs[0]
     assert BAND_EN in spare and BAND_ES in spare, spare
     assert spare.index(BAND_EN) < spare.index(BAND_ES), "English first, then Spanish"
-    assert b"1  HOT WINGS" in spare
+    assert b"1  Hot Wings" in spare
     intentional_sleep(1.0, "absence: the receipt printer gets only the receipt")
     front = fakes["Front"].text()
     assert len(fakes["Front"].jobs) == 1 and "Total:" in front and "REROUTED" not in front
@@ -129,7 +129,7 @@ def test_per_printer_target_down_goes_to_the_next_rule(routed, fakes) -> None:
     assert r.status_code == 200, r.text + a.log_tail()
     _wait_jobs(fakes["Pizza"], 2)
     rerouted = [j for j in fakes["Pizza"].jobs if BAND_EN in j]
-    assert len(rerouted) == 1 and BAND_ES in rerouted[0] and b"1  HOT WINGS" in rerouted[0]
+    assert len(rerouted) == 1 and BAND_ES in rerouted[0] and b"1  Hot Wings" in rerouted[0]
     intentional_sleep(1.0, "absence: the receipt printer gets only the receipt")
     assert len(fakes["Front"].jobs) == 1 and "REROUTED" not in fakes["Front"].text()
 

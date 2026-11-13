@@ -77,10 +77,10 @@ func TestBuild_DefaultsMatchTheDefaultBuilders(t *testing.T) {
 func TestBuild_KitchenItemSize(t *testing.T) {
 	snap := previewDelivery()
 	for size, want := range map[string]string{
-		order.SizeNormal: cmdBoldOn + cmdBaseSz + "1  PEPPERONI PIZZA (LARGE)\n",
-		order.SizeLarge:  cmdBoldOn + cmdDoubleSz + "1  PEPPERONI PIZZA\n   (LARGE)\n",
+		order.SizeNormal: cmdBoldOn + cmdBaseSz + "1  Pepperoni Pizza (Large)\n",
+		order.SizeLarge:  cmdBoldOn + cmdDoubleSz + "1  Pepperoni Pizza\n   (Large)\n",
 		// 16 characters a line at quad size.
-		order.SizeXLarge: cmdBoldOn + cmdQuadSz + "1  PEPPERONI\n   PIZZA (LARGE)\n",
+		order.SizeXLarge: cmdBoldOn + cmdQuadSz + "1  Pepperoni\n   Pizza (Large)\n",
 	} {
 		got := string(Build(snap, previewStore(), stationTicket(), prefsWith(func(p *order.ReceiptPrefs) { p.KitchenItemSize = size })))
 		if !strings.Contains(got, want) {
@@ -210,7 +210,7 @@ func TestBuildSample(t *testing.T) {
 	if n := strings.Count(got, "CUSTOMER , SAMPLE"); n != 2 {
 		t.Errorf("two receipt copies (SoftTouch's slip), got %d", n)
 	}
-	for _, want := range []string{"Order #: 1234\n", cmdHugeSz + "1234\n", "CUSTOMER, SAMPLE\n", "   - extra ranch please\n", "Also on this order:", "SAMPLE - not a real order", "XXXXXXXXXXXX4242 Card"} {
+	for _, want := range []string{"Order #: 1234\n", cmdHugeSz + "1234\n", "CUSTOMER, SAMPLE\n", "   Note: extra ranch please\n", "Also on this order:", "SAMPLE - not a real order", "XXXXXXXXXXXX4242 Card"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("sample missing %q", want)
 		}

@@ -31,10 +31,11 @@ func TestVoidedReceipt_StruckThrough(t *testing.T) {
 			t.Errorf("%q printed as text, not struck", text)
 		}
 	}
-	// SoftTouch's slip (the owner, 2026-11-12): the item line, its 4 choices, the note, Soda = 7
-	// struck pictures (GS v 0 m=0, 24 dots tall) besides the powered-by logo.
-	if n := bytes.Count(got, []byte("\x1dv0\x00")) - 1; n != 7 {
-		t.Errorf("%d struck pictures, want 7\n%q", n, got)
+	// SoftTouch's slip (the owner, 2026-11-12): the item line, its 2 priced choices (a $0 one doesn't
+	// print on a customer slip, 2.5.2), the note, Soda = 5 struck pictures (GS v 0 m=0) besides the
+	// powered-by logo.
+	if n := bytes.Count(got, []byte("\x1dv0\x00")) - 1; n != 5 {
+		t.Errorf("%d struck pictures, want 5\n%q", n, got)
 	}
 	if !bytes.Contains(got, []byte("VOID - NOT CHARGED")) || bytes.Contains(got, []byte("Collect Cash")) {
 		t.Errorf("a voided slip says NOT CHARGED, never Collect Cash")
@@ -47,7 +48,7 @@ func TestVoidedReceipt_StruckThrough(t *testing.T) {
 	prefs.StrikeImages = false
 	got = Build(snap, sc, printer.Ticket{Kind: printer.TicketReceipt}, prefs)
 	if bytes.Count(got, []byte("\x1dv0\x00")) != 1 || bytes.Count(got, []byte(cmdInvertOn+" VOID "+cmdInvertOff)) != 2 ||
-		!bytes.Contains(got, []byte("SODA")) {
+		!bytes.Contains(got, []byte("Soda")) {
 		t.Errorf("fallback: no pictures, a VOID tag per item, the text\n%q", got)
 	}
 	snap.Voided = "CANCELLED"

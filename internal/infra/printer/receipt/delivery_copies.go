@@ -43,6 +43,9 @@ type escw struct {
 	// strike: lines print as struck pictures (a voided order's items,
 	// strike.go); strikeImages = receipt_prefs.strike_images.
 	strike, strikeImages bool
+	// boldWords: a printed choice holding one of them prints bold
+	// (receipt_prefs.bold_choice_words, 2.5.2).
+	boldWords order.WordList
 }
 
 func (p *escw) raw(s string) { p.buf.WriteString(s) }
@@ -220,9 +223,10 @@ func BuildDeliveryCopies(snap order.Snapshot, sc storeconfig.StoreContext, prefs
 	if loc, err := time.LoadLocation(sc.Location.Timezone); sc.Location.Timezone != "" && err == nil {
 		at = at.In(loc)
 	}
-	p := &escw{width: lay.cols, lay: lay, strikeImages: prefs.StrikeImages}
+	p := &escw{width: lay.cols, lay: lay, strikeImages: prefs.StrikeImages, boldWords: prefs.BoldChoiceWords}
 	p.raw(cmdInit + cmdNormalSz)
 	st := storeOf(sc, prefs.Normalize())
+	classic := prefs.Normalize().StyleFor(snap.Source) == order.StyleClassic
 	for _, copy := range []string{MerchantCopy, CustomerCopy} {
 		if on.Updated { // printed again after the order changed: the driver drops the old pair
 			for _, l := range []string{"UPDATED", "ACTUALIZADO"} {
@@ -233,6 +237,10 @@ func BuildDeliveryCopies(snap order.Snapshot, sc storeconfig.StoreContext, prefs
 				p.left()
 			}
 			p.feed(1)
+		}
+		if classic { // the classic receipt twice (2.5.2): its own reroute bands, no copy label
+			p.raw(string(buildFull(snap, sc, reroutedFrom, prefs.Normalize(), lay)))
+			continue
 		}
 		if reroutedFrom != "" {
 			for _, l := range RerouteLines(reroutedFrom, lay.cols) {
@@ -259,7 +267,7 @@ func BuildCustomerReceipt(snap order.Snapshot, sc storeconfig.StoreContext, pref
 	if loc, err := time.LoadLocation(sc.Location.Timezone); sc.Location.Timezone != "" && err == nil {
 		at = at.In(loc)
 	}
-	p := &escw{width: lay.cols, lay: lay, strikeImages: prefs.StrikeImages}
+	p := &escw{width: lay.cols, lay: lay, strikeImages: prefs.StrikeImages, boldWords: prefs.BoldChoiceWords}
 	p.raw(cmdInit + cmdNormalSz)
 	if on.ReroutedFrom != "" { // the receipt's own bands (writeRerouted), as on every slip of a stand-in
 		writeRerouted(p.raw, func() { p.raw(cmdFeed) }, on.ReroutedFrom, lay)
@@ -314,16 +322,15 @@ func deliveryItems(p *escw, snap order.Snapshot, voided bool) {
 	for _, it := range snap.Items {
 		var mods []order.LineItem
 		for _, c := range it.Children {
-			if c.UnitPrice == 0 && c.ShowOnDriverTicket != nil && !*c.ShowOnDriverTicket {
-				continue
+			if slipShowsChoice(snap, c) {
+				mods = append(mods, c)
 			}
-			mods = append(mods, c)
 		}
 		if voided && !p.strikeImages { // strike_images off: a reversed VOID tag over the item
 			p.raw(cmdInvertOn + " VOID " + cmdInvertOff + cmdFeed)
 		}
 		p.strike = voided && p.strikeImages // the item, its choices and note struck through
-		name := strings.ToUpper(strings.Join(nonEmpty(strings.TrimSpace(displaySize(it.Size)), strings.TrimSpace(it.Name)), " "))
+		name := slipItemName(it.Size, it.Name)
 		qty := max(it.Quantity, 1)
 		free := it.UnitPrice == 0
 		for _, m := range mods {
@@ -333,6 +340,7 @@ func deliveryItems(p *escw, snap order.Snapshot, voided bool) {
 		if !free {
 			price = moneyC(int64(qty) * it.UnitPrice)
 		}
+		p.bold(true) // the item's own lines bold (the owner, 2.5.2); its choices follow the bold words
 		for i, l := range dwrap(dclean(name), nameW, "") {
 			head := "    " + l
 			if i == 0 {
@@ -344,6 +352,7 @@ func deliveryItems(p *escw, snap order.Snapshot, voided bool) {
 				p.line(head)
 			}
 		}
+		p.bold(false)
 		for _, m := range deliveryModLines(mods) {
 			amt := ""
 			if m.unit != 0 {
@@ -353,6 +362,10 @@ func deliveryItems(p *escw, snap order.Snapshot, voided bool) {
 			if m.qty > 1 {
 				label = fmt.Sprintf("%dx %s", m.qty, m.name)
 			}
+			bold := p.boldWords.Matches(m.name)
+			if bold {
+				p.bold(true)
+			}
 			for i, l := range dwrap(dclean(label), nameW-2, "") {
 				head := "      " + l
 				if i == 0 && amt != "" {
@@ -361,12 +374,30 @@ func deliveryItems(p *escw, snap order.Snapshot, voided bool) {
 					p.line(head)
 				}
 			}
+			if bold {
+				p.bold(false)
+			}
 		}
 		if n := strings.TrimSpace(it.Notes); n != "" {
 			p.wrapped("      Note: "+n, strings.Repeat(" ", 12))
 		}
 		p.strike = false
 	}
+}
+
+// slipShowsChoice is the customer slips' rule for a choice (the owner,
+// 2026-11-12, agent 2.5.2; kitchen tickets keep every choice): a priced one
+// always prints; a $0 one prints only when our menu stamped it
+// show_on_driver_ticket true (unstamped = hidden), never on an online vendor
+// order (source online). Pickup and delivery alike.
+func slipShowsChoice(snap order.Snapshot, c order.LineItem) bool {
+	if c.UnitPrice != 0 {
+		return true
+	}
+	if snap.Source == order.SourceOnline {
+		return false
+	}
+	return c.ShowOnDriverTicket != nil && *c.ShowOnDriverTicket
 }
 
 type modLine struct {

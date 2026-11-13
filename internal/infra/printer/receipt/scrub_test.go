@@ -140,7 +140,7 @@ func slips(t *testing.T, cols int, f func(string) string) map[string][]byte {
 			{KitchenNumber: &k2, Source: "web", Customer: "Q", Street: "1 A St", TipCents: 500, OrderTipCents: 500, SlipTotalCents: 2900, TipPending: true},
 			{OrderID: "o-3", Source: "counter", Customer: "Ana P.", Street: "7 " + tStreet, SlipTotalCents: 1850},
 		}}
-	rep.Finish(600)
+	rep.Finish(600, 300)
 	out["driver_report"] = BuildDriverReport(mapStrings(rep, f), sc, "", on, at)
 	out["driver_report_small"] = BuildDriverReport(mapStrings(rep, f), sc, order.SizeSmall, printer.Paper{Cols: cols}, at)
 	un := order.UnassignedReport{BatchID: 3, BatchOpenedAt: opened, BatchClosedAt: &at, CashCents: 999999, TipCents: 2000,

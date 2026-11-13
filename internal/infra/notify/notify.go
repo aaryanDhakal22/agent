@@ -22,8 +22,11 @@ import (
 // apart by Pushover device name (2.3.7):
 //
 //   - Send (system events) → the admin devices;
-//   - SendFloor (floor problems) → the admin + store owner devices, plus the
-//     boss key (a separate account, no device) when set;
+//   - SendFloor (floor problems) → the admin devices (2.5.2: no longer the
+//     owner: the owner's alerts go through SendOwner);
+//   - SendOwner → the store owner's devices + the boss key (a separate
+//     account, no device), only what application/owneralert lets through
+//     (contract §2.1e "Owner alerts");
 //   - SendRoute → one driver's device.
 //
 // With no admin devices known nothing is scoped: Send and SendFloor go to
@@ -168,10 +171,10 @@ func (n *Notifier) Send(ctx context.Context, message, sound string) error {
 	return n.post(ctx, m)
 }
 
-// SendFloor notifies the admin and the store owner, and the boss (when
-// PUSHOVER_BOSS_KEY is set) — problems on the restaurant floor: an order
+// SendFloor notifies the admin — problems on the restaurant floor: an order
 // nobody accepted, nothing printed, a rerouted ticket, unmatched items, a
-// printer down / back up.
+// printer down / back up. Since 2.5.2 the store owner and the boss don't get
+// these (they were a stream): they get SendOwner's few plain-English alerts.
 func (n *Notifier) SendFloor(ctx context.Context, message, sound string) error {
 	var errs []error
 	for _, m := range n.floorMessages(message, sound) {
@@ -185,15 +188,49 @@ func (n *Notifier) SendFloor(ctx context.Context, message, sound string) error {
 func (n *Notifier) floorMessages(message, sound string) []Message {
 	n.mu.RLock()
 	defer n.mu.RUnlock()
-	var devices []string
-	if len(n.adminDevices) > 0 { // unscoped otherwise: the whole account
-		devices = append(append(devices, n.adminDevices...), n.ownerDevices...)
-	} else if n.strictScope {
+	if len(n.adminDevices) == 0 && n.strictScope {
 		return nil // never the whole account outside prod (2.4.1)
 	}
-	msgs := []Message{{User: n.userKey, Devices: dedupe(devices), Text: message, Sound: sound}}
+	// No admin devices (prod only): unscoped, the whole account.
+	return []Message{{User: n.userKey, Devices: dedupe(n.adminDevices), Text: message, Sound: sound}}
+}
+
+// SendOwner notifies the store owner (2.5.2): the owner's devices on the
+// account (location.config.pushover_owner_devices) and the boss key
+// (PUSHOVER_BOSS_KEY, its own account). Never the whole account: with no
+// owner devices and no separate boss key nothing is sent. Outside prod it
+// sends only once admin devices are known (the same guard as SendFloor).
+// application/owneralert decides what reaches it.
+func (n *Notifier) SendOwner(ctx context.Context, title, message, sound string) error {
+	var errs []error
+	for _, m := range n.ownerMessages(title, message, sound) {
+		if err := n.post(ctx, m); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// OwnerConfigured reports whether SendOwner would page anyone.
+func (n *Notifier) OwnerConfigured() bool {
+	n.mu.RLock()
+	ok := n.appToken != ""
+	n.mu.RUnlock()
+	return ok && len(n.ownerMessages("", "", "")) > 0
+}
+
+func (n *Notifier) ownerMessages(title, message, sound string) []Message {
+	n.mu.RLock()
+	defer n.mu.RUnlock()
+	if n.strictScope && len(n.adminDevices) == 0 {
+		return nil
+	}
+	var msgs []Message
+	if len(n.ownerDevices) > 0 && n.userKey != "" {
+		msgs = append(msgs, Message{User: n.userKey, Devices: dedupe(n.ownerDevices), Title: title, Text: message, Sound: sound})
+	}
 	if n.bossKey != "" && n.bossKey != n.userKey {
-		msgs = append(msgs, Message{User: n.bossKey, Text: message, Sound: sound})
+		msgs = append(msgs, Message{User: n.bossKey, Title: title, Text: message, Sound: sound})
 	}
 	return msgs
 }

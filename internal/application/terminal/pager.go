@@ -7,6 +7,7 @@ import (
 
 	"quiccpos/agent/internal/domain/order"
 	"quiccpos/agent/internal/domain/terminal"
+	"quiccpos/agent/internal/infra/notify"
 )
 
 // Pager sends the owner a Pushover (notify.Notifier.Send).
@@ -16,12 +17,18 @@ type Pager interface {
 
 // SetPager wires the owner's pages (an unbalanced Z, PIN lockouts; nil =
 // log only).
-func (s *Service) SetPager(p Pager) { s.pager = p }
+func (s *Service) SetPager(p Pager) {
+	s.pager = p
+	s.pageCool = notify.NewCooldown(notify.AdminCooldown)
+}
 
 // page sends the owner a Pushover in the background (never blocks a
 // terminal request).
+//
+// 2.5.2: the same text at most once per 15 min (a terminal retrying the
+// same refused order would page on every try).
 func (s *Service) page(ctx context.Context, msg string) {
-	if s.pager == nil {
+	if s.pager == nil || !s.pageCool.Allow(msg, time.Now()) {
 		return
 	}
 	p := s.pager

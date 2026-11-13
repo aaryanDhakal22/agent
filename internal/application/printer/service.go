@@ -37,6 +37,11 @@ type Service struct {
 	// DefaultDownAfter). now: the clock (tests).
 	downAfter func() time.Duration
 	now       func() time.Time
+	// adminCool (2.5.2, the dispatcher's, so it outlives a roster rebuild):
+	// a flapping printer's down Pushover at most once per 15 min; downPaged
+	// = this outage's down went out (its "back online" goes out too).
+	adminCool *notify.Cooldown
+	downPaged bool
 	// inFlight / lastPrintOK (unix nanos): prints to this printer, so a
 	// probe failing on a busy printer isn't counted (L-5).
 	inFlight    atomic.Int32
@@ -116,7 +121,9 @@ func (s *Service) clock() time.Time {
 //     printer fails though the printer is fine);
 //   - "down" (Warn, Pushover, printer.status 0) only after the printer has
 //     failed continuously for downAfter (printer_down_after_seconds);
-//   - "back online" (Info, Pushover) only after a "down" was sent.
+//   - "back online" (Info, Pushover) only after a "down" was sent;
+//   - (2.5.2) the developer's down Pushover at most once per 15 min per
+//     printer (a flapping printer); the owner's rule is application/owneralert.
 func (s *Service) probeStep(ctx context.Context, st *probeState, notifier *notify.Notifier) bool {
 	name := s.printer.Name()
 	nameAttr := attribute.String("printer.name", name)
@@ -147,7 +154,8 @@ func (s *Service) probeStep(ctx context.Context, st *probeState, notifier *notif
 			s.onStatus(false, msg)
 		}
 		s.logger.Warn().Ctx(ctx).Err(err).Dur("failing_for", downAfter).Msg(msg)
-		if notifier != nil {
+		s.downPaged = notifier != nil && s.adminCool.Allow("printer_down:"+name, probedAt)
+		if s.downPaged {
 			if nerr := notifier.SendFloor(ctx, msg, "printer-error"); nerr != nil {
 				s.logger.Warn().Ctx(ctx).Err(nerr).Msg("Pushover notify failed")
 			}
@@ -158,7 +166,8 @@ func (s *Service) probeStep(ctx context.Context, st *probeState, notifier *notif
 			s.onStatus(true, msg)
 		}
 		s.logger.Info().Ctx(ctx).Msg(msg)
-		if notifier != nil {
+		if notifier != nil && s.downPaged {
+			s.downPaged = false
 			if nerr := notifier.SendFloor(ctx, msg, "classical"); nerr != nil {
 				s.logger.Warn().Ctx(ctx).Err(nerr).Msg("Pushover notify failed")
 			}

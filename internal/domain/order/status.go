@@ -74,6 +74,9 @@ type Status struct {
 	CashDueCents int64      `json:"cash_due_cents,omitempty"`
 	TipCents     int64      `json:"tip_cents,omitempty"`
 	SentAt       *time.Time `json:"sent_at,omitempty"`
+	// TerminalMoney (Pi only, never on the wire): an order from main a
+	// terminal took money on, so CashDueCents is the balance after it.
+	TerminalMoney bool `json:"-"`
 
 	// Future orders (2.1.0). Future is computed on read (features.future_orders
 	// on and promised_at after now + the default time); a scheduled order

@@ -35,6 +35,7 @@ import (
 	"quiccpos/agent/internal/application/lateorders"
 	"quiccpos/agent/internal/application/mapfile"
 	orderApp "quiccpos/agent/internal/application/order"
+	"quiccpos/agent/internal/application/owneralert"
 	phoneApp "quiccpos/agent/internal/application/phonepay"
 	printerApp "quiccpos/agent/internal/application/printer"
 	"quiccpos/agent/internal/application/printernet"
@@ -225,7 +226,13 @@ func main() {
 	// Outside prod, no admin device = no system/floor alerts at all: drivers'
 	// phones share the account (2.4.1).
 	notifier.SetStrictScope(cfg.AppEnv != "prod")
-	if err := notifier.Send(ctx, "Agent started", "classical"); err != nil {
+	// 2.5.2: "Agent started" and the crash pages at most once per 15 min
+	// across restarts (a crash loop restarts every 3-60 s); the crash text is
+	// still logged above.
+	startPage := safego.StartPageDue(crashDir, time.Now(), notify.AdminCooldown)
+	if !startPage {
+		logger.Info().Msg("Startup page skipped: one went out less than 15 min ago")
+	} else if err := notifier.Send(ctx, "Agent started", "classical"); err != nil {
 		logger.Warn().Err(err).Msg("Startup notification failed — continuing")
 	}
 	if quickCheck != "" {
@@ -237,7 +244,7 @@ func main() {
 			}
 		})
 	}
-	if crashLoop || len(crashes) > 0 {
+	if startPage && (crashLoop || len(crashes) > 0) {
 		msg := "The Pi's agent crashed and restarted"
 		if crashLoop {
 			msg = "The Pi's agent is crash-looping (3+ starts in 10 minutes)"
@@ -471,6 +478,14 @@ func main() {
 		}
 		return mainClient.Download(rc, k, path, "")
 	}, broker, logger)
+	// The driver's pay per delivered delivery on the driver reports: the store's
+	// delivery_driver_cents from the counter menu's pricing (no menu yet = $3).
+	orderService.SetDriverPay(func() (int64, bool) {
+		if m, _ := termStore.Menu(); m != nil {
+			return m.Pricing.Settings.DeliveryDriverCents, true
+		}
+		return 0, false
+	})
 	termSvc := terminalApp.NewService(termStore, orderRepo, orderService, broker, logger)
 	termSvc.SetFloor(orderService, orderRepo) // the driver view (§2.10b)
 	termSvc.SetPager(notifier)                // an unbalanced Z, PIN lockouts (hardening M-9 / X-2)
@@ -1029,6 +1044,62 @@ func main() {
 	})
 	safego.Go("floorsync", func() { floorSender.Run(ctx) })
 	safego.Go("escalation", func() { escalation.Run(ctx, orderService, logger) })
+	// Owner alerts (2.5.2, contract §2.1e): the store owner's few
+	// plain-English alerts, gated by opening hours, cooldowns and caps.
+	ownerPolicy := owneralert.NewPolicy(owneralert.StatePath(cfg.AgentDBPath), func(rc context.Context, title, text, sound string) error {
+		rc, cancel := context.WithTimeout(rc, 30*time.Second)
+		defer cancel()
+		return notifier.SendOwner(rc, title, text, sound)
+	}, logger)
+	ownerWatch := owneralert.New(owneralert.Inputs{
+		Store: func() (storeconfig.StoreContext, bool) {
+			sc, ok := storeCtx.Load().(storeconfig.StoreContext)
+			return sc, ok
+		},
+		Printers: func() []owneralert.PrinterState {
+			all := printerRegistry.All()
+			out := make([]owneralert.PrinterState, 0, len(all))
+			for _, p := range all {
+				if p.IP == "" || p.LastChecked == nil {
+					continue // never probed / no address: nothing to tell
+				}
+				ps := owneralert.PrinterState{Name: p.Name, Down: !p.Up}
+				if p.DownSince != nil {
+					ps.DownSince = *p.DownSince
+				}
+				out = append(out, ps)
+			}
+			return out
+		},
+		Link: func() owneralert.Link {
+			st := sseCtrl.Status()
+			return owneralert.Link{Linked: sseCtrl.Configured(), Connected: st.Connected, Refused: st.AuthRejected}
+		},
+		Waiting: func(rc context.Context) ([]time.Time, error) {
+			list, err := orderRepo.ListArrived(rc)
+			if err != nil {
+				return nil, err
+			}
+			out := make([]time.Time, 0, len(list))
+			for _, so := range list {
+				out = append(out, so.Status.ArrivalDate)
+			}
+			return out, nil
+		},
+		OpenBatch: func(rc context.Context) (owneralert.Batch, bool, error) {
+			b, err := orderRepo.OpenBatch(rc)
+			if err != nil || b == nil {
+				return owneralert.Batch{}, false, err
+			}
+			total, _, err := orderRepo.CountOpenBatchOrders(rc)
+			if err != nil {
+				return owneralert.Batch{}, false, err
+			}
+			return owneralert.Batch{OpenedAt: b.OpenedAt, Orders: total}, true, nil
+		},
+	}, ownerPolicy, logger)
+	orderService.OnNothingPrinted(func(orderID, label string) { ownerWatch.NotPrinted(orderID, label, time.Now()) })
+	safego.Go("owneralert", func() { ownerWatch.Run(ctx) })
 	safego.Go("driverreset", func() { driverreset.Run(ctx, orderService, storeTZ, logger) })
 	// Batch auto-close at main's terminal setting auto_close_batch_at
 	// (default 04:00 store time; off until the Pi has main's terminal config).

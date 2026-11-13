@@ -18,7 +18,7 @@ func TestRoundOwed(t *testing.T) {
 		}
 	}
 	r := DriverReport{Lines: []DriverReportLine{{Cash: true, CashCents: 3249}}}
-	r.Finish(0)
+	r.Finish(0, 0)
 	if r.OwedCents != 3249 || r.OwedRoundedCents != 3200 {
 		t.Fatalf("Finish: %d %d", r.OwedCents, r.OwedRoundedCents)
 	}

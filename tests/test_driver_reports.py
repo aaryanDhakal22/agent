@@ -61,12 +61,16 @@ def test_driver_reports_print_on_close(floor, fakes) -> None:
     ab = by["Abdul"]
     # 2.1.0: a cash order's tip is the driver's already (cash - tip, no tip
     # listed); only card tips count.
-    assert (ab["deliveries"], ab["cash_cents"], ab["tip_cents"], ab["tip_after_tax_cents"], ab["owed_cents"]) == (3, 3599, 400, 376, 3223)
+    # 2.5.2, the owner's settlement: hand in = cash - delivery pay x every delivery - card tips after 6 %
+    # (the store's delivery_driver_cents, $3 unless the counter menu says otherwise).
+    pay = ab["driver_pay_cents"]
+    assert pay == 300 and ab["driver_share_cents"] == 3 * pay, ab
+    assert (ab["deliveries"], ab["cash_cents"], ab["tip_cents"], ab["tip_after_tax_cents"], ab["owed_cents"]) == (3, 3599, 400, 376, 2323)
     assert ab["lines"][0]["customer"] == "Erik D." and ab["lines"][2]["cash"] is False
     assert (ab["lines"][0]["cash_cents"], ab["lines"][0]["tip_cents"]) == (2049, 0)
-    assert ab["owed_rounded_cents"] == 3200  # whole dollars: 23 cents round down
-    assert by["Carlos"]["owed_cents"] == -940  # card only: the store owes the tip
-    assert by["Carlos"]["owed_rounded_cents"] == -900
+    assert ab["owed_rounded_cents"] == 2300  # whole dollars: 23 cents round down
+    assert by["Carlos"]["owed_cents"] == -1240  # card only: the store owes his $3 and his tip after 6 %
+    assert by["Carlos"]["owed_rounded_cents"] == -1200
     assert by["Deep"]["deliveries"] == 0
 
     before = len(fakes["Front"].jobs)
@@ -76,8 +80,8 @@ def test_driver_reports_print_on_close(floor, fakes) -> None:
     wait_until(lambda: len(fakes["Front"].jobs) >= before + 3, timeout=20, what="3 driver reports printed after close")
     slips = [j.decode("latin-1") if isinstance(j, bytes) else j for j in fakes["Front"].jobs[before:before + 3]]
     abdul_slip = next(s for s in slips if "ABDUL" in s)
-    for want in ["DRIVER REPORT", "CASH ORDERS (2)", "CARD ORDERS (1)", "Total: $20.49", "Total cash owed", "$35.99", "$3.76",
-                 "OWED TO STORE", "$32.00", "exact $32.23", "Tip: $4.00", "Total: $30.00"]:
+    for want in ["DRIVER REPORT", "CASH ORDERS (2)", "CARD ORDERS (1)", "Total: $20.49", "Cash collected", "$35.99", "Delivery pay", "($3.00 x 3)",
+                 "-$9.00", "Card tips after 6%", "-$3.76", "HAND IN", "$23.00", "exact $23.23", "Tip: $4.00", "Total: $30.00"]:
         assert want in abdul_slip, want
     for not_there in ["Erik", "Ana P", "Lee M"]:
         assert not_there not in abdul_slip, f"no customer names on the driver report: {not_there}"

@@ -109,6 +109,21 @@ func textsOf(items []order.LineItem, sizes bool) []string {
 	return out
 }
 
+// slipTextsOf: textsOf for a customer slip, whose $0 choices follow slipShowsChoice (2.5.2).
+func slipTextsOf(snap order.Snapshot, items []order.LineItem, sizes bool) []string {
+	shown := make([]order.LineItem, len(items))
+	for i, it := range items {
+		it.Children = nil
+		for _, c := range items[i].Children {
+			if slipShowsChoice(snap, c) {
+				it.Children = append(it.Children, c)
+			}
+		}
+		shown[i] = it
+	}
+	return textsOf(shown, sizes)
+}
+
 func tortureSC() storeconfig.StoreContext {
 	return storeconfig.StoreContext{Location: storeconfig.LocationContext{Name: tStoreName, Timezone: "America/New_York",
 		AddressLine1: "931 Taylor Avenue, Suite 100 (entrance on the side street)", AddressLine2: "Towson, MD 21286"}}
@@ -220,7 +235,7 @@ func dumpTortureWidth(t *testing.T, dir string, cols int) {
 	slipTotals := []string{"Sub-total", "Tax", "Total"} // SoftTouch's slip (softtouch.go, 2026-11-12)
 
 	receiptTexts := func(s order.Snapshot, sizes bool) []string {
-		x := append(textsOf(s.Items, sizes), s.Notes)
+		x := append(slipTextsOf(s, s.Items, sizes), s.Notes)
 		if a := s.Fulfillment.Address; a != nil && s.Fulfillment.Type == "delivery" {
 			x = append(x, a.Line1, a.Line2, a.City)
 		}
@@ -280,9 +295,16 @@ func dumpTortureWidth(t *testing.T, dir string, cols int) {
 	fut.Fulfillment.PromisedAt = &due
 	data := Build(fut, sc, printer.Ticket{Kind: printer.TicketReceipt, Future: true, Cols: cols}, def)
 	put("receipt_delivery_future", data, "receipt", receiptTexts(fut, true), slipTotals...)
+	// the classic receipt (receipt_prefs.style_store / style_online = classic, 2.5.2): buildFull, every choice
+	classic := def
+	classic.StyleStore, classic.StyleOnline = order.StyleClassic, order.StyleClassic
+	cl := tortureSnap("delivery", items...)
+	clTexts := append(textsOf(cl.Items, true), cl.Notes, lastFirst(tCustomer), tStoreName)
+	put("receipt_delivery_classic", Build(cl, sc, printer.Ticket{Kind: printer.TicketReceipt, Cols: cols}, classic), "receipt", clTexts,
+		"Subtotal", "Tax", "Total")
 	// an online delivery's Merchant + Customer Copy (the terminal's layout, §2.10aa)
 	dc := tortureSnap("delivery", items...)
-	dcTexts := append(textsOf(dc.Items, false), tStreet, tApt, tCity, tDirections, tNote300)
+	dcTexts := append(slipTextsOf(dc, dc.Items, false), tStreet, tApt, tCity, tNote300) // no Directions on the slip (2.5.2)
 	put("delivery_copies_torture", Build(dc, sc, printer.Ticket{Kind: printer.TicketDeliveryCopies, Cols: cols}, def),
 		"receipt", dcTexts)
 	put("delivery_copies_rerouted", Build(dc, sc, printer.Ticket{Kind: printer.TicketDeliveryCopies, Cols: cols, ReroutedFrom: tPrinter}, def),
@@ -344,14 +366,14 @@ func dumpTortureWidth(t *testing.T, dir string, cols int) {
 		k := int64(1200 + i)
 		rep.Lines = append(rep.Lines, order.DriverReportLine{KitchenNumber: &k, Customer: "Ana P.", Street: fmt.Sprintf("%d %s", 100+i, tStreet), Cash: i%2 == 0, CashCents: 1850, SlipTotalCents: 1850})
 	}
-	rep.Finish(600)
+	rep.Finish(600, 300)
 	for _, size := range []string{"", order.SizeSmall, order.SizeLarge} {
 		put("driver_report_"+map[string]string{"": "default", order.SizeSmall: "small", order.SizeLarge: "large"}[size],
 			BuildDriverReport(rep, sc, size, on(tPrinter), closed), "driver_report", []string{tStaff, tStreet, tPrinter, tStoreName})
 	}
 	owes := rep72()
 	owes.Lines[0].Cash, owes.Lines[0].CashCents, owes.Lines[0].TipCents = false, 0, 99999
-	owes.Finish(600)
+	owes.Finish(600, 300)
 	put("driver_report_store_owes", BuildDriverReport(owes, sc, "", on(""), closed), "driver_report", []string{tStaff, tStreet})
 	un := order.UnassignedReport{BatchID: 3, BatchOpenedAt: opened, BatchClosedAt: &closed, CashCents: 999999, TipCents: 2000,
 		Lines: []order.UnassignedLine{{DriverReportLine: order.DriverReportLine{KitchenNumber: &k1, Street: tStreet, Cash: true,
@@ -384,12 +406,12 @@ func dumpTortureWidth(t *testing.T, dir string, cols int) {
 	inj.Customer.DisplayName, inj.Notes, inj.TakenBy = tInject(tCustomer), tInject(tNote300[:200]), tInject("Call center - "+tStaff)
 	inj.Fulfillment.Address = &order.Address{Line1: tInject(tStreet), Line2: tInject(tApt), City: tInject(tCity), PostalCode: "21093", Notes: tInject(tDirections)}
 	want := mapStrings(inj, refClean) // what must print: the same texts without their control bytes
-	injTexts := append(textsOf(want.Items, false), want.Notes, want.Fulfillment.Address.Line1, want.Fulfillment.Address.Line2,
+	injTexts := append(slipTextsOf(want, want.Items, false), want.Notes, want.Fulfillment.Address.Line1, want.Fulfillment.Address.Line2,
 		want.Fulfillment.Address.City)
 	put("receipt_delivery_injected", Build(inj, sc, printer.Ticket{Kind: printer.TicketReceipt, ReroutedFrom: tInject(tPrinter), Cols: cols}, def),
 		"receipt", append(injTexts[:len(injTexts):len(injTexts)], lastFirst(want.Customer.DisplayName), refClean(tInject(tPrinter))), slipTotals...)
 	put("delivery_copies_injected", Build(inj, sc, printer.Ticket{Kind: printer.TicketDeliveryCopies, Cols: cols}, def),
-		"receipt", append(injTexts[:len(injTexts):len(injTexts)], softName(want.Customer.DisplayName), want.Fulfillment.Address.Notes))
+		"receipt", append(injTexts[:len(injTexts):len(injTexts)], softName(want.Customer.DisplayName)))
 	put("station_injected", Build(inj, sc, printer.Ticket{Kind: printer.TicketStation, TargetID: "p-pizza", Station: tInject("Pizza"),
 		Mine: inj.Items[:1], Others: inj.Items[1:], ReroutedFrom: tInject(tPrinter), Cols: cols}, def), "station",
 		append(textsOf(want.Items[:1], false), want.Notes, lastFirst(want.Customer.DisplayName), want.Items[1].Name, want.Items[2].Name))
@@ -443,6 +465,6 @@ func rep72() order.DriverReport {
 	opened := time.Date(2026, 11, 12, 14, 2, 0, 0, time.UTC)
 	rep := order.DriverReport{BatchID: 3, BatchOpenedAt: opened, DriverName: tStaff, Lines: []order.DriverReportLine{
 		{KitchenNumber: &k, Customer: tCustomer, Street: tStreet, Cash: true, CashCents: 999999, OrderTipCents: 2000, SlipTotalCents: 999999}}}
-	rep.Finish(600)
+	rep.Finish(600, 300)
 	return rep
 }

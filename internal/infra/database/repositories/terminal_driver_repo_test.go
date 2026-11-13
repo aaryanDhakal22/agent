@@ -183,7 +183,7 @@ func TestCashDeliveryOnHisReport(t *testing.T) {
 		t.Fatalf("reports: %v %d", err, len(reps))
 	}
 	rep := reps[0]
-	rep.Finish(0)
+	rep.Finish(0, 0)
 	l := rep.Lines[0]
 	if l.OrderTipCents != 0 || l.TipCents != 0 || l.CashCents != 2000 || rep.TipCents != 0 || rep.OwedCents != 2000 {
 		t.Fatalf("cash on the report: line %+v report %+v", l, rep)

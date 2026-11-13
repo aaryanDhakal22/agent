@@ -77,7 +77,7 @@ const FOOT_SIZES = [['normal', 'Normal'], ['large', 'Large'], ['xlarge', 'X-Larg
 const FOOT_MODES = [['default', 'Store default'], ['custom', 'Custom'], ['none', 'None']];
 const MAX_FOOTER = 32;
 const SIZE_PX = { normal: '12px', large: '16px', xlarge: '22px', huge: '34px' };
-const PREF_KEYS = ['kitchen_item_size', 'kitchen_number_size', 'footer_text', 'footer_size', 'copies', 'show_store_address', 'show_phone', 'extra_paper', 'strike_images'];
+const PREF_KEYS = ['kitchen_item_size', 'kitchen_number_size', 'footer_text', 'footer_size', 'copies', 'show_store_address', 'show_phone', 'extra_paper', 'strike_images', 'style_online', 'style_store'];
 
 // --- icons (Lucide, ISC) ---------------------------------------------------
 const ICON_PATHS = {
@@ -1557,6 +1557,9 @@ function agentApp() {
         footer_size: f.footer_size, copies: Number(f.copies) || 1,
         show_store_address: !!f.show_store_address, show_phone: !!f.show_phone, extra_paper: !!f.extra_paper,
         strike_images: f.strike_images !== false,
+        // the customer slips' layout per kind of order (2.5.2)
+        style_online: f.style_online === 'classic' ? 'classic' : 'softtouch',
+        style_store: f.style_store === 'classic' ? 'classic' : 'softtouch',
         // Set on the tablet (driver-report size, line spacing): kept as they are.
         driver_report_size: f.driver_report_size, spacing: f.spacing,
       };
