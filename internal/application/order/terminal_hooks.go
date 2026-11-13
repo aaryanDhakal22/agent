@@ -27,15 +27,19 @@ func (s *Service) PrintCounterTickets(ctx context.Context, so order.StoredOrder)
 	s.PrintCounterTicketsThen(ctx, so, nil)
 }
 
-// PrintCounterTicketsThen is PrintCounterTickets with done run after the
-// print was tried (M-11: the order's kitchen_pending is cleared then).
+// PrintCounterTicketsThen is PrintCounterTickets with done run right after
+// the print was tried, before anything else is written (M-11: the order's
+// kitchen_pending is cleared then).
 func (s *Service) PrintCounterTicketsThen(ctx context.Context, so order.StoredOrder, done func(ctx context.Context)) {
 	s.background(ctx, func(ctx context.Context) {
-		if done != nil {
-			defer done(ctx)
-		}
 		start := time.Now()
-		out, err := s.printJob(ctx, printable(so), printer.ModeKitchen)
+		// done runs as soon as the paper is out (before order.printed and the
+		// alerts): a restart after the print must find kitchen_pending cleared.
+		var settle func(context.Context, printer.Outcome, error)
+		if done != nil {
+			settle = func(ctx context.Context, _ printer.Outcome, _ error) { done(ctx) }
+		}
+		out, err := s.printJobThen(ctx, printable(so), printer.ModeKitchen, settle)
 		s.recordPrintTime(ctx, so, start, out, err)
 		if errors.Is(err, printer.ErrNoTickets) {
 			return

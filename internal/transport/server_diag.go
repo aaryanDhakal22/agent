@@ -48,6 +48,9 @@ type DiagDeps struct {
 	StoreCtx    func() storeconfig.StoreContext
 	RPC         *agentrpc.Registry
 	AcksPending func() int
+	// KitchenPending counts the counter orders whose station tickets are
+	// still to print (kitchen_pending, M-11; 2.5.5).
+	KitchenPending func(ctx context.Context) int
 	// TestSlip renders the test slip for one printer (receipt.BuildTestSlip
 	// with the live store context).
 	// cols is the printer's print width (the slip is laid out for it).
@@ -146,6 +149,9 @@ type diagOrders struct {
 	LastArrivedAt   *time.Time `json:"last_arrived_at"`
 	OpenBatchOrders int64      `json:"open_batch_orders"`
 	Waiting         int        `json:"waiting"`
+	// KitchenPending: counter orders whose station tickets haven't been
+	// tried yet (a restart prints them at the next start; 2.5.5).
+	KitchenPending int `json:"kitchen_pending"`
 }
 
 type diagResponse struct {
@@ -261,6 +267,9 @@ func (s *Server) handleDiag(w http.ResponseWriter, r *http.Request) {
 	}
 	if s.diag.AcksPending != nil {
 		out.AcksPending = s.diag.AcksPending()
+	}
+	if s.diag.KitchenPending != nil {
+		out.Orders.KitchenPending = s.diag.KitchenPending(ctx)
 	}
 	if open, known := sc.OpenNow(time.Now()); known {
 		out.OpenNow = &open

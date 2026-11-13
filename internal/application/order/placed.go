@@ -94,10 +94,20 @@ func (s *Service) Place(ctx context.Context, id uuid.UUID) (*order.StoredOrder, 
 		// A future delivery whose copies printed early: the stations only now.
 		mode = printer.ModeKitchen
 	}
+	// The placed order's accept is recorded (accept_pending cleared) the
+	// moment the paper is out, before order.printed: a power cut after the
+	// print must not ring it again for a second set.
+	record := func(rctx context.Context, _ printer.Outcome, _ error) {
+		if err := s.repo.RecordAccepted(rctx, *so); err != nil {
+			s.logger.Error().Ctx(ctx).Err(err).Str("order_id", id.String()).Msg("Failed to record the placed order's floor event (main won't see it)")
+		}
+	}
 	var out printer.Outcome
 	perr := printer.ErrNoTickets // no printing wired (tests of other routes)
 	if s.print != nil {
-		out, perr = s.printJob(pctx, snap, mode)
+		out, perr = s.printJobThen(pctx, snap, mode, record)
+	} else {
+		record(pctx, out, perr)
 	}
 	if errors.Is(perr, printer.ErrNoTickets) {
 		perr = nil
@@ -108,9 +118,6 @@ func (s *Service) Place(ctx context.Context, id uuid.UUID) (*order.StoredOrder, 
 		s.logger.Warn().Ctx(ctx).Err(perr).Str("order_id", id.String()).Msg("Placed order: nothing printed")
 	}
 	s.alertPrintIssues(ctx, *so, out, true)
-	if err := s.repo.RecordAccepted(pctx, *so); err != nil {
-		s.logger.Error().Ctx(ctx).Err(err).Str("order_id", id.String()).Msg("Failed to record the placed order's floor event (main won't see it)")
-	}
 	s.floorChanged()
 	s.recordAcceptTime(ctx, *so)
 	s.logger.Info().Ctx(ctx).Str("order_id", id.String()).Int64("kitchen_number", deref(so.Status.KitchenNumber)).

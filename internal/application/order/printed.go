@@ -24,7 +24,21 @@ type printRecorder interface {
 // printJob prints an order's tickets for a mode (s.print) and records what
 // printed (order.printed). Every order print goes through it.
 func (s *Service) printJob(ctx context.Context, snap order.Snapshot, mode printer.Mode) (printer.Outcome, error) {
+	return s.printJobThen(ctx, snap, mode, nil)
+}
+
+// printJobThen is printJob with settle run the moment the paper is out,
+// before order.printed is written: a job a restart would print again (a
+// counter order's kitchen_pending, an online order's accept claim) settles
+// its marker first, so a power cut after the print finds it settled and
+// never prints the tickets twice (the window is the marker's one write, not
+// the record's too; agent 2.5.5, contract §2.10ag).
+func (s *Service) printJobThen(ctx context.Context, snap order.Snapshot, mode printer.Mode,
+	settle func(ctx context.Context, out printer.Outcome, err error)) (printer.Outcome, error) {
 	out, err := s.print(ctx, snap, mode)
+	if settle != nil {
+		settle(ctx, out, err)
+	}
 	s.recordPrinted(ctx, snap.ID, mode, out, err)
 	return out, err
 }

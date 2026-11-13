@@ -82,15 +82,19 @@ func (s *Service) printEarly(ctx context.Context, so order.StoredOrder) {
 		return
 	}
 	s.background(ctx, func(ctx context.Context) {
-		out, err := s.printJob(ctx, printable(so), printer.ModeFutureEarly)
+		// What printed early is recorded the moment the paper is out (before
+		// order.printed), so a restart in between doesn't print it again.
+		out, err := s.printJobThen(ctx, printable(so), printer.ModeFutureEarly, func(ctx context.Context, out printer.Outcome, _ error) {
+			if kitchen, receipt := earlyPrinted(out); kitchen || receipt {
+				if err := s.repo.SetEarlyPrinted(ctx, so.Order.ID, kitchen, receipt); err != nil {
+					s.logger.Warn().Ctx(ctx).Err(err).Str("order_id", so.Order.ID).Msg("record early future tickets failed")
+				}
+			}
+		})
 		if errors.Is(err, printer.ErrNoTickets) {
 			return
 		}
-		kitchen, receipt := earlyPrinted(out)
-		if kitchen || receipt {
-			if err := s.repo.SetEarlyPrinted(ctx, so.Order.ID, kitchen, receipt); err != nil {
-				s.logger.Warn().Ctx(ctx).Err(err).Str("order_id", so.Order.ID).Msg("record early future tickets failed")
-			}
+		if kitchen, receipt := earlyPrinted(out); kitchen || receipt {
 			s.printEvents(label(so)+" (future, early)", out)
 		}
 		s.alertPrintIssues(ctx, so, out, false)

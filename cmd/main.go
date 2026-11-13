@@ -1040,6 +1040,10 @@ func main() {
 		StoreCtx:    func() storeconfig.StoreContext { sc, _ := storeCtx.Load().(storeconfig.StoreContext); return sc },
 		RPC:         registry,
 		AcksPending: orderAcker.Pending,
+		KitchenPending: func(rc context.Context) int {
+			list, _ := orderRepo.KitchenPending(rc)
+			return len(list)
+		},
 		TestSlip: func(printerName, tablet string, at time.Time, cols int) []byte {
 			sc, _ := storeCtx.Load().(storeconfig.StoreContext)
 			return receipt.BuildTestSlip(printerName, sc, tablet, at, cols)

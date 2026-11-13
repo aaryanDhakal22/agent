@@ -88,7 +88,7 @@ def test_diag_shape(diag) -> None:
     assert "file_stale" in d["health"] and "disk_free_bytes" in d["health"]
     assert isinstance(d["open_now"], bool)
     assert d["quiet_alert_minutes"] == 45
-    assert d["orders"] == {"last_arrived_at": None, "open_batch_orders": 0, "waiting": 0}
+    assert d["orders"] == {"last_arrived_at": None, "open_batch_orders": 0, "waiting": 0, "kitchen_pending": 0}  # 2.5.5
     names = [p["name"] for p in d["printers"]]
     assert sorted(names) == ["Dead", "Front"]
     front = next(p for p in d["printers"] if p["name"] == "Front")
