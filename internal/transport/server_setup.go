@@ -361,6 +361,7 @@ type setupStore struct {
 	OpeningHours  storeconfig.OpeningHours `json:"opening_hours,omitempty"`
 	DeliveryArea  map[string]any           `json:"delivery_area"`
 	CounterStart  *int64                   `json:"counter_start,omitempty"`
+	KitchenStart  *int64                   `json:"kitchen_start,omitempty"`
 	AutoCloseAt   *string                  `json:"auto_close_batch_at,omitempty"`
 	AddressLine1  string                   `json:"address_line1,omitempty"`
 	AddressLine2  string                   `json:"address_line2,omitempty"`
@@ -436,7 +437,7 @@ func (s *Server) handleTerminalSetup(w http.ResponseWriter, r *http.Request) {
 		if v.Staff != nil {
 			out["staff"] = v.Staff
 		}
-		st.TaxBps, st.CounterStart, st.AutoCloseAt = v.TaxBps, v.CounterStart, v.AutoCloseAt
+		st.TaxBps, st.CounterStart, st.KitchenStart, st.AutoCloseAt = v.TaxBps, v.CounterStart, v.KitchenStart, v.AutoCloseAt
 		if st.Timezone == "" {
 			st.Timezone = v.Timezone
 		}

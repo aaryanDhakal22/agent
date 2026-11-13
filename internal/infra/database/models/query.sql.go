@@ -1415,6 +1415,29 @@ func (q *Queries) GetMapFile(ctx context.Context) (string, error) {
 	return map_file, err
 }
 
+const getNumbersState = `-- name: GetNumbersState :one
+SELECT kitchen_next, counter_next, numbers_day, numbers_closed FROM settings WHERE id = 1
+`
+
+type GetNumbersStateRow struct {
+	KitchenNext   int64  `json:"kitchen_next"`
+	CounterNext   int64  `json:"counter_next"`
+	NumbersDay    string `json:"numbers_day"`
+	NumbersClosed int64  `json:"numbers_closed"`
+}
+
+func (q *Queries) GetNumbersState(ctx context.Context) (GetNumbersStateRow, error) {
+	row := q.db.QueryRowContext(ctx, getNumbersState)
+	var i GetNumbersStateRow
+	err := row.Scan(
+		&i.KitchenNext,
+		&i.CounterNext,
+		&i.NumbersDay,
+		&i.NumbersClosed,
+	)
+	return i, err
+}
+
 const getOpenBatch = `-- name: GetOpenBatch :one
 
 SELECT id, opened_at, closed_at FROM batches WHERE closed_at IS NULL ORDER BY id DESC LIMIT 1
@@ -1841,7 +1864,7 @@ func (q *Queries) GetTerminalAppRelease(ctx context.Context) (string, error) {
 
 const getTerminalDraft = `-- name: GetTerminalDraft :one
 
-SELECT id, location_id, type, name, held, holder_device_id, holder_device_name, holder_staff_id, holder_staff_name, staff_id, staff_name, order_id, draft, created_at, updated_at FROM terminal_drafts WHERE id = ?
+SELECT id, location_id, type, name, held, holder_device_id, holder_device_name, holder_staff_id, holder_staff_name, staff_id, staff_name, order_id, draft, created_at, updated_at, origin FROM terminal_drafts WHERE id = ?
 `
 
 // The terminals' shared drafts (00027, contract 2.10i) -------------------------
@@ -1864,6 +1887,7 @@ func (q *Queries) GetTerminalDraft(ctx context.Context, id string) (TerminalDraf
 		&i.Draft,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.Origin,
 	)
 	return i, err
 }
@@ -4969,7 +4993,7 @@ func (q *Queries) ListShiftsSince(ctx context.Context, clockIn string) ([]Driver
 }
 
 const listTerminalDrafts = `-- name: ListTerminalDrafts :many
-SELECT id, location_id, type, name, held, holder_device_id, holder_device_name, holder_staff_id, holder_staff_name, staff_id, staff_name, order_id, draft, created_at, updated_at FROM terminal_drafts WHERE location_id = ? ORDER BY created_at, id
+SELECT id, location_id, type, name, held, holder_device_id, holder_device_name, holder_staff_id, holder_staff_name, staff_id, staff_name, order_id, draft, created_at, updated_at, origin FROM terminal_drafts WHERE location_id = ? ORDER BY created_at, id
 `
 
 func (q *Queries) ListTerminalDrafts(ctx context.Context, locationID string) ([]TerminalDraft, error) {
@@ -4997,6 +5021,7 @@ func (q *Queries) ListTerminalDrafts(ctx context.Context, locationID string) ([]
 			&i.Draft,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.Origin,
 		); err != nil {
 			return nil, err
 		}
@@ -5380,6 +5405,16 @@ func (q *Queries) MarkNotDelivered(ctx context.Context, arg MarkNotDeliveredPara
 	return result.RowsAffected()
 }
 
+const markNumbersClosed = `-- name: MarkNumbersClosed :exec
+UPDATE settings SET numbers_closed = 1 WHERE id = 1
+`
+
+// Close batch: the numbers restart with the first number of a new business day.
+func (q *Queries) MarkNumbersClosed(ctx context.Context) error {
+	_, err := q.db.ExecContext(ctx, markNumbersClosed)
+	return err
+}
+
 const markOnDelivery = `-- name: MarkOnDelivery :execrows
 UPDATE orders
 SET state = 'on_delivery', out_at = ?, driver_id = ?, driver_name = ?,
@@ -5483,12 +5518,17 @@ func (q *Queries) NextDriverPosition(ctx context.Context) (int64, error) {
 }
 
 const nextKitchenNumber = `-- name: NextKitchenNumber :one
-UPDATE settings SET kitchen_next = kitchen_next + 1 WHERE id = 1 RETURNING kitchen_next
+UPDATE settings
+SET kitchen_next = CASE WHEN kitchen_next > 0 THEN kitchen_next + 1 ELSE CAST(?1 AS INTEGER) + 1 END
+WHERE id = 1
+RETURNING kitchen_next
 `
 
-// Allocates a kitchen number: returns the post-increment value (caller subtracts 1).
-func (q *Queries) NextKitchenNumber(ctx context.Context) (int64, error) {
-	row := q.db.QueryRowContext(ctx, nextKitchenNumber)
+// Allocates a kitchen number: kitchen_next (or start when it is 0, i.e. after
+// the daily restart) and moves it on. Returns the post-increment value
+// (caller subtracts 1).
+func (q *Queries) NextKitchenNumber(ctx context.Context, start int64) (int64, error) {
+	row := q.db.QueryRowContext(ctx, nextKitchenNumber, start)
 	var kitchen_next int64
 	err := row.Scan(&kitchen_next)
 	return kitchen_next, err
@@ -5771,16 +5811,6 @@ func (q *Queries) RenamePairedDevice(ctx context.Context, arg RenamePairedDevice
 	return result.RowsAffected()
 }
 
-const resetCounterNumber = `-- name: ResetCounterNumber :exec
-UPDATE settings SET counter_next = 0 WHERE id = 1
-`
-
-// Close batch: the next counter order starts again at counter_start.
-func (q *Queries) ResetCounterNumber(ctx context.Context) error {
-	_, err := q.db.ExecContext(ctx, resetCounterNumber)
-	return err
-}
-
 const resetDriversAvailable = `-- name: ResetDriversAvailable :exec
 UPDATE drivers SET status = 'available' WHERE status = 'out'
 `
@@ -5788,15 +5818,6 @@ UPDATE drivers SET status = 'available' WHERE status = 'out'
 // Close batch: drivers out on a run are back in the queue (clocked-out stay off).
 func (q *Queries) ResetDriversAvailable(ctx context.Context) error {
 	_, err := q.db.ExecContext(ctx, resetDriversAvailable)
-	return err
-}
-
-const resetKitchenNumber = `-- name: ResetKitchenNumber :exec
-UPDATE settings SET kitchen_next = 1100 WHERE id = 1
-`
-
-func (q *Queries) ResetKitchenNumber(ctx context.Context) error {
-	_, err := q.db.ExecContext(ctx, resetKitchenNumber)
 	return err
 }
 
@@ -6517,6 +6538,21 @@ func (q *Queries) SetMapFile(ctx context.Context, mapFile string) error {
 	return err
 }
 
+const setNumbersState = `-- name: SetNumbersState :exec
+UPDATE settings SET numbers_day = ?, numbers_closed = ? WHERE id = 1
+`
+
+type SetNumbersStateParams struct {
+	NumbersDay    string `json:"numbers_day"`
+	NumbersClosed int64  `json:"numbers_closed"`
+}
+
+// A restore (a blank Pi continuing the shift): the day of the last number + a close since.
+func (q *Queries) SetNumbersState(ctx context.Context, arg SetNumbersStateParams) error {
+	_, err := q.db.ExecContext(ctx, setNumbersState, arg.NumbersDay, arg.NumbersClosed)
+	return err
+}
+
 const setOrderCarried = `-- name: SetOrderCarried :exec
 UPDATE orders SET carried = ?1 WHERE id = ?2
 `
@@ -6952,6 +6988,24 @@ func (q *Queries) TakeCounterNumber(ctx context.Context, start int64) (int64, er
 	var counter_next int64
 	err := row.Scan(&counter_next)
 	return counter_next, err
+}
+
+const takeNumbersDay = `-- name: TakeNumbersDay :exec
+UPDATE settings
+SET kitchen_next   = CASE WHEN numbers_closed = 1 AND numbers_day <> CAST(?1 AS TEXT) THEN 0 ELSE kitchen_next END,
+    counter_next   = CASE WHEN numbers_closed = 1 AND numbers_day <> CAST(?1 AS TEXT) THEN 0 ELSE counter_next END,
+    numbers_closed = 0,
+    numbers_day    = CAST(?1 AS TEXT)
+WHERE id = 1
+`
+
+// Before a ticket number is taken (kitchen or counter, contract 2.10ae): on a
+// new business day after a close, both sequences start again (0 = start);
+// the day of this number is kept and the close is used up. SQLite evaluates
+// every SET expression on the old row.
+func (q *Queries) TakeNumbersDay(ctx context.Context, day string) error {
+	_, err := q.db.ExecContext(ctx, takeNumbersDay, day)
+	return err
 }
 
 const touchCustomerOrder = `-- name: TouchCustomerOrder :exec

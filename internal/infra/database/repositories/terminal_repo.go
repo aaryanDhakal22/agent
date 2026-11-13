@@ -71,6 +71,9 @@ func (r *OrderRepository) PlaceCounterOrder(ctx context.Context, in terminal.New
 		case !errors.Is(err, sql.ErrNoRows):
 			return err
 		}
+		if err := takeNumbersDay(ctx, q, r.numberingAt(in.Now)); err != nil {
+			return err
+		}
 		after, err := q.TakeCounterNumber(ctx, in.CounterStart)
 		if err != nil {
 			return fmt.Errorf("counter number: %w", err)

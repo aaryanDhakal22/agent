@@ -554,11 +554,36 @@ WHERE id = 1;
 SELECT kitchen_next, last_prep_minutes FROM settings WHERE id = 1;
 
 -- name: NextKitchenNumber :one
--- Allocates a kitchen number: returns the post-increment value (caller subtracts 1).
-UPDATE settings SET kitchen_next = kitchen_next + 1 WHERE id = 1 RETURNING kitchen_next;
+-- Allocates a kitchen number: kitchen_next (or start when it is 0, i.e. after
+-- the daily restart) and moves it on. Returns the post-increment value
+-- (caller subtracts 1).
+UPDATE settings
+SET kitchen_next = CASE WHEN kitchen_next > 0 THEN kitchen_next + 1 ELSE CAST(sqlc.arg(start) AS INTEGER) + 1 END
+WHERE id = 1
+RETURNING kitchen_next;
 
--- name: ResetKitchenNumber :exec
-UPDATE settings SET kitchen_next = 1100 WHERE id = 1;
+-- name: TakeNumbersDay :exec
+-- Before a ticket number is taken (kitchen or counter, contract 2.10ae): on a
+-- new business day after a close, both sequences start again (0 = start);
+-- the day of this number is kept and the close is used up. SQLite evaluates
+-- every SET expression on the old row.
+UPDATE settings
+SET kitchen_next   = CASE WHEN numbers_closed = 1 AND numbers_day <> CAST(sqlc.arg(day) AS TEXT) THEN 0 ELSE kitchen_next END,
+    counter_next   = CASE WHEN numbers_closed = 1 AND numbers_day <> CAST(sqlc.arg(day) AS TEXT) THEN 0 ELSE counter_next END,
+    numbers_closed = 0,
+    numbers_day    = CAST(sqlc.arg(day) AS TEXT)
+WHERE id = 1;
+
+-- name: MarkNumbersClosed :exec
+-- Close batch: the numbers restart with the first number of a new business day.
+UPDATE settings SET numbers_closed = 1 WHERE id = 1;
+
+-- name: SetNumbersState :exec
+-- A restore (a blank Pi continuing the shift): the day of the last number + a close since.
+UPDATE settings SET numbers_day = ?, numbers_closed = ? WHERE id = 1;
+
+-- name: GetNumbersState :one
+SELECT kitchen_next, counter_next, numbers_day, numbers_closed FROM settings WHERE id = 1;
 
 -- name: SetLastPrepMinutes :exec
 UPDATE settings SET last_prep_minutes = ? WHERE id = 1;
@@ -967,9 +992,6 @@ SELECT counter_next FROM settings WHERE id = 1;
 -- name: SetCounterNext :exec
 UPDATE settings SET counter_next = ? WHERE id = 1;
 
--- name: ResetCounterNumber :exec
--- Close batch: the next counter order starts again at counter_start.
-UPDATE settings SET counter_next = 0 WHERE id = 1;
 
 -- name: InsertCounterOrder :exec
 -- A counter order from a terminal: stored accepted at once (no ring) with its

@@ -435,10 +435,9 @@ func (r *OrderRepository) CloseBatch(ctx context.Context, force bool) (closed *o
 		if err := recordBatchClosed(ctx, q, b.ID, now); err != nil {
 			return err
 		}
-		if err := q.ResetKitchenNumber(ctx); err != nil {
-			return err
-		}
-		if err := q.ResetCounterNumber(ctx); err != nil { // terminal stage 0d: counter orders start again too
+		// The ticket numbers restart with the first number of a new business
+		// day (contract 2.10ae): a second close the same day carries on.
+		if err := q.MarkNumbersClosed(ctx); err != nil {
 			return err
 		}
 		// The terminals' shared drafts never outlive the batch (contract 2.10i).
@@ -551,11 +550,22 @@ func (r *OrderRepository) ListByBatch(ctx context.Context, batchID int64, offset
 func (r *OrderRepository) FloorSettings(ctx context.Context) (fs order.FloorSettings, err error) {
 	ctx, _, end := dbSpan(ctx, "floor.settings")
 	defer end(&err)
-	row, err := models.New(r.db).GetFloorSettings(ctx)
+	q := models.New(r.db)
+	row, err := q.GetFloorSettings(ctx)
 	if err != nil {
 		return fs, err
 	}
-	return order.FloorSettings{KitchenNext: row.KitchenNext, LastPrepMinutes: row.LastPrepMinutes}, nil
+	next := row.KitchenNext
+	// The number the next accepted order gets (contract 2.10ae): the start
+	// when the sequence restarts (0 stored, or a new business day after a
+	// close).
+	if ns, err := q.GetNumbersState(ctx); err == nil {
+		n := r.numberingAt(time.Now())
+		if next <= 0 || (ns.NumbersClosed == 1 && ns.NumbersDay != n.Day) {
+			next = n.KitchenStart
+		}
+	}
+	return order.FloorSettings{KitchenNext: next, LastPrepMinutes: row.LastPrepMinutes}, nil
 }
 
 // --- drivers ---------------------------------------------------------------

@@ -336,7 +336,9 @@ func TestCloseBatch(t *testing.T) {
 	next, _ := r.OpenBatch(ctx)
 	fs, _ := r.FloorSettings(ctx)
 	ds, _ := r.ListDrivers(ctx)
-	if next.ID == first.ID || fs.KitchenNext != 1100 || ds[0].Status != order.DriverAvailable || ds[0].Deliveries != 0 {
+	// The kitchen numbers carry on after a close the same business day
+	// (contract 2.10ae; numbering_test.go has the daily restart).
+	if next.ID == first.ID || fs.KitchenNext != 1103 || ds[0].Status != order.DriverAvailable || ds[0].Deliveries != 0 {
 		t.Fatalf("after close: batch=%d kitchen=%d drivers=%+v", next.ID, fs.KitchenNext, ds)
 	}
 	auto, cancelled := 0, 0
@@ -363,8 +365,8 @@ func TestCloseBatch(t *testing.T) {
 	if fresh.Status.BatchID != next.ID {
 		t.Fatalf("new order batch = %d, want %d", fresh.Status.BatchID, next.ID)
 	}
-	if got := accept(t, r, fresh); *got.Status.KitchenNumber != 1100 {
-		t.Fatalf("kitchen numbers restart at 1100, got %d", *got.Status.KitchenNumber)
+	if got := accept(t, r, fresh); *got.Status.KitchenNumber != 1103 {
+		t.Fatalf("kitchen numbers carry on the same business day (2.10ae), got %d", *got.Status.KitchenNumber)
 	}
 }
 

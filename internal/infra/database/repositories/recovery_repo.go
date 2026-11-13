@@ -40,6 +40,9 @@ func (r *OrderRepository) AgentState(ctx context.Context) (st order.AgentState, 
 	if st.CounterNext, err = q.GetCounterNext(ctx); err != nil {
 		return st, err
 	}
+	if ns, err := q.GetNumbersState(ctx); err == nil {
+		st.NumbersDay, st.NumbersClosed = ns.NumbersDay, ns.NumbersClosed == 1
+	}
 	if p, err := q.GetFloorPrefs(ctx); err == nil {
 		st.Prefs = order.FloorPrefs{GreenTillMinutes: p.GreenTillMinutes, TipTaxBps: p.TipTaxBps}
 	}
@@ -231,7 +234,8 @@ func (r *OrderRepository) Restore(ctx context.Context, data order.RestoreData) (
 		}
 
 		// Counters + settings.
-		next, prep := int64(1100), int64(20)
+		// kitchen_next 0 = start at kitchen_start (contract 2.10ae).
+		next, prep := int64(0), int64(20)
 		if data.State != nil {
 			if data.State.KitchenNext > 0 {
 				next = data.State.KitchenNext
@@ -240,13 +244,16 @@ func (r *OrderRepository) Restore(ctx context.Context, data order.RestoreData) (
 				prep = data.State.LastPrepMinutes
 			}
 		}
-		if maxKitchen >= next {
+		if maxKitchen > 0 && maxKitchen >= next {
 			next = maxKitchen + 1 // never hand out a number twice
 		}
 		if err := q.SetKitchenCounters(ctx, models.SetKitchenCountersParams{KitchenNext: next, LastPrepMinutes: prep}); err != nil {
 			return err
 		}
 		res.KitchenNext = next
+		if next == 0 {
+			res.KitchenNext = r.numberingAt(time.Now()).KitchenStart // what the next accepted order gets
+		}
 		var counter int64
 		if data.State != nil {
 			counter = data.State.CounterNext
@@ -258,6 +265,15 @@ func (r *OrderRepository) Restore(ctx context.Context, data order.RestoreData) (
 			return err
 		}
 		res.CounterNext = counter
+		if data.State != nil && data.State.NumbersDay != "" { // contract 2.10ae: the daily restart goes on as before
+			closed := int64(0)
+			if data.State.NumbersClosed {
+				closed = 1
+			}
+			if err := q.SetNumbersState(ctx, models.SetNumbersStateParams{NumbersDay: data.State.NumbersDay, NumbersClosed: closed}); err != nil {
+				return err
+			}
+		}
 		if data.State != nil {
 			if p := data.State.Prefs; p.GreenTillMinutes > 0 {
 				if err := q.SetFloorPrefs(ctx, models.SetFloorPrefsParams{GreenTillMinutes: p.GreenTillMinutes, TipTaxBps: p.TipTaxBps}); err != nil {

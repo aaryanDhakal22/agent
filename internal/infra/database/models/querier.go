@@ -126,6 +126,7 @@ type Querier interface {
 	GetLatestAutoPlan(ctx context.Context) (GetLatestAutoPlanRow, error)
 	GetLinkInfo(ctx context.Context) (GetLinkInfoRow, error)
 	GetMapFile(ctx context.Context) (string, error)
+	GetNumbersState(ctx context.Context) (GetNumbersStateRow, error)
 	// Batches -------------------------------------------------------------------
 	GetOpenBatch(ctx context.Context) (Batch, error)
 	GetOpenDrawerByDevice(ctx context.Context, deviceID string) (DrawerSession, error)
@@ -277,6 +278,8 @@ type Querier interface {
 	// cancelled. Either way no driver, no pool, no out / delivered time, so it
 	// counts on no driver report.
 	MarkNotDelivered(ctx context.Context, arg MarkNotDeliveredParams) (int64, error)
+	// Close batch: the numbers restart with the first number of a new business day.
+	MarkNumbersClosed(ctx context.Context) error
 	// Leaving with a driver empties the order's pool slot (and ends a came-back
 	// hold: only the POS mirror sends a came-back order out).
 	MarkOnDelivery(ctx context.Context, arg MarkOnDeliveryParams) (int64, error)
@@ -288,8 +291,10 @@ type Querier interface {
 	// Close batch: future orders wait in the next batch.
 	MoveScheduledToBatch(ctx context.Context, arg MoveScheduledToBatchParams) error
 	NextDriverPosition(ctx context.Context) (int64, error)
-	// Allocates a kitchen number: returns the post-increment value (caller subtracts 1).
-	NextKitchenNumber(ctx context.Context) (int64, error)
+	// Allocates a kitchen number: kitchen_next (or start when it is 0, i.e. after
+	// the daily restart) and moves it on. Returns the post-increment value
+	// (caller subtracts 1).
+	NextKitchenNumber(ctx context.Context, start int64) (int64, error)
 	// A stop joining a run that is out goes last.
 	NextRunSeq(ctx context.Context, driverID sql.NullString) (int64, error)
 	// CM-9: the oldest unsynced, unparked event of each type.
@@ -318,11 +323,8 @@ type Querier interface {
 	ReleaseCameBack(ctx context.Context, id string) (int64, error)
 	RenameDriver(ctx context.Context, arg RenameDriverParams) (int64, error)
 	RenamePairedDevice(ctx context.Context, arg RenamePairedDeviceParams) (int64, error)
-	// Close batch: the next counter order starts again at counter_start.
-	ResetCounterNumber(ctx context.Context) error
 	// Close batch: drivers out on a run are back in the queue (clocked-out stay off).
 	ResetDriversAvailable(ctx context.Context) error
-	ResetKitchenNumber(ctx context.Context) error
 	RestoreDriver(ctx context.Context, arg RestoreDriverParams) error
 	RestoreOrder(ctx context.Context, arg RestoreOrderParams) error
 	RestoreShift(ctx context.Context, arg RestoreShiftParams) error
@@ -376,6 +378,8 @@ type Querier interface {
 	SetLinkInfo(ctx context.Context, arg SetLinkInfoParams) error
 	SetManagerPasswordHash(ctx context.Context, uiPasswordHash string) error
 	SetMapFile(ctx context.Context, mapFile string) error
+	// A restore (a blank Pi continuing the shift): the day of the last number + a close since.
+	SetNumbersState(ctx context.Context, arg SetNumbersStateParams) error
 	SetOrderCarried(ctx context.Context, arg SetOrderCarriedParams) error
 	// 2.4.0 Drivers tab: a delivered or out delivery moves to another driver
 	// (driver_id NULL = Unassigned) with its run stop number and the
@@ -422,6 +426,11 @@ type Querier interface {
 	// The counter sequence: hands out counter_next (or start when it is 0, i.e.
 	// after Close batch) and moves it on. Returns the number AFTER the one taken.
 	TakeCounterNumber(ctx context.Context, start int64) (int64, error)
+	// Before a ticket number is taken (kitchen or counter, contract 2.10ae): on a
+	// new business day after a close, both sequences start again (0 = start);
+	// the day of this number is kept and the close is used up. SQLite evaluates
+	// every SET expression on the old row.
+	TakeNumbersDay(ctx context.Context, day string) error
 	TouchCustomerOrder(ctx context.Context, arg TouchCustomerOrderParams) error
 	TouchPairedDevice(ctx context.Context, arg TouchPairedDeviceParams) error
 	// 2.4.0 Back to deliveries: an Unassigned delivery goes back to the state it

@@ -20,8 +20,14 @@ type AgentState struct {
 	LastPrepMinutes int64      `json:"last_prep_minutes"`
 	// CounterNext (terminal stage 0d): the counter sequence's next number,
 	// 0 = start again at the terminal config's counter_start.
-	CounterNext int64      `json:"counter_next"`
-	Prefs       FloorPrefs `json:"prefs"`
+	CounterNext int64 `json:"counter_next"`
+	// NumbersDay / NumbersClosed (contract 2.10ae): the business day of the
+	// last ticket number and whether a close came since (the numbers restart
+	// with the first number of a new day after a close). Empty in reports
+	// from agents before 2.5.5.
+	NumbersDay    string     `json:"numbers_day,omitempty"`
+	NumbersClosed bool       `json:"numbers_closed,omitempty"`
+	Prefs         FloorPrefs `json:"prefs"`
 	// ReceiptPrefs: nil in reports from agents older than receipt settings.
 	ReceiptPrefs *ReceiptPrefs `json:"receipt_prefs,omitempty"`
 	// PrintRouting: the routing + emergency reroute setting (printroute);

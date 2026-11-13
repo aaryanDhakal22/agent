@@ -205,16 +205,18 @@ def test_close_batch(floor) -> None:
     assert r.json()["auto_finished"][0]["status"].get("kitchen_number") is None
 
     f = a.http.get(f"{a.base}/api/floor", timeout=5).json()
-    assert f["batch"]["id"] > first and f["kitchen_next"] == 1100 and f["batch"]["order_count"] == 0
+    # The kitchen numbers carry on after a close the same business day (contract 2.10ae).
+    assert f["batch"]["id"] > first and f["kitchen_next"] == 1101 and f["batch"]["order_count"] == 0
     assert a.http.get(f"{a.base}/api/orders", timeout=5).json() == [], "current batch is empty"
     assert len(a.http.get(f"{a.base}/api/orders", params={"batch": first}, timeout=5).json()) == 2
     assert len(a.http.get(f"{a.base}/api/orders", params={"batch": "all"}, timeout=5).json()) == 2
     batches = a.http.get(f"{a.base}/api/batches", timeout=5).json()
     assert batches[0].get("closed_at") is None and batches[1]["id"] == first and batches[1]["order_count"] == 2
 
-    # Kitchen numbers restart.
+    # ... and the next accepted order takes it (they restart on the next business day:
+    # test_terminal.py::test_ticket_numbers_restart_once_a_business_day).
     nxt = arrive(a)
-    assert post(a, f"/api/orders/{nxt}/accept").json()["status"]["kitchen_number"] == 1100
+    assert post(a, f"/api/orders/{nxt}/accept").json()["status"]["kitchen_number"] == 1101
 
 
 def test_live_events_for_a_paired_tablet(floor) -> None:

@@ -95,8 +95,12 @@ func (s Staff) Public() Public {
 // object goes to the terminals as main sent it.
 type Settings struct {
 	// CounterStart is where the counter sequence starts (and starts again
-	// after Close batch). 0 / missing = DefaultCounterStart.
+	// once a business day, contract 2.10ae). 0 / missing = DefaultCounterStart.
 	CounterStart int64 `json:"counter_start"`
+	// KitchenStart is where the kitchen sequence (accepted online / website
+	// orders) starts, again once a business day (the owner's X, 2026-11-13;
+	// main 4.0.6). 0 / missing = order.DefaultKitchenStart (1100).
+	KitchenStart int64 `json:"kitchen_start"`
 	// The cashier role's defaults (main's terminal settings).
 	CashierRefundCents *int64 `json:"cashier_refund_cents"`
 	CashierDiscountPct *int   `json:"cashier_discount_pct"`
@@ -340,16 +344,35 @@ func ParseConfig(body []byte) (*Config, error) {
 
 // CounterStart is the counter sequence's start.
 func (c *Config) CounterStart() int64 {
-	if c == nil || c.parsed.CounterStart <= 0 || c.parsed.CounterStart >= MaxCounterStart {
-		// S-6: counter numbers stay below the online kitchen numbers (1100+).
+	if c == nil || c.parsed.CounterStart <= 0 || c.parsed.CounterStart >= c.KitchenStart() {
+		// S-6: counter numbers stay below the kitchen numbers (main
+		// validates it too; a config that breaks it falls back).
 		return DefaultCounterStart
 	}
 	return c.parsed.CounterStart
 }
 
-// MaxCounterStart: a counter_start at or above it (the online kitchen
-// numbers start at 1100) falls back to the default (S-6).
-const MaxCounterStart = 1100
+// MaxKitchenStart bounds kitchen_start (main's MaxCounterStart).
+const MaxKitchenStart = 999_999
+
+// KitchenStart is the kitchen sequence's start (main's kitchen_start,
+// default 1100; a bad value = the default).
+func (c *Config) KitchenStart() int64 {
+	if c == nil || c.parsed.KitchenStart < 2 || c.parsed.KitchenStart > MaxKitchenStart {
+		return order.DefaultKitchenStart
+	}
+	return c.parsed.KitchenStart
+}
+
+// DayStart is when the store's business day starts ("HH:MM" store time):
+// the auto-close time, or order.DefaultDayStart (04:00) when auto-close is
+// off. The ticket numbers restart once per such day (contract 2.10ae).
+func (c *Config) DayStart() string {
+	if at := c.AutoCloseAt(); at != "" {
+		return at
+	}
+	return order.DefaultDayStart
+}
 
 // LimitsOf is a staff member's limits: a manager is unlimited; otherwise
 // their own, else the role's default, else none (0 / 0).

@@ -264,6 +264,10 @@ CREATE TABLE settings (
     -- '' = 1024 on) + each device's last setup result (JSON {device id: result}).
     admin_pair                text    NOT NULL DEFAULT '',
     device_setups             text    NOT NULL DEFAULT '',
+    -- 00044_numbers_day: the business day of the last ticket number taken
+    -- ('' = none) + a close since then (the numbers restart once a day).
+    numbers_day               text    NOT NULL DEFAULT '',
+    numbers_closed            integer NOT NULL DEFAULT 0,
     CHECK (id = 1)
 );
 
