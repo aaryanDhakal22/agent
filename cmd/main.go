@@ -286,9 +286,15 @@ func main() {
 	// service's in-memory copy (receiptPrefs is pointed at it once the service
 	// exists, before anything prints).
 	receiptPrefs := order.DefaultReceiptPrefs
+	// main's takeout_two_copies (Receipts and printing): a pickup's customer
+	// receipt prints at least two copies (receipt.CustomerCopies); set from
+	// the terminal config once termStore exists.
+	var takeoutTwoCopies atomic.Bool
 	receiptBuilder := func(snap order.Snapshot, t domainprinter.Ticket) []byte {
 		sc, _ := storeCtx.Load().(storeconfig.StoreContext)
-		return receipt.Build(snap, sc, t, receiptPrefs())
+		prefs := receiptPrefs()
+		prefs.TakeoutTwoCopies = takeoutTwoCopies.Load()
+		return receipt.Build(snap, sc, t, prefs)
 	}
 
 	dispatcher := printerApp.NewDispatcher(ctx, factory, printerRegistry, notifier, cfg.PrinterDetectDelay, receiptBuilder, logger, meters)
@@ -520,6 +526,7 @@ func main() {
 	})
 	var quibaseMin atomic.Int64
 	quibaseMin.Store(-1)
+	termStore.OnConfig(func(c *domainterminal.Config) { takeoutTwoCopies.Store(c.TakeoutTwoCopies()) })
 	termStore.OnConfig(func(c *domainterminal.Config) {
 		if old := quibaseMin.Swap(c.QuibaseCounterMinCents()); old >= 0 && old != c.QuibaseCounterMinCents() {
 			broker.PublishFloorChanged()

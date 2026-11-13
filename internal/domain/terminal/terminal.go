@@ -137,6 +137,17 @@ type Settings struct {
 	// (written off as Void waste "Unpaid at close") or "carry" (kept open
 	// like a pickup). Missing / anything else = waste.
 	CloseUnpaidCounterAction string `json:"close_unpaid_counter_action"`
+	// TakeoutTwoCopies (the owner, 2026-11-13; main 4.0.6, Store › Settings
+	// › Receipts and printing): every takeout / pickup order prints two
+	// Customer Copies - the Pi's customer receipt for an online, website or
+	// call-center pickup (receipt.CustomerCopies), the terminal's own for a
+	// takeout it rang. Missing = off.
+	TakeoutTwoCopies *bool `json:"takeout_two_copies"`
+}
+
+// TakeoutTwoCopies is main's takeout_two_copies (off when not sent).
+func (c *Config) TakeoutTwoCopies() bool {
+	return c != nil && c.parsed.TakeoutTwoCopies != nil && *c.parsed.TakeoutTwoCopies
 }
 
 // CloseUnpaidCounterAction is the store's setting: waste (default) | carry.

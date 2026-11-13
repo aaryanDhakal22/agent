@@ -382,6 +382,13 @@ func (s Snapshot) IsChannel() bool {
 	return src != "" && src != SourceOnline && src != "pos"
 }
 
+// IsPickup: a takeout / pickup order (fulfillment "pickup", any source:
+// online, website, call center, a terminal's Takeout). Not a counter
+// (dine_in) order, not a delivery.
+func (s Snapshot) IsPickup() bool {
+	return strings.EqualFold(strings.TrimSpace(s.Fulfillment.Type), "pickup")
+}
+
 // MustParseID returns the snapshot id as a uuid.UUID. The wire shape uses
 // strings; callers that need to put the id in a pgtype.UUID convert through
 // this helper. Empty / invalid ids surface as uuid.Nil — callers should

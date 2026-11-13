@@ -225,6 +225,13 @@
         { "id": "callcenter.computers", "anchor": "computers", "label": "Computers", "api": "/store/v1/me/callcenter/devices", "synonyms": ["signed in", "devices"] },
         { "id": "callcenter.report", "anchor": "report", "label": "Orders by agent", "api": "GET /store/v1/me/reports/callcenter", "synonyms": ["report", "agent orders"] }
       ]
+    },
+    {
+      "id": "receipts", "title": "Receipts and printing", "group": "People and devices", "path": "/app/store/settings/receipts", "crumb": "Store › Settings › Receipts and printing",
+      "synonyms": ["receipt", "receipts", "printing", "receipts & printing"],
+      "fields": [
+        { "id": "receipts.takeout_two_copies", "anchor": "takeout_two_copies", "label": "Takeout: print 2 customer copies", "api": "PUT /store/v1/me/terminal/settings takeout_two_copies", "synonyms": ["copies", "takeout", "receipt", "pickup", "two copies", "2 copies", "customer copy", "second receipt", "bag copy"] }
+      ]
     }
   ]
 }
