@@ -1136,7 +1136,7 @@ function agentApp() {
       if (this.busy.close) return;
       const ok = await this.ask({
         title: 'Close the batch?',
-        body: 'Kitchen numbers restart at 1100 and a report prints for each driver.',
+        body: 'A report prints for each driver. Order numbers carry on today and start again with the next business day\'s first order.',
         confirmLabel: 'Close batch', cancelLabel: 'Keep it open', focusCancel: true,
       });
       if (ok) await this.doCloseBatch(false);
