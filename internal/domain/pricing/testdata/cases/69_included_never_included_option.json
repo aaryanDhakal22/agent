@@ -1,0 +1,547 @@
+{
+ "at": "2026-11-13T18:00:00-05:00",
+ "cart": {
+  "code": "",
+  "first_order": null,
+  "lines": [
+   {
+    "item_id": "00000000-0000-0000-0000-0000000000a1",
+    "options": [
+     {
+      "group_id": "00000000-0000-0000-0000-0000000000c1",
+      "option_id": "00000000-0000-0000-0000-0000000000d6"
+     },
+     {
+      "group_id": "00000000-0000-0000-0000-0000000000c1",
+      "option_id": "00000000-0000-0000-0000-0000000000d1"
+     },
+     {
+      "group_id": "00000000-0000-0000-0000-0000000000c1",
+      "option_id": "00000000-0000-0000-0000-0000000000d2"
+     },
+     {
+      "group_id": "00000000-0000-0000-0000-0000000000c1",
+      "option_id": "00000000-0000-0000-0000-0000000000d3"
+     },
+     {
+      "group_id": "00000000-0000-0000-0000-0000000000c1",
+      "option_id": "00000000-0000-0000-0000-0000000000d4"
+     }
+    ],
+    "qty": 1,
+    "size_id": "00000000-0000-0000-0000-0000000000b2"
+   },
+   {
+    "item_id": "00000000-0000-0000-0000-0000000000a1",
+    "options": [
+     {
+      "group_id": "00000000-0000-0000-0000-0000000000c1",
+      "option_id": "00000000-0000-0000-0000-0000000000d7"
+     },
+     {
+      "group_id": "00000000-0000-0000-0000-0000000000c1",
+      "option_id": "00000000-0000-0000-0000-0000000000d1"
+     },
+     {
+      "group_id": "00000000-0000-0000-0000-0000000000c1",
+      "option_id": "00000000-0000-0000-0000-0000000000d2"
+     },
+     {
+      "group_id": "00000000-0000-0000-0000-0000000000c1",
+      "option_id": "00000000-0000-0000-0000-0000000000d3"
+     },
+     {
+      "group_id": "00000000-0000-0000-0000-0000000000c1",
+      "option_id": "00000000-0000-0000-0000-0000000000d4"
+     },
+     {
+      "group_id": "00000000-0000-0000-0000-0000000000c1",
+      "option_id": "00000000-0000-0000-0000-0000000000d8"
+     },
+     {
+      "group_id": "00000000-0000-0000-0000-0000000000c1",
+      "mode": "no",
+      "option_id": "00000000-0000-0000-0000-0000000000d5"
+     }
+    ],
+    "qty": 1,
+    "size_id": "00000000-0000-0000-0000-0000000000b2"
+   },
+   {
+    "item_id": "00000000-0000-0000-0000-0000000000a3",
+    "options": [
+     {
+      "group_id": "00000000-0000-0000-0000-0000000000c2",
+      "option_id": "00000000-0000-0000-0000-0000000000d6"
+     },
+     {
+      "group_id": "00000000-0000-0000-0000-0000000000c2",
+      "option_id": "00000000-0000-0000-0000-0000000000d1"
+     }
+    ],
+    "qty": 1
+   }
+  ],
+  "payment": "cash",
+  "tip_cents": null,
+  "tip_pct": null,
+  "type": "pickup"
+ },
+ "context": {
+  "counter": true,
+  "deals": [],
+  "items": {
+   "00000000-0000-0000-0000-0000000000a1": {
+    "category_id": "00000000-0000-0000-0000-0000000000e1",
+    "family": "00000000-0000-0000-0000-0000000000f1",
+    "included_toppings": 5,
+    "tax_bps": 0
+   },
+   "00000000-0000-0000-0000-0000000000a2": {
+    "category_id": "00000000-0000-0000-0000-0000000000e1",
+    "family": "00000000-0000-0000-0000-0000000000f1",
+    "tax_bps": 0
+   },
+   "00000000-0000-0000-0000-0000000000a3": {
+    "category_id": "00000000-0000-0000-0000-0000000000e1",
+    "included_toppings": 5,
+    "tax_bps": 0
+   },
+   "00000000-0000-0000-0000-0000000000a4": {
+    "category_id": "00000000-0000-0000-0000-0000000000e1",
+    "family": "00000000-0000-0000-0000-0000000000f1",
+    "included_toppings": 2,
+    "included_toppings_sizes": {
+     "00000000-0000-0000-0000-0000000000b2": 3
+    },
+    "tax_bps": 0
+   }
+  },
+  "menu": {
+   "categories": [
+    {
+     "id": "00000000-0000-0000-0000-0000000000e1",
+     "items": [
+      {
+       "anchor": {
+        "item_ids": [
+         "00000000-0000-0000-0000-0000000000a1"
+        ]
+       },
+       "description": "",
+       "id": "00000000-0000-0000-0000-0000000000a1",
+       "modifier_group_ids": [
+        "00000000-0000-0000-0000-0000000000c1"
+       ],
+       "name": "Build Your Own Pizza",
+       "photo": "",
+       "price_cents": 0,
+       "sizes": [
+        {
+         "name": "12\" Medium",
+         "price_cents": 1599,
+         "size_id": "00000000-0000-0000-0000-0000000000b1"
+        },
+        {
+         "name": "14\" Large",
+         "price_cents": 1799,
+         "size_id": "00000000-0000-0000-0000-0000000000b2"
+        }
+       ],
+       "sold_out": false
+      },
+      {
+       "anchor": {
+        "item_ids": [
+         "00000000-0000-0000-0000-0000000000a2"
+        ]
+       },
+       "description": "",
+       "id": "00000000-0000-0000-0000-0000000000a2",
+       "modifier_group_ids": [
+        "00000000-0000-0000-0000-0000000000c1"
+       ],
+       "name": "Cheese Pizza",
+       "photo": "",
+       "price_cents": 0,
+       "sizes": [
+        {
+         "name": "12\" Medium",
+         "price_cents": 1199,
+         "size_id": "00000000-0000-0000-0000-0000000000b1"
+        },
+        {
+         "name": "14\" Large",
+         "price_cents": 1399,
+         "size_id": "00000000-0000-0000-0000-0000000000b2"
+        }
+       ],
+       "sold_out": false
+      },
+      {
+       "anchor": {
+        "item_ids": [
+         "00000000-0000-0000-0000-0000000000a3"
+        ]
+       },
+       "description": "",
+       "id": "00000000-0000-0000-0000-0000000000a3",
+       "modifier_group_ids": [
+        "00000000-0000-0000-0000-0000000000c2"
+       ],
+       "name": "Build Your Own Calzone",
+       "photo": "",
+       "price_cents": 1399,
+       "sizes": [],
+       "sold_out": false
+      },
+      {
+       "anchor": {
+        "item_ids": [
+         "00000000-0000-0000-0000-0000000000a4"
+        ]
+       },
+       "description": "",
+       "id": "00000000-0000-0000-0000-0000000000a4",
+       "modifier_group_ids": [
+        "00000000-0000-0000-0000-0000000000c1"
+       ],
+       "name": "Chicken Alfredo Pizza",
+       "photo": "",
+       "price_cents": 0,
+       "sizes": [
+        {
+         "name": "12\" Medium",
+         "price_cents": 1499,
+         "size_id": "00000000-0000-0000-0000-0000000000b1"
+        },
+        {
+         "name": "14\" Large",
+         "price_cents": 1699,
+         "size_id": "00000000-0000-0000-0000-0000000000b2"
+        }
+       ],
+       "sold_out": false
+      }
+     ],
+     "name": "Pizza"
+    }
+   ],
+   "modifier_groups": [
+    {
+     "allow_multiple": true,
+     "id": "00000000-0000-0000-0000-0000000000c1",
+     "max_select": 0,
+     "min_select": 0,
+     "name": "Pizza Toppings",
+     "options": [
+      {
+       "id": "00000000-0000-0000-0000-0000000000d1",
+       "is_default": false,
+       "name": "Pepperoni",
+       "price_cents": 175,
+       "prices": [
+        {
+         "price_cents": 175,
+         "size_id": "00000000-0000-0000-0000-0000000000b1"
+        },
+        {
+         "price_cents": 225,
+         "size_id": "00000000-0000-0000-0000-0000000000b2"
+        }
+       ],
+       "sold_out": false
+      },
+      {
+       "id": "00000000-0000-0000-0000-0000000000d2",
+       "is_default": false,
+       "name": "Sausage",
+       "price_cents": 175,
+       "prices": [
+        {
+         "price_cents": 175,
+         "size_id": "00000000-0000-0000-0000-0000000000b1"
+        },
+        {
+         "price_cents": 225,
+         "size_id": "00000000-0000-0000-0000-0000000000b2"
+        }
+       ],
+       "sold_out": false
+      },
+      {
+       "id": "00000000-0000-0000-0000-0000000000d3",
+       "is_default": false,
+       "name": "Mushrooms",
+       "price_cents": 175,
+       "prices": [
+        {
+         "price_cents": 175,
+         "size_id": "00000000-0000-0000-0000-0000000000b1"
+        },
+        {
+         "price_cents": 225,
+         "size_id": "00000000-0000-0000-0000-0000000000b2"
+        }
+       ],
+       "sold_out": false
+      },
+      {
+       "id": "00000000-0000-0000-0000-0000000000d4",
+       "is_default": false,
+       "name": "Onions",
+       "price_cents": 175,
+       "prices": [
+        {
+         "price_cents": 175,
+         "size_id": "00000000-0000-0000-0000-0000000000b1"
+        },
+        {
+         "price_cents": 225,
+         "size_id": "00000000-0000-0000-0000-0000000000b2"
+        }
+       ],
+       "sold_out": false
+      },
+      {
+       "id": "00000000-0000-0000-0000-0000000000d5",
+       "is_default": false,
+       "name": "Grilled Chicken",
+       "price_cents": 250,
+       "prices": [
+        {
+         "price_cents": 250,
+         "size_id": "00000000-0000-0000-0000-0000000000b1"
+        },
+        {
+         "price_cents": 300,
+         "size_id": "00000000-0000-0000-0000-0000000000b2"
+        }
+       ],
+       "sold_out": false
+      },
+      {
+       "id": "00000000-0000-0000-0000-0000000000d6",
+       "is_default": false,
+       "name": "Shrimp",
+       "price_cents": 250,
+       "prices": [
+        {
+         "price_cents": 250,
+         "size_id": "00000000-0000-0000-0000-0000000000b1"
+        },
+        {
+         "price_cents": 300,
+         "size_id": "00000000-0000-0000-0000-0000000000b2"
+        }
+       ],
+       "sold_out": false
+      },
+      {
+       "id": "00000000-0000-0000-0000-0000000000d7",
+       "is_default": false,
+       "name": "Extra Sauce",
+       "price_cents": 50,
+       "prices": [
+        {
+         "price_cents": 50,
+         "size_id": "00000000-0000-0000-0000-0000000000b1"
+        },
+        {
+         "price_cents": 75,
+         "size_id": "00000000-0000-0000-0000-0000000000b2"
+        }
+       ],
+       "sold_out": false
+      },
+      {
+       "id": "00000000-0000-0000-0000-0000000000d8",
+       "is_default": false,
+       "name": "Black Olives",
+       "price_cents": 175,
+       "prices": [
+        {
+         "price_cents": 175,
+         "size_id": "00000000-0000-0000-0000-0000000000b1"
+        },
+        {
+         "price_cents": 225,
+         "size_id": "00000000-0000-0000-0000-0000000000b2"
+        }
+       ],
+       "sold_out": false
+      }
+     ],
+     "portions": true,
+     "required": false
+    },
+    {
+     "allow_multiple": true,
+     "id": "00000000-0000-0000-0000-0000000000c2",
+     "max_select": 0,
+     "min_select": 0,
+     "name": "14\" Pizza Toppings (other items)",
+     "options": [
+      {
+       "id": "00000000-0000-0000-0000-0000000000d1",
+       "is_default": false,
+       "name": "Pepperoni",
+       "price_cents": 225,
+       "prices": [],
+       "sold_out": false
+      },
+      {
+       "id": "00000000-0000-0000-0000-0000000000d6",
+       "is_default": false,
+       "name": "Shrimp",
+       "price_cents": 300,
+       "prices": [],
+       "sold_out": false
+      }
+     ],
+     "portions": false,
+     "required": false
+    }
+   ]
+  },
+  "open_prices": true,
+  "options": {
+   "00000000-0000-0000-0000-0000000000d1": {
+    "class": "regular",
+    "family": "00000000-0000-0000-0000-0000000000f2"
+   },
+   "00000000-0000-0000-0000-0000000000d2": {
+    "class": "regular",
+    "family": "00000000-0000-0000-0000-0000000000f2"
+   },
+   "00000000-0000-0000-0000-0000000000d3": {
+    "class": "regular",
+    "family": "00000000-0000-0000-0000-0000000000f2"
+   },
+   "00000000-0000-0000-0000-0000000000d4": {
+    "class": "regular",
+    "family": "00000000-0000-0000-0000-0000000000f2"
+   },
+   "00000000-0000-0000-0000-0000000000d5": {
+    "class": "premium",
+    "family": "00000000-0000-0000-0000-0000000000f2"
+   },
+   "00000000-0000-0000-0000-0000000000d6": {
+    "class": "premium",
+    "family": "00000000-0000-0000-0000-0000000000f2",
+    "never_included": true
+   },
+   "00000000-0000-0000-0000-0000000000d8": {
+    "class": "regular",
+    "family": "00000000-0000-0000-0000-0000000000f2"
+   }
+  },
+  "settings": {
+   "card_fee": {
+    "bps": 0,
+    "mode": "none"
+   },
+   "delivery_driver_cents": 0,
+   "delivery_fee_cents": 0,
+   "delivery_min_cents": 0,
+   "free_delivery_over_cents": null,
+   "half_specialty_off_pct": 0,
+   "half_topping_price": "full",
+   "service_fee_bps": 0,
+   "service_fee_cents": 0,
+   "stacking": "best",
+   "tax_bps": 600,
+   "tips": {
+    "default_pct": 0,
+    "enabled": false,
+    "presets": []
+   }
+  },
+  "timezone": "America/New_York",
+  "types": {
+   "delivery": true,
+   "pickup": true
+  }
+ },
+ "expect": {
+  "errors": [],
+  "lines": [
+   {
+    "unit_cents": 2099
+   },
+   {
+    "unit_cents": 2024
+   },
+   {
+    "unit_cents": 1699
+   }
+  ],
+  "subtotal_cents": 5822
+ },
+ "name": "Included toppings: Shrimp (never included) is charged with places left; a NO pick takes no place; Extra Sauce is the cheapest and takes a place",
+ "quote": {
+  "card_fee_cents": 0,
+  "delivery_fee_cents": 0,
+  "discounts": [],
+  "errors": [],
+  "lines": [
+   {
+    "deal_id": "",
+    "index": 0,
+    "mods": [
+     "14\" Large",
+     "Shrimp",
+     "Pepperoni",
+     "Sausage",
+     "Mushrooms",
+     "Onions"
+    ],
+    "name": "Build Your Own Pizza",
+    "qty": 1,
+    "regular_cents": null,
+    "total_cents": 2099,
+    "unit_cents": 2099
+   },
+   {
+    "deal_id": "",
+    "index": 1,
+    "mods": [
+     "14\" Large",
+     "Extra Sauce",
+     "Pepperoni",
+     "Sausage",
+     "Mushrooms",
+     "Onions",
+     "Black Olives",
+     "NO Grilled Chicken"
+    ],
+    "name": "Build Your Own Pizza",
+    "qty": 1,
+    "regular_cents": null,
+    "total_cents": 2024,
+    "unit_cents": 2024
+   },
+   {
+    "deal_id": "",
+    "index": 2,
+    "mods": [
+     "Shrimp",
+     "Pepperoni"
+    ],
+    "name": "Build Your Own Calzone",
+    "qty": 1,
+    "regular_cents": null,
+    "total_cents": 1699,
+    "unit_cents": 1699
+   }
+  ],
+  "nudges": [],
+  "saved_cents": 0,
+  "service_fee_cents": 0,
+  "subtotal_cents": 5822,
+  "tax_cents": 349,
+  "tip_cents": 0,
+  "total_cents": 6171,
+  "warnings": []
+ }
+}

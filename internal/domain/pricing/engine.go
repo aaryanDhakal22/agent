@@ -485,7 +485,6 @@ func (e *engine) price(sel Selection, free int) priced {
 	}
 	halfPrice := e.ctx.Settings.HalfToppingPrice == HalfHalf
 	var only [3]bool
-	extras := []int64{}
 	for _, gid := range it.ModifierGroupIDs {
 		g, ok := e.groups[gid.String()]
 		if !ok {
@@ -562,9 +561,6 @@ func (e *engine) price(sel Selection, free int) priced {
 			if kp := pk.PriceCents; kp != nil && e.ctx.PriceOverrides && mode != ModeNo && *kp >= 0 && *kp <= MaxOpenPriceCents {
 				price = *kp
 			}
-			if price > 0 {
-				extras = append(extras, price)
-			}
 			if mode == ModeOnly {
 				if por == PortionWhole {
 					only[1], only[2] = true, true
@@ -619,6 +615,15 @@ func (e *engine) price(sel Selection, free int) priced {
 			break
 		}
 	}
+	// The item's included toppings (ItemFacts.IncludedToppings) first, then
+	// a bundle slot's `free` priciest of the options left.
+	e.includeToppings(&p)
+	extras := []int64{}
+	for _, o := range p.opts {
+		if o.PriceCents > 0 && !o.RemovedDefault && !o.Included {
+			extras = append(extras, o.PriceCents)
+		}
+	}
 	sort.SliceStable(extras, func(i, j int) bool { return extras[i] > extras[j] })
 	for i, x := range extras {
 		if i >= free {
@@ -628,7 +633,7 @@ func (e *engine) price(sel Selection, free int) priced {
 	// Mark the included ones: the priciest `free` charged options.
 	charged := make([]int, 0, len(p.opts))
 	for i, o := range p.opts {
-		if o.PriceCents > 0 && !o.RemovedDefault {
+		if o.PriceCents > 0 && !o.RemovedDefault && !o.Included {
 			charged = append(charged, i)
 		}
 	}
@@ -650,6 +655,53 @@ func (e *engine) price(sel Selection, free int) priced {
 	p.extras += p.halfUp
 	p.unit = base + p.extras
 	return p
+}
+
+// includeToppings marks the options an item's included toppings cover
+// (ItemFacts.IncludedAt the line's size; the owner, 2026-11-13): of the
+// line's charged picks (not NO, not an option NeverIncluded), the cheapest
+// first (a tie: the line's option order), until the count is used. A topping
+// on a half takes half a place when halves cost half (HalfHalf), a whole
+// place otherwise (HalfFull: SoftTouch charged a half topping in full, so it
+// counts in full); a whole topping never takes a lone half place (it is
+// charged and the half place waits for a half topping). An included option
+// keeps its price (PriceCents, the price it was rung at) and is Included:
+// not charged, and $0.00 on the order line.
+func (e *engine) includeToppings(p *priced) {
+	if p.bankItem == "" {
+		return
+	}
+	n := e.ctx.Items[p.bankItem].IncludedAt(p.size)
+	if n <= 0 {
+		return
+	}
+	var cand []int
+	for i, o := range p.opts {
+		if o.PriceCents <= 0 || o.RemovedDefault || o.Mode == ModeSpecialty || o.Mode == ModeNo || o.Included {
+			continue
+		}
+		if i < len(p.optIDs) && e.ctx.Options[p.optIDs[i]].NeverIncluded {
+			continue
+		}
+		cand = append(cand, i)
+	}
+	sort.SliceStable(cand, func(a, b int) bool { return p.opts[cand[a]].PriceCents < p.opts[cand[b]].PriceCents })
+	halves := e.ctx.Settings.HalfToppingPrice == HalfHalf
+	places := 2 * n // in half places
+	for _, i := range cand {
+		need := 2
+		if halves && p.opts[i].Portion != PortionWhole {
+			need = 1
+		}
+		if need > places {
+			continue
+		}
+		places -= need
+		p.opts[i].Included = true
+		if places == 0 {
+			break
+		}
+	}
 }
 
 func containsGroup(ids []uuid.UUID, id string) bool {
