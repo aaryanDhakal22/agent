@@ -169,7 +169,8 @@
     {"id": "V07", "note": "a manager takes a sent line off", "by": "max", "what": "line", "cents": 269, "pi": "allow", "main": null},
     {"id": "V08", "note": "the call center cancels its own unpaid order with a picked reason: it has no manager (callcenter K16 says which orders)", "by": "cece", "what": "order", "cents": 2357, "pi": "allow", "main": []},
     {"id": "V09", "note": "the call center takes a line off an unpaid order, an online one too (K19): no manager; the same removal by a store cashier is V06", "by": "cece", "what": "line", "cents": 269, "pi": "allow", "main": null},
-    {"id": "V10", "note": "a store driver takes a sent line off: a manager", "by": "dev", "what": "line", "cents": 500, "pi": {"manager": "void", "limit": 0, "requested": 500}, "main": null}
+    {"id": "V10", "note": "a store driver takes a sent line off: a manager", "by": "dev", "what": "line", "cents": 500, "pi": {"manager": "void", "limit": 0, "requested": 500}, "main": null},
+    {"id": "V11", "note": "an online vendor order that is CASH (nothing paid online) voided or wasted at a terminal (agent 2.5.3): the same manager rule as a counter order; one paid online, all or part, is refused 409 paid_online (the online ordering company refunds it)", "by": "cara", "what": "order", "cents": 1500, "pi": {"manager": "void", "limit": 0, "requested": 1500}, "main": ["void_needs_manager"]}
   ],
   "tips": [
     {"id": "T01", "note": "a cash payment with a tip: refused (tips are card only)", "by": "cara", "payment": {"tender": "cash", "cents": 1500, "tip": 300}, "pi": {"refused": "tip_card_only"}, "main": ["cash_tip"], "main_if_approved": ["cash_tip"]},

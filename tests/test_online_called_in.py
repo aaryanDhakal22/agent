@@ -69,3 +69,48 @@ def test_online_delivery_placed_printed_and_edited(placed):
     r = term.post(f"{base}/api/terminal/orders/{oid}/payments", json={"tender": "cash", "amount_cents": 100, "tip_cents": 50,
                                                                    "client_key": f"k-{uuid.uuid4()}"}, timeout=10)
     assert r.status_code == 400 and r.json()["code"] == "tip_card_only", r.text
+
+
+def test_online_cash_order_void_and_paid_online_refused(placed):
+    """Agent 2.5.3 (the owner): an online vendor order that is CASH (nothing paid online) is voided at a terminal
+    like a counter order (a manager for a sent order, the VOID slip on its stations, off the driver's run and
+    report, main gets order.void); one paid online answers 409 paid_online (the online company refunds it)."""
+    rig = placed
+    agent, term, fm, fakes = rig["agent"], rig["term"], rig["fm"], rig["fakes"]
+    base = agent.base
+    fm.accept = {"order.payment", "order.changed", "order.void"}  # main never saw these orders (resent here)
+
+    def placed_order(card: bool) -> str:
+        oid = resend(rig, delivery=True, card=card)
+        wait_until(lambda: agent.http.get(f"{base}/api/orders/{oid}", timeout=5).json()["status"]["state"] == "accepted",
+                   what="placed on arrival")
+        return oid
+
+    # Paid online: refused with its own code, untouched.
+    paid = placed_order(card=True)
+    r = term.post(f"{base}/api/terminal/orders/{paid}/void", json={"reason": "test", "manager_pin": "9876"}, timeout=5)
+    assert r.status_code == 409 and r.json()["code"] == "paid_online", r.text
+    assert agent.http.get(f"{base}/api/orders/{paid}", timeout=5).json()["status"]["state"] == "accepted"
+
+    # Cash, before send-out: a manager's (a sent order), then voided with the VOID ticket on its station.
+    cash = placed_order(card=False)
+    wait_until(lambda: fakes["Pizza"].jobs, what="the station ticket")
+    r = term.post(f"{base}/api/terminal/orders/{cash}/void", json={"reason": "customer cancelled"}, timeout=5)
+    assert r.status_code == 403 and r.json()["code"] == "manager_required", r.text
+    r = term.post(f"{base}/api/terminal/orders/{cash}/void", json={"reason": "customer cancelled", "manager_pin": "9876"}, timeout=5)
+    assert r.status_code == 200 and r.json()["order"]["status"]["state"] == "cancelled", r.text
+    wait_until(lambda: any(b"REMOVE / QUITAR" in j for j in fakes["Pizza"].jobs), what="the VOID ticket")
+    wait_until(lambda: any(e["order_id"] == cash for e in fm.of_type("order.void")), what="order.void to main")
+
+    # Cash, after send-out: off the driver's run and his report.
+    out = placed_order(card=False)
+    d = agent.http.post(f"{base}/api/drivers", json={"name": "Omar"}, timeout=5).json()
+    assert agent.http.post(f"{base}/api/drivers/{d['id']}/clock-in", timeout=5).status_code == 200
+    assert agent.http.post(f"{base}/api/orders/{out}/ready", timeout=5).status_code == 200
+    r = agent.http.post(f"{base}/api/deliveries/assign", json={"driver_id": d["id"], "order_ids": [out]}, timeout=5)
+    assert r.status_code == 200, r.text
+    r = term.post(f"{base}/api/terminal/orders/{out}/void", json={"reason": "never answered", "manager_pin": "9876"}, timeout=5)
+    assert r.status_code == 200 and r.json()["order"]["status"]["state"] == "cancelled", r.text
+    reps = agent.http.get(f"{base}/api/batches/current/driver-reports", timeout=5).json()
+    omar = next(x for x in reps if x["driver_name"] == "Omar")
+    assert omar["deliveries"] == 0 and omar["cash_cents"] == 0 and omar["owed_cents"] == 0, omar
