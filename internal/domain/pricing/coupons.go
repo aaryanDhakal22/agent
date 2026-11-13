@@ -16,7 +16,10 @@ import (
 // free, every other mod is charged. A part's UpchargeOver families are its
 // base: a unit of another of its families also pays its own price over the
 // cheapest base item at its size (an 8" specialty sub in an 8" Sub Combo).
-// Each cart line unit is in at most one coupon.
+// Each cart line unit is in at most one coupon. The coupon price applies even
+// when it is more than the units' own prices (the owner, 2026-11-13, like
+// SoftTouch: "12\" Pizza + 8 Party Wings" at $19.99 on a plain 12" + 8 wings
+// that come to $19.98): such a coupon is offered and applied like any other.
 //
 // A coupon is not a discount (the owner, 2026-11-12): it re-prices its
 // units, so each line's total_cents is the line as sold (its coupon units at
@@ -154,8 +157,8 @@ func (e *engine) fitsPart(c cline, pt Part) bool {
 }
 
 // couponFit is a coupon matched to units and priced (saved: how much lower
-// than the units' own prices; never shown, it only orders the offers and
-// refuses a coupon that would cost more).
+// than the units' own prices, negative when the coupon costs more; never
+// shown, it only orders the offers).
 type couponFit struct {
 	units                 []CouponUnit
 	lines                 []int
@@ -307,10 +310,6 @@ func (e *engine) coupons(q *Quote, cart Cart, clines []cline, at time.Time, issu
 			problem(IssueCouponFit, d.Name+" doesn't fit the order.")
 			continue
 		}
-		if f.saved <= 0 {
-			problem(IssueCouponFit, d.Name+" costs more than its items on this order.")
-			continue
-		}
 		for _, u := range f.units {
 			c := &clines[u.Line]
 			c.used++
@@ -342,7 +341,7 @@ func (e *engine) coupons(q *Quote, cart Cart, clines []cline, at time.Time, issu
 			continue
 		}
 		f, ok := e.fit(d, free, clines)
-		if !ok || f.saved <= 0 {
+		if !ok {
 			continue
 		}
 		q.CouponOffers = append(q.CouponOffers, CouponOffer{ID: d.ID, Name: d.Name, Card: cardOf(d), PriceCents: d.PriceCents, Lines: f.lines,
