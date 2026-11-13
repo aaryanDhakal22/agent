@@ -1,7 +1,9 @@
 package order
 
 import (
+	"context"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -12,23 +14,26 @@ import (
 
 // UnsettledCheck is one line of the Unsettled Check List.
 type UnsettledCheck struct {
-	OrderID     string              `json:"order_id"`
-	Number      int64               `json:"number"`
-	Type        string              `json:"type"` // counter | pickup | delivery
-	Source      string              `json:"source"`
-	State       State               `json:"state"`
-	PlacedAt    time.Time           `json:"placed_at"`
-	BatchID     int64               `json:"batch_id"`
-	Carried     bool                `json:"carried"`
-	Customer    UnsettledCustomer   `json:"customer"`
-	StaffID     string              `json:"staff_id"`
-	StaffName   string              `json:"staff_name"`
-	TotalCents  int64               `json:"total_cents"`
-	PaidCents   int64               `json:"paid_cents"`
-	DueCents    int64               `json:"due_cents"`
-	PickedUp    bool                `json:"picked_up"`
-	BlocksClose bool                `json:"blocks_close"`
-	Items       []UnsettledLineItem `json:"items"`
+	OrderID     string            `json:"order_id"`
+	Number      int64             `json:"number"`
+	Type        string            `json:"type"` // counter | pickup | delivery
+	Source      string            `json:"source"`
+	State       State             `json:"state"`
+	PlacedAt    time.Time         `json:"placed_at"`
+	BatchID     int64             `json:"batch_id"`
+	Carried     bool              `json:"carried"`
+	Customer    UnsettledCustomer `json:"customer"`
+	StaffID     string            `json:"staff_id"`
+	StaffName   string            `json:"staff_name"`
+	TotalCents  int64             `json:"total_cents"`
+	PaidCents   int64             `json:"paid_cents"`
+	DueCents    int64             `json:"due_cents"`
+	PickedUp    bool              `json:"picked_up"`
+	BlocksClose bool              `json:"blocks_close"`
+	// OnForce (a blocking check in a 409 unsettled_checks): what a forced
+	// close does with it, waste | carry (ForceOutcome).
+	OnForce string              `json:"on_force,omitempty"`
+	Items   []UnsettledLineItem `json:"items"`
 }
 
 // UnsettledCustomer is the check's customer (empty strings when none).
@@ -47,20 +52,158 @@ type UnsettledLineItem struct {
 
 // UnsettledList is GET /api/terminal/unsettled and a close's `unsettled`.
 type UnsettledList struct {
-	BatchID     int64            `json:"batch_id"`
-	GeneratedAt time.Time        `json:"generated_at"`
-	Count       int              `json:"count"`
-	DueCents    int64            `json:"due_cents"`
-	Blocking    int              `json:"blocking"`
+	BatchID     int64     `json:"batch_id"`
+	GeneratedAt time.Time `json:"generated_at"`
+	Count       int       `json:"count"`
+	DueCents    int64     `json:"due_cents"`
+	Blocking    int       `json:"blocking"`
+	// ForceAction / Force (GET /api/terminal/unsettled while a check
+	// blocks): what a forced close would do (the store's setting).
+	ForceAction string           `json:"force_action,omitempty"`
+	Force       *ForcePreview    `json:"force,omitempty"`
 	Checks      []UnsettledCheck `json:"checks"`
 }
 
-// UnsettledError: a manual close refused while an unpaid counter check is
-// open (409 unsettled_checks {checks}).
-type UnsettledError struct{ Checks []UnsettledCheck }
+// UnsettledError: a manual close without force refused while an unpaid
+// counter check is open (409 unsettled_checks {checks, force_action,
+// force}): the answer says what force will do with each check.
+type UnsettledError struct {
+	Checks []UnsettledCheck
+	// ForceAction is the store's setting (waste | carry); Force sums what a
+	// forced close would do (a partly paid check is always carried).
+	ForceAction string
+	Force       ForcePreview
+}
+
+// ForcePreview: what a forced close does with the blocking checks.
+type ForcePreview struct {
+	WasteCount    int   `json:"waste_count"`
+	WasteCents    int64 `json:"waste_cents"`
+	CarryCount    int   `json:"carry_count"`
+	CarryDueCents int64 `json:"carry_due_cents"`
+}
 
 func (e *UnsettledError) Error() string {
-	return fmt.Sprintf("%d unpaid counter check(s) are open: take the payment or void them, then close", len(e.Checks))
+	n := len(e.Checks)
+	switch {
+	case e.Force.WasteCount > 0 && e.Force.CarryCount > 0:
+		return fmt.Sprintf("%d unpaid counter check(s) are open: force close writes off %d as waste (%s) and carries %d over",
+			n, e.Force.WasteCount, centsText(e.Force.WasteCents), e.Force.CarryCount)
+	case e.Force.WasteCount > 0:
+		return fmt.Sprintf("%d unpaid counter check(s) are open: force close writes them off as waste (%s)", n, centsText(e.Force.WasteCents))
+	case e.Force.CarryCount > 0:
+		return fmt.Sprintf("%d unpaid counter check(s) are open: force close carries them over (still payable)", n)
+	}
+	return fmt.Sprintf("%d unpaid counter check(s) are open: take the payment or void them, then close", n)
+}
+
+func centsText(c int64) string { return fmt.Sprintf("$%d.%02d", c/100, c%100) }
+
+// What a forced close (and the auto-close) does with an unpaid counter
+// check (the owner, 2026-11-13; main's terminal setting
+// close_unpaid_counter_action, default waste): write it off as Void waste
+// "Unpaid at close" (nothing prints in the kitchen; the Z / till Waste
+// section; order.void kind waste to main) or carry it like a pickup.
+const (
+	UnpaidWaste = "waste"
+	UnpaidCarry = "carry"
+	// UnpaidAtCloseReason is the waste reason of a check written off at a
+	// close (not one of the store's waste_reasons: the Pi's own).
+	UnpaidAtCloseReason = "Unpaid at close"
+)
+
+// UnpaidActionOf reads the setting: "carry", else waste (missing = waste).
+func UnpaidActionOf(v string) string {
+	if strings.EqualFold(strings.TrimSpace(v), UnpaidCarry) {
+		return UnpaidCarry
+	}
+	return UnpaidWaste
+}
+
+// ForceOutcome is what a forced close does with one blocking check: waste
+// only when the setting says so and the check has no payment row at all (a
+// partial payment, a comp, a tip, even a payment given back = carried: a
+// write-off never moves or reverses money).
+func ForceOutcome(action string, paymentRows int) string {
+	if UnpaidActionOf(action) == UnpaidWaste && paymentRows == 0 {
+		return UnpaidWaste
+	}
+	return UnpaidCarry
+}
+
+type closeUnpaidKey struct{}
+
+// WithCloseUnpaid gives CloseBatch the store's setting (waste | carry).
+func WithCloseUnpaid(ctx context.Context, action string) context.Context {
+	return context.WithValue(ctx, closeUnpaidKey{}, UnpaidActionOf(action))
+}
+
+// CloseUnpaidOf is the setting on ctx (waste when none).
+func CloseUnpaidOf(ctx context.Context) string {
+	if v, ok := ctx.Value(closeUnpaidKey{}).(string); ok {
+		return UnpaidActionOf(v)
+	}
+	return UnpaidWaste
+}
+
+// CloseActor is who closed (the journal and order.void of a write-off).
+type CloseActor struct {
+	StaffID    string `json:"staff_id,omitempty"`
+	StaffName  string `json:"staff_name,omitempty"`
+	DeviceID   string `json:"device_id,omitempty"`
+	DeviceName string `json:"device_name,omitempty"`
+	ApprovedBy string `json:"approved_by,omitempty"`
+	Trigger    string `json:"trigger"` // terminal | tablet | web | auto
+	// PrintsHere: the caller prints the Unpaid at close list itself (a
+	// terminal that says so); else the Pi prints it.
+	PrintsHere bool `json:"-"`
+}
+
+type forceUnpaidKey struct{}
+
+// WithForceUnpaid: the caller passes only the unpaid counter checks (body
+// force_unpaid: the setting applies to them), not the leftovers (force).
+func WithForceUnpaid(ctx context.Context, on bool) context.Context {
+	return context.WithValue(ctx, forceUnpaidKey{}, on)
+}
+
+// ForceUnpaidOf is WithForceUnpaid's flag (false when none).
+func ForceUnpaidOf(ctx context.Context) bool {
+	v, _ := ctx.Value(forceUnpaidKey{}).(bool)
+	return v
+}
+
+type closeActorKey struct{}
+
+// WithCloseActor tells CloseBatch who closed.
+func WithCloseActor(ctx context.Context, a CloseActor) context.Context {
+	return context.WithValue(ctx, closeActorKey{}, a)
+}
+
+// CloseActorOf is who closed (the trigger filled in; device "pi" when none).
+func CloseActorOf(ctx context.Context) CloseActor {
+	a, _ := ctx.Value(closeActorKey{}).(CloseActor)
+	if a.Trigger == "" {
+		a.Trigger = CloseTriggerOf(ctx)
+	}
+	if a.DeviceID == "" {
+		a.DeviceID = "pi"
+	}
+	return a
+}
+
+// UnpaidAtClose is the "Unpaid at close" report: the unpaid counter checks
+// a close wrote off as waste (a close's `unpaid_at_close`; printed).
+type UnpaidAtClose struct {
+	BatchID    int64            `json:"batch_id"`
+	Reason     string           `json:"reason"`
+	At         time.Time        `json:"at"`
+	Auto       bool             `json:"auto"`
+	ClosedBy   CloseActor       `json:"closed_by"`
+	Count      int              `json:"count"`
+	TotalCents int64            `json:"total_cents"`
+	PrintedBy  string           `json:"printed_by"` // pi | terminal
+	Checks     []UnsettledCheck `json:"checks"`
 }
 
 // TerminalType is a terminal order's type (counter | pickup | delivery); an

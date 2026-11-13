@@ -83,15 +83,16 @@ func TestCounterSequenceAndIdempotency(t *testing.T) {
 		t.Fatalf("order.status events: %v", st)
 	}
 
-	// A manual close is refused over the unpaid counter check (contract
-	// 2.10s §4), even forced; it lists the check.
+	// A manual close without force is refused over the unpaid counter check
+	// (contract 2.10s §4); it lists the check (force follows the store's
+	// setting: unpaid_at_close_test.go).
 	var un *order.UnsettledError
-	if _, _, err := r.CloseBatch(ctx, true); !errors.As(err, &un) || len(un.Checks) != 1 || un.Checks[0].OrderID != a.Order.ID ||
-		un.Checks[0].DueCents != 1299 || !un.Checks[0].BlocksClose || un.Checks[0].Type != "counter" {
+	if _, _, err := r.CloseBatch(ctx, false); !errors.As(err, &un) || len(un.Checks) != 1 || un.Checks[0].OrderID != a.Order.ID ||
+		un.Checks[0].DueCents != 1299 || !un.Checks[0].BlocksClose || un.Checks[0].Type != "counter" || un.Checks[0].OnForce != order.UnpaidWaste {
 		t.Fatalf("manual close over an unpaid counter check: %v", err)
 	}
-	// The auto-close carries it: still open, still on the list, payable.
-	closed, _, err := r.CloseBatch(order.WithCloseKind(ctx, order.CloseAuto), true)
+	// The auto-close with the carry setting carries it: still open, still on the list, payable.
+	closed, _, err := r.CloseBatch(order.WithCloseUnpaid(order.WithCloseKind(ctx, order.CloseAuto), order.UnpaidCarry), true)
 	if err != nil || closed.Unsettled == nil || closed.Unsettled.Count != 1 || closed.Unsettled.DueCents != 1299 {
 		t.Fatalf("auto close: %+v %v", closed, err)
 	}

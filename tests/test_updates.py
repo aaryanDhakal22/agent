@@ -91,6 +91,9 @@ def test_update_request_and_status_files(main_store, spawn_agent, tmp_path, util
     upd.mkdir()
     agent = spawn_agent(AGENT_UPDATE_ENABLED="1", AGENT_UPDATE_DIR=str(upd), UTILITY_URL=utility)
     provision(agent, main_store)
+    # This test plays the Pi page's own Update button: keep the store round (2.10ad, auto_update)
+    # from asking for the newer manifest by itself meanwhile.
+    assert agent.http.put(f"{agent.base}/api/settings/auto-update", json={"auto_update": False}, timeout=5).status_code == 200
 
     # Latest version from the (fake) manifest; the open batch is empty → allowed.
     def status():

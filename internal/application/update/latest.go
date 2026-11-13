@@ -128,6 +128,7 @@ type Latest struct {
 	ttl        time.Duration
 	version    string
 	sha        string
+	manifest   Manifest // the whole last good manifest (store rounds read its headers)
 	err        error
 	refreshing bool
 }
@@ -209,7 +210,20 @@ func (l *Latest) refresh(ctx context.Context) error {
 	}
 	l.ttl = latestTTL
 	l.version, l.sha = m.AgentVersion(), m.AgentSHA()
+	l.manifest = m
 	return nil
+}
+
+// Manifest is the last good manifest (false before one was read). Like the
+// version, it is display / planning only: the root updater checks the
+// signature before it installs anything.
+func (l *Latest) Manifest() (Manifest, bool) {
+	if l == nil {
+		return Manifest{}, false
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.manifest, l.manifest.AgentVersion() != ""
 }
 
 func (l *Latest) fetch(ctx context.Context) (Manifest, error) {

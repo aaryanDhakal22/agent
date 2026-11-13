@@ -183,7 +183,9 @@ def test_claim_mine_tip_close_report(drig):
     wait_until(lambda: len(fakes["Front"].jobs) > before, what="driver report on Front")
 
     # Journaled, and the journal reaches main.
-    actions = [e["action"] for e in ali.get(f"{base}/api/terminal/journal", timeout=5).json()]
+    # (read on the cashier's terminal: a driver's login reads nothing of the store's, 403 driver_not_allowed)
+    assert ali.get(f"{base}/api/terminal/journal", timeout=5).json()["code"] == "driver_not_allowed"
+    actions = [e["action"] for e in drig["till"].get(f"{base}/api/terminal/journal", timeout=5).json()]
     for a in ("driver.linked", "driver.claim", "driver.report"):
         assert a in actions, a
     assert "driver.tip" not in actions  # the refused cash tip journals nothing

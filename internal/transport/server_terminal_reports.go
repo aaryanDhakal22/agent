@@ -149,11 +149,17 @@ func (s *Server) handleTerminalClose(w http.ResponseWriter, r *http.Request) {
 		Force      bool     `json:"force"`
 		ManagerPIN string   `json:"manager_pin"`
 		Approvals  []string `json:"approvals"`
+		// PrintUnpaidHere: this terminal prints the Unpaid at close list
+		// itself (terminal 1.0.5); else the Pi prints it.
+		PrintUnpaidHere bool `json:"print_unpaid_here"`
+		// ForceUnpaid passes the unpaid counter checks only (not the
+		// leftovers, which force passes).
+		ForceUnpaid bool `json:"force_unpaid"`
 	}
 	if r.ContentLength != 0 && !s.decodeTerminal(w, r, &body) {
 		return
 	}
-	res, err := s.terminalSvc.CloseBatch(terminalApp.WithApprovals(r.Context(), body.Approvals), actor(r), body.Force, strings.TrimSpace(body.ManagerPIN))
+	res, err := s.terminalSvc.CloseBatch(order.WithForceUnpaid(terminalApp.WithApprovals(r.Context(), body.Approvals), body.ForceUnpaid), actor(r), body.Force, strings.TrimSpace(body.ManagerPIN), body.PrintUnpaidHere)
 	if err != nil {
 		var mgr *terminal.ManagerRequired
 		switch {
@@ -171,11 +177,12 @@ func (s *Server) handleTerminalClose(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var unsettled *order.UnsettledList
+	var unpaid *order.UnpaidAtClose
 	if res.Closed != nil {
-		unsettled = res.Closed.Unsettled
+		unsettled, unpaid = res.Closed.Unsettled, res.Closed.UnpaidAtClose
 	}
 	s.writeJSON(w, http.StatusOK, map[string]any{"closed": res.Closed, "opened": opened.Batch, "auto_finished": res.AutoFinished,
-		"unsettled": unsettled})
+		"unsettled": unsettled, "unpaid_at_close": unpaid})
 }
 
 // GET /api/terminal/checks — the All Checks Overview (contract §2.10o).

@@ -102,7 +102,7 @@ func TestDriverTicket_CounterStamps(t *testing.T) {
 	want(t, stampOf(t, combo, "Can Pepsi"), bp(true), "drink")
 	want(t, stampOf(t, combo, "Well Done"), bp(false), "note")
 	want(t, stampOf(t, combo, "NO Lettuce"), bp(false), "NO")
-	want(t, stampOf(t, pizza, "Pepperoni (1st half)"), bp(false), "topping on a half (option name, not the label)")
+	want(t, stampOf(t, pizza, "Pepperoni (1st half)"), bp(true), "a priced topping on a half (option name, not the label)")
 	for _, c := range pizza.Children {
 		if c.Mode == order.ModeSpecialty {
 			want(t, c.ShowOnDriverTicket, nil, "half specialty (no such option)")
@@ -148,8 +148,8 @@ func TestDriverTicket_ChannelOrderStamps(t *testing.T) {
 	want(t, c.Children[2].ShowOnDriverTicket, bp(false), "NO")
 	want(t, c.Children[3].ShowOnDriverTicket, nil, "not on the menu")
 	want(t, c.Children[4].ShowOnDriverTicket, bp(false), "already stamped keeps its stamp")
-	want(t, web.Items[1].Children[0].ShowOnDriverTicket, bp(false), "half suffix stripped")
-	want(t, web.Items[1].Children[1].ShowOnDriverTicket, bp(false), "repeat prefix stripped")
+	want(t, web.Items[1].Children[0].ShowOnDriverTicket, bp(true), "half suffix stripped (a priced topping)")
+	want(t, web.Items[1].Children[1].ShowOnDriverTicket, bp(true), "repeat prefix stripped (a priced topping)")
 
 	// No bank item on the line, a vendor order, a POS order: left as they are.
 	noID := order.Snapshot{Source: "web", Items: []order.LineItem{line()}}
@@ -166,6 +166,38 @@ func TestDriverTicket_ChannelOrderStamps(t *testing.T) {
 	w2 := order.Snapshot{Source: "web", Items: []order.LineItem{line()}}
 	empty.StampDriverTicket(&w2)
 	want(t, w2.Items[0].Children[0].ShowOnDriverTicket, nil, "no counter menu")
+}
+
+// An included topping (main's "Included toppings", 2026-11-13) is a $0.00
+// child stamped true: the customer slips print it (at no price) like the
+// priced topping it is; a $0 note stays hidden.
+func TestDriverTicket_IncludedToppingPrints(t *testing.T) {
+	menu := driverMenu(t, true)
+	f := menu.Pricing.Items[cheese]
+	f.IncludedToppings = 1
+	menu.Pricing.Items[cheese] = f
+	cart := Cart{Cart: pricing.Cart{Lines: []pricing.Line{pizzaLine()}}}
+	p, err := priceCart(menu, time.UTC, terminal.TypeDelivery, cart, time.Now(), 3)
+	if err != nil || len(p.quote.Errors) > 0 {
+		t.Fatalf("price: %v %+v", err, p.quote.Errors)
+	}
+	items, _, _, err := buildItems(menu, p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	free := 0
+	for _, c := range items[0].Children {
+		if c.Mode == order.ModeSpecialty {
+			continue
+		}
+		if c.UnitPrice == 0 {
+			free++
+		}
+		want(t, c.ShowOnDriverTicket, bp(true), "topping "+c.Name)
+	}
+	if free != 1 {
+		t.Fatalf("one topping included at $0.00, got %d: %+v", free, items[0].Children)
+	}
 }
 
 func TestDriverTicket_JSON(t *testing.T) {

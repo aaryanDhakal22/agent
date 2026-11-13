@@ -114,8 +114,14 @@ func (s *Service) AutoCloseDue(ctx context.Context, now time.Time, loc *time.Loc
 		s.logger.Warn().Ctx(ctx).Err(err).Msg("auto-close: saving the slot failed (the 1 h rule still stops a second close)")
 	}
 	msg := fmt.Sprintf("Batch auto-closed at %s: %d orders", at, total)
-	// contract 2.10s §4: never blocked; the Unsettled Check List prints on
-	// the driver reports' printer and rides on the owner's page.
+	// contract 2.10s §4: never blocked. Unpaid counter checks follow the
+	// store's close_unpaid_counter_action (the owner, 2026-11-13; before,
+	// the auto-close always carried them): waste = written off, the Unpaid
+	// at close list prints; the Unsettled Check List (what was carried)
+	// prints too. Both on the driver reports' printer and the owner's page.
+	if line := s.printUnpaid(ctx, closed.UnpaidAtClose); line != "" {
+		msg += ". " + line
+	}
 	if line := s.printUnsettled(ctx, closed.Unsettled); line != "" {
 		msg += ". " + line
 	}

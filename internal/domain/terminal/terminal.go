@@ -124,6 +124,36 @@ type Settings struct {
 	// WasteReasons: the store's Void waste reasons (contract 2.10s §5;
 	// missing / empty = DefaultWasteReasons).
 	WasteReasons []string `json:"waste_reasons"`
+	// QuibaseCounterMinCents (2.5.4, the owner's X): a terminal order shows
+	// on Quibase only over this total with a kitchen line (missing =
+	// DefaultQuibaseCounterMinCents; order.StoredOrder.ShownOnTablet).
+	QuibaseCounterMinCents *int64 `json:"quibase_counter_min_cents"`
+	// CloseUnpaidCounterAction (the owner's X, 2026-11-13): what a forced
+	// close and the auto-close do with an unpaid counter check: "waste"
+	// (written off as Void waste "Unpaid at close") or "carry" (kept open
+	// like a pickup). Missing / anything else = waste.
+	CloseUnpaidCounterAction string `json:"close_unpaid_counter_action"`
+}
+
+// CloseUnpaidCounterAction is the store's setting: waste (default) | carry.
+func (c *Config) CloseUnpaidCounterAction() string {
+	if c != nil && strings.EqualFold(strings.TrimSpace(c.parsed.CloseUnpaidCounterAction), "carry") {
+		return "carry"
+	}
+	return "waste"
+}
+
+// DefaultQuibaseCounterMinCents is main's own default for
+// quibase_counter_min_cents (the owner, 2026-11-13: over $5).
+const DefaultQuibaseCounterMinCents = 500
+
+// QuibaseCounterMinCents is the total a terminal order must be over to show
+// on Quibase (bounded 0-100,000 cents; no config yet = the default).
+func (c *Config) QuibaseCounterMinCents() int64 {
+	if c == nil || c.parsed.QuibaseCounterMinCents == nil {
+		return DefaultQuibaseCounterMinCents
+	}
+	return min(max(*c.parsed.QuibaseCounterMinCents, 0), 100_000)
 }
 
 // DefaultDrawerStartCents is the starting cash in each drawer when main's
@@ -405,6 +435,11 @@ type CounterMenu struct {
 	// its category's default; absent = no printer: the line prints on every
 	// station).
 	Routes map[string]Route `json:"routes"`
+	// QuickAddItemID: the store's "Quick add" bank item (main 4.0.5): a
+	// custom line (Quicc Add) is routed by it like any item (its printer,
+	// its category's, "no kitchen ticket" = receipt only). "" (an older
+	// main) = no route: such a line prints on every station.
+	QuickAddItemID string `json:"quick_add_item_id,omitempty"`
 }
 
 // Route is one bank item's kitchen routing. Name is the printer's name
@@ -803,7 +838,7 @@ var (
 	// online (all or part) isn't voided at a terminal: the online ordering
 	// company refunds it (409 paid_online).
 	ErrPaidOnline = errors.New("paid online: the online ordering company refunds it")
-	ErrNotPayable      = errors.New("this order can't take a payment")
+	ErrNotPayable = errors.New("this order can't take a payment")
 	// ErrTipCardOnly (the owner, 2026-11-12): a tip goes on a card payment
 	// only - a cash or comp payment with a tip is 400 tip_card_only.
 	ErrTipCardOnly = errors.New("a tip goes on a card payment only")

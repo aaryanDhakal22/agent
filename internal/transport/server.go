@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"quiccpos/agent/internal/application/appupdate"
@@ -22,6 +23,7 @@ import (
 	"quiccpos/agent/internal/application/printernet"
 	"quiccpos/agent/internal/application/recovery"
 	"quiccpos/agent/internal/application/sseclient"
+	"quiccpos/agent/internal/application/storeupdate"
 	terminalApp "quiccpos/agent/internal/application/terminal"
 	"quiccpos/agent/internal/application/update"
 	"quiccpos/agent/internal/domain/device"
@@ -50,6 +52,10 @@ const (
 var eventsWriteTimeout = 10 * time.Second
 
 type Server struct {
+	// storeUpdate runs the store update round (contract §2.10ad; nil = none);
+	// writesInFlight counts write requests for its quiet check.
+	storeUpdate    *storeupdate.Coordinator
+	writesInFlight atomic.Int64
 	// problemHooks add GET /api/diag problem codes (AddProblems).
 	problemHooks  []func(ctx context.Context) []string
 	service       *orderApp.Service
@@ -257,7 +263,7 @@ func (s *Server) Stopped() <-chan struct{} { return s.stopped }
 // the mux's route, CM-1), panic recovery (F-1), the body cap and the
 // X-Trace-Id echo. Exposed for tests.
 func (s *Server) Handler(mux http.Handler, opts ...otelhttp.Option) http.Handler {
-	return otelhttp.NewHandler(recoverPanics(s.logger, capBodies(traceIDHeader(mux))), "agent-http",
+	return otelhttp.NewHandler(recoverPanics(s.logger, capBodies(traceIDHeader(s.countWrites(mux)))), "agent-http",
 		append([]otelhttp.Option{otelhttp.WithServerName("quicc-agent")}, opts...)...,
 	)
 }
@@ -307,10 +313,16 @@ func (s *Server) handleListOrders(w http.ResponseWriter, r *http.Request) {
 	}
 	var orders []order.StoredOrder
 	var err error
-	if all {
-		orders, err = s.service.ListPage(r.Context(), offset, limit)
+	page := func(off, lim int) ([]order.StoredOrder, error) {
+		if all {
+			return s.service.ListPage(r.Context(), off, lim)
+		}
+		return s.service.ListByBatch(r.Context(), batch, off, lim)
+	}
+	if isTablet(r) && s.broker != nil {
+		orders, err = s.tabletPage(page, offset, limit)
 	} else {
-		orders, err = s.service.ListByBatch(r.Context(), batch, offset, limit)
+		orders, err = page(offset, limit)
 	}
 	if orders == nil {
 		orders = []order.StoredOrder{}
@@ -322,6 +334,60 @@ func (s *Server) handleListOrders(w http.ResponseWriter, r *http.Request) {
 	s.writeJSON(w, http.StatusOK, orders)
 }
 
+// isTablet: the request comes from a paired Quibase tablet (its device key).
+func isTablet(r *http.Request) bool {
+	d, ok := r.Context().Value(deviceCtxKey{}).(*device.Device)
+	return ok && d.Kind == device.KindTablet
+}
+
+// forTablet leaves out, for a paired Quibase tablet, the orders it doesn't
+// show (2.5.4: a counter terminal's order at or under the store's X or with
+// no kitchen line). The terminals and the Pi page get every order. A page
+// may come back shorter than the limit: Quibase pages until an empty one.
+func (s *Server) forTablet(r *http.Request, orders []order.StoredOrder) []order.StoredOrder {
+	if !isTablet(r) || s.broker == nil {
+		return orders
+	}
+	out := orders[:0:0]
+	for _, so := range orders {
+		if s.broker.TabletShows(so) {
+			out = append(out, so)
+		}
+	}
+	return out
+}
+
+// tabletPage is one page of the orders a tablet shows: offset and limit
+// count shown orders (Quibase pages by offset until a short page), read from
+// the full list in chunks.
+func (s *Server) tabletPage(page func(off, lim int) ([]order.StoredOrder, error), offset, limit int) ([]order.StoredOrder, error) {
+	const chunk = 500
+	out := []order.StoredOrder{}
+	skip := offset
+	for from := 0; len(out) < limit; from += chunk {
+		rows, err := page(from, chunk)
+		if err != nil {
+			return nil, err
+		}
+		for _, so := range rows {
+			if !s.broker.TabletShows(so) {
+				continue
+			}
+			if skip > 0 {
+				skip--
+				continue
+			}
+			if len(out) < limit {
+				out = append(out, so)
+			}
+		}
+		if len(rows) < chunk {
+			break
+		}
+	}
+	return out, nil
+}
+
 // GET /api/orders/arrived — orders awaiting acceptance, oldest-first.
 func (s *Server) handleListArrived(w http.ResponseWriter, r *http.Request) {
 	orders, err := s.service.ListArrived(r.Context())
@@ -329,6 +395,7 @@ func (s *Server) handleListArrived(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, r, http.StatusInternalServerError, err)
 		return
 	}
+	orders = s.forTablet(r, orders)
 	if orders == nil {
 		orders = []order.StoredOrder{}
 	}
@@ -522,7 +589,13 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	// published between its refetch and a later Subscribe would be lost to it
 	// (§2.10aa: a placed online order reaches Quibase only as order.updated,
 	// no ring and no re-announce). Subscribed first, it waits in the channel.
-	ch, unsubscribe := s.broker.Subscribe()
+	// A paired Quibase tablet gets only the orders it shows (2.5.4,
+	// order.StoredOrder.ShownOnTablet); everyone else gets every order.
+	subscribe := s.broker.Subscribe
+	if isTablet(r) {
+		subscribe = s.broker.SubscribeTablet
+	}
+	ch, unsubscribe := subscribe()
 	defer unsubscribe()
 
 	// Write the SSE headers immediately — some clients wait for them before

@@ -17,7 +17,9 @@ import (
 // modifier_groups[].options[].show_on_driver_ticket, omitted when false).
 // When the Pi stores an order it stamps each modifier child of a line whose
 // bank item it knows with the flag (order.LineItem.ShowOnDriverTicket); the
-// delivery receipt leaves a $0 child stamped false off (receipt package).
+// delivery receipt leaves a $0 child stamped false off (receipt package). An
+// option the menu prices (at any size) is stamped true too: a $0 child of it
+// is an included or coupon-free topping, which prints at no price.
 // The build is parsed here, never through the pricing engine copy.
 
 // driverIndex: bank item id (lower case) → option name key → the flag (true
@@ -41,8 +43,12 @@ type driverBuild struct {
 	ModifierGroups []struct {
 		ID      string `json:"id"`
 		Options []struct {
-			Name string `json:"name"`
-			Show bool   `json:"show_on_driver_ticket"`
+			Name       string `json:"name"`
+			Show       bool   `json:"show_on_driver_ticket"`
+			PriceCents int64  `json:"price_cents"`
+			Prices     []struct {
+				PriceCents int64 `json:"price_cents"`
+			} `json:"prices"`
 		} `json:"options"`
 	} `json:"modifier_groups"`
 }
@@ -68,7 +74,16 @@ func driverIndexOf(build json.RawMessage) driverIndex {
 			if k == "" {
 				continue
 			}
-			opts[k] = opts[k] || o.Show
+			// A choice the menu prices prints like one even when it came out
+			// $0 (an included topping, main's "Included toppings", or a
+			// coupon's free topping, 2026-11-13): the customer sees what is on
+			// the pizza, at no price. Only the flag decides whether main sends
+			// flags at all (anyOn).
+			priced := o.PriceCents > 0
+			for _, p := range o.Prices {
+				priced = priced || p.PriceCents > 0
+			}
+			opts[k] = opts[k] || o.Show || priced
 			anyOn = anyOn || o.Show
 		}
 		groups[strings.ToLower(g.ID)] = opts

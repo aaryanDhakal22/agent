@@ -103,7 +103,7 @@ func (e *engine) couponLine(p priced, qty int) cline {
 	c := cline{ok: true, qty: qty, unit: p.unit, base: p.base, halfUp: p.halfUp, item: p.bankItem, category: e.category(p.bankItem),
 		size: p.size, family: e.ctx.Items[p.bankItem].Family}
 	for k, o := range p.opts {
-		if o.PriceCents <= 0 || o.RemovedDefault || o.Mode == ModeSpecialty {
+		if o.PriceCents <= 0 || o.RemovedDefault || o.Mode == ModeSpecialty || o.Included { // an included topping isn't charged
 			continue
 		}
 		id := ""

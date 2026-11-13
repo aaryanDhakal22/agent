@@ -38,7 +38,7 @@ type secRigT struct {
 	termKey string
 }
 
-func secRig(t *testing.T) (r *secRigT, tabletKey string) {
+func secRig(t *testing.T, extra ...map[string]any) (r *secRigT, tabletKey string) {
 	t.Helper()
 	s, h, tabletKey, db := diagServerDB(t)
 	ctx := context.Background()
@@ -65,7 +65,7 @@ func secRig(t *testing.T) (r *secRigT, tabletKey string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	config := ccConfig(t, 2, map[string]any{"id": secManager, "first_name": "Khawar", "last_name": "Ali", "role": "manager", "pin_hash": string(pin)})
+	config := ccConfig(t, 2, append([]map[string]any{{"id": secManager, "first_name": "Khawar", "last_name": "Ali", "role": "manager", "pin_hash": string(pin)}}, extra...)...)
 	repo := repositories.NewOrderRepository(db, zerolog.Nop())
 	store := terminalApp.NewStore(repo, func(_ context.Context, path string) (int, []byte, error) {
 		if path == terminalApp.PathCounterMenu {
@@ -486,5 +486,78 @@ func TestLoginThrottleStoreWide(t *testing.T) {
 	}
 	if w := th.blockedFor("10.9.9.9", later.Add(loginStoreWindow+2*time.Hour)); w != 0 {
 		t.Fatalf("the count never ages out: %v", w)
+	}
+}
+
+// A driver's login (owner 2026-11-13, contract §2.10b "A driver's login"):
+// whatever app asks, the Pi answers him only his own routes and what keeps a
+// terminal running; every other terminal route is 403 driver_not_allowed. A
+// cashier after him on the same terminal is unchanged.
+func TestDriverLoginReachesOnlyHisRoutes(t *testing.T) {
+	pin, err := bcrypt.GenerateFromPassword([]byte("5511"), bcrypt.MinCost)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, _ := secRig(t, map[string]any{"id": "00000000-0000-0000-0000-00000000dd01", "first_name": "Ali", "last_name": "Khan", "role": "driver", "pin_hash": string(pin)})
+	s, h := r.s, r.h
+	rec := call(h, "POST", "/api/terminal/login", r.termKey, `{"pin":"5511"}`)
+	var login struct {
+		Role  string `json:"role"`
+		Staff struct {
+			Role string `json:"role"`
+		} `json:"staff"`
+	}
+	if rec.Code != http.StatusOK || json.Unmarshal(rec.Body.Bytes(), &login) != nil || login.Role != "driver" || login.Staff.Role != "driver" {
+		t.Fatalf("driver login: %d %s", rec.Code, rec.Body)
+	}
+	have := map[string]bool{}
+	refused := 0
+	for _, d := range s.routes() {
+		p := d.Method + " " + d.Path
+		have[p] = true
+		if d.Auth != "terminal" || !strings.HasPrefix(d.Path, "/api/terminal/") || p == "POST /api/terminal/logout" || p == "POST /api/terminal/login" {
+			continue
+		}
+		path := strings.NewReplacer("{id}", "x1", "{payment_id}", "p1").Replace(d.Path)
+		body := ""
+		if d.Method != "GET" {
+			body = "{}"
+		}
+		rec := call(h, d.Method, path, r.termKey, body)
+		if driverRoutes[p] {
+			if code(rec) == "driver_not_allowed" {
+				t.Errorf("%s is his, refused: %s", p, rec.Body)
+			}
+			continue
+		}
+		refused++
+		if rec.Code != http.StatusForbidden || code(rec) != "driver_not_allowed" {
+			t.Errorf("%s with a driver logged in: %d %s", p, rec.Code, rec.Body)
+		}
+	}
+	if refused < 40 {
+		t.Errorf("only %d terminal routes refused to a driver", refused)
+	}
+	for p := range driverRoutes {
+		if !have[p] {
+			t.Errorf("driverRoutes has %q, which is not a route", p)
+		}
+	}
+	// Still logged in (the refusals don't end his login), then a cashier after him.
+	if rec := call(h, "GET", "/api/terminal/session", r.termKey, ""); !strings.Contains(rec.Body.String(), `"driver"`) {
+		t.Errorf("his session after the refusals: %d %s", rec.Code, rec.Body)
+	}
+	call(h, "POST", "/api/terminal/logout", r.termKey, "")
+	if rec := call(h, "POST", "/api/terminal/login", r.termKey, `{"pin":"1234"}`); rec.Code != http.StatusOK {
+		t.Fatalf("cashier login: %d %s", rec.Code, rec.Body)
+	}
+	for _, g := range []struct{ method, path string }{{"GET", "/api/terminal/pickups"}, {"GET", "/api/terminal/drafts"}, {"POST", "/api/terminal/quote"}} {
+		body := ""
+		if g.method != "GET" {
+			body = `{"type":"pickup","cart":{"lines":[]}}`
+		}
+		if rec := call(h, g.method, g.path, r.termKey, body); code(rec) == "driver_not_allowed" {
+			t.Errorf("a cashier %s %s: %d %s", g.method, g.path, rec.Code, rec.Body)
+		}
 	}
 }

@@ -35,7 +35,7 @@ const (
 	EventConfigChanged = "terminal.config.changed"
 	EventOrderPlaced   = "terminal.order.placed"
 	EventOrderPaid     = "terminal.order.paid"
-	EventOrderVoided   = "terminal.order.voided"
+	EventOrderVoided   = terminal.EventOrderVoided
 )
 
 // ErrMainUnsupported: main has no such route yet (404).
@@ -76,7 +76,7 @@ type Store struct {
 	logger   zerolog.Logger
 	menu     atomic.Pointer[menuState]
 	cfg      atomic.Pointer[configState]
-	onConfig atomic.Pointer[func(*terminal.Config)]
+	onConfig atomic.Pointer[[]func(*terminal.Config)]
 	kick     map[string]chan struct{}
 	failed   sync.Map // kind -> bool: the last fetch failed
 	refresh  sync.Mutex
@@ -88,8 +88,21 @@ func NewStore(repo SnapshotRepo, fetch Fetcher, pub Publisher, logger zerolog.Lo
 		kick: map[string]chan struct{}{terminal.KindCounterMenu: make(chan struct{}, 1), terminal.KindTerminalConfig: make(chan struct{}, 1)}}
 }
 
-// OnConfig registers the hook run when a new terminal config is in use.
-func (s *Store) OnConfig(fn func(*terminal.Config)) { s.onConfig.Store(&fn) }
+// OnConfig adds a hook run when a new terminal config is in use (register
+// before Load; the terminal service's sessions, cmd/main.go's Quibase rule).
+func (s *Store) OnConfig(fn func(*terminal.Config)) {
+	for {
+		cur := s.onConfig.Load()
+		var next []func(*terminal.Config)
+		if cur != nil {
+			next = append(next, *cur...)
+		}
+		next = append(next, fn)
+		if s.onConfig.CompareAndSwap(cur, &next) {
+			return
+		}
+	}
+}
 
 // Load reads the saved snapshots (startup). A bad saved body is skipped.
 func (s *Store) Load(ctx context.Context) {
@@ -138,8 +151,12 @@ func (s *Store) use(snap terminal.Snapshot) error {
 			return err
 		}
 		s.cfg.Store(&configState{snap: snap, cfg: c})
-		if fn := s.onConfig.Load(); fn != nil && *fn != nil {
-			(*fn)(c)
+		if fns := s.onConfig.Load(); fns != nil {
+			for _, fn := range *fns {
+				if fn != nil {
+					fn(c)
+				}
+			}
 		}
 	default:
 		return fmt.Errorf("unknown snapshot kind %q", snap.Kind)

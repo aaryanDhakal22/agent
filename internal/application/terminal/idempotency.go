@@ -103,7 +103,10 @@ type UnsettledRepo interface {
 	UnsettledChecks(ctx context.Context) (*order.UnsettledList, error)
 }
 
-// Unsettled is GET /api/terminal/unsettled (contract 2.10s §4).
+// Unsettled is GET /api/terminal/unsettled (contract 2.10s §4): with what a
+// forced close would do with the blocking checks (the store's
+// close_unpaid_counter_action, the owner 2026-11-13).
 func (s *Service) Unsettled(ctx context.Context) (*order.UnsettledList, error) {
-	return s.repo.UnsettledChecks(ctx)
+	cfg, _ := s.store.Config()
+	return s.repo.UnsettledChecks(order.WithCloseUnpaid(ctx, cfg.CloseUnpaidCounterAction()))
 }

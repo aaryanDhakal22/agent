@@ -64,6 +64,9 @@ const (
 	// WasteReason is the cancel reason a wasted order is stored with (its
 	// reason text is in the journal and the cancel_reason column).
 	WasteReasonPrefix = "waste: "
+	// EventOrderVoided is the terminals' SSE event for a voided / wasted
+	// order (also sent when a close writes unpaid checks off).
+	EventOrderVoided = "terminal.order.voided"
 	// ActionVoidWaste journals a waste (Pi action; the Z / till Waste section).
 	ActionVoidWaste = "void.waste"
 	// ActionUnsettled journals the unsettled checks of a close.

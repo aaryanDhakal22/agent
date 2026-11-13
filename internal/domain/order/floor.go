@@ -26,6 +26,9 @@ type Batch struct {
 	// Unsettled: the Unsettled Check List at the close (contract 2.10s §4;
 	// nil when not a close).
 	Unsettled *UnsettledList `json:"-"`
+	// UnpaidAtClose: the unpaid counter checks the close wrote off as waste
+	// (nil when none; the owner, 2026-11-13).
+	UnpaidAtClose *UnpaidAtClose `json:"-"`
 }
 
 // Close kinds (the Z report's close_kind): Close batch by hand, or the Pi's

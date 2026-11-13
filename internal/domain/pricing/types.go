@@ -44,10 +44,14 @@ type Context struct {
 	Options map[string]OptionFacts `json:"options,omitempty"`
 }
 
-// OptionFacts are a modifier option's family and that family's class.
+// OptionFacts are a modifier option's family and that family's class, and
+// whether it is never one of an item's included toppings.
 type OptionFacts struct {
 	Family string `json:"family,omitempty"`
 	Class  string `json:"class,omitempty"` // regular | premium | unpriced
+	// NeverIncluded: always charged, even on an item with toppings included
+	// (SoftTouch's "always charge": Shrimp on a build-your-own pizza).
+	NeverIncluded bool `json:"never_included,omitempty"`
 }
 
 // Mod family classes: a coupon may make a regular mod free, never the others.
@@ -79,6 +83,21 @@ type ItemFacts struct {
 	OpenPrice bool `json:"open_price,omitempty"`
 	// Family: the item's family (an item family id; "" = none: never in a coupon).
 	Family string `json:"family,omitempty"`
+	// IncludedToppings: this many of the line's charged options are in the
+	// item's price (a build-your-own pizza's 5 toppings; item attribute
+	// included_toppings), the cheapest first; IncludedSizes overrides it per
+	// size (size id → count; attribute included_toppings_sizes). An option
+	// with OptionFacts.NeverIncluded is always charged.
+	IncludedToppings int            `json:"included_toppings,omitempty"`
+	IncludedSizes    map[string]int `json:"included_toppings_sizes,omitempty"`
+}
+
+// IncludedAt is how many toppings the item includes at a size.
+func (f ItemFacts) IncludedAt(size string) int {
+	if n, ok := f.IncludedSizes[size]; ok {
+		return max(n, 0)
+	}
+	return max(f.IncludedToppings, 0)
 }
 
 // HalfBaseAttr is the menu item attribute naming a specialty pizza's plain
@@ -91,6 +110,51 @@ const (
 	NoTaxAttr     = "no_tax"
 	OpenPriceAttr = "open_price"
 )
+
+// IncludedAttr / IncludedSizesAttr are the item attributes behind
+// ItemFacts' IncludedToppings / IncludedSizes (a count; size id → count).
+const (
+	IncludedAttr      = "included_toppings"
+	IncludedSizesAttr = "included_toppings_sizes"
+	// MaxIncluded bounds an item's included toppings.
+	MaxIncluded = 50
+)
+
+// IncludedOf reads an item's included toppings from its attributes (JSON
+// numbers arrive as float64): the count for any size and the per-size ones.
+func IncludedOf(attrs map[string]any) (int, map[string]int) {
+	n := 0
+	if v, ok := countOf(attrs[IncludedAttr]); ok {
+		n = v
+	}
+	var sizes map[string]int
+	if m, ok := attrs[IncludedSizesAttr].(map[string]any); ok {
+		for k, v := range m {
+			if c, ok := countOf(v); ok {
+				if sizes == nil {
+					sizes = map[string]int{}
+				}
+				sizes[k] = c
+			}
+		}
+	}
+	return n, sizes
+}
+
+func countOf(v any) (int, bool) {
+	var n int
+	switch x := v.(type) {
+	case float64:
+		n = int(x)
+	case int:
+		n = x
+	case int64:
+		n = int(x)
+	default:
+		return 0, false
+	}
+	return min(max(n, 0), MaxIncluded), true
+}
 
 // MaxOpenPriceCents bounds an open price ($10,000).
 const MaxOpenPriceCents = 1_000_000

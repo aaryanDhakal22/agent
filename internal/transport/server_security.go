@@ -445,6 +445,34 @@ var staffRoutes = map[string]bool{
 	"GET /api/terminal/phone-charges/{id}":        true,
 }
 
+// driverRoutes are the /api/terminal/* routes (mux patterns) a terminal with a
+// driver logged in may call (contract §2.10b "A driver's login"): the login
+// itself, what keeps any terminal running (session, menu, status, receipt
+// header, setup summary, the device journal, its self-update) and his own
+// /driver/* routes. Every other terminal route answers him 403
+// driver_not_allowed: no order taking, payments, voids, refunds, customers,
+// drafts, lists, checks, reports, Square or printing.
+var driverRoutes = map[string]bool{
+	"POST /api/terminal/login":                    true,
+	"POST /api/terminal/logout":                   true,
+	"GET /api/terminal/session":                   true,
+	"GET /api/terminal/menu":                      true,
+	"GET /api/terminal/status":                    true,
+	"GET /api/terminal/receipt-header":            true,
+	"GET /api/terminal/setup":                     true,
+	"POST /api/terminal/journal":                  true,
+	"POST /api/terminal/app/state":                true,
+	"GET /api/terminal/app/latest":                true,
+	"GET /api/terminal/app/apk":                   true,
+	"GET /api/terminal/driver/available":          true,
+	"POST /api/terminal/driver/claim":             true,
+	"GET /api/terminal/driver/mine":               true,
+	"POST /api/terminal/driver/orders/{id}/tip":   true,
+	"POST /api/terminal/driver/orders/{id}/close": true,
+	"GET /api/terminal/driver/report":             true,
+	"POST /api/terminal/driver/report":            true,
+}
+
 // staffGate is the terminal wrapper's check for a request with a terminal's
 // key: it notes the call (the staff session stays alive while its terminal
 // talks to the Pi, M4) and refuses a staffRoutes route with nobody logged
@@ -455,6 +483,15 @@ func (s *Server) staffGate(w http.ResponseWriter, r *http.Request) bool {
 	}
 	a := actor(r)
 	s.terminalSvc.Touch(a)
+	// A driver logged in on the terminal (owner 2026-11-13): his own routes
+	// and what any terminal needs, nothing of the store's (no order, money,
+	// customer, list or report), whatever app version asks.
+	if !driverRoutes[r.Pattern] {
+		if st, err := s.terminalSvc.CurrentStaff(a); err == nil && st.Role == terminal.RoleDriver {
+			s.writeJSON(w, http.StatusForbidden, errCodeMap("a driver's login has only his deliveries and his report", "driver_not_allowed"))
+			return false
+		}
+	}
 	if !staffRoutes[r.Pattern] {
 		return true
 	}

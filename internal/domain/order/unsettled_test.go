@@ -1,6 +1,9 @@
 package order
 
-import "testing"
+import (
+	"context"
+	"testing"
+)
 
 func TestUnsettledRules(t *testing.T) {
 	mk := func(src, ful string, st State, due int64) StoredOrder {
@@ -26,5 +29,25 @@ func TestUnsettledRules(t *testing.T) {
 	paid := mk(SourceCounter, "pickup", StateReady, 0)
 	if IsUnsettled(paid) || Settled(paid) {
 		t.Fatal("paid but not picked up: not unsettled, not settled yet")
+	}
+}
+
+func TestUnpaidAtCloseRules(t *testing.T) {
+	if UnpaidActionOf("") != UnpaidWaste || UnpaidActionOf("Carry ") != UnpaidCarry || UnpaidActionOf("nonsense") != UnpaidWaste {
+		t.Fatal("the setting: carry, else waste")
+	}
+	if ForceOutcome("waste", 0) != UnpaidWaste || ForceOutcome("waste", 1) != UnpaidCarry || ForceOutcome("carry", 0) != UnpaidCarry {
+		t.Fatal("waste only with no payment row; a partly paid check is carried")
+	}
+	if CloseUnpaidOf(context.Background()) != UnpaidWaste || CloseUnpaidOf(WithCloseUnpaid(context.Background(), "carry")) != UnpaidCarry {
+		t.Fatal("ctx: waste by default")
+	}
+	a := CloseActorOf(WithCloseKind(context.Background(), CloseAuto))
+	if a.Trigger != "auto" || a.DeviceID != "pi" {
+		t.Fatalf("auto actor: %+v", a)
+	}
+	e := &UnsettledError{Checks: make([]UnsettledCheck, 2), ForceAction: UnpaidWaste, Force: ForcePreview{WasteCount: 1, WasteCents: 1299, CarryCount: 1}}
+	if e.Error() != "2 unpaid counter check(s) are open: force close writes off 1 as waste ($12.99) and carries 1 over" {
+		t.Fatal(e.Error())
 	}
 }

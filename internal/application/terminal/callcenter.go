@@ -195,9 +195,13 @@ func callcenterCartGuard(a Actor, ctx pricing.Context, in Cart, stored *Cart) er
 		return notAllowed(terminal.NotAllowedDiscount)
 	}
 	held := map[string]int{}
+	heldNames := map[string]bool{} // the stored order's custom lines, by name
 	if stored != nil {
 		for _, l := range stored.Lines {
 			held[heldKey(l)]++
+			if l.Custom {
+				heldNames[customName(l)] = true
+			}
 		}
 	}
 	priced := func(sel pricing.Selection) string {
@@ -253,7 +257,15 @@ func callcenterCartGuard(a Actor, ctx pricing.Context, in Cart, stored *Cart) er
 			continue
 		}
 		if l.Custom {
-			return notAllowed(terminal.NotAllowedOpenPrice)
+			// Quick add (owner 2026-11-13): the call center's typed line, like
+			// the terminal's Quicc Add (engine-checked, journaled as
+			// custom_line, routed by the store's Quick add item). One named
+			// like a custom line the order holds, at another price, is that
+			// line re-priced (an online order's own line): still refused.
+			if heldNames[customName(l)] {
+				return notAllowed(terminal.NotAllowedOpenPrice)
+			}
+			continue
 		}
 		if !rungOK(i, l) {
 			return notAllowed(terminal.NotAllowedPriceChange)
@@ -271,6 +283,15 @@ func callcenterCartGuard(a Actor, ctx pricing.Context, in Cart, stored *Cart) er
 		}
 	}
 	return nil
+}
+
+// customName is a custom line's name as the stored order compares it.
+func customName(l pricing.Line) string {
+	name := strings.TrimSpace(l.Name)
+	if name == "" {
+		name = pricing.CustomLineName
+	}
+	return strings.ToLower(name)
 }
 
 // heldKey tells whether a cart line is one the stored order holds: a custom

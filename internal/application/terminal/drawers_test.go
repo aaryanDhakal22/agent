@@ -213,7 +213,8 @@ func TestDrawerHandoverOtherCashierAndBatchClose(t *testing.T) {
 	if _, err := r.svc.PlaceOrder(r.ctx, till, OrderIn{ClientKey: "hand-0001", Type: "counter", Cart: sodaCart(1)}); err != nil {
 		t.Fatal(err)
 	}
-	closed, _, err := r.repo.CloseBatch(order.WithCloseKind(r.ctx, order.CloseAuto), true)
+	// (the carry setting: the unpaid counter check stays this Z's unpaid)
+	closed, _, err := r.repo.CloseBatch(order.WithCloseUnpaid(order.WithCloseKind(r.ctx, order.CloseAuto), order.UnpaidCarry), true)
 	if err != nil || len(closed.ClosedDrawers) != 2 || !closed.ZPending {
 		t.Fatalf("close batch: %+v %v", closed, err)
 	}
