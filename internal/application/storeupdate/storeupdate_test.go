@@ -39,6 +39,7 @@ func newRig(t *testing.T) *rig {
 func (r *rig) coordinator(version string) *Coordinator {
 	c := New(Deps{
 		Path:    r.path,
+		Settle:  -1,
 		Version: version,
 		OwnSHA:  func() string { r.mu.Lock(); defer r.mu.Unlock(); return r.ownSHA },
 		Compat:  Compat{MinQuibase: "2.1.0", MinTerminal: "1.0.3"},
@@ -479,5 +480,27 @@ func TestNoPiUpdateWhereUnsupported(t *testing.T) {
 	c2.Tick(ctx)
 	if c2.View(nil).ID == id {
 		t.Fatal("tried again after the wait")
+	}
+}
+
+// Right after a start the round waits for the devices to reconnect; a nudge
+// doesn't.
+func TestSettleAfterStart(t *testing.T) {
+	r := newRig(t)
+	r.manifest = Manifest{AgentVersion: "2.5.4", AgentSHA: "bbb"}
+	c := r.coordinator("2.5.3")
+	c.d.Settle = DefaultSettle
+	c.Tick(ctx)
+	phase(t, c, PhaseIdle)
+	r.later(DefaultSettle)
+	c.Tick(ctx)
+	phase(t, c, PhasePiInstalling)
+
+	r2 := newRig(t)
+	r2.manifest = Manifest{AgentVersion: "2.5.4", AgentSHA: "bbb"}
+	c2 := r2.coordinator("2.5.3")
+	c2.d.Settle = DefaultSettle
+	if rep := c2.Nudge(ctx, "console", ""); rep.State != "running" {
+		t.Fatalf("a nudge doesn't wait for the settle: %+v", rep)
 	}
 }

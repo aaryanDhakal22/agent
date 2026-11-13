@@ -34,6 +34,8 @@ import (
 	"sync"
 	"time"
 
+	"quiccpos/agent/internal/safego"
+
 	"github.com/rs/zerolog"
 )
 
@@ -82,6 +84,11 @@ const (
 	IdleSeconds    = 60
 	// FinishedShown: a done / cancelled round is shown this long, then idle.
 	FinishedShown = 2 * time.Minute
+	// DefaultSettle: after the agent starts, no round starts by itself for
+	// this long (AGENT_STORE_ROUND_SETTLE): the tablets and terminals
+	// reconnect first, else a round would see nobody to ask and update the
+	// Pi under a device that is mid-order. A nudge doesn't wait.
+	DefaultSettle = 2 * time.Minute
 )
 
 //go:embed compat.json
@@ -245,7 +252,10 @@ var ErrNotInRound = errors.New("not_in_round")
 
 // Deps wire the coordinator to the rest of the agent (all optional but Path).
 type Deps struct {
-	Path    string // the JSON state file
+	Path string // the JSON state file
+	// Settle: no automatic round this long after start (0 = DefaultSettle,
+	// negative = none).
+	Settle  time.Duration
 	Version string // the running agent's version
 	OwnSHA  func() string
 	Compat  Compat
@@ -290,10 +300,12 @@ type Coordinator struct {
 	tickMu sync.Mutex
 
 	mu          sync.Mutex
+	started     time.Time
 	st          state
 	forced      bool      // a nudge asked for a round (auto_update off is no reason to wait)
 	nudgedBy    string    // who asked
 	nudgeID     string    // main's request id: the id of the round this nudge starts
+	quick       bool      // a nudge's look on the RPC reader: no network calls
 	lastApps    time.Time // last CheckApps
 	lastPublish string    // id:phase:reason last published
 }
@@ -306,7 +318,10 @@ func New(d Deps) *Coordinator {
 	if d.Compat == (Compat{}) {
 		d.Compat = Floors()
 	}
-	return &Coordinator{d: d, wake: make(chan struct{}, 1), st: state{Phase: PhaseIdle}}
+	if d.Settle == 0 {
+		d.Settle = DefaultSettle
+	}
+	return &Coordinator{d: d, wake: make(chan struct{}, 1), st: state{Phase: PhaseIdle}, started: d.Now()}
 }
 
 // Load reads the persisted round (a missing / broken file = idle).
@@ -360,27 +375,44 @@ func (c *Coordinator) Nudge(ctx context.Context, requestedBy, id string) Reply {
 	if requestedBy == "" {
 		requestedBy = "admin"
 	}
-	c.mu.Lock()
-	c.forced, c.nudgedBy = true, requestedBy
-	c.nudgeID = ""
+	nudgeID := ""
 	if idRe.MatchString(id) {
-		c.nudgeID = id
+		nudgeID = id
 	}
-	c.lastApps = time.Time{} // ask main for the apps at once
-	switch c.st.Phase {
-	case PhaseIdle, PhaseDone, PhaseCancelled:
+	arm := func() {
+		c.mu.Lock()
+		c.forced, c.nudgedBy, c.nudgeID = true, requestedBy, nudgeID
 		c.st.RetryAfter = time.Time{}
-	case PhaseWaiting:
-		c.st.RetryAfter = time.Time{}
+		c.mu.Unlock()
 	}
+	// A quick look now with what the Pi already has (no call to main or the
+	// utility host: this runs on the RPC reader)…
+	arm()
+	c.mu.Lock()
+	c.quick = true
 	c.mu.Unlock()
-	if c.d.Manifest != nil {
-		c.d.Manifest(ctx, true)
-	}
 	c.Tick(ctx)
 	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.nudgeID = ""
+	c.quick = false
+	rep := c.replyLocked()
+	c.mu.Unlock()
+	// …then the full one in the background: the manifest and main's APKs
+	// fetched now, a round started if anything is behind.
+	bg := context.WithoutCancel(ctx)
+	safego.Go("storeupdate.nudge", func() {
+		if c.d.Manifest != nil {
+			c.d.Manifest(bg, true)
+		}
+		arm()
+		c.mu.Lock()
+		c.lastApps = time.Time{}
+		c.mu.Unlock()
+		c.Tick(bg)
+	})
+	return rep
+}
+
+func (c *Coordinator) replyLocked() Reply {
 	switch {
 	case c.st.Agent == nil, c.st.Phase == PhaseIdle, c.st.Phase == PhaseDone, c.st.Phase == PhaseCancelled:
 		return Reply{Accepted: true, State: "up_to_date", ID: c.st.ID}
@@ -630,7 +662,7 @@ func (c *Coordinator) devices(ctx context.Context) []Device {
 // --- phases ---------------------------------------------------------------------
 
 func (c *Coordinator) idleLocked(ctx context.Context, now time.Time) {
-	if !c.forced && now.Before(c.st.RetryAfter) {
+	if !c.forced && (now.Before(c.st.RetryAfter) || now.Sub(c.started) < c.d.Settle) {
 		return
 	}
 	if c.forced && now.Sub(c.lastApps) >= time.Minute {
@@ -880,6 +912,9 @@ func (c *Coordinator) finishLocked(now time.Time, phase, reason string) {
 // --- helpers ---------------------------------------------------------------------
 
 func (c *Coordinator) checkAppsLocked(ctx context.Context, now time.Time) {
+	if c.quick {
+		return
+	}
 	c.lastApps = now
 	if c.d.CheckApps == nil {
 		return

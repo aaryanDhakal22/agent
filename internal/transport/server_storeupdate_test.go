@@ -21,6 +21,7 @@ func storeRoundServer(t *testing.T) (s *Server, h http.Handler, tabletKey, termK
 	s, h, tabletKey, termKey, _ = setupServer(t)
 	c = storeupdate.New(storeupdate.Deps{
 		Path:    filepath.Join(t.TempDir(), "store-update.json"),
+		Settle:  -1,
 		Version: "2.5.3",
 		Compat:  storeupdate.Compat{MinQuibase: "2.1.0", MinTerminal: "1.0.3"},
 		Logger:  zerolog.Nop(),

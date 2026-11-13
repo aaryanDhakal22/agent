@@ -20,7 +20,7 @@ import threading
 
 import requests
 
-from conftest import STORE_V1, manager_session, provision, wait_until
+from conftest import ADMIN_V1, STORE_V1, manager_session, provision, wait_until
 from test_floor import arrive, floor, post  # noqa: F401  (floor is a fixture)
 from test_updates import utility  # noqa: F401  (fixture)
 
@@ -213,10 +213,12 @@ def _after_close_runs(a) -> int:
     return log.count("Driver reports printed after close") + log.count("driver reports after close failed")
 
 
-def test_auto_update_store_round(main_store, spawn_agent, tmp_path, utility) -> None:  # noqa: F811
-    """Since 2.5.4 the auto-update is a store round (contract 2.10ad): any quiet moment, not only after
-    Close batch. With no tablet or terminal paired the round freezes at once and hands the Pi's own
-    update to the root updater (requested_by store-update)."""
+def test_auto_update_store_round(admin, main_store, spawn_agent, tmp_path, utility) -> None:  # noqa: F811
+    """Since 2.5.4 the update is a store round (contract 2.10ad). A just-started agent waits
+    (AGENT_STORE_ROUND_SETTLE, 2 min) before a round starts by itself, so the devices reconnect
+    first; main's agent.update (the admin page, console Update a Pi, --do ship prd) is a nudge that
+    starts one at once. With no tablet or terminal paired the round freezes at once and hands the
+    Pi's own update to the root updater (requested_by store-update), under main's request id."""
     upd = tmp_path / "upd"
     upd.mkdir()
     a = spawn_agent(AGENT_UPDATE_ENABLED="1", AGENT_UPDATE_DIR=str(upd), UTILITY_URL=utility)
@@ -231,18 +233,19 @@ def test_auto_update_store_round(main_store, spawn_agent, tmp_path, utility) -> 
     wait_until(lambda: a.http.get(f"{a.base}/api/update/status", timeout=5).json()["latest_version"] == "9.9.9",
                timeout=15, what="manifest check")
 
-    # Off: a close (a quiet moment the round looks at) starts nothing.
+    # Off (and settling): a close (a quiet moment the round looks at) starts nothing.
     assert a.http.post(f"{a.base}/api/batch/close", json={}, timeout=15).status_code == 200
     wait_until(lambda: _after_close_runs(a) >= 1, timeout=15, interval=0.1, what="the after-close driver reports")
-    assert st()["phase"] == "idle" and not req.exists(), "auto-update ran while off"
+    assert st()["phase"] == "idle" and not req.exists(), "a round started by itself"
 
-    # On: the next look (the close's wake, else the round's 30 s tick) starts the round and, the
-    # store being quiet with no device to ask, requests the Pi's update.
-    assert a.http.put(f"{a.base}/api/settings/auto-update", json={"auto_update": True}, timeout=5).status_code == 200
-    assert a.http.post(f"{a.base}/api/batch/close", json={}, timeout=15).status_code == 200
-    wait_until(req.exists, timeout=45, what="update.request from the store round")
+    # main's nudge: a round at once, auto_update off or not.
+    r = admin.post(f"{ADMIN_V1}/agent/update", json={"tenant_id": main_store.tenant_id, "location_id": main_store.location_id,
+                                                    "force": True, "requested_by": "console"}, timeout=30)
+    assert r.status_code == 200 and r.json()["accepted"] is True, r.text
+    assert r.json()["state"] in ("running", "waiting_for_idle"), r.text
+    wait_until(req.exists, timeout=20, what="update.request from the store round")
     body = json.loads(req.read_text())
-    assert body["action"] == "update" and body["requested_by"] == "store-update" and body["id"].startswith("su-")
+    assert body["action"] == "update" and body["requested_by"] == "store-update" and body["id"], body
     v = st()
     assert v["phase"] == "pi_installing" and v["agent"]["to"] == "9.9.9" and v["id"] == body["id"], v
     assert v.get("me") is None and v["min"]["quibase"] and v["min"]["terminal"]

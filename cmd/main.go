@@ -933,6 +933,7 @@ func main() {
 	httpServer.SetUpdates(updater, printerWatcher)
 	round := storeupdate.New(storeupdate.Deps{
 		Path:    storeupdate.StatePath(cfg.AgentDBPath),
+		Settle:  envSeconds("AGENT_STORE_ROUND_SETTLE", storeupdate.DefaultSettle),
 		Version: version,
 		OwnSHA:  updater.OwnSHA,
 		Logger:  logger.With().Str("module", "storeupdate").Logger(),
@@ -1601,4 +1602,17 @@ func tapEvents(b *ssebroker.Broker) (<-chan terminalApp.RelayEvent, func()) {
 		once.Do(func() { close(done) })
 		cancel()
 	}
+}
+
+// envSeconds reads a whole number of seconds from env (unset or bad = def;
+// 0 = none, returned as -1s so the default doesn't apply).
+func envSeconds(name string, def time.Duration) time.Duration {
+	v, err := strconv.Atoi(os.Getenv(name))
+	switch {
+	case err != nil || v < 0:
+		return def
+	case v == 0:
+		return -time.Second
+	}
+	return time.Duration(v) * time.Second
 }
