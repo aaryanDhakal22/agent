@@ -10,6 +10,16 @@ func TestShownOnTablet(t *testing.T) {
 	so := func(src, kind string, total int64, items ...LineItem) StoredOrder {
 		return StoredOrder{Order: Snapshot{Source: src, DeviceKind: kind, Money: Money{Total: total}, Items: items}}
 	}
+	delivery := func(total int64, items ...LineItem) StoredOrder {
+		o := so(SourceCounter, "", total, items...)
+		o.Order.Fulfillment.Type = "delivery"
+		return o
+	}
+	takeout := func(total int64, items ...LineItem) StoredOrder {
+		o := so(SourceCounter, "", total, items...)
+		o.Order.Fulfillment.Type = "pickup"
+		return o
+	}
 	cases := []struct {
 		name string
 		o    StoredOrder
@@ -25,6 +35,12 @@ func TestShownOnTablet(t *testing.T) {
 		{"terminal custom line over $5", so(SourceCounter, "", 954, custom), true},
 		{"terminal pre-routing line over $5", so(SourceCounter, "", 954, pre), true},
 		{"terminal no lines", so(SourceCounter, "", 900), false},
+		{"terminal takeout soda", takeout(135, soda), false},
+		{"terminal takeout pizza", takeout(1377, pizza), true},
+		// Deliveries always show (the owner, 2026-11-13).
+		{"terminal delivery soda + fee", delivery(535, soda), true},
+		{"terminal delivery ranch + fee, under $5", delivery(480, pizza), true},
+		{"terminal delivery pizza", delivery(1777, pizza), true},
 		{"call center soda", so(SourceCounter, deviceKindCallcenter, 135, soda), true},
 		{"online soda", so(SourceOnline, "", 135, soda), true},
 		{"old online (no source) soda", so("", "", 135, soda), true},

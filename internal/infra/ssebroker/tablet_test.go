@@ -87,6 +87,13 @@ func TestTabletFilter(t *testing.T) {
 	b.PublishDispatched(order.Driver{ID: "d2"}, []order.StoredOrder{counter("z", 900, soda)})
 	same("hidden run: tablet", types(tab))
 	same("hidden run: terminal", types(term), "drivers.dispatched")
+
+	// A delivery always shows (the owner, 2026-11-13), a soda one too.
+	d := counter("dl", 535, soda)
+	d.Order.Fulfillment.Type = "delivery"
+	b.PublishUpdated(d)
+	same("soda delivery: tablet", types(tab), "order.updated")
+	same("soda delivery: terminal", types(term), "order.updated")
 }
 
 func TestNoFilterEveryOrderShows(t *testing.T) {
