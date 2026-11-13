@@ -63,7 +63,9 @@ def route_floor(admin, main_store, spawn_agent, fakes, pushover):
     fakes["Front"] = FakePrinter()
     assert mgr.post(f"{STORE_V1}/me/printers", json={"name": "Front", "ip": fakes["Front"].addr}, timeout=5).status_code == 201
     a = spawn_agent(PUSHOVER_APP_TOKEN="app", PUSHOVER_USER_KEY="user", PUSHOVER_API_URL=pushover.url,
-                    PUSHOVER_ADMIN_DEVICE="AdminPhone")
+                    PUSHOVER_ADMIN_DEVICE="AdminPhone",
+                    # Pushover is prod-only (2.5.5): the test-only hatch lets this dev agent reach the fake.
+                    PUSHOVER_NONPROD="1")
     provision(a, main_store)
     wait_until(lambda: len(a.http.get(f"{a.base}/api/printers", timeout=5).json()) == 1, timeout=20, what="printer roster")
     a.store = main_store

@@ -228,6 +228,12 @@ func main() {
 	// Outside prod, no admin device = no system/floor alerts at all: drivers'
 	// phones share the account (2.4.1).
 	notifier.SetStrictScope(cfg.AppEnv != "prod")
+	// Pushover leaves only a prod agent (2.5.5, notify/guard.go): anywhere
+	// else every message is logged at info and dropped.
+	notifier.SetLogger(logger)
+	if !notifier.Sends() {
+		logger.Info().Str("app_env", cfg.AppEnv).Msg("Pushover off: only APP_ENV=prod sends (messages are logged)")
+	}
 	// 2.5.2: "Agent started" and the crash pages at most once per 15 min
 	// across restarts (a crash loop restarts every 3-60 s); the crash text is
 	// still logged above.

@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/rs/zerolog"
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 )
 
@@ -44,6 +45,11 @@ type Notifier struct {
 	strictScope bool
 	pushoverURL string
 	httpClient  *http.Client
+	// The prod-only guard (guard.go): appEnv as read at construction,
+	// sendAllowed = APP_ENV prod or the tests-only PUSHOVER_NONPROD=1.
+	appEnv      string
+	sendAllowed bool
+	logger      zerolog.Logger
 }
 
 type NotifierError struct {
@@ -81,7 +87,11 @@ func NewNotifier(appToken, userKey, bossKey string) *Notifier {
 	if u == "" {
 		u = "https://api.pushover.net/1/messages.json"
 	}
+	appEnv, allowed := guardFromEnv()
 	return &Notifier{
+		appEnv:      appEnv,
+		sendAllowed: allowed,
+		logger:      zerolog.Nop(),
 		appToken:    appToken,
 		userKey:     userKey,
 		bossKey:     bossKey,
@@ -304,6 +314,9 @@ func (n *Notifier) post(ctx context.Context, m Message) error {
 			return ErrNotConfigured
 		}
 		return nil // not configured (yet): an unlinked agent has no keys
+	}
+	if n.suppressed(m) { // prod only (guard.go)
+		return nil
 	}
 	form := url.Values{
 		"token":   {token},

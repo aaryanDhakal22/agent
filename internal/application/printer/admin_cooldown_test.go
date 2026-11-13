@@ -27,6 +27,7 @@ func TestFlappingPrinterAdminCooldown(t *testing.T) {
 	}))
 	defer srv.Close()
 	t.Setenv("PUSHOVER_API_URL", srv.URL)
+	t.Setenv("PUSHOVER_NONPROD", "1") // a fake Pushover: the prod-only guard's test hatch
 	n := notify.NewNotifier("app", "user", "")
 
 	meters, _ := observability.NewMeters()
