@@ -32,7 +32,7 @@ func TestDriverReportLine_WebsiteOrders(t *testing.T) {
 		t.Fatalf("online card: %+v", o)
 	}
 	r := DriverReport{Lines: []DriverReportLine{l, locked, cash, NewDriverReportLine(online)}}
-	r.Finish(0)
+	r.Finish(0, 300)
 	if r.TipCents != 1500 || r.PendingTipCents != 700 || r.CashCents != 2700 {
 		t.Fatalf("report: tips %d pending %d cash %d", r.TipCents, r.PendingTipCents, r.CashCents)
 	}

@@ -366,14 +366,14 @@ func dumpTortureWidth(t *testing.T, dir string, cols int) {
 		k := int64(1200 + i)
 		rep.Lines = append(rep.Lines, order.DriverReportLine{KitchenNumber: &k, Customer: "Ana P.", Street: fmt.Sprintf("%d %s", 100+i, tStreet), Cash: i%2 == 0, CashCents: 1850, SlipTotalCents: 1850})
 	}
-	rep.Finish(600)
+	rep.Finish(600, 300)
 	for _, size := range []string{"", order.SizeSmall, order.SizeLarge} {
 		put("driver_report_"+map[string]string{"": "default", order.SizeSmall: "small", order.SizeLarge: "large"}[size],
 			BuildDriverReport(rep, sc, size, on(tPrinter), closed), "driver_report", []string{tStaff, tStreet, tPrinter, tStoreName})
 	}
 	owes := rep72()
 	owes.Lines[0].Cash, owes.Lines[0].CashCents, owes.Lines[0].TipCents = false, 0, 99999
-	owes.Finish(600)
+	owes.Finish(600, 300)
 	put("driver_report_store_owes", BuildDriverReport(owes, sc, "", on(""), closed), "driver_report", []string{tStaff, tStreet})
 	un := order.UnassignedReport{BatchID: 3, BatchOpenedAt: opened, BatchClosedAt: &closed, CashCents: 999999, TipCents: 2000,
 		Lines: []order.UnassignedLine{{DriverReportLine: order.DriverReportLine{KitchenNumber: &k1, Street: tStreet, Cash: true,
@@ -465,6 +465,6 @@ func rep72() order.DriverReport {
 	opened := time.Date(2026, 11, 12, 14, 2, 0, 0, time.UTC)
 	rep := order.DriverReport{BatchID: 3, BatchOpenedAt: opened, DriverName: tStaff, Lines: []order.DriverReportLine{
 		{KitchenNumber: &k, Customer: tCustomer, Street: tStreet, Cash: true, CashCents: 999999, OrderTipCents: 2000, SlipTotalCents: 999999}}}
-	rep.Finish(600)
+	rep.Finish(600, 300)
 	return rep
 }

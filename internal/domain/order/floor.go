@@ -316,10 +316,12 @@ type DriverReport struct {
 	// charged yet (the driver hasn't clocked out, the batch isn't closed) -
 	// ADD TIP can still change them.
 	PendingTipCents int64 `json:"pending_tip_cents"`
-	// DriverShareCents: his share of the delivery fees on his orders (main's
-	// split of the store's delivery fee: store share + driver share). Shown
-	// on the report; OwedCents doesn't count it (the store pays it out).
+	// DriverShareCents: his delivery pay (the owner's settlement rule,
+	// 2.5.2): the store's delivery_driver_cents for EVERY delivered delivery
+	// (vendor orders and waived fees too), taken off what he hands in.
 	DriverShareCents int64 `json:"driver_share_cents"`
+	// DriverPayCents: the per-delivery pay DriverShareCents was counted with.
+	DriverPayCents int64 `json:"driver_pay_cents"`
 }
 
 // DriverReportLine is one delivery on a driver report.
@@ -441,10 +443,17 @@ func NewDriverReportLine(so StoredOrder) DriverReportLine {
 	return l
 }
 
-// Finish fills the report's totals with the store's tip tax.
-func (r *DriverReport) Finish(tipTaxBps int64) {
+// Finish fills the report's totals with the store's tip tax and delivery pay
+// (the owner's settlement rule, 2.5.2): he hands in the cash he collected
+// less his pay for every delivered delivery (driverPayCents each, flat) less
+// his card tips after the tip tax; negative = the store owes him.
+func (r *DriverReport) Finish(tipTaxBps, driverPayCents int64) {
 	r.Deliveries = len(r.Lines)
 	r.CashCents, r.TipCents, r.PendingTipCents, r.DriverShareCents = 0, 0, 0, 0
+	r.DriverPayCents = max(driverPayCents, 0)
+	for i := range r.Lines {
+		r.Lines[i].DriverShareCents = r.DriverPayCents
+	}
 	for _, l := range r.Lines {
 		r.DriverShareCents += l.DriverShareCents
 		r.CashCents += l.CashCents
@@ -455,7 +464,7 @@ func (r *DriverReport) Finish(tipTaxBps int64) {
 	}
 	r.TipTaxBps = tipTaxBps
 	r.TipAfterTaxCents = (r.TipCents*(10000-tipTaxBps) + 5000) / 10000
-	r.OwedCents = r.CashCents - r.TipAfterTaxCents
+	r.OwedCents = r.CashCents - r.DriverShareCents - r.TipAfterTaxCents
 	r.OwedRoundedCents = RoundOwed(r.OwedCents)
 }
 

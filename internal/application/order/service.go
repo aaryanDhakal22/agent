@@ -88,6 +88,8 @@ type Service struct {
 	integ    integrationState
 	storeIDs atomic.Pointer[func() (string, string)]
 	bg       sync.WaitGroup
+	// driverPay: the store's per-delivery driver pay (SetDriverPay).
+	driverPay atomic.Pointer[func() (int64, bool)]
 	// upd: the updated delivery copies waiting after a change (delivery_update.go).
 	upd deliveryUpdates
 	// dev: the developer-mode event ring (SetDevLog; nil = off).

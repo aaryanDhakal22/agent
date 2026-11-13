@@ -478,6 +478,14 @@ func main() {
 		}
 		return mainClient.Download(rc, k, path, "")
 	}, broker, logger)
+	// The driver's pay per delivered delivery on the driver reports: the store's
+	// delivery_driver_cents from the counter menu's pricing (no menu yet = $3).
+	orderService.SetDriverPay(func() (int64, bool) {
+		if m, _ := termStore.Menu(); m != nil {
+			return m.Pricing.Settings.DeliveryDriverCents, true
+		}
+		return 0, false
+	})
 	termSvc := terminalApp.NewService(termStore, orderRepo, orderService, broker, logger)
 	termSvc.SetFloor(orderService, orderRepo) // the driver view (§2.10b)
 	termSvc.SetPager(notifier)                // an unbalanced Z, PIN lockouts (hardening M-9 / X-2)

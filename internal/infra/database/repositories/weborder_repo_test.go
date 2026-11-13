@@ -117,7 +117,7 @@ func TestTipLockOnClockOutAndCloseBatch(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, rep := range reps {
-		rep.Finish(0)
+		rep.Finish(0, 0)
 		switch rep.DriverID {
 		case d.ID:
 			if rep.PendingTipCents != 0 || rep.TipCents != 300 || rep.Lines[0].TipPending {

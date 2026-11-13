@@ -139,20 +139,22 @@ func BuildDriverReport(rep order.DriverReport, sc storeconfig.StoreContext, size
 	nl()
 	w(leftRight("Deliveries", fmt.Sprintf("%d", rep.Deliveries), lineWidth))
 	nl()
-	w(leftRight("Total cash owed", dollars(rep.CashCents), lineWidth))
+	// The owner's settlement (2.5.2): hand in = cash collected - delivery pay
+	// ($3 x every delivery) - card tips after the tip tax.
+	w(leftRight("Cash collected", dollars(rep.CashCents), lineWidth))
 	nl()
-	w(leftRight("Total tip (A/T)", dollars(rep.TipAfterTaxCents), lineWidth))
+	w(leftRight("Delivery pay", "-"+dollars(rep.DriverShareCents), lineWidth))
+	nl()
+	w(fmt.Sprintf("  (%s x %d)", dollars(rep.DriverPayCents), rep.Deliveries)) // under it, like the tips: fits 32 columns
+	nl()
+	w(leftRight("Card tips after "+percent(rep.TipTaxBps), "-"+dollars(rep.TipAfterTaxCents), lineWidth))
 	nl()
 	w(fmt.Sprintf("  (%s - %s)", dollars(rep.TipCents), percent(rep.TipTaxBps)))
 	nl()
-	if rep.DriverShareCents > 0 { // his share of the delivery fees (not in the owed total)
-		w(leftRight("Delivery fee share", dollars(rep.DriverShareCents), lineWidth))
-		nl()
-	}
 	w(strings.Repeat("=", lineWidth))
 	nl()
 
-	label, amount, exact := "OWED TO STORE", rep.OwedRoundedCents, rep.OwedCents
+	label, amount, exact := "HAND IN", rep.OwedRoundedCents, rep.OwedCents
 	if amount < 0 || (amount == 0 && exact < 0) {
 		label, amount, exact = "STORE OWES DRIVER", -amount, -exact
 	}

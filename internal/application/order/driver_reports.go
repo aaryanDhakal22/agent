@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"quiccpos/agent/internal/domain/order"
+	"quiccpos/agent/internal/domain/pricing"
 	"quiccpos/agent/internal/domain/printer"
 
 	"go.opentelemetry.io/otel/attribute"
@@ -51,10 +52,25 @@ func (s *Service) driverReports(ctx context.Context, batchID int64, ensure *orde
 	}
 	out := reps
 	tax := s.FloorPrefs(ctx).TipTaxBps
+	pay := s.DriverPayCents()
 	for i := range out {
-		out[i].Finish(tax)
+		out[i].Finish(tax, pay)
 	}
 	return out, nil
+}
+
+// SetDriverPay wires the store's per-delivery driver pay (the counter
+// menu's pricing settings, delivery_driver_cents); nil = the default $3.
+func (s *Service) SetDriverPay(fn func() (int64, bool)) { s.driverPay.Store(&fn) }
+
+// DriverPayCents is the driver's pay for one delivered delivery.
+func (s *Service) DriverPayCents() int64 {
+	if fn := s.driverPay.Load(); fn != nil {
+		if c, ok := (*fn)(); ok {
+			return max(c, 0)
+		}
+	}
+	return pricing.DefaultDriverShareCents
 }
 
 func hasReport(reps []order.DriverReport, driverID string) bool {
