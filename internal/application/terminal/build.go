@@ -250,14 +250,21 @@ func buildItems(menu *terminal.CounterMenu, p priced) (items []order.LineItem, o
 	for i, l := range p.cart.Lines {
 		qty := min(max(l.Qty, 1), 50)
 		if l.Custom {
-			// A custom line (Quicc Add): the quote's name and price, no menu
-			// item, so no route: it prints on every station (unmatched).
+			// A custom line (Quicc Add): the quote's name and price, routed by
+			// the store's Quick add item (main's Store › Menu: its printer, its
+			// category's, or receipt only). Without one (an older main), and for
+			// a line sold as custom because its item left the menu, no route:
+			// it prints on every station (unmatched).
 			if i >= len(p.quote.Lines) {
 				continue
 			}
 			ql := p.quote.Lines[i]
+			route := ""
+			if menu != nil && !p.isGone(i) {
+				route = menu.QuickAddItemID
+			}
 			lines = append(lines, built{item: order.LineItem{ID: uuid.Must(uuid.NewV7()).String(), Position: len(lines), SKU: order.SKUCustom,
-				Name: ql.Name, Quantity: qty, UnitPrice: ql.UnitCents, LineTotal: ql.TotalCents, Notes: strings.TrimSpace(l.Note)}})
+				Name: ql.Name, Quantity: qty, UnitPrice: ql.UnitCents, LineTotal: ql.TotalCents, Notes: strings.TrimSpace(l.Note)}, route: route})
 			continue
 		}
 		if l.DealID == "" {

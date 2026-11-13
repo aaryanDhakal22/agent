@@ -215,8 +215,8 @@ func (it LineItem) ShownOnDriverTicket() bool {
 }
 
 // SKUCustom marks a custom line (the counter terminal's Quicc Add: a free
-// name and price, no menu item; it prints on every station). main keeps it
-// like any SKU.
+// name and price; it prints where main's Quick add item routes, else on every
+// station). main keeps it like any SKU.
 const SKUCustom = "custom"
 
 // Routing values (LineItem.Routing).
