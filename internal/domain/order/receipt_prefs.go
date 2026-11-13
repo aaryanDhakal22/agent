@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 )
 
 // Text sizes of the receipt settings, smallest first. Not every setting takes
@@ -68,6 +69,76 @@ type ReceiptPrefs struct {
 	// and the item struck through as a small picture; off = "(VOID)" in
 	// reverse and the item as text, for a printer that can't print pictures.
 	StrikeImages bool `json:"strike_images"`
+	// BoldChoiceWords (2.5.2, the owner's stopgap until the storefront): a
+	// choice printed on a customer slip whose name holds one of these words
+	// (any case) prints bold. At most MaxBoldWords words of MaxBoldWordLen
+	// plain characters.
+	BoldChoiceWords WordList `json:"bold_choice_words"`
+}
+
+// MaxBoldWords / MaxBoldWordLen bound ReceiptPrefs.BoldChoiceWords.
+const (
+	MaxBoldWords   = 10
+	MaxBoldWordLen = 20
+)
+
+// WordList is a short list of words kept comparable (ReceiptPrefs is compared
+// with ==): JSON is an array of strings.
+type WordList struct{ joined string }
+
+// NewWordList keeps the words trimmed, empty ones dropped.
+func NewWordList(words ...string) WordList {
+	var keep []string
+	for _, w := range words {
+		if w = strings.TrimSpace(w); w != "" {
+			keep = append(keep, w)
+		}
+	}
+	return WordList{joined: strings.Join(keep, "\n")}
+}
+
+// Words is the list (never nil).
+func (l WordList) Words() []string {
+	if l.joined == "" {
+		return []string{}
+	}
+	return strings.Split(l.joined, "\n")
+}
+
+// Matches: name holds one of the words, any case.
+func (l WordList) Matches(name string) bool {
+	if l.joined == "" {
+		return false
+	}
+	n := strings.ToLower(name)
+	for _, w := range l.Words() {
+		if strings.Contains(n, strings.ToLower(w)) {
+			return true
+		}
+	}
+	return false
+}
+
+func (l WordList) MarshalJSON() ([]byte, error) { return json.Marshal(l.Words()) }
+
+func (l *WordList) UnmarshalJSON(b []byte) error {
+	if string(b) == "null" {
+		return nil // keeps what it was (decoded over the defaults)
+	}
+	var ws []string
+	if err := json.Unmarshal(b, &ws); err != nil {
+		return fmt.Errorf("bold_choice_words must be a list of words")
+	}
+	for _, w := range ws {
+		if strings.Contains(w, "\n") {
+			return fmt.Errorf("bold_choice_words: a word can't hold a line break")
+		}
+	}
+	if len(ws) > 4*MaxBoldWords { // Validate gives the real limit; this only bounds the work
+		return fmt.Errorf("bold_choice_words: at most %d words", MaxBoldWords)
+	}
+	*l = NewWordList(ws...)
+	return nil
 }
 
 // LineSpacing is ReceiptPrefs.Spacing, in printer dots (0..MaxSpacingDots).
@@ -93,6 +164,7 @@ func DefaultReceiptPrefs() ReceiptPrefs {
 		DriverReportSize:  SizeNormal,
 		Format:            FormatExpanded,
 		StrikeImages:      true,
+		BoldChoiceWords:   NewWordList("fries", "salad", "soda"),
 	}
 }
 
@@ -159,6 +231,20 @@ func (p ReceiptPrefs) Validate() error {
 	for _, v := range []int{p.Spacing.ItemMod, p.Spacing.ModMod, p.Spacing.ItemItem} {
 		if v < 0 || v > MaxSpacingDots {
 			return fmt.Errorf("spacing must be 0-%d dots", MaxSpacingDots)
+		}
+	}
+	if ws := p.BoldChoiceWords.Words(); len(ws) > MaxBoldWords {
+		return fmt.Errorf("bold_choice_words: at most %d words", MaxBoldWords)
+	} else {
+		for _, w := range ws {
+			if len(w) > MaxBoldWordLen {
+				return fmt.Errorf("bold_choice_words: a word is at most %d characters", MaxBoldWordLen)
+			}
+			for i := 0; i < len(w); i++ {
+				if c := w[i]; c < 0x20 || c > 0x7e {
+					return errors.New("bold_choice_words may only use plain letters, digits, spaces and punctuation")
+				}
+			}
 		}
 	}
 	if f := p.FooterText; f != nil {

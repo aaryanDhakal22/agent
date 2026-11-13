@@ -107,3 +107,44 @@ func TestReceiptPrefs_Footer(t *testing.T) {
 		t.Error("the setting wins")
 	}
 }
+
+// bold_choice_words (2.5.2): defaults fries / salad / soda, a JSON list that round-trips, any-case
+// matching, ≤ 10 words of ≤ 20 plain characters, a missing key keeps the store's.
+func TestBoldChoiceWords(t *testing.T) {
+	d := DefaultReceiptPrefs()
+	if got := d.BoldChoiceWords.Words(); len(got) != 3 || got[0] != "fries" || got[2] != "soda" {
+		t.Fatalf("defaults %v", got)
+	}
+	if !d.BoldChoiceWords.Matches("Side of FRIES") || !d.BoldChoiceWords.Matches("House Salad") || d.BoldChoiceWords.Matches("Pepperoni") {
+		t.Error("matching")
+	}
+	p, err := DecodeReceiptPrefs([]byte(`{"bold_choice_words":[" Ranch ","","cheese"]}`))
+	if err != nil || len(p.BoldChoiceWords.Words()) != 2 || !p.BoldChoiceWords.Matches("extra RANCH") {
+		t.Fatalf("decode: %v %v", p.BoldChoiceWords.Words(), err)
+	}
+	b, _ := json.Marshal(p)
+	if !strings.Contains(string(b), `"bold_choice_words":["Ranch","cheese"]`) {
+		t.Errorf("encode: %s", b)
+	}
+	if p, _ := DecodeReceiptPrefs([]byte(`{"copies":2}`)); p.BoldChoiceWords != d.BoldChoiceWords {
+		t.Error("a missing key keeps the defaults")
+	}
+	if p, _ := DecodeReceiptPrefs([]byte(`{"bold_choice_words":[]}`)); len(p.BoldChoiceWords.Words()) != 0 || p.Validate() != nil {
+		t.Error("an empty list is allowed: nothing bold")
+	}
+	many := d
+	many.BoldChoiceWords = NewWordList("a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k")
+	if many.Validate() == nil {
+		t.Error("11 words")
+	}
+	long := d
+	long.BoldChoiceWords = NewWordList(strings.Repeat("x", 21))
+	if long.Validate() == nil {
+		t.Error("21 characters")
+	}
+	accent := d
+	accent.BoldChoiceWords = NewWordList("café")
+	if accent.Validate() == nil {
+		t.Error("accents")
+	}
+}

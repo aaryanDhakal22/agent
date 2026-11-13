@@ -28,6 +28,7 @@ DEFAULTS = {
     "spacing": {"item_mod": 0, "mod_mod": 0, "item_item": 0},
     "format": "expanded",  # 2.4.0
     "strike_images": True,  # kitchen change tickets (2026-11-11)
+    "bold_choice_words": ["fries", "salad", "soda"],  # 2.5.2: choices printed bold on the customer slips
 }
 
 
@@ -91,6 +92,8 @@ def test_get_defaults_put_and_reject(store) -> None:
         ({**want, "footer_size": "tiny"}, "footer_size"),
         ({**want, "footer_text": "X" * 33}, "at most 32"),
         ({**want, "footer_text": "MERCI CAFÉ"}, "footer_text"),
+        ({**want, "bold_choice_words": [f"w{i}" for i in range(11)]}, "at most 10 words"),
+        ({**want, "bold_choice_words": ["x" * 21]}, "at most 20 characters"),
     ):
         r = requests.put(f"{a.base}/api/settings/receipt", headers=tab, json=bad, timeout=5)
         assert r.status_code == 400 and r.json()["code"] == "bad_request", (bad, r.text)

@@ -109,6 +109,21 @@ func textsOf(items []order.LineItem, sizes bool) []string {
 	return out
 }
 
+// slipTextsOf: textsOf for a customer slip, whose $0 choices follow slipShowsChoice (2.5.2).
+func slipTextsOf(snap order.Snapshot, items []order.LineItem, sizes bool) []string {
+	shown := make([]order.LineItem, len(items))
+	for i, it := range items {
+		it.Children = nil
+		for _, c := range items[i].Children {
+			if slipShowsChoice(snap, c) {
+				it.Children = append(it.Children, c)
+			}
+		}
+		shown[i] = it
+	}
+	return textsOf(shown, sizes)
+}
+
 func tortureSC() storeconfig.StoreContext {
 	return storeconfig.StoreContext{Location: storeconfig.LocationContext{Name: tStoreName, Timezone: "America/New_York",
 		AddressLine1: "931 Taylor Avenue, Suite 100 (entrance on the side street)", AddressLine2: "Towson, MD 21286"}}
@@ -220,7 +235,7 @@ func dumpTortureWidth(t *testing.T, dir string, cols int) {
 	slipTotals := []string{"Sub-total", "Tax", "Total"} // SoftTouch's slip (softtouch.go, 2026-11-12)
 
 	receiptTexts := func(s order.Snapshot, sizes bool) []string {
-		x := append(textsOf(s.Items, sizes), s.Notes)
+		x := append(slipTextsOf(s, s.Items, sizes), s.Notes)
 		if a := s.Fulfillment.Address; a != nil && s.Fulfillment.Type == "delivery" {
 			x = append(x, a.Line1, a.Line2, a.City)
 		}
@@ -282,7 +297,7 @@ func dumpTortureWidth(t *testing.T, dir string, cols int) {
 	put("receipt_delivery_future", data, "receipt", receiptTexts(fut, true), slipTotals...)
 	// an online delivery's Merchant + Customer Copy (the terminal's layout, §2.10aa)
 	dc := tortureSnap("delivery", items...)
-	dcTexts := append(textsOf(dc.Items, false), tStreet, tApt, tCity, tDirections, tNote300)
+	dcTexts := append(slipTextsOf(dc, dc.Items, false), tStreet, tApt, tCity, tDirections, tNote300)
 	put("delivery_copies_torture", Build(dc, sc, printer.Ticket{Kind: printer.TicketDeliveryCopies, Cols: cols}, def),
 		"receipt", dcTexts)
 	put("delivery_copies_rerouted", Build(dc, sc, printer.Ticket{Kind: printer.TicketDeliveryCopies, Cols: cols, ReroutedFrom: tPrinter}, def),
@@ -384,7 +399,7 @@ func dumpTortureWidth(t *testing.T, dir string, cols int) {
 	inj.Customer.DisplayName, inj.Notes, inj.TakenBy = tInject(tCustomer), tInject(tNote300[:200]), tInject("Call center - "+tStaff)
 	inj.Fulfillment.Address = &order.Address{Line1: tInject(tStreet), Line2: tInject(tApt), City: tInject(tCity), PostalCode: "21093", Notes: tInject(tDirections)}
 	want := mapStrings(inj, refClean) // what must print: the same texts without their control bytes
-	injTexts := append(textsOf(want.Items, false), want.Notes, want.Fulfillment.Address.Line1, want.Fulfillment.Address.Line2,
+	injTexts := append(slipTextsOf(want, want.Items, false), want.Notes, want.Fulfillment.Address.Line1, want.Fulfillment.Address.Line2,
 		want.Fulfillment.Address.City)
 	put("receipt_delivery_injected", Build(inj, sc, printer.Ticket{Kind: printer.TicketReceipt, ReroutedFrom: tInject(tPrinter), Cols: cols}, def),
 		"receipt", append(injTexts[:len(injTexts):len(injTexts)], lastFirst(want.Customer.DisplayName), refClean(tInject(tPrinter))), slipTotals...)

@@ -29,5 +29,7 @@ func StoreInfo(sc storeconfig.StoreContext, prefs order.ReceiptPrefs) map[string
 	}
 	return map[string]any{"name": sc.StoreName(), "address": addr, "address_line1": strings.TrimSpace(loc.AddressLine1),
 		"address_line2": strings.TrimSpace(loc.AddressLine2), "phone": strings.TrimSpace(loc.Phone), "website": str("website"),
-		"footer": prefs.Footer(str("receipt_footer"))}
+		"footer": prefs.Footer(str("receipt_footer")),
+		// a printed choice holding one of these words prints bold (receipt_prefs, 2.5.2)
+		"bold_choice_words": prefs.BoldChoiceWords.Words()}
 }

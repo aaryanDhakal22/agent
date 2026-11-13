@@ -435,20 +435,8 @@ func signatureWanted(snap order.Snapshot) bool {
 // indented under it). A delivery drops the $0 choices stamped not for the
 // driver (§2.1g); a pickup prints them all.
 func softItems(p *escw, snap order.Snapshot, voided, delivery bool) {
-	if delivery {
-		deliveryItems(p, snap, voided)
-		return
-	}
-	s := snap
-	s.Items = make([]order.LineItem, len(snap.Items))
-	for i, it := range snap.Items {
-		it.Children = append([]order.LineItem(nil), it.Children...)
-		for j := range it.Children {
-			it.Children[j].ShowOnDriverTicket = nil // every choice on a pickup's receipt
-		}
-		s.Items[i] = it
-	}
-	deliveryItems(p, s, voided)
+	_ = delivery // one rule for pickup and delivery (slipShowsChoice, 2.5.2)
+	deliveryItems(p, snap, voided)
 }
 
 // hasCardCharge: a card payment with an amount (it gets a payment block).
