@@ -39,11 +39,8 @@
     },
     {
       "id": "printers", "title": "Printers", "group": "Store", "path": "/app/store/printers", "crumb": "Store › Printers",
-      "synonyms": ["printer", "kitchen printer", "receipt printer", "ip address", "station", "print"],
-      "fields": [
-        { "id": "printers.found", "anchor": "found", "label": "Found on the network", "api": "GET /store/v1/me/printers/live", "synonyms": ["discover", "new printer", "add printer"] },
-        { "id": "printers.ip_changes", "anchor": "ip_changes", "label": "IP changes", "api": "GET /store/v1/me/printers", "synonyms": ["ip", "address changed"] }
-      ]
+      "synonyms": ["printer", "kitchen printer", "receipt printer", "ip address", "station", "print", "add printer", "found on the network"],
+      "fields": []
     },
     {
       "id": "devices", "title": "Devices", "group": "Store", "path": "/app/store/devices", "crumb": "Store › Devices",
