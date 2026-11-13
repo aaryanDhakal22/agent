@@ -29,6 +29,8 @@ DEFAULTS = {
     "format": "expanded",  # 2.4.0
     "strike_images": True,  # kitchen change tickets (2026-11-11)
     "bold_choice_words": ["fries", "salad", "soda"],  # 2.5.2: choices printed bold on the customer slips
+    # 2.5.7: a $0 choice holding one of these whole words is one the driver hands over (order.DefaultHandoverWords)
+    "handover_choice_words": ["can", "cans", "soda", "pepsi", "coke", "sprite", "ginger ale", "ice tea", "iced tea", "tea", "dr pepper", "root beer", "mtn dew", "mountain dew", "lemonade", "fruit punch", "punch", "water", "juice", "2 liter", "liter", "bottle", "drink", "half/half", "half & half", "half and half", "triple mix", "shake", "lassi", "lasi", "slushie", "ice", "orange", "grape", "fries", "side", "salad", "chips", "celery", "rice", "naan", "roti", "dip", "dressing", "marinara", "chutney", "dessert", "cake", "cheesecake", "cannoli", "brownie", "cookie"],
     "style_online": "softtouch",  # 2.5.2: the slips' layout for online orders / the store's own
     "style_store": "softtouch",
 }

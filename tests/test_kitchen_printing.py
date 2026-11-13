@@ -102,7 +102,7 @@ def test_station_tickets_and_receipt(kitchen, fakes) -> None:
     assert pizza.startswith("\x1b@\x1ba\x01\x1bE\x01\x1d!\x11DELIVERY\n") and "Printed " in pizza, pizza
     assert "\x1d!31100\n" in pizza and "KITCHEN, PYTEST" in pizza, pizza
     # 2.5.7: the item's choices indented under it (two past the name, which prints double wide).
-    assert "1  Pepperoni Pizza\n" in pizza and "\n        - Large\n" in pizza, pizza
+    assert "1  Pepperoni Pizza\n" in pizza and "\x1bE\x00        - Large\n" in pizza, pizza
     assert "1  Mystery Dish" in pizza and "UNMATCHED" in pizza
     assert "Also on this order:\n" in pizza and "\n   1 Hot Wings\n" in pizza
     assert "\x1dB\x01" not in pizza, "no reverse print on an order ticket"
