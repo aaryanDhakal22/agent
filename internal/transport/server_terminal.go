@@ -156,7 +156,7 @@ func (s *Server) terminalError(w http.ResponseWriter, r *http.Request, err error
 		// again (the same client_key = the same Square refund).
 		s.writeJSON(w, http.StatusServiceUnavailable, errCodeMap("No answer from Square: the refund is not recorded. Try again.", "square_unavailable"))
 	case errors.Is(err, terminal.ErrPaidOnline):
-		s.writeJSON(w, http.StatusConflict, errCodeMap(err.Error(), "paid_online"))
+		s.writeJSON(w, http.StatusConflict, errCodeMap("Paid online: the online ordering company refunds it", "paid_online"))
 	case errors.Is(err, terminal.ErrNotCounterOrder), errors.Is(err, order.ErrNotFound):
 		s.writeJSON(w, http.StatusNotFound, errCodeMap("no such counter order", "not_found"))
 	default:
