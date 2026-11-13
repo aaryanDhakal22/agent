@@ -307,6 +307,11 @@ type Live struct {
 	// TerminalsConnected (CM-2): every paired terminal by name, 1 while it
 	// has an /api/events stream, else 0 — terminal.connected{device}.
 	TerminalsConnected func(ctx context.Context) map[string]int
+	// TerminalApps (2.5.5): every paired terminal's Centurion version and
+	// last reported update state — floor.terminals.version{app_version,
+	// device} (connected ones), floor.terminals.connected and
+	// floor.terminals.update_state{device, state}.
+	TerminalApps func(ctx context.Context) []TerminalApp
 	// Hub: ok=false when no store hub has ever reported (both hub gauges
 	// are then absent).
 	Hub func() (HubLink, bool)
@@ -325,8 +330,20 @@ type Live struct {
 	UpdateLastSuccess func() (time.Time, bool)
 }
 
+// TerminalApp is one paired POS terminal as the terminal gauges see it.
+type TerminalApp struct {
+	Device     string // its name (the device attribute)
+	AppVersion string // Centurion "<name>+<code>"; "" = never reported
+	Connected  bool   // on the Pi's /api/events stream now
+	// State: the update state it last reported (up_to_date | downloading |
+	// cached | waiting_for_idle | waiting_for_tap | installing | failed);
+	// "" = none since the Pi started.
+	State string
+}
+
 // RegisterLive creates the observable gauges floor.orders.open,
-// floor.tablets.connected, floor.tablets.version, hub.link.up, hub.status.age.seconds, agent.info,
+// floor.tablets.connected, floor.tablets.version, floor.terminals.connected,
+// floor.terminals.version, floor.terminals.update_state, hub.link.up, hub.status.age.seconds, agent.info,
 // sse.connected, agent.uptime.seconds, host.uptime.seconds and
 // agent.update.last_success, and one callback that reports them all. The
 // registration lives as long as the meter provider.
@@ -394,6 +411,21 @@ func RegisterLive(src Live) (metric.Registration, error) {
 	if err != nil {
 		return nil, fmt.Errorf("terminal.connected: %w", err)
 	}
+	termCount, err := m.Int64ObservableGauge("floor.terminals.connected",
+		metric.WithDescription("Paired POS terminals currently on the Pi's event stream"))
+	if err != nil {
+		return nil, fmt.Errorf("floor.terminals.connected: %w", err)
+	}
+	termVersions, err := m.Int64ObservableGauge("floor.terminals.version",
+		metric.WithDescription("Connected POS terminals by Centurion version (attributes app_version, device); 1 per terminal"))
+	if err != nil {
+		return nil, fmt.Errorf("floor.terminals.version: %w", err)
+	}
+	termUpdate, err := m.Int64ObservableGauge("floor.terminals.update_state",
+		metric.WithDescription("A paired POS terminal's last reported app-update state (attributes device, state); always 1, absent until it reports"))
+	if err != nil {
+		return nil, fmt.Errorf("floor.terminals.update_state: %w", err)
+	}
 	infoAttrs := metric.WithAttributes(attribute.String("version", src.Version))
 
 	return m.RegisterCallback(func(ctx context.Context, o metric.Observer) error {
@@ -431,6 +463,9 @@ func RegisterLive(src Live) (metric.Registration, error) {
 				o.ObserveInt64(terminals, int64(up), metric.WithAttributes(attribute.String("device", name)))
 			}
 		}
+		if src.TerminalApps != nil {
+			observeTerminalApps(o, src.TerminalApps(ctx), termCount, termVersions, termUpdate)
+		}
 		if src.Hub != nil {
 			if h, ok := src.Hub(); ok {
 				up := int64(0)
@@ -458,5 +493,36 @@ func RegisterLive(src Live) (metric.Registration, error) {
 			}
 		}
 		return nil
-	}, floorOpen, tablets, tabletVersions, hubUp, hubAge, info, sseUp, uptime, hostUptime, lastUpdate, terminals)
+	}, floorOpen, tablets, tabletVersions, hubUp, hubAge, info, sseUp, uptime, hostUptime, lastUpdate, terminals,
+		termCount, termVersions, termUpdate)
+}
+
+// observeTerminalApps reports the terminal gauges: how many are connected,
+// one version series per connected terminal ("unknown" = no version yet) and
+// one update-state series per terminal that reported one. Two terminals with
+// the same name and version add up instead of clashing.
+func observeTerminalApps(o metric.Observer, apps []TerminalApp, count, versions, update metric.Int64Observable) {
+	connected := int64(0)
+	byVer := map[[2]string]int64{}
+	byState := map[[2]string]int64{}
+	for _, a := range apps {
+		if a.Connected {
+			connected++
+			v := a.AppVersion
+			if v == "" {
+				v = "unknown"
+			}
+			byVer[[2]string{a.Device, v}]++
+		}
+		if a.State != "" {
+			byState[[2]string{a.Device, a.State}] = 1
+		}
+	}
+	o.ObserveInt64(count, connected)
+	for k, n := range byVer {
+		o.ObserveInt64(versions, n, metric.WithAttributes(attribute.String("device", k[0]), attribute.String("app_version", k[1])))
+	}
+	for k, n := range byState {
+		o.ObserveInt64(update, n, metric.WithAttributes(attribute.String("device", k[0]), attribute.String("state", k[1])))
+	}
 }

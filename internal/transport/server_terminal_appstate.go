@@ -4,11 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
 	"quiccpos/agent/internal/application/appupdate"
 	"quiccpos/agent/internal/domain/device"
+	"quiccpos/agent/internal/observability"
 )
 
 // TerminalAppState is what a terminal reports about its app and its update
@@ -157,4 +159,26 @@ func (s *Server) TerminalsUpdateNow(check func(context.Context) error, current f
 			Msg("Terminals told to update now (from main)")
 		return res, nil
 	}
+}
+
+// TerminalApps feeds the terminal gauges (2.5.5): every paired terminal with
+// its Centurion version (X-Terminal-Version, else the version its last app
+// state named), whether it is on /api/events now and its last update state.
+func (s *Server) TerminalApps(ctx context.Context) []observability.TerminalApp {
+	ts := s.Terminals(ctx)
+	out := make([]observability.TerminalApp, 0, len(ts))
+	for _, t := range ts {
+		a := observability.TerminalApp{Device: t.Name, AppVersion: t.AppVersion, Connected: t.Connected}
+		if t.Update != nil {
+			a.State = t.Update.State
+			if a.AppVersion == "" && t.Update.VersionName != "" {
+				a.AppVersion = t.Update.VersionName
+				if t.Update.VersionCode > 0 {
+					a.AppVersion += "+" + strconv.FormatInt(t.Update.VersionCode, 10)
+				}
+			}
+		}
+		out = append(out, a)
+	}
+	return out
 }

@@ -1132,6 +1132,7 @@ func main() {
 		TabletsConnected:   httpServer.TabletsConnected,
 		TerminalsConnected: httpServer.TerminalsConnected,
 		TabletVersions:     httpServer.TabletVersions,
+		TerminalApps:       httpServer.TerminalApps,
 		Hub: func() (observability.HubLink, bool) {
 			now := time.Now()
 			v := orderService.IntegrationView(now)
