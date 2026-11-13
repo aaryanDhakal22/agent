@@ -76,12 +76,13 @@ func (r *Requester) AfterClose(ctx context.Context) (*Reply, string) {
 	}
 	version, sha := r.latest.Current()
 	own := r.latest.OwnSHA()
+	m, _ := r.latest.Manifest()
 	switch {
 	case version == "" || sha == "":
 		return nil, AutoNoManifest
 	case own != "" && strings.EqualFold(sha, own):
 		return nil, AutoUpToDate
-	case !Newer(version, r.cfg.Version):
+	case !Newer(version, r.cfg.Version) && !RollbackFor(version, m.Header["rollback_from"], r.cfg.Version):
 		return nil, AutoNotNewer
 	}
 	// The same build already failed (or was rolled back) after an earlier
@@ -120,6 +121,19 @@ func Newer(manifest, running string) bool {
 		}
 	}
 	return false
+}
+
+// RollbackFor: a rollback manifest (`# rollback_from=X.Y.Z`, written by `--do ship rollback prd`) takes an agent
+// running exactly X.Y.Z back to the manifest's older version; any other agent ignores the header (a replayed
+// rollback manifest can't move a Pi on another release backwards). Both plain semver, else false.
+func RollbackFor(manifest, rollbackFrom, running string) bool {
+	_, okM := semver(manifest)
+	f, okF := semver(rollbackFrom)
+	c, okC := semver(running)
+	if !okM || !okF || !okC || f != c {
+		return false
+	}
+	return Newer(running, manifest)
 }
 
 func semver(v string) ([3]int, bool) {

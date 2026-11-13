@@ -150,6 +150,20 @@ type Manifest struct {
 	MinTerminal  string
 	Quibase      string // quibase_version ("" = not named)
 	Terminal     string // terminal_version
+	// RollbackFrom (rollback_from): this manifest is a rollback (`--do ship rollback prd`): an agent running
+	// exactly this version installs the manifest's OLDER agent. Any other running version treats it as usual
+	// (never older), so a replayed rollback manifest can't take a Pi on another release backwards.
+	RollbackFrom string
+}
+
+// RollbackFor: the manifest takes an agent running `running` back to its older agent_version.
+func (m Manifest) RollbackFor(running string) bool {
+	if m.RollbackFrom == "" || m.AgentVersion == "" {
+		return false
+	}
+	x, ok1 := semver(m.RollbackFrom)
+	y, ok2 := semver(running)
+	return ok1 && ok2 && x == y && less(m.AgentVersion, running)
 }
 
 // participant is a device the round waits for (preparing) or installs
@@ -574,6 +588,7 @@ func (p plan) empty() bool {
 func (c *Coordinator) planLocked(ctx context.Context) plan {
 	var p plan
 	var m Manifest
+	rollback := false
 	haveManifest := false
 	if c.d.Manifest != nil {
 		m, haveManifest = c.d.Manifest(ctx, false)
@@ -585,13 +600,15 @@ func (c *Coordinator) planLocked(ctx context.Context) plan {
 			own = c.d.OwnSHA()
 		}
 		differs := own != "" && !strings.EqualFold(own, m.AgentSHA)
-		if differs && newer(m.AgentVersion, c.d.Version) {
+		back := m.RollbackFor(c.d.Version)
+		if differs && (newer(m.AgentVersion, c.d.Version) || back) {
 			if c.failedBeforeLocked(m.AgentSHA) {
 				// That release's Pi update failed: its apps don't go out
 				// without it either (one unit) until a newer manifest.
 				return plan{}
 			}
 			p.agent = &agentState{From: c.d.Version, To: m.AgentVersion, FromSHA: own, ToSHA: m.AgentSHA}
+			rollback = back
 		}
 	}
 	devices := c.devices(ctx)
@@ -604,8 +621,9 @@ func (c *Coordinator) planLocked(ctx context.Context) plan {
 		if c.d.Cached != nil {
 			cached = c.d.Cached(app)
 		}
-		// The new agent needs at least its floor: wait for it before the Pi moves.
-		if p.agent != nil && min != "" && (cached == nil || less(cached.VersionName, min)) {
+		// The new agent needs at least its floor: wait for it before the Pi moves. A rollback goes to an older
+		// agent, whose floor the apps already meet: it never waits for APKs.
+		if p.agent != nil && !rollback && min != "" && (cached == nil || less(cached.VersionName, min)) {
 			p.waitApps = append(p.waitApps, app+" "+min)
 			continue
 		}

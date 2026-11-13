@@ -959,7 +959,8 @@ func main() {
 			}
 			return storeupdate.Manifest{AgentVersion: m.AgentVersion(), AgentSHA: m.AgentSHA(),
 				MinQuibase: m.Header["min_quibase"], MinTerminal: m.Header["min_terminal"],
-				Quibase: m.Header["quibase_version"], Terminal: m.Header["terminal_version"]}, true
+				Quibase: m.Header["quibase_version"], Terminal: m.Header["terminal_version"],
+				RollbackFrom: m.Header["rollback_from"]}, true
 		},
 		Cached: func(app string) *storeupdate.Release {
 			u := appUpdater

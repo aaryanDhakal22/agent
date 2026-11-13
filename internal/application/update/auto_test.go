@@ -43,6 +43,7 @@ type autoRig struct {
 	version string
 	sha     string
 	own     string
+	headers string // more "# key=value" lines (a rollback manifest)
 }
 
 func newAutoRig(t *testing.T) *autoRig {
@@ -59,7 +60,7 @@ func newAutoRig(t *testing.T) *autoRig {
 
 func (g *autoRig) requester(supported bool) *Requester {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = w.Write([]byte("# agent_version=" + g.version + "\n" + g.sha + "  agent-linux-arm64\n"))
+		_, _ = w.Write([]byte("# agent_version=" + g.version + "\n" + g.headers + g.sha + "  agent-linux-arm64\n"))
 	}))
 	g.t.Cleanup(srv.Close)
 	exe := filepath.Join(g.dir, "agent-bin")
@@ -147,6 +148,45 @@ func TestNewer(t *testing.T) {
 	} {
 		if got := Newer(c.m, c.r); got != c.want {
 			t.Errorf("Newer(%q, %q) = %v", c.m, c.r, got)
+		}
+	}
+}
+
+// A rollback manifest (`--do ship rollback prd`): `# rollback_from=` the running version takes the Pi back to the
+// older agent; for any other running version the older manifest is ignored as before.
+func TestAutoUpdateRollbackManifest(t *testing.T) {
+	ctx := context.Background()
+	g := newAutoRig(t)
+	g.version = "2.1.9"
+	g.headers = "# rollback_from=2.2.0\n" // the requester runs 2.2.0
+	rep, reason := g.requester(true).AfterClose(ctx)
+	if reason != "" || rep == nil || !rep.Accepted {
+		t.Fatalf("rollback from the running version: %+v %q", rep, reason)
+	}
+
+	g = newAutoRig(t)
+	g.version = "2.1.9"
+	g.headers = "# rollback_from=2.2.1\n" // a rollback of another release
+	if _, reason := g.requester(true).AfterClose(ctx); reason != AutoNotNewer {
+		t.Fatalf("another release's rollback: %q", reason)
+	}
+}
+
+func TestRollbackFor(t *testing.T) {
+	for _, c := range []struct {
+		manifest, from, running string
+		want                    bool
+	}{
+		{"2.5.4", "2.5.5", "2.5.5", true},
+		{"v2.5.4", "v2.5.5", "2.5.5", true},
+		{"2.5.4", "2.5.6", "2.5.5", false}, // another release's rollback
+		{"2.5.6", "2.5.5", "2.5.5", false}, // not older: the usual path
+		{"2.5.4", "", "2.5.5", false},
+		{"staging-latest-abc", "2.5.5", "2.5.5", false},
+		{"2.5.4", "2.5.5", "dev", false},
+	} {
+		if got := RollbackFor(c.manifest, c.from, c.running); got != c.want {
+			t.Errorf("RollbackFor(%q, %q, %q) = %v", c.manifest, c.from, c.running, got)
 		}
 	}
 }
