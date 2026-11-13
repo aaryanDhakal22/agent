@@ -179,19 +179,16 @@ func headerCanvas(logo image.Image, lines []string, dots int) *image.Gray {
 		h, w = boxH, boxH*lw/lh
 	}
 	w, h = max(w, 1), max(h, 1)
-	height := max(h, textH) + int(8*scale)
-	canvas := image.NewGray(image.Rect(0, 0, dots, height))
-	draw.Draw(canvas, canvas.Bounds(), image.White, image.Point{}, draw.Src)
-	// The logo, scaled onto white (transparency = paper), then dithered.
-	scaled := image.NewRGBA(image.Rect(0, 0, w, h))
-	draw.Draw(scaled, scaled.Bounds(), image.White, image.Point{}, draw.Src)
-	xdraw.CatmullRom.Scale(scaled, scaled.Bounds(), logo, lb, xdraw.Over, nil)
-	top := (height - h) / 2
-	dither(canvas, scaled, image.Pt(0, top))
-	// The store's lines, left-aligned right of the logo, vertically centred.
-	x := w + gap
-	y := (height - textH) / 2
-	textW := dots - x
+	// The store's lines, each shrunk until it fits right of the logo; the
+	// widest sets the text block's width.
+	type textLine struct {
+		s     string
+		fc    font.Face
+		px    float64
+		lineH int
+	}
+	var tl []textLine
+	textW, blockW := dots-w-gap, 0
 	for i, l := range lines {
 		if l == "" {
 			continue
@@ -204,7 +201,6 @@ func headerCanvas(logo image.Image, lines []string, dots int) *image.Gray {
 		if fc == nil {
 			continue
 		}
-		// shrink a line that doesn't fit
 		for px > 10 && font.MeasureString(fc, l).Ceil() > textW {
 			px -= 1
 			fc = face(f, px)
@@ -213,9 +209,31 @@ func headerCanvas(logo image.Image, lines []string, dots int) *image.Gray {
 		if i == 0 {
 			lineH = int(px * 1.25)
 		}
-		d := &font.Drawer{Dst: canvas, Src: image.Black, Face: fc, Dot: fixed.P(x, y+int(px))}
-		d.DrawString(l)
-		y += lineH
+		blockW = max(blockW, min(font.MeasureString(fc, l).Ceil(), textW))
+		tl = append(tl, textLine{l, fc, px, lineH})
+	}
+	height := max(h, textH) + int(8*scale)
+	canvas := image.NewGray(image.Rect(0, 0, dots, height))
+	draw.Draw(canvas, canvas.Bounds(), image.White, image.Point{}, draw.Src)
+	// Logo + text are ONE group, centred on the paper (the owner, 2026-11-12).
+	groupW := w
+	if blockW > 0 {
+		groupW += gap + blockW
+	}
+	ox := max((dots-groupW)/2, 0)
+	// The logo, scaled onto white (transparency = paper), then dithered.
+	scaled := image.NewRGBA(image.Rect(0, 0, w, h))
+	draw.Draw(scaled, scaled.Bounds(), image.White, image.Point{}, draw.Src)
+	xdraw.CatmullRom.Scale(scaled, scaled.Bounds(), logo, lb, xdraw.Over, nil)
+	top := (height - h) / 2
+	dither(canvas, scaled, image.Pt(ox, top))
+	// The store's lines, left-aligned right of the logo, vertically centred.
+	x := ox + w + gap
+	y := (height - textH) / 2
+	for _, l := range tl {
+		d := &font.Drawer{Dst: canvas, Src: image.Black, Face: l.fc, Dot: fixed.P(x, y+int(l.px))}
+		d.DrawString(l.s)
+		y += l.lineH
 	}
 	return canvas
 }

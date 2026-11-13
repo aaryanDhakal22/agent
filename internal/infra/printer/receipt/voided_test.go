@@ -11,9 +11,9 @@ import (
 
 // A voided / cancelled order's receipt (a reprint, the owner 2026-11-12:
 // "removed / void items are stylized with strike through"): the banner, and
-// every item / size / modifier / note line as a struck GS v 0 picture (twice
-// as tall, like the base font) instead of its text; strike_images off = the
-// text with a reversed VOID tag over each item. Money lines stay text.
+// every item / modifier / note line as a struck GS v 0 picture instead of its
+// text, in SoftTouch's slip like every receipt (2026-11-12); strike_images
+// off = the text with a reversed VOID tag over each item. Money lines stay text.
 func TestVoidedReceipt_StruckThrough(t *testing.T) {
 	f := halfCases[5].item
 	f.Notes = "well done"
@@ -31,8 +31,13 @@ func TestVoidedReceipt_StruckThrough(t *testing.T) {
 			t.Errorf("%q printed as text, not struck", text)
 		}
 	}
-	if n := bytes.Count(got, []byte("\x1dv0\x02")); n != 8 { // item, its name, 4 mods, the note, Soda
-		t.Errorf("%d struck pictures, want 8", n)
+	// SoftTouch's slip (the owner, 2026-11-12): the item line, its 4 choices, the note, Soda = 7
+	// struck pictures (GS v 0 m=0, 24 dots tall) besides the powered-by logo.
+	if n := bytes.Count(got, []byte("\x1dv0\x00")) - 1; n != 7 {
+		t.Errorf("%d struck pictures, want 7\n%q", n, got)
+	}
+	if !bytes.Contains(got, []byte("VOID - NOT CHARGED")) || bytes.Contains(got, []byte("Collect Cash")) {
+		t.Errorf("a voided slip says NOT CHARGED, never Collect Cash")
 	}
 	if !bytes.Contains(got, []byte("Total:")) {
 		t.Errorf("the totals went")
@@ -41,8 +46,8 @@ func TestVoidedReceipt_StruckThrough(t *testing.T) {
 
 	prefs.StrikeImages = false
 	got = Build(snap, sc, printer.Ticket{Kind: printer.TicketReceipt}, prefs)
-	if bytes.Contains(got, []byte("\x1dv0\x02")) || bytes.Count(got, []byte(cmdInvertOn+" VOID "+cmdInvertOff)) != 2 ||
-		!bytes.Contains(got, []byte("Soda")) {
+	if bytes.Count(got, []byte("\x1dv0\x00")) != 1 || bytes.Count(got, []byte(cmdInvertOn+" VOID "+cmdInvertOff)) != 2 ||
+		!bytes.Contains(got, []byte("SODA")) {
 		t.Errorf("fallback: no pictures, a VOID tag per item, the text\n%q", got)
 	}
 	snap.Voided = "CANCELLED"

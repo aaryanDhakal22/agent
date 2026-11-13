@@ -40,6 +40,9 @@ type escw struct {
 	buf   bytes.Buffer
 	width int
 	lay   layout
+	// strike: lines print as struck pictures (a voided order's items,
+	// strike.go); strikeImages = receipt_prefs.strike_images.
+	strike, strikeImages bool
 }
 
 func (p *escw) raw(s string) { p.buf.WriteString(s) }
@@ -52,7 +55,13 @@ func (p *escw) bold(on bool) {
 		p.raw(cmdBoldOff)
 	}
 }
-func (p *escw) line(s string) { p.raw(dclean(s) + cmdFeed) }
+func (p *escw) line(s string) {
+	if p.strike { // a picture of its own line: no line feed after it
+		p.raw(strikeRaster(from437(dclean(s)), false))
+		return
+	}
+	p.raw(dclean(s) + cmdFeed)
+}
 func (p *escw) feed(n int) {
 	for i := 0; i < n; i++ {
 		p.raw(cmdFeed)
@@ -211,7 +220,7 @@ func BuildDeliveryCopies(snap order.Snapshot, sc storeconfig.StoreContext, prefs
 	if loc, err := time.LoadLocation(sc.Location.Timezone); sc.Location.Timezone != "" && err == nil {
 		at = at.In(loc)
 	}
-	p := &escw{width: lay.cols, lay: lay}
+	p := &escw{width: lay.cols, lay: lay, strikeImages: prefs.StrikeImages}
 	p.raw(cmdInit + cmdNormalSz)
 	st := storeOf(sc, prefs.Normalize())
 	for _, copy := range []string{MerchantCopy, CustomerCopy} {
@@ -250,7 +259,7 @@ func BuildCustomerReceipt(snap order.Snapshot, sc storeconfig.StoreContext, pref
 	if loc, err := time.LoadLocation(sc.Location.Timezone); sc.Location.Timezone != "" && err == nil {
 		at = at.In(loc)
 	}
-	p := &escw{width: lay.cols, lay: lay}
+	p := &escw{width: lay.cols, lay: lay, strikeImages: prefs.StrikeImages}
 	p.raw(cmdInit + cmdNormalSz)
 	if on.ReroutedFrom != "" { // the receipt's own bands (writeRerouted), as on every slip of a stand-in
 		writeRerouted(p.raw, func() { p.raw(cmdFeed) }, on.ReroutedFrom, lay)
@@ -310,9 +319,10 @@ func deliveryItems(p *escw, snap order.Snapshot, voided bool) {
 			}
 			mods = append(mods, c)
 		}
-		if voided {
+		if voided && !p.strikeImages { // strike_images off: a reversed VOID tag over the item
 			p.raw(cmdInvertOn + " VOID " + cmdInvertOff + cmdFeed)
 		}
+		p.strike = voided && p.strikeImages // the item, its choices and note struck through
 		name := strings.ToUpper(strings.Join(nonEmpty(strings.TrimSpace(displaySize(it.Size)), strings.TrimSpace(it.Name)), " "))
 		qty := max(it.Quantity, 1)
 		free := it.UnitPrice == 0
@@ -355,6 +365,7 @@ func deliveryItems(p *escw, snap order.Snapshot, voided bool) {
 		if n := strings.TrimSpace(it.Notes); n != "" {
 			p.wrapped("      Note: "+n, strings.Repeat(" ", 12))
 		}
+		p.strike = false
 	}
 }
 

@@ -55,9 +55,9 @@ func Build(snap order.Snapshot, sc storeconfig.StoreContext, t printer.Ticket, p
 		return buildStation(snap, t, prefs)
 	}
 	var out []byte
-	if t.Kind == printer.TicketReceipt && snap.Voided == "" {
-		// The customer receipt = SoftTouch's slip (the owner, 2026-11-12; softtouch.go);
-		// a voided one keeps buildFull's struck-through lines.
+	if t.Kind == printer.TicketReceipt {
+		// The customer receipt = SoftTouch's slip (the owner, 2026-11-12; softtouch.go),
+		// a voided one too (its VOID band, its items struck through).
 		out = BuildCustomerReceipt(snap, sc, prefs, printer.Paper{Cols: t.Cols, ReroutedFrom: t.ReroutedFrom})
 	} else {
 		out = buildFull(snap, sc, t.ReroutedFrom, prefs, layoutFor(t.Cols))
