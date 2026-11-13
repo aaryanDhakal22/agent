@@ -19,8 +19,10 @@ import secrets
 import threading
 import time
 import uuid
+from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import pytest
 import requests
@@ -402,15 +404,44 @@ def test_pick_up_list_payment_void_limits(rig):
         assert a in actions, a
 
 
-def test_counter_number_resets_at_close_batch(rig):
-    agent = rig["agent"]
-    first = place(rig).json()
-    assert first["number"] == 500
-    oid = first["order"]["order"]["id"]
-    assert rig["term"].post(f"{agent.base}/api/terminal/orders/{oid}/void", json={"reason": "test", "manager_pin": "9876"}, timeout=5).status_code == 200
-    r = agent.http.post(f"{agent.base}/api/batch/close", json={"force": True}, timeout=30)
-    assert r.status_code == 200, r.text
-    assert place(rig).json()["number"] == 500
+def test_ticket_numbers_restart_once_a_business_day(rig):
+    """Contract 2.10ae (the owner, 2026-11-13): Close batch no longer restarts the numbers; the first number
+    of a new business day after a close does. The business day starts at the store's auto-close time, so
+    moving it from 23:59 (now is still yesterday's day) to 00:00 (today's) plays the next day without a clock.
+    main's kitchen_start (here 2000) is where the kitchen numbers start again."""
+    agent, term, fm = rig["agent"], rig["term"], rig["fm"]
+    tz = rig["mgr"].get(f"{STORE_V1}/me/location", timeout=5).json().get("timezone") or "America/New_York"
+    now = datetime.now(ZoneInfo(tz))
+    if (now.hour, now.minute) >= (23, 57) or (now.hour, now.minute) <= (0, 2):
+        pytest.skip("too close to midnight in the store's timezone to tell the two days apart")
+
+    def config(version: int, day_start: str) -> None:
+        fm.terminal_config = staff_config(version=version)
+        fm.terminal_config["settings"].update({"auto_close_batch_at": day_start, "kitchen_start": 2000})
+        fm.command("terminal.changed", {"version": version})
+        wait_until(lambda: term.get(f"{agent.base}/api/terminal/session", timeout=5).json()["config_version"] == version,
+                   what=f"config v{version}")
+        wait_until(lambda: term.post(f"{agent.base}/api/terminal/login", json={"pin": "1234"}, timeout=5).status_code == 200,
+                   what="cashier logged in again")
+
+    def close() -> None:
+        r = agent.http.post(f"{agent.base}/api/batch/close", json={"force": True}, timeout=30)
+        assert r.status_code == 200, r.text
+
+    config(2, "23:59")  # the business day is yesterday's
+    assert [place(rig).json()["number"] for _ in range(2)] == [500, 501]
+    close()
+    assert place(rig).json()["number"] == 502, "a close the same business day carries on"
+    close()
+    close()
+    assert place(rig).json()["number"] == 503, "a second and third close the same day carry on too"
+    close()
+    config(3, "00:00")  # the next business day
+    assert agent.http.get(f"{agent.base}/api/floor", timeout=5).json()["kitchen_next"] == 2000, \
+        "the next kitchen number is main's kitchen_start on the new day"
+    assert [place(rig).json()["number"] for _ in range(2)] == [500, 501], "the first number of the new day after a close"
+    close()
+    assert place(rig).json()["number"] == 502, "and it carries on through that day's closes"
 
 
 def test_commands_refetch_and_announce(rig):

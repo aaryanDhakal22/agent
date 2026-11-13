@@ -37,6 +37,11 @@ func TestTerminalAppStateAndUpdateNow(t *testing.T) {
 		terms[0].Update.Android != "11 (API 30)" || !terms[0].Update.Permissions["install_packages"] || terms[0].Update.ReceivedAt.IsZero() {
 		t.Fatalf("terminals: %+v", terms)
 	}
+	// The terminal gauges (2.5.5): no X-Terminal-Version here, so the version comes from the app state.
+	if apps := s.TerminalApps(context.Background()); len(apps) != 1 || apps[0].Device != "Counter 1" || apps[0].Connected ||
+		apps[0].State != "waiting_for_idle" || apps[0].AppVersion != "1.0.5+1762900000" {
+		t.Fatalf("terminal apps: %+v", apps)
+	}
 
 	// Update now: no release anywhere → no_release, nothing announced.
 	var announced []appupdate.Release

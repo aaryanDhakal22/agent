@@ -295,11 +295,14 @@ func (d *Dispatcher) ExecuteMode(ctx context.Context, snap order.Snapshot, mode 
 
 // printTicket prints one ticket on its target, failing over if needed.
 func (d *Dispatcher) printTicket(ctx context.Context, snap order.Snapshot, t printer.Ticket, roster []rosterSlot, byID map[string]rosterSlot) (printer.TicketResult, error) {
-	res := printer.TicketResult{Kind: t.Kind, Station: t.Station}
+	res := printer.TicketResult{Kind: t.Kind, Station: t.Station, Label: t.Label()}
 	target, ok := byID[t.TargetID]
 	if !ok {
-		res.Err = "printer not in roster"
+		res.Err, res.Skipped, res.At = "printer not in roster", true, time.Now()
 		return res, ErrNoPrintersAvailable
+	}
+	if res.Station == "" {
+		res.Station = target.entry.Name
 	}
 
 	candidates, rule := d.candidates(target, roster)
@@ -310,6 +313,7 @@ func (d *Dispatcher) printTicket(ctx context.Context, snap order.Snapshot, t pri
 			lastErr = fmt.Errorf("print time budget used up: %w", ctx.Err())
 			break
 		}
+		res.Attempts = i + 1
 		tk := t
 		tk.Cols = sl.entry.Cols // laid out for the printer it prints on, a stand-in's on a reroute
 		if i > 0 {
@@ -317,7 +321,7 @@ func (d *Dispatcher) printTicket(ctx context.Context, snap order.Snapshot, t pri
 		}
 		err := sl.svc.PrintWith(ctx, snap, func(s order.Snapshot) []byte { return d.build(s, tk) })
 		if err == nil {
-			res.PrintedOn = sl.entry.Name
+			res.PrintedOn, res.At = sl.entry.Name, time.Now()
 			res.ReroutedFrom = tk.ReroutedFrom
 			if i > 0 {
 				res.RerouteBy = rerouteBy(rule, sl.entry.ID)
@@ -336,7 +340,10 @@ func (d *Dispatcher) printTicket(ctx context.Context, snap order.Snapshot, t pri
 		d.logger.Warn().Ctx(ctx).Err(err).Str("order_id", snap.ID).Str("printer", sl.entry.Name).
 			Str("kind", string(t.Kind)).Msg("printer failed for ticket; trying next")
 	}
-	res.Err = lastErr.Error()
+	if lastErr == nil { // nothing was tried (no candidate)
+		lastErr = ErrNoPrintersAvailable
+	}
+	res.Err, res.At = lastErr.Error(), time.Now()
 	return res, lastErr
 }
 

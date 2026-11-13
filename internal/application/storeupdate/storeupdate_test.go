@@ -504,3 +504,69 @@ func TestSettleAfterStart(t *testing.T) {
 		t.Fatalf("a nudge doesn't wait for the settle: %+v", rep)
 	}
 }
+
+// A rollback manifest (`--do ship rollback prd`, `# rollback_from=`): the Pi on exactly that version goes back to
+// the older agent in a round, without waiting for APKs; the apps the manifest names (the previous set) are older
+// than what the devices run, so none installs (Android can't downgrade an app); a Pi on any other version, or a
+// manifest without the header, never moves backwards.
+func TestRoundRollbackManifest(t *testing.T) {
+	r := newRig(t)
+	r.devices = []Device{
+		{ID: "t1", Name: "Counter tablet", Kind: KindTablet, Version: "2.1.2+200", Connected: true},
+		{ID: "c1", Name: "Register 1", Kind: KindTerminal, Version: "1.0.6+200", Connected: true},
+	}
+	r.manifest = Manifest{AgentVersion: "2.5.4", AgentSHA: "old", MinQuibase: "2.1.0", MinTerminal: "1.0.3",
+		Quibase: "2.1.1", Terminal: "1.0.5", RollbackFrom: "2.5.5"}
+	// what the Pi cached is the newer set (the old one isn't main's newest any more)
+	r.cached[AppQuibase] = &Release{VersionCode: 200, VersionName: "2.1.2"}
+	r.cached[AppTerminal] = &Release{VersionCode: 200, VersionName: "1.0.6"}
+	c := r.coordinator("2.5.5")
+	c.Tick(ctx)
+	phase(t, c, PhasePreparing)
+	v := c.View(nil)
+	if v.Agent == nil || v.Agent.From != "2.5.5" || v.Agent.To != "2.5.4" || v.Quibase != nil || v.Terminal != nil {
+		t.Fatalf("a rollback round moves the Pi only: %+v", v)
+	}
+	ready(t, c, "t1", true, "")
+	ready(t, c, "c1", true, "")
+	c.Tick(ctx)
+	phase(t, c, PhasePiInstalling)
+	if len(r.piCalls) != 1 {
+		t.Fatalf("the Pi was asked once: %v", r.piCalls)
+	}
+	// the older agent boots
+	r.ownSHA = "old"
+	c2 := r.coordinator("2.5.4")
+	c2.Tick(ctx)
+	phase(t, c2, PhaseDone)
+	r.later(FinishedShown + time.Second)
+	c2.Tick(ctx)
+	c2.Tick(ctx)
+	phase(t, c2, PhaseIdle) // the manifest names the running binary now: nothing more
+
+	// a Pi on another release ignores the rollback (a replayed manifest can't take it back)
+	r3 := newRig(t)
+	r3.manifest = Manifest{AgentVersion: "2.5.4", AgentSHA: "old", RollbackFrom: "2.5.5"}
+	c3 := r3.coordinator("2.5.6")
+	c3.Tick(ctx)
+	phase(t, c3, PhaseIdle)
+	// and an older manifest without the header is never installed
+	r4 := newRig(t)
+	r4.manifest = Manifest{AgentVersion: "2.5.4", AgentSHA: "old"}
+	c4 := r4.coordinator("2.5.5")
+	c4.Tick(ctx)
+	phase(t, c4, PhaseIdle)
+}
+
+func TestManifestRollbackFor(t *testing.T) {
+	m := Manifest{AgentVersion: "2.5.4", RollbackFrom: "2.5.5"}
+	if !m.RollbackFor("2.5.5") || m.RollbackFor("2.5.6") || m.RollbackFor("2.5.4") {
+		t.Fatal("rollback_from = the running version only")
+	}
+	if (Manifest{AgentVersion: "2.5.6", RollbackFrom: "2.5.5"}).RollbackFor("2.5.5") {
+		t.Fatal("not older = not a rollback")
+	}
+	if (Manifest{AgentVersion: "2.5.4"}).RollbackFor("2.5.5") {
+		t.Fatal("no header = no rollback")
+	}
+}

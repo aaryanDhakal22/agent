@@ -71,6 +71,9 @@ func (r *OrderRepository) PlaceCounterOrder(ctx context.Context, in terminal.New
 		case !errors.Is(err, sql.ErrNoRows):
 			return err
 		}
+		if err := takeNumbersDay(ctx, q, r.numberingAt(in.Now)); err != nil {
+			return err
+		}
 		after, err := q.TakeCounterNumber(ctx, in.CounterStart)
 		if err != nil {
 			return fmt.Errorf("counter number: %w", err)
@@ -173,6 +176,15 @@ func placedSnapshot(so order.StoredOrder, in terminal.NewCounterOrder) (map[stri
 	if t, ok := so.Order.SourceMeta["terminal"].(map[string]any); ok {
 		if id, ok := t["customer_id"].(string); ok && id != "" {
 			m["customer_id"] = id
+		}
+		// Who took it on which terminal (2.5.5, §2.10ag): main's "Carlos on
+		// Counter 1" (the paired device's name, the cashier's name as the
+		// Pi had it then).
+		if n, ok := t["device_name"].(string); ok && n != "" {
+			m["device_name"] = n
+		}
+		if n, ok := t["staff_name"].(string); ok && n != "" {
+			m["staff_name"] = n
 		}
 	}
 	if so.Status.EstimatedReadyAt != nil {

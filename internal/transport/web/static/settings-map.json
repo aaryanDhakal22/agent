@@ -1,0 +1,237 @@
+{
+  "version": 1,
+  "about": "Every main store page and setting: where it is (path#anchor), what it is called (crumb + label) and its API field. Canonical file: main/backend/frontend/src/lib/settings/settings-map.json; copies: npm run sync-settings-map. A field's anchor finds it on its page by element id, else by its label (a label, heading, tab or switch with exactly that text). Deep link = the store's main URL + path + '#' + anchor.",
+  "pages": [
+    {
+      "id": "overview", "title": "Overview", "group": "Store", "path": "/app/store", "crumb": "Store › Overview",
+      "synonyms": ["home", "dashboard", "pause", "drivers", "live"],
+      "fields": [
+        { "id": "overview.ordering", "anchor": "ordering", "label": "Ordering", "api": "POST /store/v1/me/status/pause", "synonyms": ["pause orders", "stop orders", "busy"] },
+        { "id": "overview.drivers", "anchor": "drivers", "label": "Drivers", "api": "GET /store/v1/me/floor", "synonyms": ["driver queue"] }
+      ]
+    },
+    {
+      "id": "orders", "title": "Orders", "group": "Store", "path": "/app/store/orders", "crumb": "Store › Orders",
+      "synonyms": ["history", "tickets", "order list", "refund"], "fields": []
+    },
+    {
+      "id": "reports", "title": "Reports", "group": "Store", "path": "/app/store/reports", "crumb": "Store › Reports",
+      "synonyms": ["z report", "day close", "drawers", "money flags", "over short"],
+      "fields": [
+        { "id": "reports.day_closes", "anchor": "day_closes", "label": "Day closes", "api": "GET /store/v1/me/reports/z", "synonyms": ["z report", "close batch", "end of day report"] },
+        { "id": "reports.drawers", "anchor": "drawers", "label": "Cash drawers", "api": "GET /store/v1/me/drawers", "synonyms": ["drawer", "over short", "cash count"] },
+        { "id": "reports.money_notes", "anchor": "money_notes", "label": "Money notes", "api": "GET /store/v1/me/reports/flags", "synonyms": ["flags", "money flags", "money problems"] }
+      ]
+    },
+    {
+      "id": "menu", "title": "Menu", "group": "Store", "path": "/app/store/menu", "crumb": "Store › Menu",
+      "synonyms": ["items", "prices", "catalog", "modifiers", "toppings", "printer per item", "station", "quick add"],
+      "fields": [
+        { "id": "menu.items", "anchor": "items", "label": "Items", "api": "/store/v1/me/menu/items", "synonyms": ["item", "price", "printer", "station", "no kitchen ticket", "86", "sold out"] },
+        { "id": "menu.modifiers", "anchor": "modifiers", "label": "Modifier groups", "api": "/store/v1/me/menu/modifier-groups", "synonyms": ["modifiers", "toppings", "options", "add-ons"] },
+        { "id": "menu.categories", "anchor": "categories", "label": "Categories", "api": "/store/v1/me/menu/categories", "synonyms": ["category", "default printer"] },
+        { "id": "menu.sizes", "anchor": "sizes", "label": "Sizes", "api": "/store/v1/me/menu/sizes", "synonyms": ["size", "small", "large"] },
+        { "id": "menu.families", "anchor": "families", "label": "Families", "api": "/store/v1/me/menu/families", "synonyms": ["family", "coupon families"] },
+        { "id": "menu.views", "anchor": "views", "label": "Views", "api": "/store/v1/me/menu/views", "synonyms": ["counter layout", "buttons", "terminal screen", "website menu"] },
+        { "id": "menu.deals", "anchor": "deals", "label": "Deals", "api": "/store/v1/me/deals", "synonyms": ["coupon", "coupons", "discount", "bundle", "promo code"] },
+        { "id": "menu.problems", "anchor": "problems", "label": "Find problems", "api": "GET /store/v1/me/menu/problems", "synonyms": ["missing price", "no printer", "check menu"] }
+      ]
+    },
+    {
+      "id": "printers", "title": "Printers", "group": "Store", "path": "/app/store/printers", "crumb": "Store › Printers",
+      "synonyms": ["printer", "kitchen printer", "receipt printer", "ip address", "station", "print", "add printer", "found on the network"],
+      "fields": []
+    },
+    {
+      "id": "devices", "title": "Devices", "group": "Store", "path": "/app/store/devices", "crumb": "Store › Devices",
+      "synonyms": ["tablet", "terminal", "pi", "keys", "quibase", "centurion"],
+      "fields": [
+        { "id": "devices.keys", "anchor": "keys", "label": "Device keys", "api": "/store/v1/me/devices", "synonyms": ["api key", "device key"] },
+        { "id": "devices.terminals", "anchor": "terminals", "label": "Terminals & tablets", "api": "GET /store/v1/me/devices", "synonyms": ["terminals", "tablets", "versions"] }
+      ]
+    },
+    {
+      "id": "staff", "title": "Staff", "group": "Store", "path": "/app/store/staff", "crumb": "Store › Staff",
+      "synonyms": ["people", "employees", "pin", "cashier", "manager", "driver", "call-center agent", "limits per person"],
+      "fields": [
+        { "id": "staff.people", "anchor": "people", "label": "People", "api": "/store/v1/me/staff", "synonyms": ["add a person", "pin", "role", "own limits"] }
+      ]
+    },
+    {
+      "id": "website", "title": "Website", "group": "Store", "path": "/app/store/website", "crumb": "Store › Website",
+      "synonyms": ["site", "storefront", "online ordering", "domain", "logo", "miso"],
+      "fields": [
+        { "id": "website.look", "anchor": "look", "label": "Look", "api": "PUT /store/v1/me/site/draft look", "synonyms": ["colour", "color", "logo", "theme"] },
+        { "id": "website.home", "anchor": "home", "label": "Home page", "api": "PUT /store/v1/me/site/draft", "synonyms": ["blocks", "home"] },
+        { "id": "website.announcement", "anchor": "announcement", "label": "Announcement bar", "api": "PUT /store/v1/me/site/draft", "synonyms": ["banner", "announcement"] },
+        { "id": "website.address", "anchor": "address", "label": "Address", "api": "/store/v1/me/site/domains", "synonyms": ["domain", "url", "web address"] },
+        { "id": "website.privacy", "anchor": "privacy", "label": "Privacy policy", "api": "PUT /store/v1/me/site/draft", "synonyms": ["privacy"] }
+      ]
+    },
+    {
+      "id": "settings", "title": "Settings", "group": "Store", "path": "/app/store/settings", "crumb": "Store › Settings",
+      "synonyms": ["settings", "options", "setup"], "fields": []
+    },
+    {
+      "id": "details", "title": "Store details", "group": "Your store", "path": "/app/store/settings/details", "crumb": "Store › Settings › Store details",
+      "synonyms": ["name", "phone", "address", "email", "time zone", "receipt header"],
+      "fields": [
+        { "id": "details.name", "anchor": "name", "label": "Location name", "api": "PUT /store/v1/me/location name", "synonyms": ["store name"] },
+        { "id": "details.phone", "anchor": "phone", "label": "Phone", "api": "PUT /store/v1/me/location phone", "synonyms": ["phone number"] },
+        { "id": "details.address_line1", "anchor": "address_line1", "label": "Address", "api": "PUT /store/v1/me/location address_line1", "synonyms": ["street", "store address"] },
+        { "id": "details.address_line2", "anchor": "address_line2", "label": "City, state, ZIP", "api": "PUT /store/v1/me/location address_line2", "synonyms": ["city", "zip"] },
+        { "id": "details.reply_email", "anchor": "reply_email", "label": "Store email", "api": "PUT /store/v1/me/site/contact reply_email", "synonyms": ["email", "receipt replies"] },
+        { "id": "details.timezone", "anchor": "timezone", "label": "Time zone", "api": "PUT /store/v1/me/location timezone", "synonyms": ["timezone", "tz"] },
+        { "id": "details.daily_reset_hour", "anchor": "daily_reset_hour", "label": "New day starts at", "api": "PUT /store/v1/me/location daily_reset_hour", "synonyms": ["day starts", "86 reset", "new day", "business day"] }
+      ]
+    },
+    {
+      "id": "hours", "title": "Hours", "group": "Your store", "path": "/app/store/settings/hours", "crumb": "Store › Settings › Hours",
+      "synonyms": ["opening hours", "open", "closed", "holiday"],
+      "fields": [
+        { "id": "hours.weekly", "anchor": "weekly", "label": "Every week", "api": "PUT /store/v1/me/location config.hours", "synonyms": ["weekly hours", "open hours"] },
+        { "id": "hours.special_days", "anchor": "special_days", "label": "Special days", "api": "/store/v1/me/hours-exceptions", "synonyms": ["holiday", "closed day", "early close"] }
+      ]
+    },
+    {
+      "id": "map", "title": "Map and delivery area", "group": "Your store", "path": "/app/store/settings/map", "crumb": "Store › Settings › Map and delivery area",
+      "synonyms": ["map", "pin", "radius", "delivery area", "distance", "miles", "out of area", "delivery fee"],
+      "fields": [
+        { "id": "map.store_pin", "anchor": "store_pin", "label": "Store location", "api": "PUT /store/v1/me/location/pin", "synonyms": ["pin", "map", "location"] },
+        { "id": "map.delivery_radius", "anchor": "delivery_radius", "label": "Delivers up to (miles)", "api": "PUT /store/v1/me/location/radius radius_m", "synonyms": ["radius", "delivery radius", "delivery area", "miles", "distance", "out of area"] },
+        { "id": "map.delivery_fee_bands", "anchor": "delivery_fee_bands", "label": "Delivery fee by distance", "api": "PUT /store/v1/me/pricing fees.delivery_bands", "synonyms": ["delivery fee", "fee bands", "distance fee", "miles fee"] }
+      ]
+    },
+    {
+      "id": "alerts", "title": "Alerts", "group": "Your store", "path": "/app/store/settings/alerts", "crumb": "Store › Settings › Alerts",
+      "synonyms": ["pushover", "notifications", "phone alerts"],
+      "fields": [
+        { "id": "alerts.alert_devices", "anchor": "alert_devices", "label": "Pushover device names", "api": "PUT /store/v1/me/location config.alert_devices", "synonyms": ["pushover", "phones", "notifications"] }
+      ]
+    },
+    {
+      "id": "ordering", "title": "Ordering", "group": "Ordering and money", "path": "/app/store/settings/ordering", "crumb": "Store › Settings › Ordering",
+      "synonyms": ["pickup", "delivery", "order ahead", "eta", "wait time"],
+      "fields": [
+        { "id": "ordering.pickup_enabled", "anchor": "pickup_enabled", "label": "Take pickup orders", "api": "PUT /store/v1/me/ordering pickup_enabled", "synonyms": ["pickup on", "takeout"] },
+        { "id": "ordering.pickup_eta_minutes", "anchor": "pickup_eta_minutes", "label": "Ready in", "api": "PUT /store/v1/me/ordering pickup_eta_minutes", "synonyms": ["pickup time", "eta"] },
+        { "id": "ordering.delivery_enabled", "anchor": "delivery_enabled", "label": "Take delivery orders", "api": "PUT /store/v1/me/ordering delivery_enabled", "synonyms": ["delivery on"] },
+        { "id": "ordering.delivery_eta_minutes", "anchor": "delivery_eta_minutes", "label": "At the door in", "api": "PUT /store/v1/me/ordering delivery_eta_minutes", "synonyms": ["delivery time", "eta"] },
+        { "id": "ordering.schedule_days", "anchor": "schedule_days", "label": "Order ahead up to", "api": "PUT /store/v1/me/ordering schedule_days", "synonyms": ["future orders", "schedule", "order ahead"] },
+        { "id": "ordering.max_tip_cents", "anchor": "max_tip_cents", "label": "Online tips up to", "api": "PUT /store/v1/me/ordering max_tip_cents", "synonyms": ["tip limit", "tip cap"] }
+      ]
+    },
+    {
+      "id": "tax", "title": "Tax and deals", "group": "Ordering and money", "path": "/app/store/settings/tax", "crumb": "Store › Settings › Tax and deals",
+      "synonyms": ["tax", "sales tax", "deals", "stacking", "half and half"],
+      "fields": [
+        { "id": "tax.tax_bps", "anchor": "tax_bps", "label": "Sales tax", "api": "PUT /store/v1/me/pricing settings.tax_bps", "synonyms": ["tax rate", "tax"] },
+        { "id": "tax.stacking", "anchor": "stacking", "label": "Deals in one order", "api": "PUT /store/v1/me/pricing settings.stacking", "synonyms": ["stacking", "combine deals"] },
+        { "id": "tax.half_topping_price", "anchor": "half_topping_price", "label": "A topping on half a pizza", "api": "PUT /store/v1/me/pricing settings.half_topping_price", "synonyms": ["half topping", "half price topping"] },
+        { "id": "tax.half_specialty_off_pct", "anchor": "half_specialty_off_pct", "label": "2 specialties: cheaper half’s extra, % off", "api": "PUT /store/v1/me/pricing settings.half_specialty_off_pct", "synonyms": ["half and half specialty"] }
+      ]
+    },
+    {
+      "id": "fees", "title": "Fees and tips", "group": "Ordering and money", "path": "/app/store/settings/fees", "crumb": "Store › Settings › Fees and tips",
+      "synonyms": ["fee", "delivery fee", "driver pay", "tips", "service fee", "online fee", "minimum"],
+      "fields": [
+        { "id": "fees.delivery_store_share", "anchor": "delivery_store_share", "label": "Delivery: store share ($)", "api": "PUT /store/v1/me/pricing settings.fees.delivery_fee_cents", "synonyms": ["delivery fee", "store share"] },
+        { "id": "fees.delivery_driver_cents", "anchor": "delivery_driver_cents", "label": "Delivery: driver share ($)", "api": "PUT /store/v1/me/pricing settings.fees.delivery_driver_cents", "synonyms": ["driver pay", "driver share", "driver fee"] },
+        { "id": "fees.free_delivery_over_cents", "anchor": "free_delivery_over_cents", "label": "Free delivery over ($)", "api": "PUT /store/v1/me/pricing settings.fees.free_delivery_over_cents", "synonyms": ["free delivery"] },
+        { "id": "fees.delivery_min_cents", "anchor": "delivery_min_cents", "label": "Delivery minimum ($)", "api": "PUT /store/v1/me/pricing settings.fees.delivery_min_cents", "synonyms": ["minimum order"] },
+        { "id": "fees.service_fee_cents", "anchor": "service_fee_cents", "label": "Online fee ($)", "api": "PUT /store/v1/me/pricing settings.fees.service_fee_cents", "synonyms": ["service fee", "convenience fee"] },
+        { "id": "fees.tips", "anchor": "tips", "label": "Ask for a tip", "api": "PUT /store/v1/me/pricing settings.tips", "synonyms": ["online tips", "tip choices", "tip"] },
+        { "id": "fees.kind_overrides", "anchor": "kind_overrides", "label": "A channel that differs", "api": "PUT /store/v1/me/pricing overrides", "synonyms": ["channel fees", "website fees", "call center fees"] }
+      ]
+    },
+    {
+      "id": "payments", "title": "Payments", "group": "Ordering and money", "path": "/app/store/payments", "crumb": "Store › Settings › Payments",
+      "synonyms": ["square", "card", "credit card", "card holds", "charge"],
+      "fields": [
+        { "id": "payments.square", "anchor": "square", "label": "Square", "api": "/store/v1/me/square", "synonyms": ["connect square", "square account"] },
+        { "id": "payments.card_holds", "anchor": "card_holds", "label": "Card orders", "api": "GET /store/v1/me/square/holds", "synonyms": ["holds", "charge now"] }
+      ]
+    },
+    {
+      "id": "cashier", "title": "Cashier limits", "group": "Counter terminal", "path": "/app/store/settings/cashier", "crumb": "Store › Settings › Cashier limits",
+      "synonyms": ["limits", "manager pin", "refund", "discount", "payout"],
+      "fields": [
+        { "id": "cashier.cashier_refund_cents", "anchor": "cashier_refund_cents", "label": "Refunds up to", "api": "PUT /store/v1/me/terminal/settings cashier_refund_cents", "synonyms": ["refund limit", "refund"] },
+        { "id": "cashier.cashier_discount_pct", "anchor": "cashier_discount_pct", "label": "Discounts up to", "api": "PUT /store/v1/me/terminal/settings cashier_discount_pct", "synonyms": ["discount limit", "discount"] },
+        { "id": "cashier.cashier_price_drop_pct", "anchor": "cashier_price_drop_pct", "label": "Lower an item’s price by up to", "api": "PUT /store/v1/me/terminal/settings cashier_price_drop_pct", "synonyms": ["price change", "price drop"] },
+        { "id": "cashier.cashier_payout_cents", "anchor": "cashier_payout_cents", "label": "Pay out of the drawer up to", "api": "PUT /store/v1/me/terminal/settings cashier_payout_cents", "synonyms": ["payout", "paid out", "cash out"] }
+      ]
+    },
+    {
+      "id": "counter", "title": "Counter orders", "group": "Counter terminal", "path": "/app/store/settings/counter", "crumb": "Store › Settings › Counter orders",
+      "synonyms": ["ticket numbers", "numbers", "counter", "pickup time", "area codes", "employee meal"],
+      "fields": [
+        { "id": "counter.default_pickup_minutes", "anchor": "default_pickup_minutes", "label": "Pickups are ready in", "api": "PUT /store/v1/me/terminal/settings default_pickup_minutes", "synonyms": ["pickup time", "quote time"] },
+        { "id": "counter.topping_max_count", "anchor": "topping_max_count", "label": "Most of one topping", "api": "PUT /store/v1/me/terminal/settings topping_max_count", "synonyms": ["double topping", "extra"] },
+        { "id": "counter.employee_meal_pct", "anchor": "employee_meal_pct", "label": "Employee meal", "api": "PUT /store/v1/me/terminal/settings employee_meal_pct", "synonyms": ["staff meal", "employee discount"] },
+        { "id": "counter.name_on_paid_counter", "anchor": "name_on_paid_counter", "label": "Ask a name for a paid counter order", "api": "PUT /store/v1/me/terminal/settings name_on_paid_counter", "synonyms": ["customer name"] },
+        { "id": "counter.counter_start", "anchor": "counter_start", "label": "Counter numbers start at", "api": "PUT /store/v1/me/terminal/settings counter_start", "synonyms": ["ticket", "ticket number", "counter number", "order number", "check number"] },
+        { "id": "counter.kitchen_start", "anchor": "kitchen_start", "label": "Online and kitchen numbers start at", "api": "PUT /store/v1/me/terminal/settings kitchen_start", "synonyms": ["ticket", "ticket number", "kitchen number", "online number", "order number", "1100"] },
+        { "id": "counter.area_codes", "anchor": "area_codes", "label": "Local area codes", "api": "PUT /store/v1/me/terminal/settings area_codes", "synonyms": ["area code", "phone"] },
+        { "id": "counter.quibase_counter_min_cents", "anchor": "quibase_counter_min_cents", "label": "Counter orders on Quibase over", "api": "PUT /store/v1/me/terminal/settings quibase_counter_min_cents", "synonyms": ["quibase", "tablet", "kitchen tablet"] },
+        { "id": "counter.out_of_area_margin_mi", "anchor": "out_of_area_margin_mi", "label": "Deliver past the delivery area by up to", "api": "PUT /store/v1/me/terminal/settings out_of_area_margin_mi", "synonyms": ["out of area", "margin", "radius", "miles"] }
+      ]
+    },
+    {
+      "id": "screen", "title": "Login and screen", "group": "Counter terminal", "path": "/app/store/settings/screen", "crumb": "Store › Settings › Login and screen",
+      "synonyms": ["lock", "font", "buttons", "screen", "login"],
+      "fields": [
+        { "id": "screen.auto_lock_minutes", "anchor": "auto_lock_minutes", "label": "Lock the terminal after", "api": "PUT /store/v1/me/terminal/settings auto_lock_minutes", "synonyms": ["auto lock", "lock", "idle"] },
+        { "id": "screen.default_tab", "anchor": "default_tab", "label": "After login, open", "api": "PUT /store/v1/me/terminal/settings default_tab", "synonyms": ["start tab", "home tab"] },
+        { "id": "screen.receipt_auto_done_seconds", "anchor": "receipt_auto_done_seconds", "label": "Close the receipt screen after", "api": "PUT /store/v1/me/terminal/settings receipt_auto_done_seconds", "synonyms": ["receipt screen"] },
+        { "id": "screen.button_font", "anchor": "button_font", "label": "Menu button font", "api": "PUT /store/v1/me/terminal/settings button_font", "synonyms": ["font"] },
+        { "id": "screen.prices_on_buttons", "anchor": "prices_on_buttons", "label": "Prices on menu buttons", "api": "PUT /store/v1/me/terminal/settings prices_on_buttons", "synonyms": ["prices"] },
+        { "id": "screen.click_sound", "anchor": "click_sound", "label": "Click sound on buttons", "api": "PUT /store/v1/me/terminal/settings click_sound", "synonyms": ["sound", "click"] },
+        { "id": "screen.show_history", "anchor": "show_history", "label": "Show the History tab", "api": "PUT /store/v1/me/terminal/settings show_history", "synonyms": ["history"] }
+      ]
+    },
+    {
+      "id": "card", "title": "Card payments", "group": "Counter terminal", "path": "/app/store/settings/card", "crumb": "Store › Settings › Card payments",
+      "synonyms": ["card reader", "tip", "send to phone"],
+      "fields": [
+        { "id": "card.card_tips", "anchor": "card_tips", "label": "Ask for a tip on the card reader", "api": "PUT /store/v1/me/terminal/settings card_tips", "synonyms": ["tip", "card tip", "reader tip"] },
+        { "id": "card.card_tip_percents", "anchor": "card_tip_percents", "label": "Tip choices", "api": "PUT /store/v1/me/terminal/settings card_tip_percents", "synonyms": ["tip percent", "tip"] },
+        { "id": "card.phone_charge_timeout_seconds", "anchor": "phone_charge_timeout_seconds", "label": "A charge sent to a phone expires after", "api": "PUT /store/v1/me/terminal/settings phone_charge_timeout_seconds", "synonyms": ["send to phone", "pay by phone"] }
+      ]
+    },
+    {
+      "id": "voids", "title": "Void and waste reasons", "group": "Counter terminal", "path": "/app/store/settings/voids", "crumb": "Store › Settings › Void and waste reasons",
+      "synonyms": ["void", "waste", "reasons", "cancel"],
+      "fields": [
+        { "id": "voids.void_reasons", "anchor": "void_reasons", "label": "Void reasons", "api": "PUT /store/v1/me/terminal/settings void_reasons", "synonyms": ["void", "cancel reason"] },
+        { "id": "voids.waste_reasons", "anchor": "waste_reasons", "label": "Waste reasons", "api": "PUT /store/v1/me/terminal/settings waste_reasons", "synonyms": ["waste"] }
+      ]
+    },
+    {
+      "id": "end-of-day", "title": "End of day", "group": "Counter terminal", "path": "/app/store/settings/end-of-day", "crumb": "Store › Settings › End of day",
+      "synonyms": ["close batch", "close the day", "auto close", "drawer", "z report"],
+      "fields": [
+        { "id": "end-of-day.auto_close_batch_at", "anchor": "auto_close_batch_at", "label": "Close a batch nobody closed", "api": "PUT /store/v1/me/terminal/settings auto_close_batch_at", "synonyms": ["auto close", "close batch", "4 am"] },
+        { "id": "end-of-day.close_unpaid_counter_action", "anchor": "close_unpaid_counter_action", "label": "Unpaid counter checks at close", "api": "PUT /store/v1/me/terminal/settings close_unpaid_counter_action", "synonyms": ["unpaid", "force close", "waste", "carry"] },
+        { "id": "end-of-day.drawer_start_cents", "anchor": "drawer_start_cents", "label": "Cash left in each drawer at opening", "api": "PUT /store/v1/me/terminal/settings drawer_start_cents", "synonyms": ["drawer", "starting cash", "float", "bank"] }
+      ]
+    },
+    {
+      "id": "callcenter", "title": "Call center", "group": "People and devices", "path": "/app/store/settings/callcenter", "crumb": "Store › Settings › Call center",
+      "synonyms": ["call center", "phone orders", "operator", "agents"],
+      "fields": [
+        { "id": "callcenter.login", "anchor": "login", "label": "Call-center login", "api": "PUT /store/v1/me/callcenter/login", "synonyms": ["username", "password", "call center login"] },
+        { "id": "callcenter.callcenter_idle_lock_minutes", "anchor": "callcenter_idle_lock_minutes", "label": "Ask for the PIN again after", "api": "PUT /store/v1/me/terminal/settings callcenter_idle_lock_minutes", "synonyms": ["idle lock", "lock", "pin"] },
+        { "id": "callcenter.computers", "anchor": "computers", "label": "Computers", "api": "/store/v1/me/callcenter/devices", "synonyms": ["signed in", "devices"] },
+        { "id": "callcenter.report", "anchor": "report", "label": "Orders by agent", "api": "GET /store/v1/me/reports/callcenter", "synonyms": ["report", "agent orders"] }
+      ]
+    },
+    {
+      "id": "receipts", "title": "Receipts and printing", "group": "People and devices", "path": "/app/store/settings/receipts", "crumb": "Store › Settings › Receipts and printing",
+      "synonyms": ["receipt", "receipts", "printing", "receipts & printing"],
+      "fields": [
+        { "id": "receipts.takeout_two_copies", "anchor": "takeout_two_copies", "label": "Takeout: print 2 customer copies", "api": "PUT /store/v1/me/terminal/settings takeout_two_copies", "synonyms": ["copies", "takeout", "receipt", "pickup", "two copies", "2 copies", "customer copy", "second receipt", "bag copy"] }
+      ]
+    }
+  ]
+}

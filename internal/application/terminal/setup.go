@@ -57,6 +57,7 @@ type SetupView struct {
 	TaxBps       *int
 	Timezone     string
 	CounterStart *int64
+	KitchenStart *int64
 	AutoCloseAt  *string
 	Store        map[string]any
 }
@@ -76,9 +77,9 @@ func (s *Service) SetupView(roster []RosterPrinter) SetupView {
 	}
 	if cfg, _ := s.store.Config(); cfg != nil {
 		v.Staff = staffStats(cfg)
-		start := cfg.CounterStart()
+		start, kitchen := cfg.CounterStart(), cfg.KitchenStart()
 		at := cfg.AutoCloseAt()
-		v.CounterStart, v.AutoCloseAt = &start, &at
+		v.CounterStart, v.KitchenStart, v.AutoCloseAt = &start, &kitchen, &at
 	}
 	if s.storeInfo != nil {
 		v.Store = s.storeInfo()

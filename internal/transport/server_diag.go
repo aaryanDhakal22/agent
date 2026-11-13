@@ -48,6 +48,9 @@ type DiagDeps struct {
 	StoreCtx    func() storeconfig.StoreContext
 	RPC         *agentrpc.Registry
 	AcksPending func() int
+	// KitchenPending counts the counter orders whose station tickets are
+	// still to print (kitchen_pending, M-11; 2.5.5).
+	KitchenPending func(ctx context.Context) int
 	// TestSlip renders the test slip for one printer (receipt.BuildTestSlip
 	// with the live store context).
 	// cols is the printer's print width (the slip is laid out for it).
@@ -117,6 +120,9 @@ type diagMain struct {
 	// ClockSkewS (hardening F-13): main's clock minus the Pi's at the last
 	// connect, seconds (absent until a connect carried a Date header).
 	ClockSkewS *float64 `json:"clock_skew_s,omitempty"`
+	// URL is main's base URL as this Pi reaches it: the apps build their
+	// "change it in main" links on it (settings map, contract 2.10af).
+	URL string `json:"url,omitempty"`
 }
 
 type diagHealth struct {
@@ -143,6 +149,9 @@ type diagOrders struct {
 	LastArrivedAt   *time.Time `json:"last_arrived_at"`
 	OpenBatchOrders int64      `json:"open_batch_orders"`
 	Waiting         int        `json:"waiting"`
+	// KitchenPending: counter orders whose station tickets haven't been
+	// tried yet (a restart prints them at the next start; 2.5.5).
+	KitchenPending int `json:"kitchen_pending"`
 }
 
 type diagResponse struct {
@@ -218,6 +227,7 @@ func (s *Server) handleDiag(w http.ResponseWriter, r *http.Request) {
 	}
 	if s.mainClient != nil {
 		out.Main.Reachable = s.mainReach.reachable(ctx, s.mainClient.BaseURL())
+		out.Main.URL = strings.TrimRight(s.mainClient.BaseURL(), "/")
 	}
 
 	// The Pi itself.
@@ -257,6 +267,9 @@ func (s *Server) handleDiag(w http.ResponseWriter, r *http.Request) {
 	}
 	if s.diag.AcksPending != nil {
 		out.AcksPending = s.diag.AcksPending()
+	}
+	if s.diag.KitchenPending != nil {
+		out.Orders.KitchenPending = s.diag.KitchenPending(ctx)
 	}
 	if open, known := sc.OpenNow(time.Now()); known {
 		out.OpenNow = &open

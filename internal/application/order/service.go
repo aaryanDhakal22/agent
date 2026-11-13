@@ -94,6 +94,8 @@ type Service struct {
 	upd deliveryUpdates
 	// dev: the developer-mode event ring (SetDevLog; nil = off).
 	dev atomic.Pointer[devlog.Ring]
+	// onDrivers runs after every roster change (OnDriversChanged).
+	onDrivers atomic.Pointer[func()]
 	// onBatchClosed runs after a Close batch (OnBatchClosed).
 	onBatchClosed atomic.Pointer[func(ctx context.Context)]
 	// onClosed runs right after a successful Close batch, in the background
@@ -310,8 +312,23 @@ func (s *Service) accept(ctx context.Context, id uuid.UUID, prepMinutes *int, au
 	if so.Status.EarlyReceipt {
 		mode = printer.ModeAcceptKitchen // a future order's receipt printed at its first ACCEPT (2.4.0)
 	}
-	out, err := s.print(context.WithoutCancel(ctx), printable(*so), mode)
-	if mode == printer.ModeAcceptKitchen && errors.Is(err, printer.ErrNoTickets) {
+	// The tickets printed: the accept is recorded (accept_pending cleared, it
+	// must reach main even if the tablet's request was cancelled meanwhile)
+	// the moment the paper is out, before order.printed, so a power cut after
+	// the print never rings the order again for a second set.
+	printedOK := func(err error) bool {
+		return err == nil || (mode == printer.ModeAcceptKitchen && errors.Is(err, printer.ErrNoTickets))
+	}
+	out, err := s.printJobThen(context.WithoutCancel(ctx), printable(*so), mode,
+		func(pctx context.Context, _ printer.Outcome, err error) {
+			if !printedOK(err) {
+				return
+			}
+			if rerr := s.repo.RecordAccepted(pctx, *so); rerr != nil {
+				s.logger.Error().Ctx(ctx).Err(rerr).Str("order_id", id.String()).Msg("Failed to record accepted floor event (main won't see it)")
+			}
+		})
+	if printedOK(err) {
 		err = nil // nothing for the kitchen, and the receipt is out already
 	}
 	s.recordPrintTime(ctx, *so, printStart, out, err)
@@ -326,11 +343,6 @@ func (s *Service) accept(ctx context.Context, id uuid.UUID, prepMinutes *int, au
 		s.devEvent(devlog.Error, devlog.KindPrint, "%s NOT accepted: nothing printed", label(*so))
 		s.alertPrintIssues(ctx, *so, out, true)
 		return fail(fmt.Errorf("%w: %w", ErrNothingPrinted, err))
-	}
-	// The tickets printed: the accept must reach main even if the tablet's
-	// request was cancelled meanwhile.
-	if err := s.repo.RecordAccepted(context.WithoutCancel(ctx), *so); err != nil {
-		s.logger.Error().Ctx(ctx).Err(err).Str("order_id", id.String()).Msg("Failed to record accepted floor event (main won't see it)")
 	}
 	s.floorChanged()
 	s.recordAcceptTime(ctx, *so)
@@ -472,7 +484,7 @@ func (s *Service) PrintSnapshot(ctx context.Context, snap order.Snapshot) error 
 	if strings.EqualFold(snap.Status, "cancelled") || strings.EqualFold(snap.Status, "rejected") { // main's word
 		snap.Voided = voidedLabel(snap)
 	}
-	out, err := s.print(ctx, snap, printer.ModeReceipt)
+	out, err := s.printJob(ctx, snap, printer.ModeReceipt)
 	s.alertPrintIssues(ctx, order.StoredOrder{Order: snap}, out, false)
 	if err != nil {
 		span.RecordError(err)
@@ -543,7 +555,7 @@ func (s *Service) Reprint(ctx context.Context, id uuid.UUID) (*order.StoredOrder
 		return nil, err
 	}
 
-	out, err := s.print(ctx, printable(*so), printer.ModeReceipt)
+	out, err := s.printJob(ctx, printable(*so), printer.ModeReceipt)
 	s.alertPrintIssues(ctx, *so, out, false)
 	if err != nil {
 		span.RecordError(err)
@@ -590,7 +602,7 @@ func (s *Service) ResendKitchen(ctx context.Context, id uuid.UUID) (*order.Store
 		return fail(printer.Outcome{}, fmt.Errorf("%w (state %s)", ErrNotAccepted, so.Status.State))
 	}
 
-	out, err := s.print(ctx, printable(*so), printer.ModeKitchen)
+	out, err := s.printJob(ctx, printable(*so), printer.ModeKitchen)
 	if errors.Is(err, printer.ErrNoTickets) {
 		return fail(out, ErrNothingForKitchen)
 	}

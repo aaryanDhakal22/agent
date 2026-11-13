@@ -213,3 +213,53 @@ func TestLiveTabletVersions(t *testing.T) {
 		t.Fatalf("floor.tablets.version = %+v", pts)
 	}
 }
+
+// 2.5.5: the terminal gauges — one version series per connected terminal
+// (device + Centurion version), the connected count, and each reported
+// update state (a disconnected terminal keeps its last state).
+func TestLiveTerminalApps(t *testing.T) {
+	reader := sdkmetric.NewManualReader()
+	prev := otel.GetMeterProvider()
+	otel.SetMeterProvider(sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader)))
+	t.Cleanup(func() { otel.SetMeterProvider(prev) })
+	apps := []TerminalApp{
+		{Device: "Counter 1", AppVersion: "1.0.6+1762990000", Connected: true, State: "up_to_date"},
+		{Device: "Counter 2", AppVersion: "", Connected: true, State: "waiting_for_tap"},
+		{Device: "Back office", AppVersion: "1.0.5+1762900000", Connected: false, State: "failed"},
+		{Device: "Spare", Connected: false},
+	}
+	if _, err := RegisterLive(Live{
+		Version:      "2.5.5",
+		TerminalApps: func(context.Context) []TerminalApp { return apps },
+	}); err != nil {
+		t.Fatal(err)
+	}
+	got := collect(t, reader)
+	if pts := intGauge(t, got["floor.terminals.connected"]); len(pts) != 1 || pts[0].Value != 2 {
+		t.Fatalf("floor.terminals.connected = %+v", pts)
+	}
+	ver := map[string]int64{}
+	for _, p := range intGauge(t, got["floor.terminals.version"]) {
+		ver[attr(p.Attributes, "device")+"="+attr(p.Attributes, "app_version")] = p.Value
+	}
+	if len(ver) != 2 || ver["Counter 1=1.0.6+1762990000"] != 1 || ver["Counter 2=unknown"] != 1 {
+		t.Fatalf("floor.terminals.version = %v", ver)
+	}
+	st := map[string]int64{}
+	for _, p := range intGauge(t, got["floor.terminals.update_state"]) {
+		st[attr(p.Attributes, "device")+"="+attr(p.Attributes, "state")] = p.Value
+	}
+	if len(st) != 3 || st["Counter 1=up_to_date"] != 1 || st["Counter 2=waiting_for_tap"] != 1 || st["Back office=failed"] != 1 {
+		t.Fatalf("floor.terminals.update_state = %v", st)
+	}
+
+	// No terminals: the count is 0, the per-terminal gauges are absent.
+	apps = nil
+	got = collect(t, reader)
+	if pts := intGauge(t, got["floor.terminals.connected"]); len(pts) != 1 || pts[0].Value != 0 {
+		t.Fatalf("floor.terminals.connected (none) = %+v", pts)
+	}
+	if m, ok := got["floor.terminals.version"]; ok && len(intGauge(t, m)) != 0 {
+		t.Fatalf("floor.terminals.version (none) = %+v", m.Data)
+	}
+}

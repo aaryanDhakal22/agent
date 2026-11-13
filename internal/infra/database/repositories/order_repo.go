@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sync/atomic"
 	"time"
 
 	"quiccpos/agent/internal/domain/order"
@@ -20,6 +21,34 @@ var _ order.Repository = (*OrderRepository)(nil)
 type OrderRepository struct {
 	db     *sql.DB
 	logger zerolog.Logger
+	// numbering gives the business day + kitchen start a ticket number is
+	// taken with (SetNumbering; unset = local time, 04:00, 1100).
+	numbering atomic.Pointer[func(time.Time) order.Numbering]
+}
+
+// SetNumbering wires the store's business day (timezone + day start) and
+// kitchen_start for the ticket numbers (contract 2.10ae; cmd/main.go).
+func (r *OrderRepository) SetNumbering(fn func(time.Time) order.Numbering) { r.numbering.Store(&fn) }
+
+// numberingAt is the numbering for a number taken at t.
+func (r *OrderRepository) numberingAt(t time.Time) order.Numbering {
+	if fn := r.numbering.Load(); fn != nil && *fn != nil {
+		n := (*fn)(t)
+		if n.KitchenStart <= 0 {
+			n.KitchenStart = order.DefaultKitchenStart
+		}
+		return n
+	}
+	return order.Numbering{Day: order.BusinessDay(t, time.Local, order.DefaultDayStart), KitchenStart: order.DefaultKitchenStart}
+}
+
+// takeNumbersDay runs before a ticket number is taken: on a new business day
+// after a close both sequences start again.
+func takeNumbersDay(ctx context.Context, q *models.Queries, n order.Numbering) error {
+	if err := q.TakeNumbersDay(ctx, n.Day); err != nil {
+		return fmt.Errorf("numbers day: %w", err)
+	}
+	return nil
 }
 
 func NewOrderRepository(db *sql.DB, lg zerolog.Logger) *OrderRepository {
@@ -125,15 +154,19 @@ func (r *OrderRepository) ClaimAccept(ctx context.Context, id uuid.UUID, prepMin
 	if order.State(row.State) != order.StateArrived {
 		return nil, order.ErrAlreadyAccepted
 	}
+	now := time.Now()
 	kitchen := row.KitchenNumber
 	if !kitchen.Valid {
-		next, err := q.NextKitchenNumber(ctx)
+		n := r.numberingAt(now)
+		if err := takeNumbersDay(ctx, q, n); err != nil {
+			return nil, err
+		}
+		next, err := q.NextKitchenNumber(ctx, n.KitchenStart)
 		if err != nil {
 			return nil, fmt.Errorf("allocate kitchen number: %w", err)
 		}
 		kitchen = sql.NullInt64{Int64: next - 1, Valid: true}
 	}
-	now := time.Now()
 	n, err := q.ClaimAccept(ctx, models.ClaimAcceptParams{
 		Now:              nullTS(now),
 		PrepMinutes:      sql.NullInt64{Int64: int64(prepMinutes), Valid: prepMinutes > 0},

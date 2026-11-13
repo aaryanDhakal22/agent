@@ -361,6 +361,7 @@ type setupStore struct {
 	OpeningHours  storeconfig.OpeningHours `json:"opening_hours,omitempty"`
 	DeliveryArea  map[string]any           `json:"delivery_area"`
 	CounterStart  *int64                   `json:"counter_start,omitempty"`
+	KitchenStart  *int64                   `json:"kitchen_start,omitempty"`
 	AutoCloseAt   *string                  `json:"auto_close_batch_at,omitempty"`
 	AddressLine1  string                   `json:"address_line1,omitempty"`
 	AddressLine2  string                   `json:"address_line2,omitempty"`
@@ -394,6 +395,9 @@ func (s *Server) handleTerminalSetup(w http.ResponseWriter, r *http.Request) {
 	sc := s.storeContext()
 	loc := sc.Location
 	out := map[string]any{"at": time.Now().UTC()}
+	if s.mainClient != nil { // the wizard's "change it in main" links (settings map, contract 2.10af)
+		out["main_url"] = strings.TrimRight(s.mainClient.BaseURL(), "/")
+	}
 
 	var roster []terminalApp.RosterPrinter
 	printers := []setupPrinter{}
@@ -436,7 +440,7 @@ func (s *Server) handleTerminalSetup(w http.ResponseWriter, r *http.Request) {
 		if v.Staff != nil {
 			out["staff"] = v.Staff
 		}
-		st.TaxBps, st.CounterStart, st.AutoCloseAt = v.TaxBps, v.CounterStart, v.AutoCloseAt
+		st.TaxBps, st.CounterStart, st.KitchenStart, st.AutoCloseAt = v.TaxBps, v.CounterStart, v.KitchenStart, v.AutoCloseAt
 		if st.Timezone == "" {
 			st.Timezone = v.Timezone
 		}

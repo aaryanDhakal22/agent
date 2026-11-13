@@ -121,7 +121,7 @@ func (s *Service) printCancelVoid(ctx context.Context, so order.StoredOrder) {
 	snap := printable(so)
 	snap.RemovedItems = nil
 	s.background(ctx, func(ctx context.Context) {
-		out, err := s.print(ctx, snap, printer.ModeVoid)
+		out, err := s.printJob(ctx, snap, printer.ModeVoid)
 		if errors.Is(err, printer.ErrNoTickets) {
 			return
 		}

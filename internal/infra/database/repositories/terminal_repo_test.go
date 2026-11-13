@@ -96,9 +96,10 @@ func TestCounterSequenceAndIdempotency(t *testing.T) {
 	if err != nil || closed.Unsettled == nil || closed.Unsettled.Count != 1 || closed.Unsettled.DueCents != 1299 {
 		t.Fatalf("auto close: %+v %v", closed, err)
 	}
-	// Close batch: the counter sequence starts again at the start.
+	// Close batch the same business day: the counter sequence carries on
+	// (contract 2.10ae; numbering_test.go has the daily restart).
 	c, _ := counterOrder(t, r, "key-cccc-3", 7, 100)
-	if *c.Status.KitchenNumber != 7 {
+	if *c.Status.KitchenNumber != 502 {
 		t.Fatalf("after close: %d", *c.Status.KitchenNumber)
 	}
 	list, err := r.CounterOrders(ctx)

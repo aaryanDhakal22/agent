@@ -324,7 +324,20 @@ func (s *Service) CreateDriver(ctx context.Context, name string) (*order.Driver,
 	return d, nil
 }
 
+// RenameDriver is Quibase's rename: a Store › Staff driver's name comes
+// from main (order.ErrStaffDriverName).
 func (s *Service) RenameDriver(ctx context.Context, id, name string) error {
+	if staff, err := s.repo.DriverStaffID(ctx, id); err != nil {
+		return err
+	} else if staff != "" {
+		return order.ErrStaffDriverName
+	}
+	return s.SyncDriverName(ctx, id, name)
+}
+
+// SyncDriverName renames a driver to his name in main's Store › Staff
+// (the staff sync, §2.1f): no staff check.
+func (s *Service) SyncDriverName(ctx context.Context, id, name string) error {
 	name, err := cleanName(name)
 	if err != nil {
 		return err
@@ -336,7 +349,57 @@ func (s *Service) RenameDriver(ctx context.Context, id, name string) error {
 	return nil
 }
 
+// AddDriver is Quibase's ADD (POST /api/drivers): a Pi-only driver, except
+// when a Store › Staff driver of that name is on the roster already: then
+// that driver comes back (existed = true) and nothing is made (§2.1f; an
+// older Quibase adding "Ali K." gets the staff driver, not a second one).
+func (s *Service) AddDriver(ctx context.Context, name string) (d *order.Driver, existed bool, err error) {
+	clean, err := cleanName(name)
+	if err != nil {
+		return nil, false, err
+	}
+	ds, err := s.repo.ListDrivers(ctx)
+	if err != nil {
+		return nil, false, err
+	}
+	for i := range ds {
+		if ds[i].StaffID != "" && sameDriverName(ds[i].Name, clean) {
+			return &ds[i], true, nil
+		}
+	}
+	d, err = s.CreateDriver(ctx, clean)
+	return d, false, err
+}
+
+func sameDriverName(a, b string) bool {
+	return strings.EqualFold(strings.Join(strings.Fields(a), " "), strings.Join(strings.Fields(b), " "))
+}
+
+// ReactivateDriver / RetireOffDriver: the staff sync's switch on / off (§2.1f).
+func (s *Service) ReactivateDriver(ctx context.Context, id string) (bool, error) {
+	changed, err := s.repo.ReactivateDriver(ctx, id)
+	if changed {
+		s.driversChanged(ctx)
+	}
+	return changed, err
+}
+
+func (s *Service) RetireOffDriver(ctx context.Context, id string) (bool, error) {
+	changed, err := s.repo.RetireOffDriver(ctx, id)
+	if changed {
+		s.driversChanged(ctx)
+	}
+	return changed, err
+}
+
+// RemoveDriver is Quibase's bin: never a Store › Staff driver
+// (order.ErrStaffDriverRemove: main switches him off).
 func (s *Service) RemoveDriver(ctx context.Context, id string) error {
+	if staff, err := s.repo.DriverStaffID(ctx, id); err != nil {
+		return err
+	} else if staff != "" {
+		return order.ErrStaffDriverRemove
+	}
 	unpooled, err := s.repo.RemoveDriver(ctx, id)
 	if err != nil {
 		return err
@@ -463,7 +526,15 @@ func (s *Service) DriverResetDue(ctx context.Context, now time.Time, loc *time.L
 func (s *Service) driversChanged(ctx context.Context) {
 	s.floorChanged()
 	s.publishDrivers(ctx)
+	if fn := s.onDrivers.Load(); fn != nil && *fn != nil {
+		(*fn)()
+	}
 }
+
+// OnDriversChanged adds the hook run after every roster change (cmd/main.go:
+// the staff sync's next pass, so a driver switched off in main leaves the
+// roster as soon as he clocks out, §2.1f). It must not block.
+func (s *Service) OnDriversChanged(fn func()) { s.onDrivers.Store(&fn) }
 
 func (s *Service) publishDrivers(ctx context.Context) {
 	if s.broker == nil {

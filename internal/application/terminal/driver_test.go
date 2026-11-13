@@ -94,9 +94,10 @@ func TestDriverLinkAtLogin(t *testing.T) {
 	if err != nil || res.Driver == nil || res.Driver.Name != "Sam" || res.Driver.Status != order.DriverOff {
 		t.Fatalf("login creates a driver: %+v %v", res, err)
 	}
-	// Linked by staff id: a second login (even after a rename) is the same driver.
-	if err := r.floor.RenameDriver(r.ctx, res.Driver.ID, "Sammy"); err != nil {
-		t.Fatal(err)
+	// Linked by staff id: a second login is the same driver. Quibase can't
+	// rename him (his name comes from Store › Staff, §2.1f).
+	if err := r.floor.RenameDriver(r.ctx, res.Driver.ID, "Sammy"); !errors.Is(err, order.ErrStaffDriverName) {
+		t.Fatalf("rename a staff driver: %v", err)
 	}
 	again, _ := r.svc.Login(r.ctx, till3, "88")
 	if again.Driver.ID != res.Driver.ID {

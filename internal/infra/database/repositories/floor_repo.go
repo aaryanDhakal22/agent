@@ -86,12 +86,29 @@ func recordRoster(ctx context.Context, q *models.Queries, at time.Time) error {
 	if err != nil {
 		return fmt.Errorf("list drivers: %w", err)
 	}
+	staffOf, err := driverStaff(ctx, q)
+	if err != nil {
+		return err
+	}
 	ev := order.DriversRosterEvent{EventID: uuid.NewString(), Type: order.FloorEventDriversRoster, At: at.UTC().Truncate(time.Millisecond),
 		Drivers: make([]order.RosterDriver, 0, len(rows))}
 	for _, d := range rows {
-		ev.Drivers = append(ev.Drivers, order.RosterDriver{ID: d.ID, Name: d.Name, Position: d.Position, Status: d.Status})
+		ev.Drivers = append(ev.Drivers, order.RosterDriver{ID: d.ID, Name: d.Name, Position: d.Position, Status: d.Status, StaffID: staffOf[d.ID]})
 	}
 	return insertEvent(ctx, q, ev.EventID, "", ev.Type, at, ev)
+}
+
+// driverStaff maps each linked Pi driver to his Store › Staff id (§2.1f).
+func driverStaff(ctx context.Context, q *models.Queries) (map[string]string, error) {
+	links, err := q.ListTerminalDriverLinks(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("list driver links: %w", err)
+	}
+	out := make(map[string]string, len(links))
+	for _, l := range links {
+		out[l.DriverID] = l.StaffID
+	}
+	return out, nil
 }
 
 // loadOrder reads one order with its geo.
@@ -435,10 +452,9 @@ func (r *OrderRepository) CloseBatch(ctx context.Context, force bool) (closed *o
 		if err := recordBatchClosed(ctx, q, b.ID, now); err != nil {
 			return err
 		}
-		if err := q.ResetKitchenNumber(ctx); err != nil {
-			return err
-		}
-		if err := q.ResetCounterNumber(ctx); err != nil { // terminal stage 0d: counter orders start again too
+		// The ticket numbers restart with the first number of a new business
+		// day (contract 2.10ae): a second close the same day carries on.
+		if err := q.MarkNumbersClosed(ctx); err != nil {
 			return err
 		}
 		// The terminals' shared drafts never outlive the batch (contract 2.10i).
@@ -551,11 +567,22 @@ func (r *OrderRepository) ListByBatch(ctx context.Context, batchID int64, offset
 func (r *OrderRepository) FloorSettings(ctx context.Context) (fs order.FloorSettings, err error) {
 	ctx, _, end := dbSpan(ctx, "floor.settings")
 	defer end(&err)
-	row, err := models.New(r.db).GetFloorSettings(ctx)
+	q := models.New(r.db)
+	row, err := q.GetFloorSettings(ctx)
 	if err != nil {
 		return fs, err
 	}
-	return order.FloorSettings{KitchenNext: row.KitchenNext, LastPrepMinutes: row.LastPrepMinutes}, nil
+	next := row.KitchenNext
+	// The number the next accepted order gets (contract 2.10ae): the start
+	// when the sequence restarts (0 stored, or a new business day after a
+	// close).
+	if ns, err := q.GetNumbersState(ctx); err == nil {
+		n := r.numberingAt(time.Now())
+		if next <= 0 || (ns.NumbersClosed == 1 && ns.NumbersDay != n.Day) {
+			next = n.KitchenStart
+		}
+	}
+	return order.FloorSettings{KitchenNext: next, LastPrepMinutes: row.LastPrepMinutes}, nil
 }
 
 // --- drivers ---------------------------------------------------------------
@@ -594,6 +621,10 @@ func (r *OrderRepository) ListDrivers(ctx context.Context) (out []order.Driver, 
 	for _, sh := range open {
 		clockedIn[sh.DriverID] = sh.ClockIn
 	}
+	staffOf, err := driverStaff(ctx, q)
+	if err != nil {
+		return nil, err
+	}
 	out = make([]order.Driver, 0, len(rows))
 	for _, d := range rows {
 		ret, err := optTS(d.LastReturnedAt)
@@ -606,7 +637,7 @@ func (r *OrderRepository) ListDrivers(ctx context.Context) (out []order.Driver, 
 		}
 		dr := order.Driver{ID: d.ID, Name: d.Name, Position: d.Position, Status: d.Status,
 			LastReturnedAt: ret, Deliveries: counts[d.ID], ClockedInAt: in,
-			PushoverDevice: d.PushoverDevice}
+			PushoverDevice: d.PushoverDevice, StaffID: staffOf[d.ID], InStaff: staffOf[d.ID] != ""}
 		if d.Status == order.DriverOut {
 			dr.RunOrderIDs = runs[d.ID]
 		}
@@ -662,6 +693,49 @@ func (r *OrderRepository) RenameDriver(ctx context.Context, id, name string) (er
 		}
 		return recordRoster(ctx, q, time.Now())
 	})
+}
+
+// DriverStaffID is the Store › Staff id a Pi driver is ("" = Pi-only).
+func (r *OrderRepository) DriverStaffID(ctx context.Context, id string) (staffID string, err error) {
+	ctx, _, end := dbSpan(ctx, "drivers.staff_id")
+	defer end(&err)
+	staffID, err = models.New(r.db).GetStaffOfDriver(ctx, id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	return staffID, err
+}
+
+// ReactivateDriver puts a removed driver back on the roster, off (a staff
+// driver switched back on in main). false = he was on it already / no such driver.
+func (r *OrderRepository) ReactivateDriver(ctx context.Context, id string) (changed bool, err error) {
+	ctx, _, end := dbSpan(ctx, "drivers.reactivate")
+	defer end(&err)
+	err = r.withTx(ctx, func(q *models.Queries) error {
+		n, err := q.ReactivateDriver(ctx, id)
+		if err != nil || n == 0 {
+			return err
+		}
+		changed = true
+		return recordRoster(ctx, q, time.Now())
+	})
+	return changed, err
+}
+
+// RetireOffDriver takes a driver off the roster only when he is off (a staff
+// driver switched off in main); false = he is clocked in / out (later) or gone.
+func (r *OrderRepository) RetireOffDriver(ctx context.Context, id string) (changed bool, err error) {
+	ctx, _, end := dbSpan(ctx, "drivers.retire")
+	defer end(&err)
+	err = r.withTx(ctx, func(q *models.Queries) error {
+		n, err := q.DeactivateOffDriver(ctx, id)
+		if err != nil || n == 0 {
+			return err
+		}
+		changed = true
+		return recordRoster(ctx, q, time.Now())
+	})
+	return changed, err
 }
 
 func (r *OrderRepository) RemoveDriver(ctx context.Context, id string) (unpooled []order.StoredOrder, err error) {
@@ -1290,4 +1364,15 @@ func (s TerminalAppStore) GetAppRelease(ctx context.Context) (string, error) {
 
 func (s TerminalAppStore) SetAppRelease(ctx context.Context, raw string) error {
 	return models.New(s.R.db).SetTerminalAppRelease(ctx, raw)
+}
+
+// RecordOrderPrinted appends an order.printed floor event (contract
+// §2.10ag): one print job's results, about the order (it waits behind a
+// refused order.placed of the same order).
+func (r *OrderRepository) RecordOrderPrinted(ctx context.Context, ev order.OrderPrintedEvent) (err error) {
+	ctx, _, end := dbSpan(ctx, "floor.record_order_printed")
+	defer end(&err)
+	return r.withTx(ctx, func(q *models.Queries) error {
+		return insertEvent(ctx, q, ev.EventID, ev.OrderID, ev.Type, ev.At, ev)
+	})
 }

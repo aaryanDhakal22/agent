@@ -133,7 +133,15 @@ func (s *Service) PrintNow(ctx context.Context, id string, kitchen, receipt bool
 	case !kitchen:
 		mode = printer.ModeFutureReceipt
 	}
-	out, err := s.print(context.WithoutCancel(ctx), printable(*so), mode)
+	// What printed is recorded the moment the paper is out (before
+	// order.printed), so a restart in between doesn't print it again.
+	out, err := s.printJobThen(context.WithoutCancel(ctx), printable(*so), mode, func(pctx context.Context, out printer.Outcome, _ error) {
+		if k, r := earlyPrinted(out); k || r {
+			if err := s.repo.SetEarlyPrinted(pctx, uid.String(), k, r); err != nil {
+				s.logger.Warn().Ctx(ctx).Err(err).Str("order_id", id).Msg("record early future tickets failed")
+			}
+		}
+	})
 	if errors.Is(err, printer.ErrNoTickets) {
 		return nil, out, spanErr(span, ErrNothingForKitchen)
 	}
@@ -144,9 +152,6 @@ func (s *Service) PrintNow(ctx context.Context, id string, kitchen, receipt bool
 			err = ErrFuturePrintFailed
 		}
 		return nil, out, spanErr(span, fmt.Errorf("%w: %w", ErrFuturePrintFailed, err))
-	}
-	if err := s.repo.SetEarlyPrinted(ctx, uid.String(), k, r); err != nil {
-		s.logger.Warn().Ctx(ctx).Err(err).Str("order_id", id).Msg("record early future tickets failed")
 	}
 	s.printEvents(label(*so)+" (future, printed now)", out)
 	fresh, err := s.repo.GetByID(ctx, uid)

@@ -25,6 +25,7 @@ func recorder(t *testing.T) (*Notifier, *[]string) {
 	t.Cleanup(srv.Close)
 	n := NewNotifier("app", "owner", "boss")
 	n.pushoverURL = srv.URL
+	n.sendAllowed = true // these tests are about scoping, not the prod-only guard
 	return n, &users
 }
 
@@ -102,6 +103,7 @@ func forms(t *testing.T, status int, body string) (*Notifier, *[]url.Values) {
 	t.Cleanup(srv.Close)
 	n := NewNotifier("app", "owner", "boss")
 	n.pushoverURL = srv.URL
+	n.sendAllowed = true // these tests are about scoping, not the prod-only guard
 	return n, &got
 }
 

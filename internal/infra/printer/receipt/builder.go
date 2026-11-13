@@ -71,10 +71,32 @@ func Build(snap order.Snapshot, sc storeconfig.StoreContext, t printer.Ticket, p
 	if t.Future { // a future order's receipt printed early (2.4.0)
 		out = futureReceiptTop(out, layoutFor(t.Cols))
 	}
-	if prefs.Copies > 1 {
-		return bytes.Repeat(out, prefs.Copies)
+	if n := CustomerCopies(snap, t, prefs); n > 1 {
+		return bytes.Repeat(out, n)
 	}
 	return out
+}
+
+// CustomerCopies is how many copies of a customer receipt ticket print (each
+// copy cut; contract agent §2.10ah):
+//
+//   - the store's receipt Copies (1 or 2, Quibase Settings, every type);
+//   - a takeout / pickup order's customer receipt (fulfillment pickup, any
+//     source) with main's takeout_two_copies on: max(Copies, 2);
+//   - a reprint: Copies only (the takeout setting never doubles a reprint,
+//     so with the default Copies 1 a reprint prints one).
+//
+// A counter (dine-in) order and a delivery (its Merchant + Customer Copy,
+// TicketDeliveryCopies, built apart) are unchanged.
+func CustomerCopies(snap order.Snapshot, t printer.Ticket, prefs order.ReceiptPrefs) int {
+	n := max(prefs.Copies, 1)
+	if !prefs.TakeoutTwoCopies || t.Reprint || !snap.IsPickup() {
+		return n
+	}
+	if t.Kind == printer.TicketReceipt || t.Kind == printer.TicketFull {
+		return max(n, 2)
+	}
+	return n
 }
 
 // BuildWith renders a canonical Snapshot into ESC/POS bytes using the

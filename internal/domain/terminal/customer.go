@@ -71,6 +71,10 @@ type CustomerAddress struct {
 type Area struct {
 	State      string   `json:"state"`
 	DistanceMi *float64 `json:"distance_mi,omitempty"`
+	// DistanceM: the same distance in whole meters, for the delivery fee by
+	// distance (a terminal / the call center sends it back as the cart's
+	// distance_m so its quote prices the band the Pi will).
+	DistanceM *int64 `json:"distance_m,omitempty"`
 }
 
 // Area states.
@@ -91,7 +95,8 @@ const metersPerMile = 1609.344
 // warn-only margin (miles).
 func AreaOf(distM float64, radiusM int64, marginMi float64) Area {
 	mi := math.Round(distM/metersPerMile*10) / 10
-	a := Area{DistanceMi: &mi}
+	m := int64(math.Round(distM))
+	a := Area{DistanceMi: &mi, DistanceM: &m}
 	switch r := float64(radiusM); {
 	case distM <= r:
 		a.State = AreaIn

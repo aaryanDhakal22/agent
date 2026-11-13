@@ -128,6 +128,7 @@ func (s *Service) PrecheckOrder(ctx context.Context, a Actor, in OrderIn) (*Prec
 	if m == nil {
 		return nil, terminal.ErrNoMenu
 	}
+	in.Cart = s.withDistance(ctx, typ, &cust, in.Cart) // the delivery fee by distance (2.10ae)
 	p, _, err := priceRung(m, s.orders.StoreLocation(), typ, nil, in.Cart, s.now(), s.toppingMax())
 	if err != nil {
 		return nil, asBadRequest(err)

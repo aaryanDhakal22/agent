@@ -541,7 +541,7 @@
     <!-- ================================================================= -->
     <section class="stack" x-show="page === 'printers'" aria-labelledby="h-printers">
       <div class="page-head">
-        <div><h1 id="h-printers">Printers</h1><p>Printers are added and named in main (<b>/app/store</b>); their status here is live from this Pi. Tests never fail over to another printer.</p></div>
+        <div><h1 id="h-printers">Printers</h1><p>Printers are added and named on the Quicc website (<b x-text="mainWords('printers', 'Store › Printers')">Store › Printers</b><template x-if="mainLink('printers')"><span> · <a :href="mainLink('printers')" target="_blank" rel="noopener">open it</a></span></template>); their status here is live from this Pi. Tests never fail over to another printer.</p></div>
         <div class="hrow">
           <button type="button" class="btn" :disabled="!!printerBusy" @click="printerAction('probe')">Check now</button>
           <button type="button" class="btn" :disabled="!!printerBusy || !printers.length" @click="printerAction('test')">Test all</button>
@@ -585,7 +585,7 @@
               </div>
             </div>
           </template>
-          <div class="empty" x-show="!printers.length">No printers yet — add them in main (<b>/app/store</b>).</div>
+          <div class="empty" x-show="!printers.length">No printers yet — add them on the Quicc website (<b x-text="mainWords('printers', 'Store › Printers')">Store › Printers</b>).</div>
         </div>
       </section>
 
@@ -969,7 +969,7 @@
         </section>
         <section class="card sbody" aria-labelledby="h-s-acct">
           <h2 id="h-s-acct">Account</h2>
-          <p class="help" x-show="session.manager_login">This Pi signs in with the store manager login. Change that password in the main dashboard (Store → Login).</p>
+          <p class="help" x-show="session.manager_login">This Pi signs in with the store manager login. QuiccPOS changes that password (main's admin page: the store's Manager login).</p>
           <form class="stack" style="gap:12px;margin-top:14px" x-show="!session.manager_login" @submit.prevent="changePassword()">
             <div class="lbl" style="color:var(--text)">Change password</div>
             <div><label class="lbl" for="cp-current">Current password</label><input class="field" id="cp-current" type="password" autocomplete="current-password" x-model="cp.current" /></div>

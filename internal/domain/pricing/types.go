@@ -189,6 +189,10 @@ type Settings struct {
 	DeliveryFeeCents      int64  `json:"delivery_fee_cents"`
 	FreeDeliveryOverCents *int64 `json:"free_delivery_over_cents"`
 	DeliveryMinCents      int64  `json:"delivery_min_cents"`
+	// DeliveryBands: the delivery fee by distance (absent = the flat
+	// DeliveryFeeCents). DeliveryFeeFor picks the fee from the cart's
+	// distance_m.
+	DeliveryBands []DeliveryBand `json:"delivery_bands,omitempty"`
 	// DeliveryDriverCents is the driver's share of DeliveryFeeCents (the
 	// store keeps the rest; Fees.DriverShare). Not used by the engine: the
 	// quote's delivery fee is the total (DeliverySplit splits it).
@@ -318,6 +322,36 @@ type Slot struct {
 }
 
 // Cart is what a channel asks to price.
+// DeliveryBand is one row of the delivery fee by distance (the owner,
+// 2026-11-13): a delivery up to UpToM meters (straight line from the store,
+// as the delivery radius is measured) costs the customer FeeCents. Bands
+// are ascending; the last one also covers anything farther (the radius and
+// its out-of-area rules decide whether such a delivery goes at all).
+type DeliveryBand struct {
+	UpToM    int64 `json:"up_to_m"`
+	FeeCents int64 `json:"fee_cents"`
+}
+
+// DeliveryFeeFor is the customer's delivery fee for a distance: the first
+// band the distance is within, the last band past them all, and - the
+// distance unknown (nil: the address isn't located yet) - the FIRST band
+// (the nearest, so a customer is never charged a far band on a guess).
+// No bands: flat.
+func DeliveryFeeFor(flat int64, bands []DeliveryBand, distanceM *int64) int64 {
+	if len(bands) == 0 {
+		return flat
+	}
+	if distanceM == nil {
+		return bands[0].FeeCents
+	}
+	for _, b := range bands {
+		if *distanceM <= b.UpToM {
+			return b.FeeCents
+		}
+	}
+	return bands[len(bands)-1].FeeCents
+}
+
 type Cart struct {
 	Type       string `json:"type"`    // pickup | delivery
 	Payment    string `json:"payment"` // card | cash
@@ -330,6 +364,10 @@ type Cart struct {
 	// units it takes (one index per unit; repeat an index for more units
 	// of that line).
 	Coupons []CartCoupon `json:"coupons,omitempty"`
+	// DistanceM: a delivery's straight-line distance from the store in
+	// meters (main's geocoder or the Pi's lookup); nil = unknown. Only the
+	// delivery fee bands read it (DeliveryFeeFor).
+	DistanceM *int64 `json:"distance_m,omitempty"`
 }
 
 // CartCoupon is one applied coupon in a cart.

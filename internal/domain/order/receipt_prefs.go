@@ -80,6 +80,13 @@ type ReceiptPrefs struct {
 	// receipt the Pi printed before it).
 	StyleOnline string `json:"style_online"`
 	StyleStore  string `json:"style_store"`
+
+	// TakeoutTwoCopies is not a tablet setting: main's terminal setting
+	// takeout_two_copies (Store › Settings › Receipts and printing, the
+	// owner 2026-11-13), set on the prefs at print time from the terminal
+	// config (cmd/main.go). On: a pickup's customer receipt prints at least
+	// two copies (receipt.CustomerCopies). Never stored, never sent.
+	TakeoutTwoCopies bool `json:"-"`
 }
 
 // The receipt styles.

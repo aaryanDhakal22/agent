@@ -277,6 +277,48 @@ type PairedDevice struct {
 	AppVersionSeenAt sql.NullString `json:"app_version_seen_at"`
 }
 
+type PaymentCard struct {
+	PaymentID string `json:"payment_id"`
+	Card      string `json:"card"`
+}
+
+type PhoneCharge struct {
+	ID                  string         `json:"id"`
+	ClientKey           string         `json:"client_key"`
+	RequestHash         string         `json:"request_hash"`
+	OrderID             string         `json:"order_id"`
+	Number              int64          `json:"number"`
+	PhoneID             string         `json:"phone_id"`
+	PhoneName           string         `json:"phone_name"`
+	DeviceID            string         `json:"device_id"`
+	DeviceName          string         `json:"device_name"`
+	StaffID             string         `json:"staff_id"`
+	StaffName           string         `json:"staff_name"`
+	AmountCents         int64          `json:"amount_cents"`
+	TipCents            int64          `json:"tip_cents"`
+	Code                string         `json:"code"`
+	Note                string         `json:"note"`
+	Status              string         `json:"status"`
+	Message             string         `json:"message"`
+	CreatedAt           string         `json:"created_at"`
+	UpdatedAt           string         `json:"updated_at"`
+	ExpiresAt           string         `json:"expires_at"`
+	OpenedAt            sql.NullString `json:"opened_at"`
+	FinishedAt          sql.NullString `json:"finished_at"`
+	TransactionID       string         `json:"transaction_id"`
+	ClientTransactionID string         `json:"client_transaction_id"`
+	ErrorCode           string         `json:"error_code"`
+	PaymentID           string         `json:"payment_id"`
+	SquarePaymentID     string         `json:"square_payment_id"`
+	Brand               string         `json:"brand"`
+	Last4               string         `json:"last4"`
+	Entry               string         `json:"entry"`
+	ExtraTipCents       int64          `json:"extra_tip_cents"`
+	OrderKey            string         `json:"order_key"`
+	OrderBody           string         `json:"order_body"`
+	ApprovedBy          string         `json:"approved_by"`
+}
+
 type PrinterMac struct {
 	PrinterID string `json:"printer_id"`
 	Mac       string `json:"mac"`
@@ -341,6 +383,8 @@ type Setting struct {
 	PrintRouting               string  `json:"print_routing"`
 	AdminPair                  string  `json:"admin_pair"`
 	DeviceSetups               string  `json:"device_setups"`
+	NumbersDay                 string  `json:"numbers_day"`
+	NumbersClosed              int64   `json:"numbers_closed"`
 }
 
 type SettingsLog struct {
@@ -375,6 +419,7 @@ type TerminalDraft struct {
 	Draft            string `json:"draft"`
 	CreatedAt        string `json:"created_at"`
 	UpdatedAt        string `json:"updated_at"`
+	Origin           string `json:"origin"`
 }
 
 type TerminalDriverLink struct {

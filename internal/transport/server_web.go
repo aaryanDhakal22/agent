@@ -337,7 +337,7 @@ func (s *Server) handleHint(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	if li, err := s.settings.GetLinkInfo(ctx); err == nil && li.ManagerUsername != "" {
-		s.writeJSON(w, http.StatusConflict, errCodeMap("This Pi unlocks with the store manager login — change that password in the manager dashboard (Store → Login).", "manager_login"))
+		s.writeJSON(w, http.StatusConflict, errCodeMap("This Pi unlocks with the store manager login — QuiccPOS changes that password (main's admin page: the store's Manager login).", "manager_login"))
 		return
 	}
 	hash, _, err := s.settings.GetUIPassword(ctx)

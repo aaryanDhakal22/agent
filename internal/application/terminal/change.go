@@ -80,6 +80,15 @@ func orderAddress(c *Customer) *order.Address {
 		State: strings.TrimSpace(ad.State), PostalCode: strings.TrimSpace(ad.Zip), Country: "US", Notes: strings.TrimSpace(ad.Notes)}
 }
 
+// customerAt is a sent order's delivery address as a terminal Customer
+// (for the Pi's area / distance lookup).
+func customerAt(ad *order.Address) *Customer {
+	if ad == nil {
+		return nil
+	}
+	return &Customer{Address: &Address{Line1: ad.Line1, Line2: ad.Line2, City: ad.City, State: ad.State, Zip: ad.PostalCode}}
+}
+
 // recustomer applies a customer edit to a sent order whose type stays
 // (TERMINAL-FLOWS CHG-14: "the customer gave the wrong address"): a
 // delivery's new address (line1 + city given), the name, the phone. A field
@@ -280,6 +289,15 @@ func (s *Service) changeCart(ctx context.Context, a Actor, id string, in ChangeI
 		typ = to
 	}
 	now := s.now()
+	// The delivery fee by distance (2.10ae): the new address's, else the
+	// order's own.
+	if c := in.Customer; c != nil && orderAddress(c) != nil {
+		in.Cart = s.withDistance(ctx, typ, c, in.Cart)
+	} else if ad := cur.Order.Order.Fulfillment.Address; ad != nil {
+		in.Cart = s.withDistance(ctx, typ, customerAt(ad), in.Cart)
+	} else {
+		in.Cart = s.withDistance(ctx, typ, nil, in.Cart)
+	}
 	// M-15 / §2.10u: kept lines keep their rung prices, gone ones are sold
 	// as custom lines (rung.go).
 	p, _, err := priceRung(m, s.orders.StoreLocation(), typ, &cur.Order.Order, in.Cart, now, s.toppingMax())

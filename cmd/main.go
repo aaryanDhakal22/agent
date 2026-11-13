@@ -228,6 +228,12 @@ func main() {
 	// Outside prod, no admin device = no system/floor alerts at all: drivers'
 	// phones share the account (2.4.1).
 	notifier.SetStrictScope(cfg.AppEnv != "prod")
+	// Pushover leaves only a prod agent (2.5.5, notify/guard.go): anywhere
+	// else every message is logged at info and dropped.
+	notifier.SetLogger(logger)
+	if !notifier.Sends() {
+		logger.Info().Str("app_env", cfg.AppEnv).Msg("Pushover off: only APP_ENV=prod sends (messages are logged)")
+	}
 	// 2.5.2: "Agent started" and the crash pages at most once per 15 min
 	// across restarts (a crash loop restarts every 3-60 s); the crash text is
 	// still logged above.
@@ -286,9 +292,15 @@ func main() {
 	// service's in-memory copy (receiptPrefs is pointed at it once the service
 	// exists, before anything prints).
 	receiptPrefs := order.DefaultReceiptPrefs
+	// main's takeout_two_copies (Receipts and printing): a pickup's customer
+	// receipt prints at least two copies (receipt.CustomerCopies); set from
+	// the terminal config once termStore exists.
+	var takeoutTwoCopies atomic.Bool
 	receiptBuilder := func(snap order.Snapshot, t domainprinter.Ticket) []byte {
 		sc, _ := storeCtx.Load().(storeconfig.StoreContext)
-		return receipt.Build(snap, sc, t, receiptPrefs())
+		prefs := receiptPrefs()
+		prefs.TakeoutTwoCopies = takeoutTwoCopies.Load()
+		return receipt.Build(snap, sc, t, prefs)
 	}
 
 	dispatcher := printerApp.NewDispatcher(ctx, factory, printerRegistry, notifier, cfg.PrinterDetectDelay, receiptBuilder, logger, meters)
@@ -494,8 +506,13 @@ func main() {
 	})
 	termSvc := terminalApp.NewService(termStore, orderRepo, orderService, broker, logger)
 	termSvc.SetFloor(orderService, orderRepo) // the driver view (§2.10b)
-	termSvc.SetPager(notifier)                // an unbalanced Z, PIN lockouts (hardening M-9 / X-2)
-	termSvc.SetPinRepo(ctx, orderRepo)        // the PIN throttle survives a restart (X-2)
+	// The roster = Store › Staff drivers (§2.1f): a pass at start, on every
+	// terminal config and after every roster change (switched off in main:
+	// off the roster once he clocks out).
+	safego.Go("terminal.driver_sync", func() { termSvc.RunDriverSync(ctx) })
+	orderService.OnDriversChanged(termSvc.KickDriverSync)
+	termSvc.SetPager(notifier)         // an unbalanced Z, PIN lockouts (hardening M-9 / X-2)
+	termSvc.SetPinRepo(ctx, orderRepo) // the PIN throttle survives a restart (X-2)
 	// Close batch closes the drawers and queues the Z report (§2.10k-l):
 	// built right after, and at start for one a crash left pending.
 	termSvc.SetZDrivers(orderService.DriverReports)
@@ -520,6 +537,7 @@ func main() {
 	})
 	var quibaseMin atomic.Int64
 	quibaseMin.Store(-1)
+	termStore.OnConfig(func(c *domainterminal.Config) { takeoutTwoCopies.Store(c.TakeoutTwoCopies()) })
 	termStore.OnConfig(func(c *domainterminal.Config) {
 		if old := quibaseMin.Swap(c.QuibaseCounterMinCents()); old >= 0 && old != c.QuibaseCounterMinCents() {
 			broker.PublishFloorChanged()
@@ -707,6 +725,13 @@ func main() {
 		Terminals: func(rc context.Context) any {
 			if hs := httpRef.Load(); hs != nil {
 				return hs.Terminals(rc)
+			}
+			return nil
+		},
+		// The store round (2.5.5) for main's fleet view + the console's ship watch.
+		StoreRound: func() any {
+			if sr := storeRound.Load(); sr != nil {
+				return sr.View(nil)
 			}
 			return nil
 		},
@@ -952,7 +977,8 @@ func main() {
 			}
 			return storeupdate.Manifest{AgentVersion: m.AgentVersion(), AgentSHA: m.AgentSHA(),
 				MinQuibase: m.Header["min_quibase"], MinTerminal: m.Header["min_terminal"],
-				Quibase: m.Header["quibase_version"], Terminal: m.Header["terminal_version"]}, true
+				Quibase: m.Header["quibase_version"], Terminal: m.Header["terminal_version"],
+				RollbackFrom: m.Header["rollback_from"]}, true
 		},
 		Cached: func(app string) *storeupdate.Release {
 			u := appUpdater
@@ -998,7 +1024,10 @@ func main() {
 		},
 		PiSupported: updater.Supported,
 		PiResult:    updater.ResultOf,
-		Publish:     broker.Publish,
+		Publish: func(event string, v any) {
+			broker.Publish(event, v)
+			heartbeat.Wake() // main (and a ship watch) sees each phase change at once
+		},
 		Notify: func(rc context.Context, msg string) {
 			if err := notifier.Send(context.WithoutCancel(rc), msg, "siren"); err != nil {
 				logger.Warn().Err(err).Msg("store update notification failed")
@@ -1016,6 +1045,10 @@ func main() {
 		StoreCtx:    func() storeconfig.StoreContext { sc, _ := storeCtx.Load().(storeconfig.StoreContext); return sc },
 		RPC:         registry,
 		AcksPending: orderAcker.Pending,
+		KitchenPending: func(rc context.Context) int {
+			list, _ := orderRepo.KitchenPending(rc)
+			return len(list)
+		},
 		TestSlip: func(printerName, tablet string, at time.Time, cols int) []byte {
 			sc, _ := storeCtx.Load().(storeconfig.StoreContext)
 			return receipt.BuildTestSlip(printerName, sc, tablet, at, cols)
@@ -1068,6 +1101,12 @@ func main() {
 		return time.Local
 	}
 	orderService.SetStoreTZ(storeTZ)
+	// Ticket numbers restart once a business day (contract 2.10ae): the
+	// store's day starts at its auto-close time; main's kitchen_start.
+	orderRepo.SetNumbering(func(t time.Time) order.Numbering {
+		cfg, _ := termStore.Config()
+		return order.Numbering{Day: order.BusinessDay(t, storeTZ(), cfg.DayStart()), KitchenStart: cfg.KitchenStart()}
+	})
 	nightly := backup.New(db, cfg.AgentDBPath, func(rc context.Context, path string, body []byte, ct string) (int, []byte, error) {
 		return mainClient.Upload(rc, sseCtrl.CurrentKey(), path, body, ct)
 	}, settingsRepo, sseCtrl.Configured, storeTZ, logger)
@@ -1132,6 +1171,7 @@ func main() {
 		TabletsConnected:   httpServer.TabletsConnected,
 		TerminalsConnected: httpServer.TerminalsConnected,
 		TabletVersions:     httpServer.TabletVersions,
+		TerminalApps:       httpServer.TerminalApps,
 		Hub: func() (observability.HubLink, bool) {
 			now := time.Now()
 			v := orderService.IntegrationView(now)
