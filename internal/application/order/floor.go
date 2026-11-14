@@ -233,6 +233,7 @@ func (s *Service) CloseBatch(ctx context.Context, force bool) (*order.Batch, []o
 		s.publishUpdated(so)
 	}
 	s.unpaidWrittenOff(ctx, closed.UnpaidAtClose)
+	s.notPickedUpWrittenOff(ctx, closed.NotPickedUp)
 	if s.broker != nil {
 		opened, err := s.repo.OpenBatch(ctx)
 		if err == nil {

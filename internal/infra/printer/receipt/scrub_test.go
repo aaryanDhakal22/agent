@@ -158,6 +158,16 @@ func slips(t *testing.T, cols int, f func(string) string) map[string][]byte {
 			Items: []order.UnsettledLineItem{{Qty: 1, Name: tUnicode1, Mods: []string{}, PriceCents: 10999}}},
 	}}
 	out["unsettled_list"] = BuildUnsettledList(mapStrings(ul, f), sc, "", on, at)
+	// The close's write-off slips (the owner, 2026-11-13 / 2026-11-14).
+	wo := order.UnpaidAtClose{BatchID: 41, Reason: order.UnpaidAtCloseReason, At: at, Count: 1, TotalCents: 999999,
+		ClosedBy: order.CloseActor{StaffName: tStaff, DeviceName: tPrinter, Trigger: "terminal"}, Checks: ul.Checks[:1]}
+	out["unpaid_at_close"] = BuildUnpaidAtClose(mapStrings(wo, f), sc, "", on, at)
+	np := wo
+	np.Reason, np.Count, np.TotalCents = order.NotPickedUpReason, 2, 1010998
+	np.Checks = []order.UnsettledCheck{ul.Checks[0], ul.Checks[1]}
+	np.Checks[0].Type, np.Checks[0].Customer = "pickup", order.UnsettledCustomer{Name: tCustomer, Phone: "4105550100"}
+	np.Checks[1].Type, np.Checks[1].Source = "pickup", "counter"
+	out["not_picked_up"] = BuildNotPickedUp(mapStrings(np, f), sc, order.SizeSmall, on, at)
 	out["test_slip"] = BuildTestSlip(f(tPrinter), sc, f("Front Counter Tablet"), at, cols)
 	out["width_test"] = BuildWidthTest(f(tPrinter), at)
 	out["sample"] = BuildSample(sc, withFooter, at, cols)

@@ -306,7 +306,7 @@ func (r *OrderRepository) CloseBatch(ctx context.Context, force bool) (closed *o
 	now := time.Now()
 	var clearedDrafts, closedDrawers []string
 	var unsettled *order.UnsettledList
-	var unpaid *order.UnpaidAtClose
+	var unpaid, notPicked *order.UnpaidAtClose
 	defer func() {
 		if err == nil && closed != nil {
 			closed.ClearedDrafts = clearedDrafts
@@ -314,6 +314,7 @@ func (r *OrderRepository) CloseBatch(ctx context.Context, force bool) (closed *o
 			closed.ZPending = true
 			closed.Unsettled = unsettled
 			closed.UnpaidAtClose = unpaid
+			closed.NotPickedUp = notPicked
 		}
 	}()
 	err = r.withTx(ctx, func(q *models.Queries) error {
@@ -324,12 +325,13 @@ func (r *OrderRepository) CloseBatch(ctx context.Context, force bool) (closed *o
 		// Unsettled checks (contract 2.10s §4): a manual close without force
 		// is refused while an unpaid counter check is open; forced (and the
 		// auto-close) the store's setting writes them off as waste or carries
-		// them; unpaid pickups are carried, still payable.
-		list, wasted, carry, err := closeUnsettled(ctx, q, b.ID, order.CloseKindOf(ctx) == order.CloseAuto, force, now)
+		// them; unpaid pickups never block and follow the same setting
+		// ("Not picked up", the owner 2026-11-14), a partly paid one carried.
+		list, wasted, notPickedUp, carry, err := closeUnsettled(ctx, q, b.ID, order.CloseKindOf(ctx) == order.CloseAuto, force, now)
 		if err != nil {
 			return err
 		}
-		unsettled, unpaid = list, wasted
+		unsettled, unpaid, notPicked = list, wasted, notPickedUp
 		rows, err := q.ListBatchLeftovers(ctx, b.ID)
 		if err != nil {
 			return err

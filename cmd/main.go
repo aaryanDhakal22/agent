@@ -414,6 +414,10 @@ func main() {
 		sc, _ := storeCtx.Load().(storeconfig.StoreContext)
 		return receipt.BuildUnpaidAtClose(l, sc, orderService.PrintPrefs().DriverReportSize, on, time.Now())
 	})
+	orderService.SetNotPickedUpReport(func(l order.UnpaidAtClose, on domainprinter.Paper) []byte { // the owner, 2026-11-14
+		sc, _ := storeCtx.Load().(storeconfig.StoreContext)
+		return receipt.BuildNotPickedUp(l, sc, orderService.PrintPrefs().DriverReportSize, on, time.Now())
+	})
 
 	orderService.LoadReceiptPrefs(ctx)
 	receiptPrefs = orderService.PrintPrefs
@@ -557,8 +561,9 @@ func main() {
 		}
 	})
 	termStore.Load(ctx)
-	// What a forced close / the auto-close does with an unpaid counter check
-	// (main's close_unpaid_counter_action: waste, the default, or carry).
+	// What a forced close / the auto-close does with an unpaid counter check,
+	// and every close with an unpaid pickup not picked up (main's
+	// close_unpaid_counter_action: waste, the default, or carry).
 	orderService.SetCloseUnpaidAction(func() string { cfg, _ := termStore.Config(); return cfg.CloseUnpaidCounterAction() })
 	orderService.SetArrivalStamp(termStore.StampDriverTicket) // show_on_driver_ticket on channel orders
 	registry.Register(terminalApp.MsgMenuChanged, termStore.HandleMenuChanged)

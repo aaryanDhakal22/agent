@@ -87,10 +87,11 @@ type mOrder struct {
 }
 
 // wasteUnpaidCounters: what a waste close does - every unpaid counter check
-// with no payment row at all is written off (a partly paid one is carried).
+// and (the owner, 2026-11-14) every unpaid pickup ("Not picked up") with no
+// payment row at all is written off (a partly paid one is carried).
 func (m *model) wasteUnpaidCounters() {
 	for _, o := range m.orders {
-		if o.typ == "counter" && !o.voided && len(o.pays) == 0 && o.total > 0 {
+		if (o.typ == "counter" || o.typ == "pickup") && !o.voided && len(o.pays) == 0 && o.total > 0 {
 			o.wasted = true
 		}
 	}
@@ -519,11 +520,13 @@ func (m *model) check(t *testing.T, where string, z *terminal.Z) {
 			z.Unpaid.Cents, unpaid, rec.TipsCents, tips, rec.OnCancelledCents, onCancelled, z.CashOutside, cashOutside)
 	}
 	// A waste close's write-offs are on the Waste section as Unpaid at close
-	// (with any carried check of an earlier day it also wrote off).
+	// / Not picked up (with any carried check of an earlier day it also wrote
+	// off).
 	var atClose terminal.ZAmount
 	for _, wr := range z.Waste.Reasons {
-		if wr.Reason == order.UnpaidAtCloseReason {
-			atClose = terminal.ZAmount{Count: wr.Count, Cents: wr.Cents}
+		if wr.Reason == order.UnpaidAtCloseReason || wr.Reason == order.NotPickedUpReason {
+			atClose.Count += wr.Count
+			atClose.Cents += wr.Cents
 		}
 	}
 	if atClose.Count < wasted.Count || atClose.Cents < wasted.Cents {

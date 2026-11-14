@@ -134,7 +134,9 @@ type Settings struct {
 	// CloseUnpaidCounterAction (the owner's X, 2026-11-13): what a forced
 	// close and the auto-close do with an unpaid counter check: "waste"
 	// (written off as Void waste "Unpaid at close") or "carry" (kept open
-	// like a pickup). Missing / anything else = waste.
+	// like a pickup). Missing / anything else = waste. Since 2026-11-14 (the
+	// owner) every close does the same with an unpaid counter / phone pickup
+	// that isn't picked up: waste = "Not picked up", carry = carried.
 	CloseUnpaidCounterAction string `json:"close_unpaid_counter_action"`
 	// TakeoutTwoCopies (the owner, 2026-11-13; main 4.0.6, Store › Settings
 	// › Receipts and printing): every takeout / pickup order prints two

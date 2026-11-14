@@ -1,9 +1,13 @@
 """The hardening round on a throwaway Pi (contract/agent.md §2.10s, HARDENING-PLAN A1 / A2):
 
   * closing the day: a manual close without force is refused over an unpaid counter check (409
-    unsettled_checks saying what force will do, also from the Pi page), an unpaid pickup is carried (still
-    on the Pickup list, payable after the close, counted as earlier_checks on the next batch's Z), the
-    Unsettled Check List route
+    unsettled_checks saying what force will do, also from the Pi page), a partly paid pickup is carried
+    (still on the Pickup list, payable after the close, counted as earlier_checks on the next batch's Z),
+    the Unsettled Check List route
+  * every close writes an unpaid pickup that isn't picked up (no payment row) off as Void waste "Not picked
+    up" and prints the NOT PICKED UP slip (the owner, 2026-11-14; the store's close_unpaid_counter_action
+    covers it: carry keeps today's carry), an older terminal that prints only the Unpaid at close list gets
+    the Pi's print
   * a forced close follows the store's close_unpaid_counter_action (the owner, 2026-11-13): waste (the
     default) writes each unpaid counter check off as Void waste "Unpaid at close" (order.void kind waste,
     the Z's Waste section, the UNPAID AT CLOSE list on the receipt printer), a partly paid one is
@@ -44,7 +48,9 @@ def test_close_refused_over_an_unpaid_counter_check_and_pickups_carried(rig):  #
     agent, term, fm = rig["agent"], rig["term"], rig["fm"]
     base = agent.base
     counter_id, counter_total = _place(rig)
-    pickup_id, pickup_total = _place(rig, "pickup")
+    # A partly paid pickup (a payment row: carried, never written off as not picked up).
+    pickup_id, pickup_placed = _place(rig, "pickup", payments=[{"tender": "cash", "amount_cents": 100}])
+    pickup_total = pickup_placed - 100  # what it still owes
 
     lst = term.get(f"{base}/api/terminal/unsettled", timeout=5).json()
     assert lst["count"] == 2 and lst["blocking"] == 1 and lst["due_cents"] == counter_total + pickup_total
@@ -63,7 +69,7 @@ def test_close_refused_over_an_unpaid_counter_check_and_pickups_carried(rig):  #
     r = agent.http.post(f"{base}/api/batch/close", json={"force": False}, timeout=30)
     assert r.status_code == 409 and r.json()["code"] == "unsettled_checks" and r.json()["force_action"] == "waste", r.text
 
-    # Pay the counter check: the close goes through and carries the pickup.
+    # Pay the counter check: the close goes through and carries the partly paid pickup.
     r = term.post(f"{base}/api/terminal/orders/{counter_id}/payments", json={"tender": "cash", "amount_cents": counter_total}, timeout=5)
     assert r.status_code == 200, r.text
     r = term.post(f"{base}/api/terminal/close", json={"force": True, "manager_pin": "9876"}, timeout=30)
@@ -71,6 +77,7 @@ def test_close_refused_over_an_unpaid_counter_check_and_pickups_carried(rig):  #
     closed_id = r.json()["closed"]["id"]
     un = r.json()["unsettled"]
     assert un["count"] == 1 and un["checks"][0]["order_id"] == pickup_id and un["checks"][0]["carried"]
+    assert r.json()["not_picked_up"] is None, r.text
     journal = term.get(f"{base}/api/terminal/journal", timeout=5).json()
     assert any(e["action"] == "batch.unsettled" and e["detail"]["count"] == 1 for e in journal)
 
@@ -135,19 +142,30 @@ def test_forced_close_writes_unpaid_counter_checks_off(rig):  # noqa: F811
     assert u["checks"][0]["order_id"] == unpaid_id and u["checks"][0]["items"], u
     assert u["closed_by"]["staff_id"] == CARA and u["closed_by"]["approved_by"] == KHAWAR and u["closed_by"]["trigger"] == "terminal", u
     un = r.json()["unsettled"]
-    assert {c["order_id"] for c in un["checks"]} == {part_id, pickup_id} and all(c["carried"] for c in un["checks"]), un
+    assert {c["order_id"] for c in un["checks"]} == {part_id} and all(c["carried"] for c in un["checks"]), un
+    # The unpaid pickup isn't carried any more (the owner, 2026-11-14): written off "Not picked up".
+    n = r.json()["not_picked_up"]
+    assert n["count"] == 1 and n["total_cents"] == pickup_total and n["reason"] == "Not picked up" and n["printed_by"] == "pi", n
+    assert n["checks"][0]["order_id"] == pickup_id and n["checks"][0]["customer"]["name"] == "Sam", n
+    assert n["checks"][0]["customer"]["phone"].endswith("5550100"), n
+    assert n["closed_by"]["staff_id"] == CARA, n
 
     # The UNPAID AT CLOSE list on the receipt printer (the driver reports' printer); nothing in the kitchen.
     slip = wait_until(lambda: [j for j in fakes["Front"].jobs if b"UNPAID" in j and b"AT CLOSE" in j], what="the Unpaid at close list")[-1]
     text = slip.decode("latin-1")
     assert f"${unpaid_total / 100:.2f}" in text and "Unpaid at close" in text and "Cara" in text, text
+    # The NOT PICKED UP slip next to it: the pickup's number, customer and total.
+    slip = wait_until(lambda: [j for j in fakes["Front"].jobs if b"NOT" in j and b"PICKED UP" in j], what="the Not picked up slip")[-1]
+    text = slip.decode("latin-1")
+    assert f"${pickup_total / 100:.2f}" in text and "Not picked up" in text and "Sam 410-555-0100" in text, text
     assert len(fakes["Pizza"].jobs) == station_jobs
 
-    # The order is cancelled as waste; the partly paid one is still open and payable.
-    got = term.get(f"{base}/api/terminal/checks/{unpaid_id}", timeout=5).json()
-    assert got["order"]["status"]["state"] == "cancelled", got["order"]["status"]
+    # The orders are cancelled as waste; the partly paid one is still open and payable.
+    for oid in (unpaid_id, pickup_id):
+        got = term.get(f"{base}/api/terminal/checks/{oid}", timeout=5).json()
+        assert got["order"]["status"]["state"] == "cancelled", got["order"]["status"]
     picks = {o["order"]["id"]: o for o in term.get(f"{base}/api/terminal/pickups", timeout=5).json()["orders"]}
-    assert unpaid_id not in picks and picks[part_id]["status"]["carried"], list(picks)
+    assert unpaid_id not in picks and pickup_id not in picks and picks[part_id]["status"]["carried"], list(picks)
 
     # main: order.void {kind: waste, waste_reason}, no money moved.
     wait_until(lambda: [e for e in fm.of_type("order.void") if e.get("order_id") == unpaid_id], what="order.void to main")
@@ -156,14 +174,20 @@ def test_forced_close_writes_unpaid_counter_checks_off(rig):  # noqa: F811
     assert not [e for e in fm.of_type("order.payment") if e.get("order_id") == unpaid_id]
     j = [e for e in term.get(f"{base}/api/terminal/journal", timeout=5).json() if e["action"] == "void.waste" and e.get("order_id") == unpaid_id]
     assert len(j) == 1 and j[0]["detail"]["at_close"] and j[0]["detail"]["reason"] == "Unpaid at close", j
+    wait_until(lambda: [e for e in fm.of_type("order.void") if e.get("order_id") == pickup_id], what="the pickup's order.void")
+    ev = [e for e in fm.of_type("order.void") if e.get("order_id") == pickup_id][0]
+    assert ev["kind"] == "waste" and ev["waste_reason"] == "Not picked up" and ev["staff_id"] == CARA, ev
+    assert not [e for e in fm.of_type("order.payment") if e.get("order_id") == pickup_id]
 
     # The Z: the write-off on the Waste section, the carried checks unpaid, balanced; no driver reports.
     wait_until(lambda: term.get(f"{base}/api/terminal/z?batch={closed_id}", timeout=10).status_code == 200, what="Z built")
     z = term.get(f"{base}/api/terminal/z?batch={closed_id}", timeout=10).json()["report"]
-    assert z["waste"]["count"] == 1 and z["waste"]["cents"] == unpaid_total, z["waste"]
-    assert z["waste"]["reasons"] == [{"reason": "Unpaid at close", "count": 1, "cents": unpaid_total}], z["waste"]
-    assert z["unpaid"]["cents"] == part_total - 500 + pickup_total and z["reconcile"]["difference_cents"] == 0, z
-    assert z["sales"]["total_cents"] == part_total + pickup_total, z["sales"]
+    assert z["waste"]["count"] == 2 and z["waste"]["cents"] == unpaid_total + pickup_total, z["waste"]
+    assert sorted(z["waste"]["reasons"], key=lambda w: w["reason"]) == [
+        {"reason": "Not picked up", "count": 1, "cents": pickup_total},
+        {"reason": "Unpaid at close", "count": 1, "cents": unpaid_total}], z["waste"]
+    assert z["unpaid"]["cents"] == part_total - 500 and z["reconcile"]["difference_cents"] == 0, z
+    assert z["sales"]["total_cents"] == part_total, z["sales"]
     reps = agent.http.get(f"{base}/api/batches/{closed_id}/driver-reports", timeout=10)
     assert reps.status_code == 200 and unpaid_id not in reps.text, reps.text  # a counter check is on no driver's report
 
@@ -173,18 +197,21 @@ def test_forced_close_carry_setting_then_a_terminal_prints_it(rig):  # noqa: F81
     base = agent.base
     _set_close_action(rig, "carry", 2)
     counter_id, counter_total = _place(rig)
+    kept_pickup, _ = _place(rig, "pickup")  # carry: an unpaid pickup is carried too
 
     r = agent.http.post(f"{base}/api/batch/close", json={"force": False}, timeout=30)
     assert r.status_code == 409 and r.json()["force_action"] == "carry" and r.json()["checks"][0]["on_force"] == "carry", r.text
     assert r.json()["force"] == {"waste_count": 0, "waste_cents": 0, "carry_count": 1, "carry_due_cents": counter_total}, r.text
     # Forced from the Pi page: carried like a pickup, still payable / voidable.
     r = agent.http.post(f"{base}/api/batch/close", json={"force": True}, timeout=30)
-    assert r.status_code == 200 and r.json()["unpaid_at_close"] is None, r.text
-    assert [c["order_id"] for c in r.json()["unsettled"]["checks"]] == [counter_id] and r.json()["unsettled"]["checks"][0]["carried"]
+    assert r.status_code == 200 and r.json()["unpaid_at_close"] is None and r.json()["not_picked_up"] is None, r.text
+    assert {c["order_id"] for c in r.json()["unsettled"]["checks"]} == {counter_id, kept_pickup}, r.text
+    assert all(c["carried"] for c in r.json()["unsettled"]["checks"]), r.text
     picks = {o["order"]["id"]: o for o in term.get(f"{base}/api/terminal/pickups", timeout=5).json()["orders"]}
-    assert picks[counter_id]["status"]["carried"]
+    assert picks[counter_id]["status"]["carried"] and picks[kept_pickup]["status"]["carried"]
 
-    # Back to waste: the carried counter check still blocks; a terminal that prints the list itself closes.
+    # Back to waste: the carried counter check still blocks; a terminal that prints the list itself closes
+    # (an older one: print_unpaid_here only, so the Pi prints the NOT PICKED UP slip for the carried pickup).
     _set_close_action(rig, "waste", 3)
     r = term.post(f"{base}/api/terminal/close", json={"force": False, "manager_pin": "9876"}, timeout=30)
     assert r.status_code == 409 and r.json()["checks"][0]["carried"] and r.json()["checks"][0]["on_force"] == "waste", r.text
@@ -194,7 +221,11 @@ def test_forced_close_carry_setting_then_a_terminal_prints_it(rig):  # noqa: F81
     u = r.json()["unpaid_at_close"]
     assert u["printed_by"] == "terminal" and [c["order_id"] for c in u["checks"]] == [counter_id] and u["checks"][0]["carried"], u
     assert term.get(f"{base}/api/terminal/checks/{counter_id}", timeout=5).json()["order"]["status"]["state"] == "cancelled"
-    assert counter_id not in {o["order"]["id"] for o in term.get(f"{base}/api/terminal/pickups", timeout=5).json()["orders"]}
+    n = r.json()["not_picked_up"]
+    assert n["printed_by"] == "pi" and [c["order_id"] for c in n["checks"]] == [kept_pickup] and n["checks"][0]["carried"], n
+    open_ids = {o["order"]["id"] for o in term.get(f"{base}/api/terminal/pickups", timeout=5).json()["orders"]}
+    assert counter_id not in open_ids and kept_pickup not in open_ids, open_ids
+    wait_until(lambda: [j for j in fakes["Front"].jobs[front:] if b"PICKED UP" in j], what="the Pi's Not picked up slip")
     with intentional("absence check: the Pi must not print the list the terminal prints"):
         time.sleep(2)
     assert not [j for j in fakes["Front"].jobs[front:] if b"UNPAID" in j], "the Pi printed the terminal's list"

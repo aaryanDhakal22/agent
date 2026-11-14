@@ -29,6 +29,9 @@ type Batch struct {
 	// UnpaidAtClose: the unpaid counter checks the close wrote off as waste
 	// (nil when none; the owner, 2026-11-13).
 	UnpaidAtClose *UnpaidAtClose `json:"-"`
+	// NotPickedUp: the unpaid pickups the close wrote off as waste "Not
+	// picked up" (nil when none; the owner, 2026-11-14).
+	NotPickedUp *UnpaidAtClose `json:"-"`
 }
 
 // Close kinds (the Z report's close_kind): Close batch by hand, or the Pi's

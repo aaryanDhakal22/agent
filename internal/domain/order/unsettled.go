@@ -110,6 +110,11 @@ const (
 	// UnpaidAtCloseReason is the waste reason of a check written off at a
 	// close (not one of the store's waste_reasons: the Pi's own).
 	UnpaidAtCloseReason = "Unpaid at close"
+	// NotPickedUpReason is the waste reason of an unpaid pickup a close
+	// wrote off (the owner, 2026-11-14: "when a pickup order isn't picked up
+	// and the close batch command is sent, they're supposed to be voided as
+	// waste and printed on a not picked up slip"; the Pi's own reason too).
+	NotPickedUpReason = "Not picked up"
 )
 
 // UnpaidActionOf reads the setting: "carry", else waste (missing = waste).
@@ -157,6 +162,10 @@ type CloseActor struct {
 	// PrintsHere: the caller prints the Unpaid at close list itself (a
 	// terminal that says so); else the Pi prints it.
 	PrintsHere bool `json:"-"`
+	// PrintsNotPickedUpHere: the caller prints the Not picked up slip
+	// itself (a terminal that says print_not_picked_up_here); else the Pi
+	// prints it (an older terminal never knew the slip).
+	PrintsNotPickedUpHere bool `json:"-"`
 }
 
 type forceUnpaidKey struct{}
@@ -170,6 +179,20 @@ func WithForceUnpaid(ctx context.Context, on bool) context.Context {
 // ForceUnpaidOf is WithForceUnpaid's flag (false when none).
 func ForceUnpaidOf(ctx context.Context) bool {
 	v, _ := ctx.Value(forceUnpaidKey{}).(bool)
+	return v
+}
+
+type printNotPickedUpKey struct{}
+
+// WithPrintNotPickedUpHere: the closing terminal prints the Not picked up
+// slip itself (body print_not_picked_up_here, the owner 2026-11-14).
+func WithPrintNotPickedUpHere(ctx context.Context, on bool) context.Context {
+	return context.WithValue(ctx, printNotPickedUpKey{}, on)
+}
+
+// PrintNotPickedUpHereOf is WithPrintNotPickedUpHere's flag (false when none).
+func PrintNotPickedUpHereOf(ctx context.Context) bool {
+	v, _ := ctx.Value(printNotPickedUpKey{}).(bool)
 	return v
 }
 
@@ -193,7 +216,10 @@ func CloseActorOf(ctx context.Context) CloseActor {
 }
 
 // UnpaidAtClose is the "Unpaid at close" report: the unpaid counter checks
-// a close wrote off as waste (a close's `unpaid_at_close`; printed).
+// a close wrote off as waste (a close's `unpaid_at_close`; printed). The
+// same shape is the "Not picked up" report (a close's `not_picked_up`, the
+// owner 2026-11-14): the unpaid pickups it wrote off, Reason "Not picked
+// up".
 type UnpaidAtClose struct {
 	BatchID    int64            `json:"batch_id"`
 	Reason     string           `json:"reason"`
@@ -236,6 +262,15 @@ func IsUnsettled(so StoredOrder) bool {
 // BlocksClose: an unsettled counter (dine-in) check blocks a manual close.
 func BlocksClose(so StoredOrder) bool {
 	return IsUnsettled(so) && TerminalType(so) == "counter"
+}
+
+// NotPickedUp: an unsettled counter / phone pickup (source counter, never
+// an online or website one) that isn't picked up - what a close writes off
+// as waste "Not picked up" when it has no payment row and the store's
+// close_unpaid_counter_action is waste (the owner, 2026-11-14). Open batch
+// or carried from an earlier one; it never blocks a close.
+func NotPickedUp(so StoredOrder) bool {
+	return IsUnsettled(so) && so.Order.Source == SourceCounter && TerminalType(so) == "pickup" && so.Status.FinishedAt == nil
 }
 
 // Carries: an unsettled check a close carries to the next batch (still
