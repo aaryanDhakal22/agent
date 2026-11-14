@@ -600,3 +600,14 @@ CREATE TABLE driver_tips (
     square_payment_id text    NOT NULL DEFAULT ''
 );
 CREATE INDEX idx_driver_tips_batch ON driver_tips (batch_id);
+
+-- 00048_terminal_printers - the Pi's copy of each counter terminal's receipt
+-- printer settings (contract/agent.md 2.10ap).
+CREATE TABLE terminal_printers (
+    printer_key text PRIMARY KEY,
+    device_id   text NOT NULL,
+    device_name text NOT NULL DEFAULT '',
+    profile     text NOT NULL,
+    route       text NOT NULL DEFAULT '',
+    updated_at  text NOT NULL
+);

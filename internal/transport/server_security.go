@@ -461,6 +461,8 @@ var driverRoutes = map[string]bool{
 	"GET /api/terminal/status":                     true,
 	"GET /api/terminal/receipt-header":             true,
 	"GET /api/terminal/setup":                      true,
+	"GET /api/terminal/printer-profiles":           true, // 2.10ap: the printer settings copy
+	"PUT /api/terminal/printer-profile":            true,
 	"POST /api/terminal/journal":                   true,
 	"POST /api/terminal/app/state":                 true,
 	"GET /api/terminal/app/latest":                 true,
