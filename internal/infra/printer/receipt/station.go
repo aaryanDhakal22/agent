@@ -58,7 +58,6 @@ var clock = time.Now
 const (
 	cmdSizeReset = "\x1d\x21\x00" // GS ! 0: 1x1
 	ruleChar     = "-"
-	itemIndent   = "   "
 	voidMark     = "(VOID) "
 )
 
