@@ -248,6 +248,17 @@ func stationTickets(snap order.Snapshot, roster []RosterEntry, receipt RosterEnt
 		known[p.ID] = true
 	}
 
+	// A Quicc Add (and a priced note under one) the cashier sent to a printer
+	// this Pi doesn't know prints NOWHERE: the owner's rule is "never prints
+	// anywhere unless chosen" (2026-11-14, #17), so it must not fall back to
+	// every station like an unrouted menu item.
+	customIDs := map[string]bool{}
+	for _, it := range snap.Items {
+		if it.SKU == order.SKUCustom {
+			customIDs[it.ID] = true
+		}
+	}
+
 	// Which station(s) each top-level item goes to (by index into snap.Items).
 	assigned := make(map[string][]int, len(stations))
 	for i, it := range snap.Items {
@@ -257,6 +268,10 @@ func stationTickets(snap order.Snapshot, roster []RosterEntry, receipt RosterEnt
 		if it.Routing == order.RoutingMatched && known[it.PrinterID] {
 			assigned[it.PrinterID] = append(assigned[it.PrinterID], i)
 			continue
+		}
+		if it.Routing == order.RoutingMatched && (it.SKU == order.SKUCustom ||
+			(it.SKU == order.SKUNote && customIDs[it.ParentLineID])) {
+			continue // a Quicc Add on an unknown printer: nowhere (see above)
 		}
 		unrouted = append(unrouted, it.Name)
 		for _, st := range stations {

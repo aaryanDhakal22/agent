@@ -718,15 +718,6 @@ func writeRerouted(w func(string), nl func(), from string, lay layout) {
 	nl()
 }
 
-// itemName is the kitchen-ticket item label: "Name (Size)" when the size says
-// something (see displaySize).
-func itemName(it order.LineItem) string {
-	if sz := displaySize(it.Size); sz != "" {
-		return it.Name + " (" + sz + ")"
-	}
-	return it.Name
-}
-
 // displaySize drops the vendor's placeholder size: "Serving" (a single-size
 // item) prints nothing and "Serving (2 Piece)" prints "2 Piece". The customer
 // receipt keeps the vendor's size as v1 printed it.
