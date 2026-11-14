@@ -150,7 +150,7 @@ def test_kitchen_ticket_header_and_others(kitchen, fakes) -> None:  # noqa: F811
     assert a.http.post(f"{a.base}/api/orders/{snap['id']}/accept", json={"prep_minutes": 20}, timeout=30).status_code == 200
     wait_until(lambda: fakes["Pizza"].jobs and fakes["Front"].jobs, timeout=10, what="tickets")
     pizza = fakes["Pizza"].text()
-    assert pizza.index("DELIVERY") < pizza.index("\x1d!31100\n"), "the type above the number"
+    assert pizza.index("DELIVERY") < pizza.index("\x1d!3100\n"), "the type above the number"
     assert "Wings" in pizza and "Can Coke" not in pizza
     receipt = fakes["Front"].text()
     # the type is a picture since 2026-11-14 (DELIVERY + its car: GS v 0, 18 bytes x 24 rows)

@@ -100,7 +100,7 @@ def test_station_tickets_and_receipt(kitchen, fakes) -> None:
     # size), the unmatched item flagged, the rest of the order under "ITEMS TO
     # OTHER PRINTER" one size smaller (the owner, 2026-11-14).
     assert pizza.startswith("\x1b@\x1ba\x01\x1bE\x01\x1d!\x11DELIVERY\n") and "Printed " in pizza, pizza
-    assert "\x1d!31100\n" in pizza and "KITCHEN, PYTEST" in pizza, pizza
+    assert "\x1d!3100\n" in pizza and "KITCHEN, PYTEST" in pizza, pizza
     # 2.5.7: the item's choices indented under it (two past the name, which prints double wide);
     # 2026-11-14: three spaces after the quantity, so the choices start at column 10.
     assert "1   Pepperoni Pizza\n" in pizza and "\x1bE\x00          - Large\n" in pizza, pizza
