@@ -85,6 +85,10 @@ type Status struct {
 	ScheduledLeadMinutes *int64     `json:"scheduled_lead_minutes,omitempty"`
 	RingAt               *time.Time `json:"ring_at,omitempty"`
 	Rerung               bool       `json:"rerung,omitempty"`
+	// NumberPlaceholder (batch E, contract 2.10ae): KitchenNumber is a future
+	// order's random 5-digit placeholder; it takes the next number of the
+	// store's sequence when it is placed.
+	NumberPlaceholder bool `json:"number_placeholder,omitempty"`
 
 	// AutoAccepted (2.2.0): accepted by auto-accept, not by staff (a future
 	// order auto-accepted at its re-ring too). The tablet shows a banner.

@@ -85,6 +85,9 @@ CREATE TABLE orders (
     kitchen_pending         boolean NOT NULL DEFAULT false,
     -- B: 00045_reopen: when a cashier last reopened the check (All checks).
     reopened_at             text,
+    -- E: 00047_one_sequence: kitchen_number holds a future order's 5-digit
+    -- placeholder until it is placed (contract 2.10ae).
+    number_placeholder      boolean NOT NULL DEFAULT false,
     CHECK (state IN ('arrived', 'scheduled', 'accepted', 'ready', 'on_delivery', 'delivered', 'cancelled'))
 );
 CREATE INDEX idx_orders_arrival_date ON orders (arrival_date DESC);
@@ -266,10 +269,7 @@ CREATE TABLE settings (
     -- '' = 1024 on) + each device's last setup result (JSON {device id: result}).
     admin_pair                text    NOT NULL DEFAULT '',
     device_setups             text    NOT NULL DEFAULT '',
-    -- 00044_numbers_day: the business day of the last ticket number taken
-    -- ('' = none) + a close since then (the numbers restart once a day).
-    numbers_day               text    NOT NULL DEFAULT '',
-    numbers_closed            integer NOT NULL DEFAULT 0,
+    -- (00044_numbers_day's numbers_day / numbers_closed: dropped by E's 00047.)
     CHECK (id = 1)
 );
 

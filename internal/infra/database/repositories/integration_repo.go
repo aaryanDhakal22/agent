@@ -198,6 +198,16 @@ func (r *OrderRepository) Schedule(ctx context.Context, id string, leadMinutes i
 		if n == 0 {
 			return order.ErrInvalidState
 		}
+		// A future order holds a random 5-digit placeholder until it is
+		// placed (contract 2.10ae); a lead edit keeps the one it has.
+		if fresh.Status.KitchenNumber == nil {
+			if err := r.givePlaceholder(ctx, q, id); err != nil {
+				return err
+			}
+			if fresh, err = loadOrder(ctx, q, id); err != nil {
+				return err
+			}
+		}
 		return recordOrderStatus(ctx, q, fresh, false, now)
 	})
 	if err != nil {

@@ -1114,11 +1114,11 @@ func main() {
 		return time.Local
 	}
 	orderService.SetStoreTZ(storeTZ)
-	// Ticket numbers restart once a business day (contract 2.10ae): the
-	// store's day starts at its auto-close time; main's kitchen_start.
-	orderRepo.SetNumbering(func(t time.Time) order.Numbering {
+	// Ticket numbers (contract 2.10ae): one sequence for every order from
+	// main's counter_start (default 100), restarted by every Close batch.
+	orderRepo.SetNumbering(func(time.Time) order.Numbering {
 		cfg, _ := termStore.Config()
-		return order.Numbering{Day: order.BusinessDay(t, storeTZ(), cfg.DayStart()), KitchenStart: cfg.KitchenStart()}
+		return order.Numbering{Start: cfg.CounterStart()}
 	})
 	nightly := backup.New(db, cfg.AgentDBPath, func(rc context.Context, path string, body []byte, ct string) (int, []byte, error) {
 		return mainClient.Upload(rc, sseCtrl.CurrentKey(), path, body, ct)

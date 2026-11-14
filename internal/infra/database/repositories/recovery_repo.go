@@ -36,12 +36,11 @@ func (r *OrderRepository) AgentState(ctx context.Context) (st order.AgentState, 
 	if err != nil {
 		return st, err
 	}
-	st.KitchenNext, st.LastPrepMinutes = fs.KitchenNext, fs.LastPrepMinutes
+	// One sequence (contract 2.10ae): counter_next numbers every order;
+	// kitchen_next is unused (0).
+	st.LastPrepMinutes, st.OneSequence = fs.LastPrepMinutes, true
 	if st.CounterNext, err = q.GetCounterNext(ctx); err != nil {
 		return st, err
-	}
-	if ns, err := q.GetNumbersState(ctx); err == nil {
-		st.NumbersDay, st.NumbersClosed = ns.NumbersDay, ns.NumbersClosed == 1
 	}
 	if p, err := q.GetFloorPrefs(ctx); err == nil {
 		st.Prefs = order.FloorPrefs{GreenTillMinutes: p.GreenTillMinutes, TipTaxBps: p.TipTaxBps}
@@ -153,7 +152,7 @@ func (r *OrderRepository) Restore(ctx context.Context, data order.RestoreData) (
 		}
 
 		// Orders.
-		maxKitchen, maxCounter := int64(0), int64(0)
+		maxCounter := int64(0)
 		for _, ro := range data.Orders {
 			snap := ro.Order
 			var st order.Status
@@ -224,35 +223,29 @@ func (r *OrderRepository) Restore(ctx context.Context, data order.RestoreData) (
 			if st.State == order.StateArrived {
 				res.Waiting++
 			}
-			switch {
-			case st.KitchenNumber == nil:
-			case snap.Source == order.SourceCounter: // the counter sequence is its own
+			if st.NumberPlaceholder && st.KitchenNumber != nil { // a future order keeps its placeholder (2.10ae)
+				if err := q.SetOrderPlaceholderFlag(ctx, models.SetOrderPlaceholderFlagParams{Placeholder: true, ID: snap.ID}); err != nil {
+					return fmt.Errorf("restore order %s placeholder: %w", snap.ID, err)
+				}
+			}
+			oneSeq := data.State == nil || data.State.OneSequence
+			// The one sequence (2.10ae): every real number counts (no state
+			// either); a state from an older Pi (no one_sequence) numbered its
+			// online orders apart (1100+): only its counter numbers count.
+			if st.KitchenNumber != nil && !st.NumberPlaceholder && !order.IsPlaceholder(*st.KitchenNumber) &&
+				(snap.Source == order.SourceCounter || oneSeq) {
 				maxCounter = max(maxCounter, *st.KitchenNumber)
-			case *st.KitchenNumber > maxKitchen:
-				maxKitchen = *st.KitchenNumber
 			}
 		}
 
-		// Counters + settings.
-		// kitchen_next 0 = start at kitchen_start (contract 2.10ae).
-		next, prep := int64(0), int64(20)
-		if data.State != nil {
-			if data.State.KitchenNext > 0 {
-				next = data.State.KitchenNext
-			}
-			if data.State.LastPrepMinutes > 0 {
-				prep = data.State.LastPrepMinutes
-			}
+		// Counters + settings. One sequence (contract 2.10ae): counter_next
+		// numbers every order; kitchen_next stays 0 (unused).
+		prep := int64(20)
+		if data.State != nil && data.State.LastPrepMinutes > 0 {
+			prep = data.State.LastPrepMinutes
 		}
-		if maxKitchen > 0 && maxKitchen >= next {
-			next = maxKitchen + 1 // never hand out a number twice
-		}
-		if err := q.SetKitchenCounters(ctx, models.SetKitchenCountersParams{KitchenNext: next, LastPrepMinutes: prep}); err != nil {
+		if err := q.SetKitchenCounters(ctx, models.SetKitchenCountersParams{KitchenNext: 0, LastPrepMinutes: prep}); err != nil {
 			return err
-		}
-		res.KitchenNext = next
-		if next == 0 {
-			res.KitchenNext = r.numberingAt(time.Now()).KitchenStart // what the next accepted order gets
 		}
 		var counter int64
 		if data.State != nil {
@@ -265,14 +258,9 @@ func (r *OrderRepository) Restore(ctx context.Context, data order.RestoreData) (
 			return err
 		}
 		res.CounterNext = counter
-		if data.State != nil && data.State.NumbersDay != "" { // contract 2.10ae: the daily restart goes on as before
-			closed := int64(0)
-			if data.State.NumbersClosed {
-				closed = 1
-			}
-			if err := q.SetNumbersState(ctx, models.SetNumbersStateParams{NumbersDay: data.State.NumbersDay, NumbersClosed: closed}); err != nil {
-				return err
-			}
+		res.KitchenNext = counter // what the next order gets
+		if counter <= 0 {
+			res.KitchenNext = r.numberingAt(time.Now()).Start
 		}
 		if data.State != nil {
 			if p := data.State.Prefs; p.GreenTillMinutes > 0 {

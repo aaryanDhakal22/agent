@@ -50,8 +50,16 @@ func TestFingerprintAndWasteReasons(t *testing.T) {
 	}
 }
 
-func TestCounterStartStaysBelowKitchenNumbers(t *testing.T) {
-	for raw, want := range map[string]int64{`{"counter_start": 500}`: 500, `{"counter_start": 1100}`: DefaultCounterStart, `{}`: DefaultCounterStart} {
+// counter_start is the store's ONE sequence's start (contract 2.10ae,
+// 2026-11-14): default 100, kept below the 5-digit future placeholders, no
+// longer tied to kitchen_start (retired).
+func TestCounterStartStaysBelowThePlaceholders(t *testing.T) {
+	if DefaultCounterStart != 100 {
+		t.Fatalf("default start %d, want 100", DefaultCounterStart)
+	}
+	for raw, want := range map[string]int64{`{"counter_start": 500}`: 500, `{"counter_start": 1100}`: 1100,
+		`{"counter_start": 1100, "kitchen_start": 1100}`: 1100, `{"counter_start": 9999}`: 9999,
+		`{"counter_start": 10000}`: DefaultCounterStart, `{"counter_start": 0}`: DefaultCounterStart, `{}`: DefaultCounterStart} {
 		cfg, err := ParseConfig([]byte(`{"version":1,"staff":[],"settings":` + raw + `}`))
 		if err != nil {
 			t.Fatal(err)

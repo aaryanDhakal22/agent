@@ -529,7 +529,7 @@ function agentApp() {
           list: r ? [
             r.orders + ' order' + (r.orders === 1 ? '' : 's') + ' restored (' + r.waiting + ' waiting to be accepted)',
             r.drivers + ' driver' + (r.drivers === 1 ? '' : 's'),
-            'Next kitchen # ' + r.kitchen_next,
+            'Next ticket # ' + r.kitchen_next,
           ] : [],
           confirmLabel: 'Open the dashboard', cancelLabel: null,
         });
@@ -1118,7 +1118,7 @@ function agentApp() {
     get batchSubtitle() {
       if (!this.floor || !this.floor.batch) return this.floorErr || 'Loading…';
       const b = this.floor.batch;
-      return 'Batch ' + b.id + ' open since ' + new Date(ts(b.opened_at)).toLocaleString([], { weekday: 'short', hour: 'numeric', minute: '2-digit' }) + ' · next kitchen # ' + this.floor.kitchen_next;
+      return 'Batch ' + b.id + ' open since ' + new Date(ts(b.opened_at)).toLocaleString([], { weekday: 'short', hour: 'numeric', minute: '2-digit' }) + ' · next ticket # ' + this.floor.kitchen_next;
     },
     async printReports() {
       if (this.busy.reports) return;
@@ -1136,7 +1136,7 @@ function agentApp() {
       if (this.busy.close) return;
       const ok = await this.ask({
         title: 'Close the batch?',
-        body: 'A report prints for each driver. Order numbers carry on today and start again with the next business day\'s first order.',
+        body: 'A report prints for each driver. Order numbers start again at the store\'s first number (100 by default).',
         confirmLabel: 'Close batch', cancelLabel: 'Keep it open', focusCancel: true,
       });
       if (ok) await this.doCloseBatch(false);

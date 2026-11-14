@@ -44,10 +44,10 @@ func newNearbyFloor(t *testing.T) *nearbyFloor {
 		t.Fatal(err)
 	}
 	f.juma = drv.ID
-	f.a = readyDelivery(t, svc, 20*time.Minute) // #1100
-	f.b = readyDelivery(t, svc, 15*time.Minute) // #1101
-	f.c = readyDelivery(t, svc, 10*time.Minute) // #1102
-	f.d = readyDelivery(t, svc, 5*time.Minute)  // #1103, never located
+	f.a = readyDelivery(t, svc, 20*time.Minute) // #100
+	f.b = readyDelivery(t, svc, 15*time.Minute) // #101
+	f.c = readyDelivery(t, svc, 10*time.Minute) // #102
+	f.d = readyDelivery(t, svc, 5*time.Minute)  // #103, never located
 	locate(t, svc, f.a, 40.010, -74.000, 300)
 	locate(t, svc, f.b, 40.011, -74.001, 310, order.GeoTime{Other: f.a, ToS: ptr[int64](60), FromS: ptr[int64](60)})
 	locate(t, svc, f.c, 40.100, -74.200, 1500)
@@ -75,7 +75,7 @@ func TestNextCheckDetour(t *testing.T) {
 		strings.Join(got.NearbyOrderIDs, ",") != f.b {
 		t.Fatalf("got %+v (want only %s)", got, f.b)
 	}
-	if got.Reason != "#1101 adds 1 min to Juma's run." {
+	if got.Reason != "#101 adds 1 min to Juma's run." {
 		t.Fatalf("reason %q", got.Reason)
 	}
 	// A tighter limit than the detour: nothing.
@@ -98,7 +98,7 @@ func TestNextCheckDistance(t *testing.T) {
 	if err != nil || strings.Join(got.NearbyOrderIDs, ",") != f.b || got.Rule != order.NearbyDistance {
 		t.Fatalf("%v %+v", err, got)
 	}
-	if got.Reason != "#1101 is 0.1 mi from #1100." {
+	if got.Reason != "#101 is 0.1 mi from #100." {
 		t.Fatalf("reason %q", got.Reason)
 	}
 	f.rule(t, DeliveryPatch{NearbyDistanceMi: ptr(0.1)}) // B is ~0.09 mi away
@@ -127,7 +127,7 @@ func TestNextCheckBundle(t *testing.T) {
 			t.Fatalf("bundle listed %s: %+v", id, got)
 		}
 	}
-	if !strings.HasPrefix(got.Reason, "AUTO would add #1101 to Juma's run") {
+	if !strings.HasPrefix(got.Reason, "AUTO would add #101 to Juma's run") {
 		t.Fatalf("reason %q", got.Reason)
 	}
 }
@@ -371,9 +371,9 @@ func TestDevEventsNoPII(t *testing.T) {
 			t.Fatalf("%q in the events:\n%s", pii, text)
 		}
 	}
-	for _, want := range []string{"arrived (delivery)", "#1100 accepted (prep 20 min)", "#1100 printed on Online",
-		"#1100 full ticket for Wings NOT printed", "#1100 Pizza ticket rerouted to Online", "#1100 ready",
-		"Out on a run: #1100", "Delivered: #1100"} {
+	for _, want := range []string{"arrived (delivery)", "#100 accepted (prep 20 min)", "#100 printed on Online",
+		"#100 full ticket for Wings NOT printed", "#100 Pizza ticket rerouted to Online", "#100 ready",
+		"Out on a run: #100", "Delivered: #100"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("missing %q in:\n%s", want, text)
 		}

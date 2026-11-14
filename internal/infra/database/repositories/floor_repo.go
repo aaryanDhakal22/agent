@@ -452,9 +452,9 @@ func (r *OrderRepository) CloseBatch(ctx context.Context, force bool) (closed *o
 		if err := recordBatchClosed(ctx, q, b.ID, now); err != nil {
 			return err
 		}
-		// The ticket numbers restart with the first number of a new business
-		// day (contract 2.10ae): a second close the same day carries on.
-		if err := q.MarkNumbersClosed(ctx); err != nil {
+		// Every close restarts the ticket numbers at the start (contract
+		// 2.10ae, the owner 2026-11-14); future orders keep their placeholders.
+		if err := q.RestartNumbers(ctx); err != nil {
 			return err
 		}
 		// The terminals' shared drafts never outlive the batch (contract 2.10i).
@@ -572,15 +572,14 @@ func (r *OrderRepository) FloorSettings(ctx context.Context) (fs order.FloorSett
 	if err != nil {
 		return fs, err
 	}
-	next := row.KitchenNext
-	// The number the next accepted order gets (contract 2.10ae): the start
-	// when the sequence restarts (0 stored, or a new business day after a
-	// close).
-	if ns, err := q.GetNumbersState(ctx); err == nil {
-		n := r.numberingAt(time.Now())
-		if next <= 0 || (ns.NumbersClosed == 1 && ns.NumbersDay != n.Day) {
-			next = n.KitchenStart
-		}
+	// The number the next order gets (contract 2.10ae): the sequence's next,
+	// or the start after a close.
+	next, err := q.GetCounterNext(ctx)
+	if err != nil {
+		return fs, err
+	}
+	if next <= 0 {
+		next = r.numberingAt(time.Now()).Start
 	}
 	return order.FloorSettings{KitchenNext: next, LastPrepMinutes: row.LastPrepMinutes}, nil
 }

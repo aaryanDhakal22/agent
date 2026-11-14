@@ -134,7 +134,7 @@ func TestMigrationFrom00003KeepsOrders(t *testing.T) {
 		}
 	}
 	fs, _ := r.FloorSettings(ctx)
-	if fs.KitchenNext != 1100 || fs.LastPrepMinutes != 20 {
+	if fs.KitchenNext != 100 || fs.LastPrepMinutes != 20 { // the one sequence's start (2.10ae)
 		t.Fatalf("floor settings defaults: %+v", fs)
 	}
 }
@@ -145,14 +145,14 @@ func TestKitchenNumbers(t *testing.T) {
 	a, b := arrive(t, r, "pickup"), arrive(t, r, "pickup")
 
 	ga := accept(t, r, a)
-	if ga.Status.KitchenNumber == nil || *ga.Status.KitchenNumber != 1100 {
+	if ga.Status.KitchenNumber == nil || *ga.Status.KitchenNumber != 100 {
 		t.Fatalf("first kitchen number = %v", ga.Status.KitchenNumber)
 	}
 	if ga.Status.EstimatedReadyAt == nil || ga.Status.EstimatedReadyAt.Sub(*ga.Status.AcceptedAt) != 20*time.Minute {
 		t.Fatalf("estimated ready should be accepted + 20m: %+v", ga.Status)
 	}
 
-	// A reverted claim keeps its number on re-accept; the next order gets 1101.
+	// A reverted claim keeps its number on re-accept; the next order gets 101.
 	gb, err := r.ClaimAccept(ctx, uuid.MustParse(b.Order.ID), 30, false)
 	if err != nil {
 		t.Fatal(err)
@@ -164,11 +164,11 @@ func TestKitchenNumbers(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if *gb.Status.KitchenNumber != 1101 || *again.Status.KitchenNumber != 1101 {
-		t.Fatalf("retry must keep 1101: %d / %d", *gb.Status.KitchenNumber, *again.Status.KitchenNumber)
+	if *gb.Status.KitchenNumber != 101 || *again.Status.KitchenNumber != 101 {
+		t.Fatalf("retry must keep 101: %d / %d", *gb.Status.KitchenNumber, *again.Status.KitchenNumber)
 	}
 	fs, _ := r.FloorSettings(ctx)
-	if fs.KitchenNext != 1102 || fs.LastPrepMinutes != 30 {
+	if fs.KitchenNext != 102 || fs.LastPrepMinutes != 30 {
 		t.Fatalf("settings after accepts: %+v", fs)
 	}
 }
@@ -192,7 +192,7 @@ func TestPickupLifecycleAndEvents(t *testing.T) {
 	if len(evs) != 2 || evs[0]["status"] != "accepted" || evs[1]["status"] != "ready" {
 		t.Fatalf("events = %v", evs)
 	}
-	if evs[0]["kitchen_number"].(float64) != 1100 || evs[0]["prep_minutes"].(float64) != 20 || evs[0]["estimated_ready_at"] == nil {
+	if evs[0]["kitchen_number"].(float64) != 100 || evs[0]["prep_minutes"].(float64) != 20 || evs[0]["estimated_ready_at"] == nil {
 		t.Fatalf("accepted event must carry kitchen # + prep: %v", evs[0])
 	}
 }
@@ -336,9 +336,9 @@ func TestCloseBatch(t *testing.T) {
 	next, _ := r.OpenBatch(ctx)
 	fs, _ := r.FloorSettings(ctx)
 	ds, _ := r.ListDrivers(ctx)
-	// The kitchen numbers carry on after a close the same business day
-	// (contract 2.10ae; numbering_test.go has the daily restart).
-	if next.ID == first.ID || fs.KitchenNext != 1103 || ds[0].Status != order.DriverAvailable || ds[0].Deliveries != 0 {
+	// Every close restarts the numbers at 100 (contract 2.10ae, 2026-11-14;
+	// numbering_test.go has the rest).
+	if next.ID == first.ID || fs.KitchenNext != 100 || ds[0].Status != order.DriverAvailable || ds[0].Deliveries != 0 {
 		t.Fatalf("after close: batch=%d kitchen=%d drivers=%+v", next.ID, fs.KitchenNext, ds)
 	}
 	auto, cancelled := 0, 0
@@ -365,8 +365,8 @@ func TestCloseBatch(t *testing.T) {
 	if fresh.Status.BatchID != next.ID {
 		t.Fatalf("new order batch = %d, want %d", fresh.Status.BatchID, next.ID)
 	}
-	if got := accept(t, r, fresh); *got.Status.KitchenNumber != 1103 {
-		t.Fatalf("kitchen numbers carry on the same business day (2.10ae), got %d", *got.Status.KitchenNumber)
+	if got := accept(t, r, fresh); *got.Status.KitchenNumber != 100 {
+		t.Fatalf("the numbers restart at 100 after Close batch (2.10ae), got %d", *got.Status.KitchenNumber)
 	}
 }
 

@@ -9,7 +9,7 @@ import (
 )
 
 // Batch is a shift's worth of orders. Exactly one batch is open; "Close
-// batch" closes it and opens the next (resetting kitchen numbers to 1100).
+// batch" closes it and opens the next (restarting the ticket numbers at main's counter_start, default 100: contract 2.10ae).
 type Batch struct {
 	ID         int64      `json:"id"`
 	OpenedAt   time.Time  `json:"opened_at"`

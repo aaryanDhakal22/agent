@@ -60,9 +60,9 @@ func TestCounterSequenceAndIdempotency(t *testing.T) {
 	if n, _ := r.CounterNext(ctx); n != 502 {
 		t.Fatalf("counter next %d", n)
 	}
-	// Online kitchen numbers are their own sequence.
+	// One sequence (contract 2.10ae): a website order takes the next number.
 	web := accept(t, r, arriveWeb(t, r, "web", "pickup", true))
-	if *web.Status.KitchenNumber != 1100 {
+	if *web.Status.KitchenNumber != 502 {
 		t.Fatalf("kitchen number %d", *web.Status.KitchenNumber)
 	}
 	placed := eventsOfType(t, r, terminal.EventOrderPlaced)
@@ -96,10 +96,10 @@ func TestCounterSequenceAndIdempotency(t *testing.T) {
 	if err != nil || closed.Unsettled == nil || closed.Unsettled.Count != 1 || closed.Unsettled.DueCents != 1299 {
 		t.Fatalf("auto close: %+v %v", closed, err)
 	}
-	// Close batch the same business day: the counter sequence carries on
-	// (contract 2.10ae; numbering_test.go has the daily restart).
+	// Every Close batch restarts the sequence at the store's start (contract
+	// 2.10ae, 2026-11-14; numbering_test.go has the rest).
 	c, _ := counterOrder(t, r, "key-cccc-3", 7, 100)
-	if *c.Status.KitchenNumber != 502 {
+	if *c.Status.KitchenNumber != 7 {
 		t.Fatalf("after close: %d", *c.Status.KitchenNumber)
 	}
 	list, err := r.CounterOrders(ctx)
@@ -238,9 +238,9 @@ func TestJournalAndSnapshots(t *testing.T) {
 	}
 }
 
-// The counter sequence rides in agent.state and survives a restore on a new
-// Pi without ever repeating a number; online kitchen numbers aren't pushed
-// past counter numbers.
+// The sequence rides in agent.state and survives a restore on a new Pi
+// without ever repeating a number (one sequence since batch E: the restore's
+// kitchen_next is the number the next order gets).
 func TestCounterNextInStateAndRestore(t *testing.T) {
 	a := newFloorRepo(t)
 	ctx := context.Background()
@@ -256,7 +256,7 @@ func TestCounterNextInStateAndRestore(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.CounterNext != 4001 || res.KitchenNext != 1100 {
+	if res.CounterNext != 4001 || res.KitchenNext != 4001 {
 		t.Fatalf("restore: %+v", res)
 	}
 	got, err := b.CounterOrderByKey(ctx, "key-rest-0001")

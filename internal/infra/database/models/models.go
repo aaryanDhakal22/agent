@@ -112,6 +112,21 @@ type DriverShift struct {
 	AutoOut    bool           `json:"auto_out"`
 }
 
+type DriverTip struct {
+	OrderID         string         `json:"order_id"`
+	BatchID         int64          `json:"batch_id"`
+	DriverID        string         `json:"driver_id"`
+	State           string         `json:"state"`
+	TipCents        int64          `json:"tip_cents"`
+	AppliedCents    int64          `json:"applied_cents"`
+	SetAt           string         `json:"set_at"`
+	SetBy           string         `json:"set_by"`
+	AppliedAt       sql.NullString `json:"applied_at"`
+	SquareState     string         `json:"square_state"`
+	SquareError     string         `json:"square_error"`
+	SquarePaymentID string         `json:"square_payment_id"`
+}
+
 type FloorDeadLetter struct {
 	EventID        string         `json:"event_id"`
 	Subject        string         `json:"subject"`
@@ -214,6 +229,7 @@ type Order struct {
 	Carried              bool           `json:"carried"`
 	KitchenPending       bool           `json:"kitchen_pending"`
 	ReopenedAt           sql.NullString `json:"reopened_at"`
+	NumberPlaceholder    bool           `json:"number_placeholder"`
 }
 
 type OrderGeo struct {
@@ -384,8 +400,6 @@ type Setting struct {
 	PrintRouting               string  `json:"print_routing"`
 	AdminPair                  string  `json:"admin_pair"`
 	DeviceSetups               string  `json:"device_setups"`
-	NumbersDay                 string  `json:"numbers_day"`
-	NumbersClosed              int64   `json:"numbers_closed"`
 }
 
 type SettingsLog struct {

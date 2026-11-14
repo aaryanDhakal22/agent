@@ -179,6 +179,7 @@ func TestRestoreWithoutState(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// No state (main kept none): every restored number counts (one sequence, 2.10ae).
 	if res.Orders != 2 || res.Waiting != 1 || res.Drivers != 1 || res.KitchenNext != 1108 {
 		t.Fatalf("restore result %+v", res)
 	}

@@ -1,45 +1,75 @@
 package order
 
-import "time"
+// Ticket numbers (contract/agent.md §2.10ae, the owner, final 2026-11-14):
+//
+//   - ONE sequence for every order: terminal, call-center, website and
+//     online orders all take the next number from settings.counter_next,
+//     starting at main's counter_start (default 100). No more kitchen
+//     numbers from 1100.
+//   - Every Close batch restarts it at the start (a second close the same
+//     day too). The 2026-11-13 business-day rule is gone.
+//   - A future order holds a random 5-digit placeholder (PlaceholderMin -
+//     PlaceholderMax, unique among open future orders) from when it is
+//     scheduled until it is placed (its ring time, MAKE NOW); then it takes
+//     the next number of the sequence.
 
-// Ticket numbers (contract/agent.md §2.10ae, the owner 2026-11-13): the
-// kitchen sequence (accepted online / website orders, from main's
-// kitchen_start, default 1100) and the counter sequence (terminal and call-
-// center orders, from counter_start, default 1) restart once a business day:
-// Close batch marks them closed, and the first number taken on a new business
-// day after a close starts both again. A second or third close the same day
-// carries on, so a day never shows two #1s; a batch never restarts mid-way.
+// DefaultNumberStart is where the store's one ticket-number sequence starts
+// when main's terminal config doesn't say (main's counter_start default).
+const DefaultNumberStart = 100
 
-// DefaultKitchenStart is the kitchen sequence's start when main's terminal
-// config doesn't say (the Pi's fixed start before the setting).
-const DefaultKitchenStart = 1100
+// MaxNumberStart bounds counter_start: the real numbers stay below the
+// placeholders (main's MaxCounterStart).
+const MaxNumberStart = 9_999
 
-// DefaultDayStart is the business day's start when the store has no
-// auto-close time (main's default auto_close_batch_at).
-const DefaultDayStart = "04:00"
+// A future order's placeholder number: 5 digits.
+const (
+	PlaceholderMin = 10_000
+	PlaceholderMax = 99_999
+)
 
-// Numbering is what taking a ticket number needs: the business day it is
-// taken on and where the kitchen sequence starts.
+// Numbering is what taking a ticket number needs: where the sequence
+// starts (main's counter_start).
 type Numbering struct {
-	Day          string // YYYY-MM-DD (BusinessDay)
-	KitchenStart int64
+	Start int64
 }
 
-// BusinessDay is the store's business day at t: the date, in loc, of the day
-// that began at dayStart ("HH:MM" store time; "" or bad = DefaultDayStart) at
-// or before t. With 04:00, 01:30 on the 14th is still the 13th's.
-func BusinessDay(t time.Time, loc *time.Location, dayStart string) string {
-	if loc == nil {
-		loc = time.Local
+// StartOrDefault is n's start, or DefaultNumberStart when unset / out of range.
+func (n Numbering) StartOrDefault() int64 {
+	if n.Start < 1 || n.Start > MaxNumberStart {
+		return DefaultNumberStart
 	}
-	hm, err := time.Parse("15:04", dayStart)
-	if err != nil || len(dayStart) != 5 {
-		hm, _ = time.Parse("15:04", DefaultDayStart)
-	}
-	local := t.In(loc)
-	start := time.Date(local.Year(), local.Month(), local.Day(), hm.Hour(), hm.Minute(), 0, 0, loc)
-	if local.Before(start) {
-		local = local.AddDate(0, 0, -1)
-	}
-	return local.Format("2006-01-02")
+	return n.Start
 }
+
+// PickPlaceholder draws a placeholder from rnd (a value in [0, n)) that
+// taken doesn't hold. It tries a handful of random draws, then walks the
+// range from a random point, so it always finds a free one while fewer than
+// 90,000 future orders are open. ok false = every placeholder is taken.
+func PickPlaceholder(rnd func(n int64) int64, taken func(int64) (bool, error)) (int64, bool, error) {
+	span := int64(PlaceholderMax - PlaceholderMin + 1)
+	for range 16 {
+		c := PlaceholderMin + rnd(span)
+		used, err := taken(c)
+		if err != nil {
+			return 0, false, err
+		}
+		if !used {
+			return c, true, nil
+		}
+	}
+	from := rnd(span)
+	for i := range span {
+		c := PlaceholderMin + (from+i)%span
+		used, err := taken(c)
+		if err != nil {
+			return 0, false, err
+		}
+		if !used {
+			return c, true, nil
+		}
+	}
+	return 0, false, nil
+}
+
+// IsPlaceholder: a number in the placeholder range.
+func IsPlaceholder(n int64) bool { return n >= PlaceholderMin && n <= PlaceholderMax }

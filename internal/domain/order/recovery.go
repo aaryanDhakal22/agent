@@ -19,15 +19,14 @@ type AgentState struct {
 	KitchenNext     int64      `json:"kitchen_next"`
 	LastPrepMinutes int64      `json:"last_prep_minutes"`
 	// CounterNext (terminal stage 0d): the counter sequence's next number,
-	// 0 = start again at the terminal config's counter_start.
+	// 0 = start again at the terminal config's counter_start. Since batch E
+	// it is the store's ONE sequence (every order, contract 2.10ae) and
+	// KitchenNext is sent as 0.
 	CounterNext int64 `json:"counter_next"`
-	// NumbersDay / NumbersClosed (contract 2.10ae): the business day of the
-	// last ticket number and whether a close came since (the numbers restart
-	// with the first number of a new day after a close). Empty in reports
-	// from agents before 2.5.5.
-	NumbersDay    string     `json:"numbers_day,omitempty"`
-	NumbersClosed bool       `json:"numbers_closed,omitempty"`
-	Prefs         FloorPrefs `json:"prefs"`
+	// OneSequence (batch E): CounterNext numbers every order. A report
+	// without it (an older Pi) numbered online orders apart (KitchenNext).
+	OneSequence bool       `json:"one_sequence,omitempty"`
+	Prefs       FloorPrefs `json:"prefs"`
 	// ReceiptPrefs: nil in reports from agents older than receipt settings.
 	ReceiptPrefs *ReceiptPrefs `json:"receipt_prefs,omitempty"`
 	// PrintRouting: the routing + emergency reroute setting (printroute);
