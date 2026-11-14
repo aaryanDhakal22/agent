@@ -75,7 +75,7 @@ func TestCardTipsReachTheDriverReport(t *testing.T) {
 		t.Fatalf("reports: %v %+v", err, reps)
 	}
 	rep := reps[0]
-	rep.Finish(600, 300)
+	rep.Finish(600, 300, false)
 	tips := map[string]int64{}
 	for _, l := range rep.Lines {
 		tips[l.OrderID] = l.TipCents
@@ -88,8 +88,8 @@ func TestCardTipsReachTheDriverReport(t *testing.T) {
 			t.Fatalf("the card + tip line: %+v", l)
 		}
 	}
-	// tips 7.17 - 6% = 6.74; no cash; pay 2 x 3.00 → the store owes 12.74
-	if rep.TipCents != 717 || rep.TipAfterTaxCents != 674 || rep.OwedCents != -1274 {
+	// tips 7.17 - 6% = 6.74; no cash; the delivery pay paid weekly (2.5.8) → the store owes 6.74
+	if rep.TipCents != 717 || rep.TipAfterTaxCents != 674 || rep.OwedCents != -674 {
 		t.Fatalf("report: tip %d a/t %d owed %d", rep.TipCents, rep.TipAfterTaxCents, rep.OwedCents)
 	}
 }

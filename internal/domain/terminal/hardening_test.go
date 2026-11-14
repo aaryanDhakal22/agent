@@ -62,6 +62,25 @@ func TestCounterStartStaysBelowKitchenNumbers(t *testing.T) {
 	}
 }
 
+// main's driver_pay_from_cash (2.5.8): the delivery pay comes off the driver's
+// cash only when main sends it true; missing / no config = off (paid weekly).
+func TestDriverPayFromCash(t *testing.T) {
+	var none *Config
+	if none.DriverPayFromCash() {
+		t.Fatal("no config yet: off")
+	}
+	for raw, want := range map[string]bool{`{}`: false, `{"driver_pay_from_cash":true}`: true, `{"driver_pay_from_cash":false}`: false,
+		`{"driver_pay_from_cash":null}`: false} {
+		cfg, err := ParseConfig([]byte(`{"version":1,"staff":[],"settings":` + raw + `}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := cfg.DriverPayFromCash(); got != want {
+			t.Errorf("%s: %v, want %v", raw, got, want)
+		}
+	}
+}
+
 // The owner's X of 2026-11-13: what a forced close does with an unpaid
 // counter check (main's close_unpaid_counter_action; missing = waste).
 func TestCloseUnpaidCounterAction(t *testing.T) {

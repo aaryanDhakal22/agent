@@ -81,7 +81,7 @@ func TestDriverReports(t *testing.T) {
 		t.Fatalf("order = %s,%s,%s", reps[0].DriverName, reps[1].DriverName, reps[2].DriverName)
 	}
 	a := reps[0]
-	a.Finish(600, 0)
+	a.Finish(600, 0, false)
 	// 2.1.0: cash orders count cash less their tip (the driver kept it) and
 	// list no tip; only the card order's tip counts.
 	if a.Deliveries != 3 || a.CashCents != 3599 || a.TipCents != 400 || a.TipAfterTaxCents != 376 || a.OwedCents != 3223 {
@@ -94,7 +94,7 @@ func TestDriverReports(t *testing.T) {
 		t.Errorf("card line = %+v", l)
 	}
 	c := reps[1]
-	c.Finish(600, 0)
+	c.Finish(600, 0, false)
 	if c.Lines[0].Customer != "Cher" || c.CashCents != 0 || c.OwedCents != 0 {
 		t.Errorf("carlos = %+v", c)
 	}

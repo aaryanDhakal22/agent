@@ -143,11 +143,22 @@ type Settings struct {
 	// call-center pickup (receipt.CustomerCopies), the terminal's own for a
 	// takeout it rang. Missing = off.
 	TakeoutTwoCopies *bool `json:"takeout_two_copies"`
+	// DriverPayFromCash (the owner, 2026-11-13; main 4.0.8, Store › Settings
+	// › End of day "Driver delivery pay comes out of the cash at close"): on,
+	// the driver reports take the store's delivery_driver_cents x every
+	// delivered delivery off the cash he hands in (the 2.5.2 rule). Missing /
+	// off = the delivery pay is paid weekly: only the count shows.
+	DriverPayFromCash *bool `json:"driver_pay_from_cash"`
 }
 
 // TakeoutTwoCopies is main's takeout_two_copies (off when not sent).
 func (c *Config) TakeoutTwoCopies() bool {
 	return c != nil && c.parsed.TakeoutTwoCopies != nil && *c.parsed.TakeoutTwoCopies
+}
+
+// DriverPayFromCash is main's driver_pay_from_cash (off when not sent).
+func (c *Config) DriverPayFromCash() bool {
+	return c != nil && c.parsed.DriverPayFromCash != nil && *c.parsed.DriverPayFromCash
 }
 
 // CloseUnpaidCounterAction is the store's setting: waste (default) | carry.

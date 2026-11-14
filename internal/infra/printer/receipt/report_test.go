@@ -24,7 +24,7 @@ func reportFixture() (order.DriverReport, storeconfig.StoreContext) {
 			{Customer: "Lee H.", Address: "9 Oak Ave", Street: "9 Oak Ave", TipCents: 400, OrderTipCents: 400, SlipTotalCents: 3000},
 			{KitchenNumber: &k3, Source: "web", Customer: "Customer", Street: "5 Pine Rd", TipCents: 500, OrderTipCents: 500, SlipTotalCents: 2900}, // website card
 		}}
-	rep.Finish(600, 300)
+	rep.Finish(600, 300, false)
 	sc := storeconfig.StoreContext{Location: storeconfig.LocationContext{Name: "Lombardi's Pizza", Timezone: "America/New_York"}}
 	return rep, sc
 }
@@ -71,16 +71,21 @@ func TestBuildDriverReport_Content(t *testing.T) {
 		leftRight("Tip: $5.00", "Total: $29.00", W),
 		leftRight("Card tips", "$9.00", W),
 		leftRight("Deliveries", "4", W),
-		// the owner's settlement (2.5.2): cash - $3 x every delivery - card tips after 6%
+		// the owner's settlement (2.5.8): cash - card tips after 6%; the delivery pay is paid weekly (only the count)
 		leftRight("Cash collected", "$40.99", W),
-		leftRight("Delivery pay", "-$12.00", W), "($3.00 x 4)",
 		leftRight("Card tips after 6%", "-$8.46", W),
 		"($9.00 - 6%)",
-		"HAND IN", "$21.00", // $20.53 rounded, large and centred
-		"exact $20.53",
+		"HAND IN", "$33.00", // $32.53 rounded, large and centred
+		"exact $32.53",
 	} {
 		if !strings.Contains(s, want) {
 			t.Errorf("missing %q", want)
+		}
+	}
+	// Paid weekly: no delivery pay line, no "$3.00 x 4".
+	for _, not := range []string{"Delivery pay", "x 4)", "$12.00"} {
+		if strings.Contains(s, not) {
+			t.Errorf("the slip must not print %q when the delivery pay is paid weekly", not)
 		}
 	}
 	// No customer names, no "#" on ticket numbers, no apartment.
@@ -95,7 +100,7 @@ func TestBuildDriverReport_Content(t *testing.T) {
 	}
 	// Title, name and the owed amount large again (owner, 2026-10-27); the
 	// delivery lines in the report's text size (normal = font A).
-	for _, big := range []string{cmdDoubleSz + "DRIVER REPORT", cmdQuadSz + "ABDUL", cmdQuadSz + "$21.00", cmdNormalSz + cmdBoldOn + "1104 12 Main St"} {
+	for _, big := range []string{cmdDoubleSz + "DRIVER REPORT", cmdQuadSz + "ABDUL", cmdQuadSz + "$33.00", cmdNormalSz + cmdBoldOn + "1104 12 Main St"} {
 		if !strings.Contains(s, big) {
 			t.Errorf("missing %q in %q", big, s)
 		}
@@ -123,14 +128,20 @@ func TestBuildDriverReport_Sizes(t *testing.T) {
 func TestBuildDriverReport_StoreOwesAndEmpty(t *testing.T) {
 	rep := order.DriverReport{BatchID: 1, BatchOpenedAt: printed, DriverName: "Carlos",
 		Lines: []order.DriverReportLine{{Customer: "Sam T.", TipCents: 1000}}} // card only
-	rep.Finish(600, 300)
+	rep.Finish(600, 300, false)
 	s := string(BuildDriverReport(rep, storeconfig.StoreContext{}, "", printer.Paper{}, printed))
-	// his $3 + his tip after 6%: $12.40 (the deduction lines carry a "-", the total never does)
-	if !strings.Contains(s, "STORE OWES DRIVER") || !strings.Contains(s, "$12.00") || !strings.Contains(s, "exact $12.40") || strings.Contains(s, "-$12.00") {
+	// his tip after 6%: $9.40 (the deduction lines carry a "-", the total never does)
+	if !strings.Contains(s, "STORE OWES DRIVER") || !strings.Contains(s, "$9.00") || !strings.Contains(s, "exact $9.40") || strings.Contains(s, "-$9.00") {
 		t.Errorf("store-owes slip wrong:\n%s", s)
 	}
+	// driver_pay_from_cash on: his $3 + his tip after 6%: $12.40
+	rep.Finish(600, 300, true)
+	s = string(BuildDriverReport(rep, storeconfig.StoreContext{}, "", printer.Paper{}, printed))
+	if !strings.Contains(s, "STORE OWES DRIVER") || !strings.Contains(s, "$12.00") || !strings.Contains(s, "exact $12.40") || strings.Contains(s, "-$12.00") {
+		t.Errorf("store-owes slip (pay from the cash) wrong:\n%s", s)
+	}
 	empty := order.DriverReport{BatchID: 1, BatchOpenedAt: printed, DriverName: "Deep", Lines: []order.DriverReportLine{}}
-	empty.Finish(600, 300)
+	empty.Finish(600, 300, false)
 	s = string(BuildDriverReport(empty, storeconfig.StoreContext{}, "", printer.Paper{}, printed))
 	for _, want := range []string{"No deliveries this batch", leftRight("Deliveries", "0", defaultLayout.cols), "HAND IN", "$0.00", " - open"} {
 		if !strings.Contains(s, want) {
@@ -162,7 +173,7 @@ func webReportFixture() order.DriverReport {
 				AddedTipCents: 200}, // charged at an earlier clock-out
 			{KitchenNumber: &k3, Street: "7 Pine Rd", Cash: true, CashCents: 1800, SlipTotalCents: 1800},
 		}}
-	rep.Finish(600, 300)
+	rep.Finish(600, 300, false)
 	return rep
 }
 
@@ -200,12 +211,25 @@ func TestBuildDriverReport_WebGolden(t *testing.T) {
 	}
 }
 
-// The delivery pay line is always there (2.5.2): the per-delivery pay times the deliveries, taken off.
+// The delivery pay line (2.5.2 rule) prints only with the store's
+// driver_pay_from_cash on (2.5.8): the per-delivery pay times the
+// deliveries, taken off; off (the default) it is paid weekly: no line.
 func TestBuildDriverReport_DeliveryPayLine(t *testing.T) {
 	rep, sc := reportFixture()
-	rep.Finish(600, 250) // another store's pay
+	rep.Finish(600, 250, true) // another store's pay, taken from the cash
 	s := string(BuildDriverReport(rep, sc, "", printer.Paper{}, printed))
-	if !strings.Contains(s, leftRight("Delivery pay", "-$10.00", defaultLayout.cols)) || !strings.Contains(s, "($2.50 x 4)") || strings.Contains(s, "Delivery fee share") {
+	W := defaultLayout.cols
+	if !strings.Contains(s, leftRight("Delivery pay", "-$10.00", W)) || !strings.Contains(s, "($2.50 x 4)") || strings.Contains(s, "Delivery fee share") ||
+		!strings.Contains(s, "exact $22.53") { // 40.99 - 10.00 - 8.46
 		t.Fatalf("delivery pay line:\n%s", s)
+	}
+	// The order: Cash collected, Delivery pay + (rate x n), Card tips after 6%.
+	if !(strings.Index(s, "Cash collected") < strings.Index(s, "Delivery pay") && strings.Index(s, "Delivery pay") < strings.Index(s, "Card tips after")) {
+		t.Fatalf("settlement lines out of order:\n%s", s)
+	}
+	rep.Finish(600, 250, false)
+	s = string(BuildDriverReport(rep, sc, "", printer.Paper{}, printed))
+	if strings.Contains(s, "Delivery pay") || strings.Contains(s, "($2.50 x 4)") || !strings.Contains(s, leftRight("Deliveries", "4", W)) || !strings.Contains(s, "exact $32.53") {
+		t.Fatalf("paid weekly: only the count:\n%s", s)
 	}
 }
