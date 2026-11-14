@@ -178,6 +178,11 @@ type LineItem struct {
 	Coupon    string `json:"coupon,omitempty"`
 	CouponNo  int    `json:"coupon_no,omitempty"`
 	RungCents int64  `json:"rung_cents,omitempty"`
+
+	// ParentLineID: a priced note (sku "note", the owner 2026-11-14, #19;
+	// contract §2.10an) names the line of the item it belongs to; it carries
+	// that item's routing and prints with it. "" otherwise.
+	ParentLineID string `json:"parent_line_id,omitempty"`
 }
 
 // Portions and modes (LineItem.Portion / Mode).
@@ -218,6 +223,9 @@ func (it LineItem) ShownOnDriverTicket() bool {
 // name and price; it prints where main's Quick add item routes, else on every
 // station). main keeps it like any SKU.
 const SKUCustom = "custom"
+
+// SKUNote is a priced note's line (LineItem.ParentLineID names its item).
+const SKUNote = "note"
 
 // Routing values (LineItem.Routing).
 const (

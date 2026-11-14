@@ -86,6 +86,9 @@ type priced struct {
 	// and lines kept at their rung price (rung.go).
 	gone []terminal.GoneLine
 	kept []terminal.KeptPrice
+	// modChanges: the cart options the terminal priced itself (batch A,
+	// orderlines.go).
+	modChanges []ModPriceChange
 }
 
 // priceCart prices a cart with the Pi's engine copy. typ: counter | pickup |
@@ -248,8 +251,21 @@ func buildItems(menu *terminal.CounterMenu, p priced) (items []order.LineItem, o
 		li.LineTotal = total
 		return built{item: li, route: route}
 	}
+	firstOf := map[int]int{} // cart line → its first built line (a priced note's item)
 	for i, l := range p.cart.Lines {
 		qty := min(max(l.Qty, 1), 50)
+		firstOf[i] = len(lines)
+		if l.Custom && l.NoteOf != nil && i < len(p.quote.Lines) {
+			// A priced note (§2.10an): its own line under its item, with the
+			// item's routing (it prints with its item, on its station).
+			if at, ok := firstOf[*l.NoteOf]; ok && at < len(lines) && *l.NoteOf < i {
+				ql := p.quote.Lines[i]
+				par := lines[at]
+				lines = append(lines, built{item: order.LineItem{ID: uuid.Must(uuid.NewV7()).String(), Position: len(lines), SKU: order.SKUNote,
+					Name: ql.Name, Quantity: qty, UnitPrice: ql.UnitCents, LineTotal: ql.TotalCents, ParentLineID: par.item.ID}, route: par.route})
+				continue
+			}
+		}
 		if l.Custom {
 			// A custom line (Quicc Add): the quote's name and price, routed by
 			// the store's Quick add item (main's Store › Menu: its printer, its
