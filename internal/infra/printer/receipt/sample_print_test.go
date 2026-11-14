@@ -1,0 +1,191 @@
+package receipt
+
+// Owner's sample tickets (2026-11-14): a made-up delivery order rendered with
+// the Pi's real delivery slip (BuildDeliveryCopies, one copy) and the store's
+// real settings, then one adjustment per variant, so the owner can compare
+// layouts on paper before one becomes the real layout. Skipped unless
+// RECEIPT_SAMPLE_DIR is set; quicc-ops scripts/receipt-sample.sh fills that
+// folder (store_config + receipt prefs + logo, read-only from the Pi), runs
+// this test and sends the .bin files to a printer through iris.
+//
+// Variants (each a <name>.bin in the folder):
+//   - asis: the slip as it prints today
+//   - typeface: DELIVERY in Go Bold + the car, one size larger, centred (a picture)
+//   - plain: DELIVERY in the printer's own font, one size larger (GS ! 0x11), centred, no icon
+//   - kitchen: Order # and DELIVERY printed the kitchen ticket's way (font A, bold, GS ! size), centred, no icon
+
+import (
+	"bytes"
+	"encoding/json"
+	"image"
+	"image/color"
+	"image/draw"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	"quiccpos/agent/internal/domain/order"
+	"quiccpos/agent/internal/domain/printer"
+	"quiccpos/agent/internal/domain/storeconfig"
+
+	"golang.org/x/image/font"
+	"golang.org/x/image/font/gofont/gobold"
+	"golang.org/x/image/font/opentype"
+	"golang.org/x/image/math/fixed"
+)
+
+func TestReceiptSamples(t *testing.T) {
+	dir := os.Getenv("RECEIPT_SAMPLE_DIR")
+	if dir == "" {
+		t.Skip("RECEIPT_SAMPLE_DIR not set (scripts/receipt-sample.sh)")
+	}
+	var sc storeconfig.StoreContext
+	raw, err := os.ReadFile(filepath.Join(dir, "sc.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(raw, &sc); err != nil {
+		t.Fatal(err)
+	}
+	prefs := order.DefaultReceiptPrefs()
+	if praw, err := os.ReadFile(filepath.Join(dir, "prefs.json")); err == nil {
+		if prefs, err = order.DecodeReceiptPrefs(praw); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if logo, err := os.ReadFile(filepath.Join(dir, "logo.bin")); err == nil {
+		img, err := DecodeReceiptLogo(logo)
+		if err != nil {
+			t.Fatal(err)
+		}
+		SetReceiptLogo(img, "sample")
+		defer SetReceiptLogo(nil, "")
+	}
+	cols := 42
+	if c := os.Getenv("RECEIPT_SAMPLE_COLS"); c == "48" || c == "32" {
+		cols = map[string]int{"48": 48, "32": 32}[c]
+	}
+	was := deliveryNow
+	deliveryNow = time.Now
+	defer func() { deliveryNow = was }()
+
+	n := int64(100)
+	s := order.Snapshot{ID: "o-sample", Source: "counter", SourceEventID: "SAMPLE-100", KitchenNumber: &n,
+		PlacedAt: time.Now().UTC(), TakenBy: "Khawar",
+		Customer: order.Customer{DisplayName: "Sample Customer", Phone: "4105550100"},
+		Fulfillment: order.Fulfillment{Type: "delivery", Address: &order.Address{Line1: "123 Sample St", Line2: "Apt 2",
+			City: "Towson", State: "MD", PostalCode: "21204", Notes: "Side door"}},
+		Items: []order.LineItem{
+			{Name: "16\" Cheese Pizza", Quantity: 1, UnitPrice: 1599, LineTotal: 1798, Children: []order.LineItem{
+				{Name: "Pepperoni", Quantity: 1, UnitPrice: 199}}},
+			{Name: "10 pc Wings", Quantity: 1, UnitPrice: 1299, LineTotal: 1299, Notes: "Extra crispy"},
+			{Name: "2 Liter Soda", Quantity: 1, UnitPrice: 399, LineTotal: 399},
+		},
+		Money: order.Money{Subtotal: 3496, Tax: 210, Total: 4006,
+			Fees: []order.Fee{{Type: "delivery", Label: "Delivery fee", Amount: 300}}},
+		Notes: "Sample ticket - not a real order",
+	}
+	slip := BuildDeliveryCopies(s, sc, prefs, printer.Paper{Cols: cols})
+	one := firstCopy(t, slip)
+	typeRaster := []byte(typeLine("DELIVERY", true))
+	if !bytes.Contains(one, typeRaster) {
+		t.Fatal("type line picture not found")
+	}
+	dots := layoutFor(cols).dots()
+	out := map[string][]byte{
+		"asis":     one,
+		"typeface": bytes.Replace(one, typeRaster, typefaceLine(t, "DELIVERY", iconCar, dots), 1),
+		"plain":    bytes.Replace(one, typeRaster, []byte(cmdCenter+cmdNormalSz+cmdBoldOff+cmdDoubleSz+"DELIVERY"+cmdFeed+cmdSizeReset+cmdLeft), 1),
+	}
+	// kitchen: the kitchen ticket's number commands (ESC ! 0 font A, bold, GS ! size) on Order #, centred, and
+	// DELIVERY the same way under it.
+	num := "Order #: 100"
+	oldNum := cmdBoldOn + gsBig + num + cmdFeed
+	if !bytes.Contains(one, []byte(oldNum)) {
+		oldNum = cmdBoldOn + gsTall + num + cmdFeed
+	}
+	if !bytes.Contains(one, []byte(oldNum)) {
+		t.Fatalf("Order # line not found")
+	}
+	size := gsBig
+	if strings.Contains(oldNum, gsTall) {
+		size = gsTall
+	}
+	k := bytes.Replace(one, []byte(oldNum), []byte(cmdCenter+cmdNormalSz+cmdBoldOn+size+num+cmdFeed+cmdLeft), 1)
+	k = bytes.Replace(k, typeRaster, []byte(cmdCenter+cmdNormalSz+cmdBoldOn+cmdDoubleSz+"DELIVERY"+cmdFeed+cmdSizeReset+cmdBoldOff+cmdLeft), 1)
+	out["kitchen"] = k
+	for name, b := range out {
+		if err := os.WriteFile(filepath.Join(dir, name+".bin"), b, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// firstCopy is the slip up to and including its first paper cut (the Merchant Copy).
+func firstCopy(t *testing.T, slip []byte) []byte {
+	t.Helper()
+	cut := bytes.Index(slip, []byte("\x1dV"))
+	if cut < 0 {
+		t.Fatal("no cut")
+	}
+	end := cut + 3
+	if slip[cut+2] == 'A' || slip[cut+2] == 'B' {
+		end = cut + 4
+	}
+	return slip[:end]
+}
+
+// typefaceLine draws word in Go Bold at about the printer's double size (a
+// 48-dot line) with icon doubled beside it, centred on a paper dots wide, as
+// one GS v 0 picture.
+func typefaceLine(t *testing.T, word string, icon []string, paper int) []byte {
+	t.Helper()
+	ft, err := opentype.Parse(gobold.TTF)
+	if err != nil {
+		t.Fatal(err)
+	}
+	face, err := opentype.NewFace(ft, &opentype.FaceOptions{Size: 46, DPI: 72, Hinting: font.HintingFull})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer face.Close()
+	const h = 52
+	textW := font.MeasureString(face, word).Ceil()
+	const k, gap = 2, 24
+	iconW, iconH := len(icon[0])*k, len(icon)*k
+	total := textW + gap + iconW
+	img := image.NewGray(image.Rect(0, 0, paper, h))
+	draw.Draw(img, img.Bounds(), image.White, image.Point{}, draw.Src)
+	x0 := (paper - total) / 2
+	d := font.Drawer{Dst: img, Src: image.Black, Face: face, Dot: fixed.P(x0, 42)}
+	d.DrawString(word)
+	iy := (h - iconH) / 2
+	for y, row := range icon {
+		for x, c := range row {
+			if c != '#' {
+				continue
+			}
+			for dy := 0; dy < k; dy++ {
+				for dx := 0; dx < k; dx++ {
+					img.SetGray(x0+textW+gap+x*k+dx, iy+y*k+dy, color.Gray{})
+				}
+			}
+		}
+	}
+	wb := (paper + 7) / 8
+	data := make([]byte, wb*h)
+	for y := 0; y < h; y++ {
+		for x := 0; x < paper; x++ {
+			if img.GrayAt(x, y).Y < 128 {
+				data[y*wb+x/8] |= 0x80 >> (x % 8)
+			}
+		}
+	}
+	var b bytes.Buffer
+	b.WriteString("\x1d\x76\x30\x00")
+	b.Write([]byte{byte(wb % 256), byte(wb / 256), byte(h % 256), byte(h / 256)})
+	b.Write(data)
+	return b.Bytes()
+}
