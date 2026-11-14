@@ -512,6 +512,13 @@ func main() {
 	})
 	termSvc := terminalApp.NewService(termStore, orderRepo, orderService, broker, logger)
 	termSvc.SetFloor(orderService, orderRepo) // the driver view (§2.10b)
+	// Card tips the driver types before Close batch (§2.10am, batch F): on
+	// every report at once, put on the orders at the press of Close batch
+	// (website card holds also at the driver's clock-out: main captures then).
+	termSvc.SetDriverTips(orderRepo)
+	orderService.SetDriverTips(orderRepo)
+	orderService.OnClosePress(func(ctx context.Context) { termSvc.ApplyDriverTips(ctx, "", false) })
+	orderService.OnShiftClosing(func(ctx context.Context, driverID string) { termSvc.ApplyDriverTips(ctx, driverID, true) })
 	// The roster = Store › Staff drivers (§2.1f): a pass at start, on every
 	// terminal config and after every roster change (switched off in main:
 	// off the roster once he clocks out).
@@ -1107,11 +1114,11 @@ func main() {
 		return time.Local
 	}
 	orderService.SetStoreTZ(storeTZ)
-	// Ticket numbers restart once a business day (contract 2.10ae): the
-	// store's day starts at its auto-close time; main's kitchen_start.
-	orderRepo.SetNumbering(func(t time.Time) order.Numbering {
+	// Ticket numbers (contract 2.10ae): one sequence for every order from
+	// main's counter_start (default 100), restarted by every Close batch.
+	orderRepo.SetNumbering(func(time.Time) order.Numbering {
 		cfg, _ := termStore.Config()
-		return order.Numbering{Day: order.BusinessDay(t, storeTZ(), cfg.DayStart()), KitchenStart: cfg.KitchenStart()}
+		return order.Numbering{Start: cfg.CounterStart()}
 	})
 	nightly := backup.New(db, cfg.AgentDBPath, func(rc context.Context, path string, body []byte, ct string) (int, []byte, error) {
 		return mainClient.Upload(rc, sseCtrl.CurrentKey(), path, body, ct)

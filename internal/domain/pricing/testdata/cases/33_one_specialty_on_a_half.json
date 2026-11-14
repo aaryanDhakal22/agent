@@ -378,8 +378,15 @@
   "errors": [],
   "lines": [
    {
+    "base_cents": 1999,
     "deal_id": "",
     "index": 0,
+    "mod_prices": [
+     {
+      "pick": 0,
+      "price_cents": 225
+     }
+    ],
     "mods": [
      "16 X-Large",
      "Hawaiian (2nd half)",
@@ -392,6 +399,7 @@
     "unit_cents": 2224
    },
    {
+    "base_cents": 1499,
     "deal_id": "",
     "index": 1,
     "mods": [
@@ -405,8 +413,15 @@
     "unit_cents": 1499
    },
    {
+    "base_cents": 2199,
     "deal_id": "",
     "index": 2,
+    "mod_prices": [
+     {
+      "pick": 0,
+      "price_cents": 225
+     }
+    ],
     "mods": [
      "16 X-Large",
      "Supreme (2nd half)",

@@ -114,16 +114,17 @@ func TestKitchenTicket_Layout(t *testing.T) {
 	}
 	for _, want := range []string{
 		"ANA\n",
-		"2  Pepperoni Pizza\n   (Large)\n", H8 + "- Extra cheese\n", H8 + "- Well done\n",
-		"1  Garlic Knots\n", H8 + "- Side of ranch\n",
-		strings.Repeat("-", Cols80) + "\nAlso on this order:\n   1 Fries\n   1 2L Coke\n",
+		"2   Pepperoni Pizza\n    (Large)\n", H8 + "- Extra cheese\n", H8 + "- Well done\n",
+		"1   Garlic Knots\n", H8 + "- Side of ranch\n",
+		// ITEMS TO OTHER PRINTER (the owner, 2026-11-14, #2): one size smaller (font A 1x1), " - 1   Fries".
+		strings.Repeat("-", Cols80) + "\n" + cmdSizeReset + cmdNormalSz + "ITEMS TO OTHER PRINTER\n - 1   Fries\n - 1   2L Coke\n" + cmdBaseSz,
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("missing %q\n%q", want, got)
 		}
 	}
 	// No reverse print, no prices, no station names, no rung-by on an order ticket.
-	for _, gone := range []string{cmdInvertOn, "$", "Pizza:", "PIZZA STATION", "Rung", "ITEMS TO OTHER"} {
+	for _, gone := range []string{cmdInvertOn, "$", "Pizza:", "PIZZA STATION", "Rung", "Also on this order"} {
 		if strings.Contains(got, gone) {
 			t.Errorf("an order ticket carries %q", gone)
 		}
@@ -131,8 +132,9 @@ func TestKitchenTicket_Layout(t *testing.T) {
 	// Nothing else on the order: the section still closes the ticket.
 	one := pizzaTicket(snap)
 	one.Others = nil
-	if !strings.Contains(string(BuildStation(snap, one)), "Also on this order:\n   nothing else\n") {
-		t.Error("Also on this order is always at the bottom")
+	if alone := string(BuildStation(snap, one)); !strings.Contains(alone, cmdNormalSz+"ITEMS TO OTHER PRINTER\n"+cmdBaseSz) ||
+		strings.Contains(alone, "\n - ") || strings.Contains(alone, "nothing else") {
+		t.Error("ITEMS TO OTHER PRINTER is always at the bottom, the heading alone when nothing else prints")
 	}
 }
 
@@ -189,23 +191,23 @@ func TestKitchenTicket_Change(t *testing.T) {
 	addBand := cmdDoubleSz + cmdInvertOn + pad("ADD / AGREGAR", defaultLayout.big()) + cmdInvertOff
 	rmBand := cmdDoubleSz + cmdInvertOn + pad("REMOVE / QUITAR", defaultLayout.big()) + cmdInvertOff
 	rule, a, item, r, void := strings.Index(got, strings.Repeat("-", Cols80)), strings.Index(got, addBand),
-		strings.Index(got, "1  Cheese Pizza (Large)\n"), strings.Index(got, rmBand), strings.Index(got, "(VOID) \x1b*\x21")
+		strings.Index(got, "1   Cheese Pizza (Large)\n"), strings.Index(got, rmBand), strings.Index(got, "(VOID) \x1b*\x21")
 	if rule < 0 || !(rule < a && a < item && item < r && r < void) {
 		t.Fatalf("rule %d < ADD %d < item %d < REMOVE %d < (VOID) %d:\n%q", rule, a, item, r, void, got)
 	}
-	if !strings.HasPrefix(got, cmdInit+cmdCenter+cmdBoldOn+cmdDoubleSz+"COUNTER\n") || strings.Contains(got, "Also on this order") {
+	if !strings.HasPrefix(got, cmdInit+cmdCenter+cmdBoldOn+cmdDoubleSz+"COUNTER\n") || strings.Contains(got, otherPrintersHead) {
 		t.Errorf("same top, no other items:\n%q", got)
 	}
 	if strings.Count(got, cmdInvertOn) != 2 {
 		t.Errorf("reverse only for the two bands")
 	}
 	// The struck picture: 15 characters x 12 dots, 24 dots tall, a line through the middle.
-	img := strikeImage("1  Garlic Knots")
-	if !strings.Contains(got, "(VOID) "+img+"\n") || len(img) != 5+15*12*3 || img[3] != byte(15*12%256) || img[4] != byte(15*12/256) {
+	img := strikeImage("1   Garlic Knots")
+	if !strings.Contains(got, "(VOID) "+img+"\n") || len(img) != 5+16*12*3 || img[3] != byte(16*12%256) || img[4] != byte(16*12/256) {
 		t.Errorf("struck line: %d bytes", len(img))
 	}
 	data := []byte(img[5:])
-	for x := 0; x < 15*12; x++ {
+	for x := 0; x < 16*12; x++ {
 		if data[x*3+strikeTop/8]&(0x80>>(strikeTop%8)) == 0 {
 			t.Fatalf("no strike at column %d", x)
 		}
@@ -220,16 +222,18 @@ func TestKitchenTicket_Change(t *testing.T) {
 	p := order.DefaultReceiptPrefs()
 	p.StrikeImages = false
 	got = string(buildStation(snap, tk, p))
-	if !strings.Contains(got, cmdInvertOn+"(VOID)"+cmdInvertOff+" 1  Garlic Knots\n") || strings.Contains(got, "\x1b*") {
+	if !strings.Contains(got, cmdInvertOn+"(VOID)"+cmdInvertOff+" 1   Garlic Knots\n") || strings.Contains(got, "\x1b*") {
 		t.Errorf("text fallback:\n%q", got)
 	}
 }
 
-// The choices' columns under a large (double width) item (2.5.7): 8 = two
-// past the item's name, 10 = a half's topping nested under its heading.
+// The choices' columns under a large (double width) item (2.5.7; the
+// 2026-11-14 quantity gap moved the name to column 8): H8 = two past the
+// item's name (column 10), H10 = a half's topping nested under its heading
+// (column 12). The names stayed: the tests read the same.
 const (
-	H8  = "        "
-	H10 = "          "
+	H8  = "          "
+	H10 = "            "
 )
 
 func TestKitchenTicket_Halves(t *testing.T) {
@@ -238,7 +242,7 @@ func TestKitchenTicket_Halves(t *testing.T) {
 		order.LineItem{Name: "ONLY Pepperoni (1st half)", Portion: order.PortionFirst, Mode: order.ModeOnly, Quantity: 1},
 		order.LineItem{Name: "NO Onion (2nd half)", Portion: order.PortionSecond, Mode: order.ModeNo, Quantity: 1}))
 	got := string(BuildStation(snap, pizzaTicket(snap)))
-	want := "1  Cheese Pizza\n   (X-Large)\n" + cmdSizeReset + cmdBaseSz + cmdBoldOff +
+	want := "1   Cheese Pizza\n    (X-Large)\n" + cmdSizeReset + cmdBaseSz + cmdBoldOff +
 		H8 + "WHOLE:\n" + H10 + "- Extra cheese\n" + H8 + "1ST HALF:\n" + H10 + "- Pepperoni ONLY\n" + H8 + "2ND HALF:\n" + H10 + "- NO Onion\n"
 	if !strings.Contains(got, want) {
 		t.Fatalf("halves:\n%q", got)
@@ -256,7 +260,7 @@ func TestKitchenTicket_OnlineOrderSameFormat(t *testing.T) {
 	snap.KitchenNumber = &n
 	got := BuildStation(snap, pizzaTicket(snap))
 	if !bytes.HasPrefix(got, []byte(cmdInit+cmdCenter+cmdBoldOn+cmdDoubleSz+"DELIVERY\n")) ||
-		!bytes.Contains(got, []byte(cmdHugeSz+"1104\n")) || !bytes.Contains(got, []byte("Also on this order:")) {
+		!bytes.Contains(got, []byte(cmdHugeSz+"1104\n")) || !bytes.Contains(got, []byte(otherPrintersHead)) {
 		t.Fatalf("online delivery:\n%q", got)
 	}
 }
@@ -268,11 +272,11 @@ func TestKitchenTicket_TypeChange(t *testing.T) {
 	tk := printer.Ticket{Kind: printer.TicketStation, TargetID: "p-pizza", Change: true, TypeOnly: true, WasType: "pickup", Mine: snap.Items}
 	got := string(BuildStation(snap, tk))
 	band := cmdDoubleSz + cmdInvertOn + pad("NOW DELIVERY", defaultLayout.big()) + cmdInvertOff
-	top, b, was, item := strings.Index(got, "DELIVERY\n"), strings.Index(got, band), strings.Index(got, "(WAS PICKUP)"), strings.Index(got, "1  Cheese Pizza (Large)\n")
+	top, b, was, item := strings.Index(got, "DELIVERY\n"), strings.Index(got, band), strings.Index(got, "(WAS PICKUP)"), strings.Index(got, "1   Cheese Pizza (Large)\n")
 	if top < 0 || !(top < b && b < was && was < item) {
 		t.Fatalf("top %d < band %d < was %d < item %d:\n%q", top, b, was, item, got)
 	}
-	if strings.Contains(got, "ADD / AGREGAR") || strings.Contains(got, "Also on this order") {
+	if strings.Contains(got, "ADD / AGREGAR") || strings.Contains(got, otherPrintersHead) {
 		t.Errorf("a type-only ticket has no ADD band and no other items:\n%q", got)
 	}
 	// With lines added too: the band first, then ADD.

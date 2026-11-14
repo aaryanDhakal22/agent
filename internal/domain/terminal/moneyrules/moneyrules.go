@@ -40,6 +40,8 @@ type RuleTable struct {
 	Tips           []RuleCase `json:"tips"`
 	Discounts      []RuleCase `json:"discounts"`
 	PriceChanges   []RuleCase `json:"price_changes"`
+	// TenderVoids: Cash Out's Void on one tender (batch C, contract 2.10al).
+	TenderVoids []RuleCase `json:"tender_voids"`
 }
 
 // RulePay is one payment of a case.
@@ -75,6 +77,8 @@ type RuleCase struct {
 	// tip set afterwards on it).
 	Payment  RulePay         `json:"payment"`
 	TipAfter bool            `json:"tip_after"`
+	// Void: a tender_voids case: the index of the order's payment voided.
+	Void int `json:"void"`
 	Pi       json.RawMessage `json:"pi"`
 }
 
@@ -142,6 +146,14 @@ func Answer(need *terminal.ManagerRequired, err error) string {
 		return `{"refused":"tip_card_only"}`
 	case err != nil && errors.Is(err, terminal.ErrNotTippable):
 		return `{"refused":"not_tippable"}`
+	case err != nil && errors.Is(err, terminal.ErrNotVoidableTender):
+		return `{"refused":"not_voidable_tender"}`
+	case err != nil && errors.Is(err, terminal.ErrTenderRefunded):
+		return `{"refused":"tender_refunded"}`
+	case err != nil && errors.Is(err, terminal.ErrDriverNotAllowed):
+		return `{"refused":"driver_not_allowed"}`
+	case err != nil && errors.As(err, new(*terminal.NotAllowedForCallcenter)):
+		return `{"refused":"not_allowed_for_callcenter"}`
 	case err != nil:
 		return "error: " + err.Error()
 	case need != nil:

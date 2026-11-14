@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math/rand/v2"
 	"sync/atomic"
 	"time"
 
@@ -21,32 +22,57 @@ var _ order.Repository = (*OrderRepository)(nil)
 type OrderRepository struct {
 	db     *sql.DB
 	logger zerolog.Logger
-	// numbering gives the business day + kitchen start a ticket number is
-	// taken with (SetNumbering; unset = local time, 04:00, 1100).
+	// numbering gives where the store's one ticket-number sequence starts
+	// (SetNumbering; unset = 100, contract 2.10ae).
 	numbering atomic.Pointer[func(time.Time) order.Numbering]
+	// placeholderRand draws a future order's placeholder (tests pin it).
+	placeholderRand func(n int64) int64
 }
 
-// SetNumbering wires the store's business day (timezone + day start) and
-// kitchen_start for the ticket numbers (contract 2.10ae; cmd/main.go).
+// SetNumbering wires where the store's one ticket-number sequence starts
+// (main's counter_start, contract 2.10ae; cmd/main.go).
 func (r *OrderRepository) SetNumbering(fn func(time.Time) order.Numbering) { r.numbering.Store(&fn) }
 
-// numberingAt is the numbering for a number taken at t.
+// numberingAt is the numbering for a number taken at t (unset = start 100).
 func (r *OrderRepository) numberingAt(t time.Time) order.Numbering {
 	if fn := r.numbering.Load(); fn != nil && *fn != nil {
 		n := (*fn)(t)
-		if n.KitchenStart <= 0 {
-			n.KitchenStart = order.DefaultKitchenStart
-		}
+		n.Start = n.StartOrDefault()
 		return n
 	}
-	return order.Numbering{Day: order.BusinessDay(t, time.Local, order.DefaultDayStart), KitchenStart: order.DefaultKitchenStart}
+	return order.Numbering{Start: order.DefaultNumberStart}
 }
 
-// takeNumbersDay runs before a ticket number is taken: on a new business day
-// after a close both sequences start again.
-func takeNumbersDay(ctx context.Context, q *models.Queries, n order.Numbering) error {
-	if err := q.TakeNumbersDay(ctx, n.Day); err != nil {
-		return fmt.Errorf("numbers day: %w", err)
+// takeNumber hands out the next number of the store's one sequence (every
+// order, contract 2.10ae) inside the caller's transaction.
+func takeNumber(ctx context.Context, q *models.Queries, start int64) (int64, error) {
+	after, err := q.TakeCounterNumber(ctx, order.Numbering{Start: start}.StartOrDefault())
+	if err != nil {
+		return 0, fmt.Errorf("ticket number: %w", err)
+	}
+	return after - 1, nil
+}
+
+// givePlaceholder gives a scheduled future order with no number its random
+// 5-digit placeholder, one no other open future order holds (contract
+// 2.10ae). Inside the caller's transaction.
+func (r *OrderRepository) givePlaceholder(ctx context.Context, q *models.Queries, id string) error {
+	rnd := r.placeholderRand
+	if rnd == nil {
+		rnd = rand.Int64N
+	}
+	n, ok, err := order.PickPlaceholder(rnd, func(c int64) (bool, error) {
+		held, err := q.PlaceholderHeld(ctx, sql.NullInt64{Int64: c, Valid: true})
+		return held > 0, err
+	})
+	if err != nil {
+		return fmt.Errorf("placeholder: %w", err)
+	}
+	if !ok {
+		return nil // 90,000 open future orders: it waits without one
+	}
+	if _, err := q.SetPlaceholderNumber(ctx, models.SetPlaceholderNumberParams{Number: sql.NullInt64{Int64: n, Valid: true}, ID: id}); err != nil {
+		return fmt.Errorf("set placeholder: %w", err)
 	}
 	return nil
 }
@@ -156,16 +182,14 @@ func (r *OrderRepository) ClaimAccept(ctx context.Context, id uuid.UUID, prepMin
 	}
 	now := time.Now()
 	kitchen := row.KitchenNumber
-	if !kitchen.Valid {
-		n := r.numberingAt(now)
-		if err := takeNumbersDay(ctx, q, n); err != nil {
+	if !kitchen.Valid || row.NumberPlaceholder {
+		// The next number of the store's one sequence (contract 2.10ae); a
+		// future order's placeholder is dropped for it.
+		next, err := takeNumber(ctx, q, r.numberingAt(now).Start)
+		if err != nil {
 			return nil, err
 		}
-		next, err := q.NextKitchenNumber(ctx, n.KitchenStart)
-		if err != nil {
-			return nil, fmt.Errorf("allocate kitchen number: %w", err)
-		}
-		kitchen = sql.NullInt64{Int64: next - 1, Valid: true}
+		kitchen = sql.NullInt64{Int64: next, Valid: true}
 	}
 	n, err := q.ClaimAccept(ctx, models.ClaimAcceptParams{
 		Now:              nullTS(now),
@@ -245,6 +269,7 @@ func toStored(row models.Order) (order.StoredOrder, error) {
 	if row.KitchenNumber.Valid {
 		v := row.KitchenNumber.Int64
 		st.KitchenNumber = &v
+		st.NumberPlaceholder = row.NumberPlaceholder
 	}
 	if row.PrepMinutes.Valid {
 		v := row.PrepMinutes.Int64
@@ -308,6 +333,10 @@ func toStored(row models.Order) (order.StoredOrder, error) {
 	st.EarlyKitchen, st.EarlyReceipt = row.EarlyKitchen, row.EarlyReceipt
 	if st.PaidAt, err = optTS(row.PaidAt); err != nil {
 		return order.StoredOrder{}, fmt.Errorf("parse paid_at for order %s: %w", row.ID, err)
+	}
+	// 00045 (batch B): reopened from All checks.
+	if st.ReopenedAt, err = optTS(row.ReopenedAt); err != nil {
+		return order.StoredOrder{}, fmt.Errorf("parse reopened_at for order %s: %w", row.ID, err)
 	}
 	// 00023: the Pi's own due time / MADE NOW, applied here so every reader
 	// (future rule, ring, printing, Close batch, tablets, the hub) sees it.

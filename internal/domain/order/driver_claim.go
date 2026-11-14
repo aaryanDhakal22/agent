@@ -43,6 +43,15 @@ func Unclaimed(so StoredOrder, batchID int64) bool {
 type ClaimRule struct {
 	Now      time.Time
 	Fallback time.Duration
+	// OldAfter (#27, batch F, contract 2.10am): a delivery still not
+	// delivered this long after it went to the kitchen is old - every driver
+	// may claim it, whoever has it (OldDelivery); 0 = off.
+	OldAfter time.Duration
+}
+
+// Claimable: ClaimableLate, or an old undelivered delivery (OldDelivery).
+func Claimable(so StoredOrder, batchID int64, rule ClaimRule) bool {
+	return ClaimableLate(so, batchID, rule) || OldDelivery(so, batchID, rule.Now, rule.OldAfter)
 }
 
 // PromisedAt is the order's promised time on the Pi: the later of its

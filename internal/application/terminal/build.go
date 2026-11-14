@@ -86,6 +86,9 @@ type priced struct {
 	// and lines kept at their rung price (rung.go).
 	gone []terminal.GoneLine
 	kept []terminal.KeptPrice
+	// modChanges: the cart options the terminal priced itself (batch A,
+	// orderlines.go).
+	modChanges []ModPriceChange
 }
 
 // priceCart prices a cart with the Pi's engine copy. typ: counter | pickup |
@@ -218,6 +221,9 @@ func buildItems(menu *terminal.CounterMenu, p priced) (items []order.LineItem, o
 	type built struct {
 		item  order.LineItem
 		route string
+		// printer: a Quicc Add's printer_id (2026-11-14, #17): Set = the
+		// cashier's pick decides (ID "" = no kitchen paper), not the route.
+		printer pricing.LinePrinter
 	}
 	var lines []built
 	drivers := driverIndexFor(menu) // show_on_driver_ticket stamps (driverticket.go)
@@ -229,8 +235,9 @@ func buildItems(menu *terminal.CounterMenu, p priced) (items []order.LineItem, o
 		li := order.LineItem{ID: uuid.Must(uuid.NewV7()).String(), Position: pos, Name: r.Name, Size: r.SizeName, Quantity: qty,
 			UnitPrice: r.BaseCents, Notes: note}
 		total := r.BaseCents * int64(qty)
-		// A double / triple topping is one child "2x Pepperoni" at its price × 2.
-		for k, o := range pricing.FoldRepeats(r.Options) {
+		// One child per mod line (the owner, 2026-11-14: mods never stack; a
+		// qualifier joins its pick: "Lite Fried Onions").
+		for k, o := range pricing.ModLines(r.Options) {
 			child := order.LineItem{ID: uuid.Must(uuid.NewV7()).String(), Position: k, Quantity: qty, Name: o.Label,
 				Portion: o.Portion, Mode: o.Mode, UnitPrice: o.PriceCents * int64(o.Count)}
 			if o.RemovedDefault {
@@ -247,8 +254,23 @@ func buildItems(menu *terminal.CounterMenu, p priced) (items []order.LineItem, o
 		li.LineTotal = total
 		return built{item: li, route: route}
 	}
+	firstOf := map[int]int{} // cart line → its first built line (a priced note's item)
 	for i, l := range p.cart.Lines {
 		qty := min(max(l.Qty, 1), 50)
+		firstOf[i] = len(lines)
+		if l.Custom && l.NoteOf != nil && i < len(p.quote.Lines) {
+			// A priced note (§2.10an): its own line under its item, with the
+			// item's routing (it prints with its item, on its station).
+			if at, ok := firstOf[*l.NoteOf]; ok && at < len(lines) && *l.NoteOf < i {
+				ql := p.quote.Lines[i]
+				par := lines[at]
+				// Under a Quicc Add it follows that line's printer_id (null = nowhere), as the line itself does.
+				lines = append(lines, built{item: order.LineItem{ID: uuid.Must(uuid.NewV7()).String(), Position: len(lines), SKU: order.SKUNote,
+					Name: ql.Name, Quantity: qty, UnitPrice: ql.UnitCents, LineTotal: ql.TotalCents, ParentLineID: par.item.ID}, route: par.route,
+					printer: par.printer})
+				continue
+			}
+		}
 		if l.Custom {
 			// A custom line (Quicc Add): the quote's name and price, routed by
 			// the store's Quick add item (main's Store › Menu: its printer, its
@@ -265,6 +287,9 @@ func buildItems(menu *terminal.CounterMenu, p priced) (items []order.LineItem, o
 			}
 			lines = append(lines, built{item: order.LineItem{ID: uuid.Must(uuid.NewV7()).String(), Position: len(lines), SKU: order.SKUCustom,
 				Name: ql.Name, Quantity: qty, UnitPrice: ql.UnitCents, LineTotal: ql.TotalCents, Notes: strings.TrimSpace(l.Note)}, route: route})
+			if !p.isGone(i) {
+				lines[len(lines)-1].printer = l.PrinterID // contract §2.1i / §2.10an: null = nowhere
+			}
 			continue
 		}
 		if l.DealID == "" {
@@ -328,6 +353,10 @@ func buildItems(menu *terminal.CounterMenu, p priced) (items []order.LineItem, o
 		// item without one is unassigned (every station, like an online
 		// line without a printer); only an added item is unmatched.
 		switch rt, ok := menu.Routes[b.route]; {
+		case b.printer.Set && b.printer.ID == "": // a Quicc Add sent nowhere: no kitchen paper (#17)
+			it.MenuItemID, it.Routing = b.route, order.RoutingNone
+		case b.printer.Set: // a Quicc Add on the cashier's printer, that one alone (#17)
+			it.MenuItemID, it.PrinterID, it.Routing = b.route, b.printer.ID, order.RoutingMatched
 		case b.route == "":
 			it.Routing = order.RoutingUnmatched
 		case ok && rt.NoKitchen:

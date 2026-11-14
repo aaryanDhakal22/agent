@@ -113,7 +113,7 @@ def test_tablet_auto_accept_marks_orders(floor, fakes) -> None:  # noqa: F811
                    what="order.updated with auto_accepted")
         assert not sse.of("order.arrived", oid), "an auto-accepted order rang"
         st = a.http.get(f"{a.base}/api/orders/{oid}", timeout=5).json()["status"]
-        assert st["state"] == "accepted" and st["auto_accepted"] is True and st["kitchen_number"] >= 1100
+        assert st["state"] == "accepted" and st["auto_accepted"] is True and 100 <= st["kitchen_number"] < 10_000
         wait_until(lambda: len(fakes["Front"].jobs) > jobs, timeout=15, what="the fake printer to get the ticket")
         assert any(o["status"].get("auto_accepted") for o in a.http.get(f"{a.base}/api/orders?batch=current", timeout=5).json())
 

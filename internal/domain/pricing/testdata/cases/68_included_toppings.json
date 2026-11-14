@@ -490,8 +490,36 @@
   "errors": [],
   "lines": [
    {
+    "base_cents": 1799,
     "deal_id": "",
     "index": 0,
+    "mod_prices": [
+     {
+      "included": true,
+      "pick": 0,
+      "price_cents": 225
+     },
+     {
+      "included": true,
+      "pick": 1,
+      "price_cents": 225
+     },
+     {
+      "included": true,
+      "pick": 2,
+      "price_cents": 225
+     },
+     {
+      "included": true,
+      "pick": 3,
+      "price_cents": 225
+     },
+     {
+      "included": true,
+      "pick": 4,
+      "price_cents": 225
+     }
+    ],
     "mods": [
      "14\" Large",
      "Pepperoni",
@@ -507,8 +535,40 @@
     "unit_cents": 1799
    },
    {
+    "base_cents": 1799,
     "deal_id": "",
     "index": 1,
+    "mod_prices": [
+     {
+      "pick": 0,
+      "price_cents": 300
+     },
+     {
+      "included": true,
+      "pick": 1,
+      "price_cents": 225
+     },
+     {
+      "included": true,
+      "pick": 2,
+      "price_cents": 225
+     },
+     {
+      "included": true,
+      "pick": 3,
+      "price_cents": 225
+     },
+     {
+      "included": true,
+      "pick": 4,
+      "price_cents": 225
+     },
+     {
+      "included": true,
+      "pick": 5,
+      "price_cents": 225
+     }
+    ],
     "mods": [
      "14\" Large",
      "Grilled Chicken",
@@ -525,8 +585,19 @@
     "unit_cents": 2099
    },
    {
+    "base_cents": 1399,
     "deal_id": "",
     "index": 2,
+    "mod_prices": [
+     {
+      "pick": 0,
+      "price_cents": 225
+     },
+     {
+      "pick": 1,
+      "price_cents": 225
+     }
+    ],
     "mods": [
      "14\" Large",
      "Pepperoni",

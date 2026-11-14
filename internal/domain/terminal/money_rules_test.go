@@ -2,6 +2,7 @@ package terminal_test
 
 import (
 	"encoding/json"
+	"fmt"
 	"testing"
 
 	"quiccpos/agent/internal/domain/terminal"
@@ -94,5 +95,39 @@ func TestMoneyRules(t *testing.T) {
 	// off): the service's rule for all three (application void / removalNeed).
 	for _, c := range tab.Voids {
 		check(c, mr.Answer(cfg.VoidNeed(tab.Staff(cfg, c.By), c.Cents), nil))
+	}
+	// Void a tender (batch C, contract 2.10al): the service's order of
+	// checks (application tender_void.go): who, the batch, the tender. A row
+	// with a refund = a later refund on that order (CashierRefunded leaves
+	// the tender void out).
+	for _, c := range tab.TenderVoids {
+		var paid []terminal.Payment
+		for i, p := range c.Order.Payments {
+			x := pay(p)
+			x.ID = fmt.Sprintf("p%d", i)
+			paid = append(paid, x)
+		}
+		st := tab.Staff(cfg, c.By)
+		if c.Refund.Tender != "" {
+			r := c.Refund
+			r.Refund, r.By = true, c.By
+			rp := pay(r)
+			if err := terminal.RefundRefused(paid, rp); err != nil {
+				check(c, mr.Answer(nil, err))
+				continue
+			}
+			check(c, mr.Answer(terminal.RefundNeed(cfg, st, paid, []terminal.Payment{rp}, terminal.ActionRefund), nil))
+			continue
+		}
+		var err error
+		switch {
+		case terminal.TenderVoidAllowed(st) != nil:
+			err = terminal.TenderVoidAllowed(st)
+		case !terminal.PayableBatch(c.Order.Batch == "" || c.Order.Batch == "open", c.Order.Batch == "carried"):
+			err = terminal.ErrNotPayable
+		default:
+			_, _, _, err = terminal.TenderToVoid(paid, fmt.Sprintf("p%d", c.Void))
+		}
+		check(c, mr.Answer(nil, err))
 	}
 }

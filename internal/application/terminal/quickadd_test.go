@@ -1,6 +1,7 @@
 package terminal
 
 import (
+	"encoding/json"
 	"testing"
 	"time"
 
@@ -71,5 +72,43 @@ func TestParseCounterMenuQuickAdd(t *testing.T) {
 	m, err = terminal.ParseCounterMenu([]byte(`{"menu_version":3,"build":{"categories":[{"key":"a","name":"A","items":[]}]},"routes":{}}`))
 	if err != nil || m.QuickAddItemID != "" {
 		t.Fatalf("%v %+v", err, m)
+	}
+}
+
+// The owner, 2026-11-14 (#17; contract §2.1i / §2.10an): a Quicc Add from a
+// terminal that sends printer_id prints only where the cashier sent it:
+// null = no kitchen paper anywhere (routing none, even when the store's Quick
+// add item has a printer), an id = that printer alone. The Quick add item's
+// route no longer decides, and renaming the line changes nothing.
+func TestQuickAddPrinterIDDecides(t *testing.T) {
+	for _, c := range []struct {
+		name, body       string
+		routing, printer string
+	}{
+		{"null: nowhere", `null`, order.RoutingNone, ""},
+		{"a printer: that one", `"p-pizza"`, order.RoutingMatched, "p-pizza"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			for _, label := range []string{"Side of ranch", "Pizza dough"} { // a rename never moves it
+				var l pricing.Line
+				if err := json.Unmarshal([]byte(`{"custom":true,"name":"`+label+`","qty":1,"price_cents":450,"printer_id":`+c.body+`}`), &l); err != nil {
+					t.Fatal(err)
+				}
+				m := driverMenu(t, true)
+				m.QuickAddItemID = "qa-item"
+				m.Routes = map[string]terminal.Route{"qa-item": {PrinterID: "p-wings", Name: "Wings"}}
+				p, err := priceCart(m, time.UTC, terminal.TypeCounter, Cart{Cart: pricing.Cart{Lines: []pricing.Line{l}}}, time.Now(), 3)
+				if err != nil || len(p.quote.Errors) > 0 {
+					t.Fatalf("price: %v %+v", err, p.quote.Errors)
+				}
+				items, _, _, err := buildItems(m, p)
+				if err != nil || len(items) != 1 {
+					t.Fatalf("build: %v %+v", err, items)
+				}
+				if it := items[0]; it.Routing != c.routing || it.PrinterID != c.printer || it.MenuItemID != "qa-item" {
+					t.Errorf("%s: routing %q printer %q item %q, want %q %q qa-item", label, it.Routing, it.PrinterID, it.MenuItemID, c.routing, c.printer)
+				}
+			}
+		})
 	}
 }

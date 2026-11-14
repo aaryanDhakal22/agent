@@ -166,6 +166,11 @@ type ResolvedOption struct {
 	// half-specialty or a default left off). Go only: the Pi keeps each
 	// pick's price for an edit (Pick.PriceCents).
 	Pick int
+	// Qualifier: a qualifier pick ("Lite", IsQualifier); Attached: joined
+	// to the next pick of its group (whose Label reads "Lite Fried
+	// Onions"), so ModLines leaves it out.
+	Qualifier bool
+	Attached  bool
 }
 
 // Resolve resolves a selection against the context's menu; free = the
@@ -501,15 +506,37 @@ func (e *engine) price(sel Selection, free int) priced {
 		seen := map[string]bool{}  // options picked (any portion or mode)
 		twice := map[string]bool{} // option + portion + mode
 		reps := map[string]int{}   // option + portion + mode → picks so far
-		modAt := map[string]int{}  // option + portion + mode → its p.mods index
 		count := 0                 // picks that put something on (NO doesn't count)
-		for pi, pk := range picks {
-			var o *menuview.BuildOption
+		// Mods never stack (the owner, 2026-11-14): every pick is its own
+		// mod, and a qualifier ("Lite") joins the next pick of this group:
+		// "Lite Fried Onions". found[k]: pick k's option; qual[k]: it is a
+		// qualifier with a later non-qualifier pick to join.
+		found := make([]*menuview.BuildOption, len(picks))
+		for k, pk := range picks {
 			for i := range g.Options {
 				if g.Options[i].ID.String() == pk.OptionID {
-					o = &g.Options[i]
+					found[k] = &g.Options[i]
 				}
 			}
+		}
+		isQual := func(k int) bool {
+			return found[k] != nil && modeOf(picks[k].Mode) == ModeAdd && IsQualifier(found[k].Name)
+		}
+		qual := make([]bool, len(picks))
+		for k := len(picks) - 1; k >= 0; k-- {
+			if !isQual(k) {
+				continue
+			}
+			for j := k + 1; j < len(picks); j++ {
+				if found[j] != nil && !isQual(j) {
+					qual[k] = true
+					break
+				}
+			}
+		}
+		prefix := "" // qualifiers waiting for their pick
+		for pi, pk := range picks {
+			o := found[pi]
 			if o == nil {
 				p.issues = append(p.issues, Issue{Code: IssueUnknownOpt, Message: it.Name + ": an option is no longer available."})
 				continue
@@ -518,32 +545,43 @@ func (e *engine) price(sel Selection, free int) priced {
 			if g.Portions {
 				por = portionOf(pk.Portion)
 			}
+			q := isQual(pi)
 			key := pk.OptionID + "/" + por + "/" + mode
-			if twice[key] && !g.AllowMultiple {
-				p.issues = append(p.issues, Issue{Code: IssueOptionRules, Message: it.Name + ": " + o.Name + " only once."})
-			}
-			twice[key] = true
-			reps[key]++
-			if g.AllowMultiple && e.ctx.MaxRepeat > 0 && reps[key] == e.ctx.MaxRepeat+1 {
-				p.issues = append(p.issues, Issue{Code: IssueOptionRules, Message: fmt.Sprintf("%s: up to %d× %s.", it.Name, e.ctx.MaxRepeat, o.Name)})
+			if !q { // a qualifier may repeat anywhere and counts nowhere
+				if twice[key] && !g.AllowMultiple {
+					p.issues = append(p.issues, Issue{Code: IssueOptionRules, Message: it.Name + ": " + o.Name + " only once."})
+				}
+				twice[key] = true
+				reps[key]++
+				if g.AllowMultiple && e.ctx.MaxRepeat > 0 && reps[key] == e.ctx.MaxRepeat+1 {
+					p.issues = append(p.issues, Issue{Code: IssueOptionRules, Message: fmt.Sprintf("%s: up to %d× %s.", it.Name, e.ctx.MaxRepeat, o.Name)})
+				}
 			}
 			seen[pk.OptionID] = true
 			if mode != ModeNo {
-				count++
+				if !q {
+					count++
+				}
 				if o.SoldOut {
 					p.issues = append(p.issues, Issue{Code: IssueSoldOut, Message: o.Name + " is sold out right now."})
 				}
 			}
 			label := OptionLabel(o.Name, por, mode)
-			// A repeat (allow_multiple: a double / triple) reads once, "2× Pepperoni".
-			if at, ok := modAt[key]; ok && g.AllowMultiple {
-				p.mods[at] = fmt.Sprintf("%d× %s", reps[key], label)
-			} else if reps[key] > 1 && g.AllowMultiple {
-				modAt[key] = len(p.mods)
-				p.mods = append(p.mods, fmt.Sprintf("%d× %s", reps[key], label))
-			} else if !o.IsDefault || por != PortionWhole || mode != ModeAdd {
-				modAt[key] = len(p.mods)
+			qualified := false
+			switch {
+			case qual[pi]: // joins the next pick: no mod of its own
+				prefix += o.Name + " "
+			case q: // a qualifier with nothing after it stands alone
 				p.mods = append(p.mods, label)
+			default:
+				if prefix != "" {
+					label, prefix, qualified = prefix+label, "", true
+				}
+				// A default left as it is reads nothing; picked again (a
+				// double: extra cheese) each repeat reads on its own.
+				if qualified || !o.IsDefault || por != PortionWhole || mode != ModeAdd || reps[key] > 1 {
+					p.mods = append(p.mods, label)
+				}
 			}
 			price := o.PriceCents
 			for _, op := range o.Prices {
@@ -569,7 +607,7 @@ func (e *engine) price(sel Selection, free int) priced {
 				}
 			}
 			p.opts = append(p.opts, ResolvedOption{Name: o.Name, Label: label, Portion: por, Mode: mode, PriceCents: price, RemovedDefault: mode == ModeNo,
-				Pick: pickAt[pi] + 1})
+				Pick: pickAt[pi] + 1, Qualifier: q, Attached: qual[pi]})
 			p.optIDs = append(p.optIDs, pk.OptionID)
 		}
 		// "NO onions": a default left off in a pick-many group (in a pick-one
@@ -704,6 +742,18 @@ func (e *engine) includeToppings(p *priced) {
 	}
 }
 
+// modPrices are a line's picks with their own prices (QuoteLine.ModPrices),
+// in the resolved order.
+func modPrices(opts []ResolvedOption) []ModPrice {
+	var out []ModPrice
+	for _, o := range opts {
+		if o.Pick > 0 {
+			out = append(out, ModPrice{Pick: o.Pick - 1, PriceCents: o.PriceCents, Included: o.Included})
+		}
+	}
+	return out
+}
+
 func containsGroup(ids []uuid.UUID, id string) bool {
 	for _, g := range ids {
 		if g.String() == id {
@@ -804,7 +854,9 @@ func Price(ctx Context, cart Cart, at time.Time) Quote {
 			if n := strings.TrimSpace(line.Note); n != "" {
 				mods = append(mods, "“"+n+"”")
 			}
-			q.Lines = append(q.Lines, QuoteLine{Index: i, Name: p.name, Mods: mods, Qty: qty, UnitCents: p.unit, TotalCents: p.unit * int64(qty), ListCents: p.list})
+			base := p.base + p.halfUp
+			q.Lines = append(q.Lines, QuoteLine{Index: i, Name: p.name, Mods: mods, Qty: qty, UnitCents: p.unit, TotalCents: p.unit * int64(qty), ListCents: p.list,
+				BaseCents: &base, ModPrices: modPrices(p.opts)})
 			taxAt[i] = len(lineTax)
 			lineTax = append(lineTax, taxed{p.unit * int64(qty), e.rate(p.rateItem)})
 			// A price-changed line is left out of the automatic deals and

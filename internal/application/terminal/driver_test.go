@@ -49,6 +49,11 @@ func newDriverRig(t *testing.T) *driverRig {
 		t.Fatal(err)
 	}
 	r.svc.SetFloor(floor, r.repo)
+	// Batch F (§2.10am): typed card tips, applied at the press of Close batch.
+	r.svc.SetDriverTips(r.repo)
+	floor.SetDriverTips(r.repo)
+	floor.OnClosePress(func(ctx context.Context) { r.svc.ApplyDriverTips(ctx, "", false) })
+	floor.OnShiftClosing(func(ctx context.Context, id string) { r.svc.ApplyDriverTips(ctx, id, true) })
 	return &driverRig{rig: r, floor: floor}
 }
 

@@ -211,9 +211,15 @@ func DueOf(so order.StoredOrder) int64 {
 //     leaves when it is finished - picked up (POST .../picked-up), the store's
 //     finish time after ready (settings.finishing.online_pickup_minutes) or the
 //     day's close.
+//
+// A check reopened from All checks (contract 2.10ak) is on it while it is open
+// again (order.Status.OpenAgain), paid or not, from any source.
 func OnPickupList(so order.StoredOrder) bool {
 	if !IsPickup(so) || !OnPickupStates(so) {
 		return false
+	}
+	if so.Status.OpenAgain() {
+		return true
 	}
 	if so.Order.Source == order.SourceCounter {
 		return DueOf(so) > 0

@@ -319,15 +319,18 @@
    {
     "mods": [
      "16 X-Large",
-     "2× Pepperoni",
-     "3× Mushrooms (1st half)",
-     "2× Cheese"
+     "Pepperoni",
+     "Pepperoni",
+     "Mushrooms (1st half)",
+     "Mushrooms (1st half)",
+     "Mushrooms (1st half)",
+     "Cheese"
     ],
     "unit_cents": 2288
    }
   ]
  },
- "name": "doubles",
+ "name": "doubles (since 2026-11-14 every pick is its own mod: nothing folds)",
  "quote": {
   "card_fee_cents": 0,
   "delivery_fee_cents": 0,
@@ -335,13 +338,47 @@
   "errors": [],
   "lines": [
    {
+    "base_cents": 1299,
     "deal_id": "",
     "index": 0,
+    "mod_prices": [
+     {
+      "pick": 0,
+      "price_cents": 225
+     },
+     {
+      "pick": 1,
+      "price_cents": 225
+     },
+     {
+      "pick": 2,
+      "price_cents": 113
+     },
+     {
+      "pick": 3,
+      "price_cents": 113
+     },
+     {
+      "pick": 4,
+      "price_cents": 113
+     },
+     {
+      "pick": 5,
+      "price_cents": 100
+     },
+     {
+      "pick": 6,
+      "price_cents": 100
+     }
+    ],
     "mods": [
      "16 X-Large",
-     "2× Pepperoni",
-     "3× Mushrooms (1st half)",
-     "2× Cheese"
+     "Pepperoni",
+     "Pepperoni",
+     "Mushrooms (1st half)",
+     "Mushrooms (1st half)",
+     "Mushrooms (1st half)",
+     "Cheese"
     ],
     "name": "Cheese Pizza",
     "qty": 1,

@@ -94,13 +94,12 @@ func (s Staff) Public() Public {
 // Settings are the terminal settings the Pi itself reads; the whole settings
 // object goes to the terminals as main sent it.
 type Settings struct {
-	// CounterStart is where the counter sequence starts (and starts again
-	// once a business day, contract 2.10ae). 0 / missing = DefaultCounterStart.
+	// CounterStart is where the store's one ticket-number sequence starts
+	// (every order: terminal, call center, website, online) and starts again
+	// at every Close batch (contract 2.10ae, 2026-11-14). 0 / missing / out
+	// of range = DefaultCounterStart. (main's kitchen_start is retired: the
+	// Pi reads nothing from it.)
 	CounterStart int64 `json:"counter_start"`
-	// KitchenStart is where the kitchen sequence (accepted online / website
-	// orders) starts, again once a business day (the owner's X, 2026-11-13;
-	// main 4.0.6). 0 / missing = order.DefaultKitchenStart (1100).
-	KitchenStart int64 `json:"kitchen_start"`
 	// The cashier role's defaults (main's terminal settings).
 	CashierRefundCents *int64 `json:"cashier_refund_cents"`
 	CashierDiscountPct *int   `json:"cashier_discount_pct"`
@@ -331,9 +330,9 @@ func (c *Config) AutoCloseAt() string {
 	return strings.TrimSpace(*c.parsed.AutoCloseBatchAt)
 }
 
-// DefaultCounterStart is the counter sequence's start when main's config
-// doesn't say (the store setting X, contract §2.10).
-const DefaultCounterStart = 1
+// DefaultCounterStart is the ticket-number sequence's start when main's
+// config doesn't say (main's counter_start default, contract 2.10ae).
+const DefaultCounterStart = order.DefaultNumberStart
 
 // Config is GET /store/v1/agent/terminal-config.
 type Config struct {
@@ -364,36 +363,14 @@ func ParseConfig(body []byte) (*Config, error) {
 	return &c, nil
 }
 
-// CounterStart is the counter sequence's start.
+// CounterStart is the store's one ticket-number sequence's start (main's
+// counter_start, 1 - order.MaxNumberStart: the numbers stay below the future
+// orders' 5-digit placeholders; anything else = DefaultCounterStart).
 func (c *Config) CounterStart() int64 {
-	if c == nil || c.parsed.CounterStart <= 0 || c.parsed.CounterStart >= c.KitchenStart() {
-		// S-6: counter numbers stay below the kitchen numbers (main
-		// validates it too; a config that breaks it falls back).
+	if c == nil {
 		return DefaultCounterStart
 	}
-	return c.parsed.CounterStart
-}
-
-// MaxKitchenStart bounds kitchen_start (main's MaxCounterStart).
-const MaxKitchenStart = 999_999
-
-// KitchenStart is the kitchen sequence's start (main's kitchen_start,
-// default 1100; a bad value = the default).
-func (c *Config) KitchenStart() int64 {
-	if c == nil || c.parsed.KitchenStart < 2 || c.parsed.KitchenStart > MaxKitchenStart {
-		return order.DefaultKitchenStart
-	}
-	return c.parsed.KitchenStart
-}
-
-// DayStart is when the store's business day starts ("HH:MM" store time):
-// the auto-close time, or order.DefaultDayStart (04:00) when auto-close is
-// off. The ticket numbers restart once per such day (contract 2.10ae).
-func (c *Config) DayStart() string {
-	if at := c.AutoCloseAt(); at != "" {
-		return at
-	}
-	return order.DefaultDayStart
+	return order.Numbering{Start: c.parsed.CounterStart}.StartOrDefault()
 }
 
 // LimitsOf is a staff member's limits: a manager is unlimited; otherwise
@@ -741,6 +718,9 @@ func (p Payment) Wire() map[string]any {
 	if p.Brand != "" { // 2.5.5 (§2.10ag): the card's brand as Square named it (amex | discover | mastercard | visa | other)
 		m["brand"] = p.Brand
 	}
+	if p.RefundKind == RefundTenderVoid { // batch C (§2.10al): any cashier's, never a refund under the limit
+		m["kind"] = RefundTenderVoid
+	}
 	return m
 }
 
@@ -954,8 +934,8 @@ func TipAllowed(p Payment) bool { return p.Refund || p.TipCents == 0 || IsCard(p
 func CashierRefunded(c *Config, paid []Payment) int64 {
 	var n int64
 	for _, p := range paid {
-		if !p.Refund || p.ApprovedBy != "" || p.Tender == TenderComp {
-			continue
+		if !p.Refund || p.ApprovedBy != "" || p.Tender == TenderComp || p.RefundKind == RefundTenderVoid {
+			continue // a tender void (batch C, §2.10al) is never under the limit
 		}
 		if st, ok := c.Find(p.StaffID); ok && c.LimitsOf(st).Unlimited {
 			continue

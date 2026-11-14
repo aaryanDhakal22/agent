@@ -450,6 +450,7 @@
   ],
   "lines": [
    {
+    "base_cents": 1099,
     "deal_id": "",
     "index": 0,
     "mods": [],
@@ -460,8 +461,19 @@
     "unit_cents": 1099
    },
    {
+    "base_cents": 1199,
     "deal_id": "",
     "index": 1,
+    "mod_prices": [
+     {
+      "pick": 0,
+      "price_cents": 150
+     },
+     {
+      "pick": 1,
+      "price_cents": 150
+     }
+    ],
     "mods": [
      "12 Medium",
      "Pepperoni",
@@ -475,6 +487,7 @@
     "unit_cents": 1499
    },
    {
+    "base_cents": 0,
     "deal_id": "",
     "index": 2,
     "mods": [],
@@ -485,6 +498,7 @@
     "unit_cents": 0
    },
    {
+    "base_cents": 499,
     "deal_id": "",
     "index": 3,
     "mods": [],
@@ -495,6 +509,7 @@
     "unit_cents": 499
    },
    {
+    "base_cents": 0,
     "deal_id": "",
     "index": 4,
     "mods": [],
@@ -505,6 +520,7 @@
     "unit_cents": 0
    },
    {
+    "base_cents": 0,
     "deal_id": "",
     "index": 5,
     "mods": [],

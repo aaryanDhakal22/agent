@@ -248,6 +248,17 @@ func stationTickets(snap order.Snapshot, roster []RosterEntry, receipt RosterEnt
 		known[p.ID] = true
 	}
 
+	// A Quicc Add (and a priced note under one) the cashier sent to a printer
+	// this Pi doesn't know prints NOWHERE: the owner's rule is "never prints
+	// anywhere unless chosen" (2026-11-14, #17), so it must not fall back to
+	// every station like an unrouted menu item.
+	customIDs := map[string]bool{}
+	for _, it := range snap.Items {
+		if it.SKU == order.SKUCustom {
+			customIDs[it.ID] = true
+		}
+	}
+
 	// Which station(s) each top-level item goes to (by index into snap.Items).
 	assigned := make(map[string][]int, len(stations))
 	for i, it := range snap.Items {
@@ -257,6 +268,10 @@ func stationTickets(snap order.Snapshot, roster []RosterEntry, receipt RosterEnt
 		if it.Routing == order.RoutingMatched && known[it.PrinterID] {
 			assigned[it.PrinterID] = append(assigned[it.PrinterID], i)
 			continue
+		}
+		if it.Routing == order.RoutingMatched && (it.SKU == order.SKUCustom ||
+			(it.SKU == order.SKUNote && customIDs[it.ParentLineID])) {
+			continue // a Quicc Add on an unknown printer: nowhere (see above)
 		}
 		unrouted = append(unrouted, it.Name)
 		for _, st := range stations {
@@ -281,7 +296,13 @@ func stationTickets(snap order.Snapshot, roster []RosterEntry, receipt RosterEnt
 	}
 	for _, p := range roster {
 		idx := assigned[p.ID]
-		if len(idx) == 0 || (p.ID == receipt.ID && !receiptIsStation) {
+		if p.ID == receipt.ID && !receiptIsStation {
+			// A Quicc Add the cashier sent to the receipt printer prints there
+			// (the owner 2026-11-14, #17: "only on that one printer"); the rest
+			// routed there stays receipt-only.
+			idx = quiccAddsOn(snap, idx)
+		}
+		if len(idx) == 0 {
 			continue
 		}
 		mine := make([]order.LineItem, 0, len(idx))
@@ -301,6 +322,18 @@ func stationTickets(snap order.Snapshot, roster []RosterEntry, receipt RosterEnt
 		})
 	}
 	return tickets, unrouted
+}
+
+// quiccAddsOn keeps the Quicc Add (custom) lines of idx: the receipt
+// printer's own station ticket carries only those.
+func quiccAddsOn(snap order.Snapshot, idx []int) []int {
+	var out []int
+	for _, i := range idx {
+		if snap.Items[i].SKU == order.SKUCustom {
+			out = append(out, i)
+		}
+	}
+	return out
 }
 
 // isDeliverySnap: the order is a delivery (fulfillment delivery).

@@ -460,6 +460,7 @@
     "unit_cents": 1999
    },
    {
+    "base_cents": 1199,
     "deal_id": "",
     "index": 1,
     "mods": [

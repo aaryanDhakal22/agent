@@ -513,6 +513,7 @@
   ],
   "lines": [
    {
+    "base_cents": 999,
     "deal_id": "",
     "index": 0,
     "mods": [
@@ -525,6 +526,7 @@
     "unit_cents": 999
    },
    {
+    "base_cents": 899,
     "deal_id": "",
     "index": 1,
     "mods": [

@@ -19,10 +19,8 @@ import secrets
 import threading
 import time
 import uuid
-from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from zoneinfo import ZoneInfo
 
 import pytest
 import requests
@@ -404,16 +402,11 @@ def test_pick_up_list_payment_void_limits(rig):
         assert a in actions, a
 
 
-def test_ticket_numbers_restart_once_a_business_day(rig):
-    """Contract 2.10ae (the owner, 2026-11-13): Close batch no longer restarts the numbers; the first number
-    of a new business day after a close does. The business day starts at the store's auto-close time, so
-    moving it from 23:59 (now is still yesterday's day) to 00:00 (today's) plays the next day without a clock.
-    main's kitchen_start (here 2000) is where the kitchen numbers start again."""
+def test_ticket_numbers_restart_at_every_close(rig):
+    """Contract 2.10ae (the owner, final 2026-11-14; replaces the 2026-11-13 business-day rule): every Close batch
+    restarts the numbers at main's counter_start (here 500), a second or third close the same day too, whatever
+    the auto-close time; main's kitchen_start is retired (ignored)."""
     agent, term, fm = rig["agent"], rig["term"], rig["fm"]
-    tz = rig["mgr"].get(f"{STORE_V1}/me/location", timeout=5).json().get("timezone") or "America/New_York"
-    now = datetime.now(ZoneInfo(tz))
-    if (now.hour, now.minute) >= (23, 57) or (now.hour, now.minute) <= (0, 2):
-        pytest.skip("too close to midnight in the store's timezone to tell the two days apart")
 
     def config(version: int, day_start: str) -> None:
         fm.terminal_config = staff_config(version=version)
@@ -428,20 +421,19 @@ def test_ticket_numbers_restart_once_a_business_day(rig):
         r = agent.http.post(f"{agent.base}/api/batch/close", json={"force": True}, timeout=30)
         assert r.status_code == 200, r.text
 
-    config(2, "23:59")  # the business day is yesterday's
+    config(2, "23:59")
     assert [place(rig).json()["number"] for _ in range(2)] == [500, 501]
     close()
-    assert place(rig).json()["number"] == 502, "a close the same business day carries on"
+    assert agent.http.get(f"{agent.base}/api/floor", timeout=5).json()["kitchen_next"] == 500, \
+        "the next number is counter_start again (never main's retired kitchen_start)"
+    assert place(rig).json()["number"] == 500, "Close batch restarts the numbers"
     close()
     close()
-    assert place(rig).json()["number"] == 503, "a second and third close the same day carry on too"
+    assert place(rig).json()["number"] == 500, "a second and third close the same day restart them too"
+    config(3, "00:00")  # the auto-close time no longer matters
+    assert [place(rig).json()["number"] for _ in range(2)] == [501, 502], "no restart without a close"
     close()
-    config(3, "00:00")  # the next business day
-    assert agent.http.get(f"{agent.base}/api/floor", timeout=5).json()["kitchen_next"] == 2000, \
-        "the next kitchen number is main's kitchen_start on the new day"
-    assert [place(rig).json()["number"] for _ in range(2)] == [500, 501], "the first number of the new day after a close"
-    close()
-    assert place(rig).json()["number"] == 502, "and it carries on through that day's closes"
+    assert place(rig).json()["number"] == 500
 
 
 def test_commands_refetch_and_announce(rig):
@@ -627,8 +619,8 @@ def test_no_kitchen_ticket_item(rig):
     wait_until(lambda: fakes["Pizza"].jobs, what="pizza station ticket")
     ticket = fakes["Pizza"].text()
     soda_name = items[1]["name"].upper()
-    assert soda_name not in ticket.upper(), ticket  # not its own line, not under "Also on this order"
-    assert "nothing else" in ticket, ticket
+    assert soda_name not in ticket.upper(), ticket  # not its own line, not under ITEMS TO OTHER PRINTER
+    assert "ITEMS TO OTHER PRINTER\n" in ticket and "\n - " not in ticket, ticket  # the heading alone (2026-11-14)
     # Only the soda: no station ticket at all (the receipt is the terminal's own).
     before = len(fakes["Pizza"].jobs)
     assert place(rig, cart={"lines": [{"item_id": SODA, "qty": 1}]}).status_code == 201

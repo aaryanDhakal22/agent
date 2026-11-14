@@ -384,8 +384,15 @@
   "errors": [],
   "lines": [
    {
+    "base_cents": 1099,
     "deal_id": "",
     "index": 0,
+    "mod_prices": [
+     {
+      "pick": 0,
+      "price_cents": 50
+     }
+    ],
     "mods": [
      "BBQ"
     ],

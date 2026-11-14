@@ -331,7 +331,8 @@ func (s *Service) changeCart(ctx context.Context, a Actor, id string, in ChangeI
 			return nil, fmt.Errorf("%w (%d paid, the new total is %d)", terminal.ErrRefundFirst, amount, money.Total)
 		}
 	}
-	approver, overrides, err := s.approve(ctx, a, st, cfg, in.ManagerPIN, id, need, priceNeed, compNeed, voidNeed)
+	modNeed := checkModPrices(cfg, st, p.cart, p.modChanges, keptModPrices(cur.Order.Order)) // §2.10an
+	approver, overrides, err := s.approve(ctx, a, st, cfg, in.ManagerPIN, id, need, priceNeed, compNeed, voidNeed, modNeed)
 	if err != nil {
 		return nil, err
 	}
@@ -411,6 +412,7 @@ func (s *Service) changeCart(ctx context.Context, a Actor, id string, in ChangeI
 		}
 		entries = append(entries, overrides...)
 		entries = append(entries, priceEntries(a, st, p.changes, approver, id)...)
+		entries = append(entries, modPriceEntries(a, st, p.modChanges, approver, id)...)
 		entries = append(entries, customEntries(a, st, p, id, keptCustom(cur.Order))...)
 		entries = append(entries, rungEntries(a, st, p, id, keptCustom(cur.Order))...)
 		entries = append(entries, couponEntries(a, st, p, id, cartCoupons(cur.Order))...)

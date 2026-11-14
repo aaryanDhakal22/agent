@@ -16,7 +16,7 @@ func TestSlipItemName(t *testing.T) {
 		{"", "10 Nuggets", "10 Nuggets"},
 		{"2 Liter", "Coca-Cola", "2 Liter Coca-Cola"},
 		{"20 oz", "Sprite", "20 oz Sprite"},
-		{"10 PC", "buffalo wings", "10 PC Buffalo Wings"},
+		{"10 PC", "buffalo wings", "10 pc Buffalo Wings"}, // count first, "pc" (2026-11-14, #4)
 		{"", "BBQ chicken BLT sub", "BBQ Chicken BLT Sub"},
 		{"Large", "pepperoni pizza", "Large Pepperoni Pizza"},
 		{"Serving", "garlic knots", "Garlic Knots"},

@@ -49,6 +49,7 @@ var escSeq = regexp.MustCompile(`(?s)\x1b@|\x1b[a!E-].|\x1d[!B].|\x1dVB.`)
 
 // textOf is the bytes as the paper reads (commands and the logo left out).
 func textOf(b []byte) string {
+	b = iconsAsText(b) // the type's icon picture reads "DELIVERY [icon car]" (icons_test.go)
 	if i := bytes.Index(b, []byte("\x1dv0")); i >= 0 {
 		// the logo raster: cut each one out up to its next line feed after the image
 		var out []byte

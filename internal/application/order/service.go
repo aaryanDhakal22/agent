@@ -121,6 +121,8 @@ type Service struct {
 	// prepSource: a placed order's default prep (SetPrepSource, §2.10aa).
 	prepSource atomic.Pointer[func(fulfillment string) int64]
 	placeOnce  sync.Once
+	// drvTips: the driver's typed card tips (batch F, driver_tips.go).
+	drvTips driverTipHooks
 	// legacyArrival (Go tests of the kept accept path only): an arrival
 	// with the auto-accept setting off waits arrived, as before §2.10aa.
 	legacyArrival bool

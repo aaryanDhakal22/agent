@@ -437,8 +437,8 @@ func buildFull(snap order.Snapshot, sc storeconfig.StoreContext, reroutedFrom st
 				w(feedDots(sp.ModMod))
 			}
 			label := mod.Name
-			if mod.Quantity > 1 {
-				label = fmt.Sprintf("(x%d) %s", mod.Quantity, label)
+			if n := perItem(mod.Quantity, item.Quantity); n > 1 { // per item, never folded (#20)
+				label = fmt.Sprintf("(x%d) %s", n, label)
 			}
 			// Sides (fries, salad) stand out, as on the v1 receipt.
 			side := strings.Contains(strings.ToLower(mod.Name), "fries") || strings.Contains(strings.ToLower(mod.Name), "salad")
@@ -718,15 +718,6 @@ func writeRerouted(w func(string), nl func(), from string, lay layout) {
 	nl()
 }
 
-// itemName is the kitchen-ticket item label: "Name (Size)" when the size says
-// something (see displaySize).
-func itemName(it order.LineItem) string {
-	if sz := displaySize(it.Size); sz != "" {
-		return it.Name + " (" + sz + ")"
-	}
-	return it.Name
-}
-
 // displaySize drops the vendor's placeholder size: "Serving" (a single-size
 // item) prints nothing and "Serving (2 Piece)" prints "2 Piece". The customer
 // receipt keeps the vendor's size as v1 printed it.
@@ -908,8 +899,8 @@ func writeCondensedItems(w func(string), nl func(), items []order.LineItem, sp o
 					continue
 				}
 				label := mod.Name
-				if mod.Quantity > 1 {
-					label = fmt.Sprintf("(x%d) %s", mod.Quantity, label)
+				if n := perItem(mod.Quantity, item.Quantity); n > 1 { // per item, never folded (#20)
+					label = fmt.Sprintf("(x%d) %s", n, label)
 				}
 				w(cmdLeft)
 				for _, l := range wrapped("    - "+label, lay.cols, "      ") {

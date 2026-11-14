@@ -120,7 +120,7 @@ def test_channel_order_prints_stations_and_receipt_with_switches_off(web, fakes)
         assert got["order"]["source"] == kind
         _ok(post(a, f"/api/orders/{o['id']}/accept", {"prep_minutes": 15}))  # the accept answers once it printed
         wait_jobs(fakes["Pizza"], 1)
-        assert "1  Cheese Pizza" in fakes["Pizza"].text(), fakes["Pizza"].text()
+        assert "1   Cheese Pizza" in fakes["Pizza"].text(), fakes["Pizza"].text()
         # 2.5.7 (the owner, 2026-11-13): a pickup's customer receipt never prints on the receipt printer.
         assert fakes["Front"].jobs == [], fakes["Front"].text()
     # A website delivery prints its receipt too, whatever the switches say.

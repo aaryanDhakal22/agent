@@ -160,6 +160,7 @@
   ],
   "lines": [
    {
+    "base_cents": 0,
     "deal_id": "",
     "index": 0,
     "mods": [],

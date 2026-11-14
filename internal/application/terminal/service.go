@@ -706,6 +706,9 @@ type QuoteView struct {
 	// their rung_cents; KeptPrices: lines kept at their rung price (§2.10u).
 	MenuGone   []terminal.GoneLine  `json:"menu_gone,omitempty"`
 	KeptPrices []terminal.KeptPrice `json:"kept_prices,omitempty"`
+	// ModPriceChanges: the cart options priced at the counter (§2.10an),
+	// each with needs_manager for the logged-in staff member.
+	ModPriceChanges []ModPriceChange `json:"mod_price_changes,omitempty"`
 }
 
 // asBadRequest wraps a pricing input error as a 400 (one already wrapped
@@ -785,6 +788,13 @@ func (s *Service) Quote(ctx context.Context, a Actor, in QuoteIn) (*QuoteView, e
 				v.NeedsManager = v.NeedsManager || v.PriceChanges[i].NeedsManager
 			}
 		} else if price, comp := checkPrices(cfg, st, v.PriceChanges, nil); price != nil || comp != nil {
+			v.NeedsManager = true
+		}
+	}
+	if len(p.modChanges) > 0 { // §2.10an: a driver lowering a mod needs a manager
+		v.ModPriceChanges = p.modChanges
+		st, cfg, err := s.staffOf(a)
+		if err == nil && checkModPrices(cfg, st, p.cart, v.ModPriceChanges, nil) != nil {
 			v.NeedsManager = true
 		}
 	}
@@ -1269,7 +1279,8 @@ func (s *Service) placeOrder(ctx context.Context, a Actor, in OrderIn) (*PlaceRe
 			compNeed.Requested += pi.AmountCents
 		}
 	}
-	approver, journal, err := s.approve(ctx, a, st, cfg, in.ManagerPIN, "", dNeed, priceNeed, compNeed)
+	modNeed := checkModPrices(cfg, st, p.cart, p.modChanges, nil) // §2.10an
+	approver, journal, err := s.approve(ctx, a, st, cfg, in.ManagerPIN, "", dNeed, priceNeed, compNeed, modNeed)
 	if err != nil {
 		return nil, err
 	}
@@ -1332,6 +1343,7 @@ func (s *Service) placeOrder(ctx context.Context, a Actor, in OrderIn) (*PlaceRe
 	journal = append(journal, terminal.Entry{StaffID: st.ID, DeviceID: a.DeviceID, Action: terminal.ActionOrderPlaced, OrderID: id,
 		Detail: detail(map[string]any{"type": typ, "total_cents": money.Total, "paid_cents": paidCents, "lines": len(items), "client_key": in.ClientKey})})
 	journal = append(journal, priceEntries(a, st, p.changes, approver, id)...)
+	journal = append(journal, modPriceEntries(a, st, p.modChanges, approver, id)...)
 	journal = append(journal, customEntries(a, st, p, id, nil)...)
 	journal = append(journal, rungEntries(a, st, p, id, nil)...)
 	journal = append(journal, couponEntries(a, st, p, id, nil)...)

@@ -58,9 +58,9 @@ func TestSpacing_WhereTheFeedsGo(t *testing.T) {
 	s := string(Build(snap, storeconfig.StoreContext{}, tk, spaced))
 	im, mm, ii := feedDots(8), feedDots(4), feedDots(12)
 	for _, want := range []string{
-		"1  Pepperoni Pizza\n" + cmdSizeReset + cmdBaseSz + cmdBoldOff + im + H8 + "- Extra cheese\n" + mm + H8 + "- Onions\n",
-		"1  Garlic Knots\n" + cmdSizeReset + cmdBaseSz + cmdBoldOff + ii + cmdBoldOn, // item→item
-		"1  Cheese Pizza\n" + cmdSizeReset + cmdBaseSz + cmdBoldOff + im + H8 + "- Well done\n",
+		"1   Pepperoni Pizza\n" + cmdSizeReset + cmdBaseSz + cmdBoldOff + im + H8 + "- Extra cheese\n" + mm + H8 + "- Onions\n",
+		"1   Garlic Knots\n" + cmdSizeReset + cmdBaseSz + cmdBoldOff + ii + cmdBoldOn, // item→item
+		"1   Cheese Pizza\n" + cmdSizeReset + cmdBaseSz + cmdBoldOff + im + H8 + "- Well done\n",
 	} {
 		if !strings.Contains(s, want) {
 			t.Errorf("missing %q in %q", want, s)

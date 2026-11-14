@@ -254,7 +254,9 @@ func (r *OrderRepository) MarkPickedUp(ctx context.Context, id string, journal f
 		if due := terminal.DueOf(cur); due > 0 {
 			return &terminal.CashDue{BalanceCents: due}
 		}
-		if cur.Status.FinishedAt != nil {
+		// A check reopened since it was finished (contract 2.10ak) is
+		// finished again; any other finished one answers already.
+		if cur.Status.FinishedAt != nil && !cur.Status.OpenAgain() {
 			so, already = cur, true
 			return nil
 		}
@@ -263,7 +265,12 @@ func (r *OrderRepository) MarkPickedUp(ctx context.Context, id string, journal f
 				return fmt.Errorf("mark ready: %w", err)
 			}
 		}
-		n, err := q.SetOrderFinished(ctx, models.SetOrderFinishedParams{FinishedAt: nullTS(now), FinishedBy: terminal.FinishedByTerminal, ID: id})
+		var n int64
+		if cur.Status.FinishedAt != nil { // reopened (2.10ak): finished again
+			n, err = q.SetOrderRefinished(ctx, models.SetOrderRefinishedParams{FinishedAt: nullTS(now), FinishedBy: terminal.FinishedByTerminal, ID: id})
+		} else {
+			n, err = q.SetOrderFinished(ctx, models.SetOrderFinishedParams{FinishedAt: nullTS(now), FinishedBy: terminal.FinishedByTerminal, ID: id})
+		}
 		if err != nil {
 			return err
 		}

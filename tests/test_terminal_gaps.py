@@ -1,7 +1,7 @@
 """The order screen's gaps on the Pi (2026-11-11, contract/agent.md §2.10a):
 
   * double / triple toppings: the same pick again in an allow_multiple
-    group, capped by main's topping_max_count; one ticket line "2x X" (ASCII: PC437 has no ×)
+    group, capped by main's topping_max_count; since 2026-11-14 each pick its own child / ticket line
   * Quicc Add: a custom line {custom, name, price_cents, qty, note?} on
     quote / place / PUT …/cart, journaled with who added it, synced to main
     as a line with sku "custom", printed on every station
@@ -68,7 +68,8 @@ def test_doubles_custom_line_and_required_warning(rig):
     assert [e["message"] for e in q["errors"]] == ["Cheese Pizza: up to 2× Pepperoni."]
     double = _pizza((PEP, ""), (PEP, ""), (MUSH, "first"), (MUSH, "first"))
     q = _quote(rig, double)
-    assert not q["errors"] and q["lines"][0]["mods"][1:3] == ["2× Pepperoni", "2× Mushrooms (1st half)"]
+    # Mods never stack (the owner, 2026-11-14; contract 2.10an): each pick its own mod line.
+    assert not q["errors"] and q["lines"][0]["mods"][1:5] == ["Pepperoni", "Pepperoni", "Mushrooms (1st half)", "Mushrooms (1st half)"]
     assert q["lines"][0]["unit_cents"] == 1299 + 2 * 225 + 2 * 113
 
     # A Club Sandwich with no side / dips: warnings, not errors.
@@ -84,11 +85,11 @@ def test_doubles_custom_line_and_required_warning(rig):
     assert r.status_code == 201, r.text
     so = r.json()["order"]["order"]
     pz, cl, cu = so["items"]
-    assert [c["name"] for c in pz["children"]][:2] == ["2x Pepperoni", "2x Mushrooms (1st half)"]
-    assert [c["unit_price_cents"] for c in pz["children"]][:2] == [450, 226]
+    assert [c["name"] for c in pz["children"]][:4] == ["Pepperoni", "Pepperoni", "Mushrooms (1st half)", "Mushrooms (1st half)"]
+    assert [c["unit_price_cents"] for c in pz["children"]][:4] == [225, 225, 113, 113]
     assert (cu["name"], cu["sku"], cu["quantity"], cu["line_total_cents"], cu["routing"]) == ("Extra dough ball", "custom", 2, 500, "unmatched")
     wait_until(lambda: "Extra Dough Ball" in fakes["Pizza"].text(), what="the custom line on the Pizza station (unrouted: every station)")
-    wait_until(lambda: "2x Pepperoni" in fakes["Pizza"].text(), what="the double on the Pizza station")
+    wait_until(lambda: fakes["Pizza"].text().upper().count("PEPPERONI") >= 2, what="each Pepperoni its own line on the Pizza station")
     journal = term.get(f"{base}/api/terminal/journal", timeout=5).json()
     rows = [e for e in journal if e["action"] == "custom_line"]
     assert len(rows) == 1 and rows[0]["staff_id"] == "00000000-0000-4000-8000-0000000000c1" and rows[0]["detail"]["name"] == "Extra dough ball"

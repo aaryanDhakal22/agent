@@ -655,9 +655,16 @@
   "errors": [],
   "lines": [
    {
+    "base_cents": 999,
     "deal_id": "",
     "index": 0,
     "list_cents": 899,
+    "mod_prices": [
+     {
+      "pick": 0,
+      "price_cents": 75
+     }
+    ],
     "mods": [
      "8\"",
      "Fried Onions"
@@ -669,6 +676,7 @@
     "unit_cents": 1074
    },
    {
+    "base_cents": 399,
     "deal_id": "",
     "index": 1,
     "mods": [],
@@ -679,6 +687,7 @@
     "unit_cents": 399
    },
    {
+    "base_cents": 150,
     "deal_id": "",
     "index": 2,
     "mods": [],

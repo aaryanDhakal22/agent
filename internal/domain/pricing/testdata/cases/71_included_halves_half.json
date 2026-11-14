@@ -530,8 +530,61 @@
   "errors": [],
   "lines": [
    {
+    "base_cents": 1799,
     "deal_id": "",
     "index": 0,
+    "mod_prices": [
+     {
+      "included": true,
+      "pick": 0,
+      "price_cents": 113
+     },
+     {
+      "included": true,
+      "pick": 1,
+      "price_cents": 113
+     },
+     {
+      "included": true,
+      "pick": 2,
+      "price_cents": 113
+     },
+     {
+      "included": true,
+      "pick": 3,
+      "price_cents": 113
+     },
+     {
+      "included": true,
+      "pick": 4,
+      "price_cents": 113
+     },
+     {
+      "included": true,
+      "pick": 5,
+      "price_cents": 113
+     },
+     {
+      "included": true,
+      "pick": 6,
+      "price_cents": 113
+     },
+     {
+      "included": true,
+      "pick": 7,
+      "price_cents": 113
+     },
+     {
+      "included": true,
+      "pick": 8,
+      "price_cents": 113
+     },
+     {
+      "included": true,
+      "pick": 9,
+      "price_cents": 113
+     }
+    ],
     "mods": [
      "14\" Large",
      "Pepperoni (1st half)",
@@ -552,8 +605,40 @@
     "unit_cents": 1799
    },
    {
+    "base_cents": 1799,
     "deal_id": "",
     "index": 1,
+    "mod_prices": [
+     {
+      "included": true,
+      "pick": 0,
+      "price_cents": 113
+     },
+     {
+      "included": true,
+      "pick": 1,
+      "price_cents": 225
+     },
+     {
+      "included": true,
+      "pick": 2,
+      "price_cents": 225
+     },
+     {
+      "included": true,
+      "pick": 3,
+      "price_cents": 225
+     },
+     {
+      "included": true,
+      "pick": 4,
+      "price_cents": 225
+     },
+     {
+      "pick": 5,
+      "price_cents": 300
+     }
+    ],
     "mods": [
      "14\" Large",
      "Pepperoni (1st half)",
@@ -570,8 +655,40 @@
     "unit_cents": 2099
    },
    {
+    "base_cents": 1799,
     "deal_id": "",
     "index": 2,
+    "mod_prices": [
+     {
+      "included": true,
+      "pick": 0,
+      "price_cents": 150
+     },
+     {
+      "included": true,
+      "pick": 1,
+      "price_cents": 225
+     },
+     {
+      "included": true,
+      "pick": 2,
+      "price_cents": 225
+     },
+     {
+      "included": true,
+      "pick": 3,
+      "price_cents": 225
+     },
+     {
+      "included": true,
+      "pick": 4,
+      "price_cents": 225
+     },
+     {
+      "pick": 5,
+      "price_cents": 225
+     }
+    ],
     "mods": [
      "14\" Large",
      "Grilled Chicken (1st half)",

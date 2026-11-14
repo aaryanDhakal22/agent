@@ -64,6 +64,7 @@
     "errors": [],
     "lines": [
      {
+      "base_cents": 999,
       "deal_id": "",
       "index": 0,
       "mods": [
@@ -76,6 +77,7 @@
       "unit_cents": 999
      },
      {
+      "base_cents": 999,
       "deal_id": "",
       "index": 1,
       "mods": [
@@ -192,6 +194,7 @@
     "errors": [],
     "lines": [
      {
+      "base_cents": 999,
       "deal_id": "",
       "index": 0,
       "mods": [
@@ -204,6 +207,7 @@
       "unit_cents": 999
      },
      {
+      "base_cents": 999,
       "deal_id": "",
       "index": 1,
       "mods": [
@@ -299,8 +303,15 @@
     "errors": [],
     "lines": [
      {
+      "base_cents": 999,
       "deal_id": "",
       "index": 0,
+      "mod_prices": [
+       {
+        "pick": 0,
+        "price_cents": 175
+       }
+      ],
       "mods": [
        "12\" Medium",
        "Pepperoni"
@@ -312,6 +323,7 @@
       "unit_cents": 1174
      },
      {
+      "base_cents": 999,
       "deal_id": "",
       "index": 1,
       "mods": [
@@ -436,8 +448,15 @@
     "errors": [],
     "lines": [
      {
+      "base_cents": 999,
       "deal_id": "",
       "index": 0,
+      "mod_prices": [
+       {
+        "pick": 0,
+        "price_cents": 175
+       }
+      ],
       "mods": [
        "12\" Medium",
        "Pepperoni"
@@ -449,6 +468,7 @@
       "unit_cents": 1174
      },
      {
+      "base_cents": 999,
       "deal_id": "",
       "index": 1,
       "mods": [
@@ -559,8 +579,15 @@
     "errors": [],
     "lines": [
      {
+      "base_cents": 999,
       "deal_id": "",
       "index": 0,
+      "mod_prices": [
+       {
+        "pick": 0,
+        "price_cents": 175
+       }
+      ],
       "mods": [
        "12\" Medium",
        "Pepperoni"
@@ -572,6 +599,7 @@
       "unit_cents": 1174
      },
      {
+      "base_cents": 999,
       "deal_id": "",
       "index": 1,
       "mods": [
@@ -713,8 +741,19 @@
     "errors": [],
     "lines": [
      {
+      "base_cents": 999,
       "deal_id": "",
       "index": 0,
+      "mod_prices": [
+       {
+        "pick": 0,
+        "price_cents": 175
+       },
+       {
+        "pick": 1,
+        "price_cents": 175
+       }
+      ],
       "mods": [
        "12\" Medium",
        "Pepperoni",
@@ -727,8 +766,23 @@
       "unit_cents": 1349
      },
      {
+      "base_cents": 999,
       "deal_id": "",
       "index": 1,
+      "mod_prices": [
+       {
+        "pick": 0,
+        "price_cents": 0
+       },
+       {
+        "pick": 1,
+        "price_cents": 50
+       },
+       {
+        "pick": 2,
+        "price_cents": 75
+       }
+      ],
       "mods": [
        "8 pc",
        "Regular",
@@ -819,6 +873,7 @@
     "errors": [],
     "lines": [
      {
+      "base_cents": 999,
       "deal_id": "",
       "index": 0,
       "mods": [
@@ -831,6 +886,7 @@
       "unit_cents": 999
      },
      {
+      "base_cents": 999,
       "deal_id": "",
       "index": 1,
       "mods": [
@@ -946,6 +1002,7 @@
     "errors": [],
     "lines": [
      {
+      "base_cents": 999,
       "deal_id": "",
       "index": 0,
       "mods": [
@@ -958,6 +1015,7 @@
       "unit_cents": 999
      },
      {
+      "base_cents": 999,
       "deal_id": "",
       "index": 1,
       "mods": [
@@ -1081,8 +1139,15 @@
     "errors": [],
     "lines": [
      {
+      "base_cents": 999,
       "deal_id": "",
       "index": 0,
+      "mod_prices": [
+       {
+        "pick": 0,
+        "price_cents": 175
+       }
+      ],
       "mods": [
        "12\" Medium",
        "Pepperoni"
@@ -1094,6 +1159,7 @@
       "unit_cents": 1174
      },
      {
+      "base_cents": 1099,
       "deal_id": "",
       "index": 1,
       "mods": [
@@ -1189,8 +1255,15 @@
     "errors": [],
     "lines": [
      {
+      "base_cents": 999,
       "deal_id": "",
       "index": 0,
+      "mod_prices": [
+       {
+        "pick": 0,
+        "price_cents": 175
+       }
+      ],
       "mods": [
        "12\" Medium",
        "Pepperoni"
@@ -1202,6 +1275,7 @@
       "unit_cents": 1174
      },
      {
+      "base_cents": 1099,
       "deal_id": "",
       "index": 1,
       "mods": [
@@ -1298,6 +1372,7 @@
     "errors": [],
     "lines": [
      {
+      "base_cents": 699,
       "deal_id": "",
       "index": 0,
       "mods": [
@@ -1401,8 +1476,15 @@
     "errors": [],
     "lines": [
      {
+      "base_cents": 999,
       "deal_id": "",
       "index": 0,
+      "mod_prices": [
+       {
+        "pick": 0,
+        "price_cents": 175
+       }
+      ],
       "mods": [
        "12\" Medium",
        "Mushrooms"
@@ -1503,8 +1585,15 @@
     "errors": [],
     "lines": [
      {
+      "base_cents": 999,
       "deal_id": "",
       "index": 0,
+      "mod_prices": [
+       {
+        "pick": 0,
+        "price_cents": 250
+       }
+      ],
       "mods": [
        "12\" Medium",
        "Shrimp"
@@ -1599,6 +1688,7 @@
     "errors": [],
     "lines": [
      {
+      "base_cents": 999,
       "deal_id": "",
       "index": 0,
       "mods": [
@@ -1728,8 +1818,15 @@
     "errors": [],
     "lines": [
      {
+      "base_cents": 999,
       "deal_id": "",
       "index": 0,
+      "mod_prices": [
+       {
+        "pick": 0,
+        "price_cents": 175
+       }
+      ],
       "mods": [
        "12\" Medium",
        "Pepperoni"
@@ -1741,8 +1838,15 @@
       "unit_cents": 1174
      },
      {
+      "base_cents": 999,
       "deal_id": "",
       "index": 1,
+      "mod_prices": [
+       {
+        "pick": 0,
+        "price_cents": 175
+       }
+      ],
       "mods": [
        "12\" Medium",
        "Sausage"
@@ -1883,8 +1987,15 @@
     "errors": [],
     "lines": [
      {
+      "base_cents": 1199,
       "deal_id": "",
       "index": 0,
+      "mod_prices": [
+       {
+        "pick": 0,
+        "price_cents": 225
+       }
+      ],
       "mods": [
        "14\" Large",
        "Pepperoni"
@@ -1896,6 +2007,7 @@
       "unit_cents": 1424
      },
      {
+      "base_cents": 1399,
       "deal_id": "",
       "index": 1,
       "mods": [
@@ -1908,6 +2020,7 @@
       "unit_cents": 1399
      },
      {
+      "base_cents": 365,
       "deal_id": "",
       "index": 2,
       "mods": [],
@@ -2047,8 +2160,19 @@
     "errors": [],
     "lines": [
      {
+      "base_cents": 1199,
       "deal_id": "",
       "index": 0,
+      "mod_prices": [
+       {
+        "pick": 0,
+        "price_cents": 225
+       },
+       {
+        "pick": 1,
+        "price_cents": 225
+       }
+      ],
       "mods": [
        "14\" Large",
        "Pepperoni",
@@ -2061,6 +2185,7 @@
       "unit_cents": 1649
      },
      {
+      "base_cents": 129,
       "deal_id": "",
       "index": 1,
       "mods": [],
@@ -2189,8 +2314,15 @@
     "errors": [],
     "lines": [
      {
+      "base_cents": 1199,
       "deal_id": "",
       "index": 0,
+      "mod_prices": [
+       {
+        "pick": 0,
+        "price_cents": 225
+       }
+      ],
       "mods": [
        "14\" Large",
        "Pepperoni"
@@ -2202,8 +2334,15 @@
       "unit_cents": 1424
      },
      {
+      "base_cents": 1199,
       "deal_id": "",
       "index": 1,
+      "mod_prices": [
+       {
+        "pick": 0,
+        "price_cents": 225
+       }
+      ],
       "mods": [
        "14\" Large",
        "Sausage"
@@ -2344,8 +2483,15 @@
     "errors": [],
     "lines": [
      {
+      "base_cents": 1299,
       "deal_id": "",
       "index": 0,
+      "mod_prices": [
+       {
+        "pick": 0,
+        "price_cents": 250
+       }
+      ],
       "mods": [
        "16\" X-Large",
        "Pepperoni"
@@ -2357,6 +2503,7 @@
       "unit_cents": 1549
      },
      {
+      "base_cents": 2399,
       "deal_id": "",
       "index": 1,
       "mods": [
@@ -2369,6 +2516,7 @@
       "unit_cents": 2399
      },
      {
+      "base_cents": 365,
       "deal_id": "",
       "index": 2,
       "mods": [],
@@ -2477,8 +2625,19 @@
     "errors": [],
     "lines": [
      {
+      "base_cents": 1299,
       "deal_id": "",
       "index": 0,
+      "mod_prices": [
+       {
+        "pick": 0,
+        "price_cents": 250
+       },
+       {
+        "pick": 1,
+        "price_cents": 250
+       }
+      ],
       "mods": [
        "16\" X-Large",
        "Pepperoni",
@@ -2608,8 +2767,15 @@
     "errors": [],
     "lines": [
      {
+      "base_cents": 1299,
       "deal_id": "",
       "index": 0,
+      "mod_prices": [
+       {
+        "pick": 0,
+        "price_cents": 250
+       }
+      ],
       "mods": [
        "16\" X-Large",
        "Pepperoni"
@@ -2621,8 +2787,15 @@
       "unit_cents": 1549
      },
      {
+      "base_cents": 1299,
       "deal_id": "",
       "index": 1,
+      "mod_prices": [
+       {
+        "pick": 0,
+        "price_cents": 250
+       }
+      ],
       "mods": [
        "16\" X-Large",
        "Pepperoni"
@@ -2722,8 +2895,15 @@
     "errors": [],
     "lines": [
      {
+      "base_cents": 1299,
       "deal_id": "",
       "index": 0,
+      "mod_prices": [
+       {
+        "pick": 0,
+        "price_cents": 250
+       }
+      ],
       "mods": [
        "16\" X-Large",
        "Pepperoni"
@@ -2735,8 +2915,15 @@
       "unit_cents": 1549
      },
      {
+      "base_cents": 1299,
       "deal_id": "",
       "index": 1,
+      "mod_prices": [
+       {
+        "pick": 0,
+        "price_cents": 250
+       }
+      ],
       "mods": [
        "16\" X-Large",
        "Pepperoni"
@@ -2869,6 +3056,7 @@
     "errors": [],
     "lines": [
      {
+      "base_cents": 1099,
       "deal_id": "",
       "index": 0,
       "mods": [
@@ -2881,6 +3069,7 @@
       "unit_cents": 1099
      },
      {
+      "base_cents": 349,
       "deal_id": "",
       "index": 1,
       "mods": [
@@ -2893,6 +3082,7 @@
       "unit_cents": 349
      },
      {
+      "base_cents": 129,
       "deal_id": "",
       "index": 2,
       "mods": [],
@@ -3026,6 +3216,7 @@
     "errors": [],
     "lines": [
      {
+      "base_cents": 1249,
       "deal_id": "",
       "index": 0,
       "mods": [
@@ -3038,6 +3229,7 @@
       "unit_cents": 1249
      },
      {
+      "base_cents": 349,
       "deal_id": "",
       "index": 1,
       "mods": [
@@ -3050,6 +3242,7 @@
       "unit_cents": 349
      },
      {
+      "base_cents": 129,
       "deal_id": "",
       "index": 2,
       "mods": [],
@@ -3226,6 +3419,7 @@
     "errors": [],
     "lines": [
      {
+      "base_cents": 1099,
       "deal_id": "",
       "index": 0,
       "mods": [
@@ -3238,6 +3432,7 @@
       "unit_cents": 1099
      },
      {
+      "base_cents": 1099,
       "deal_id": "",
       "index": 1,
       "mods": [
@@ -3250,6 +3445,7 @@
       "unit_cents": 1099
      },
      {
+      "base_cents": 349,
       "deal_id": "",
       "index": 2,
       "mods": [
@@ -3262,6 +3458,7 @@
       "unit_cents": 349
      },
      {
+      "base_cents": 129,
       "deal_id": "",
       "index": 3,
       "mods": [],
@@ -3396,6 +3593,7 @@
     "errors": [],
     "lines": [
      {
+      "base_cents": 1099,
       "deal_id": "",
       "index": 0,
       "mods": [
@@ -3408,6 +3606,7 @@
       "unit_cents": 1099
      },
      {
+      "base_cents": 999,
       "deal_id": "",
       "index": 1,
       "mods": [
@@ -3420,6 +3619,7 @@
       "unit_cents": 999
      },
      {
+      "base_cents": 349,
       "deal_id": "",
       "index": 2,
       "mods": [
@@ -3554,6 +3754,7 @@
     "errors": [],
     "lines": [
      {
+      "base_cents": 1399,
       "deal_id": "",
       "index": 0,
       "mods": [
@@ -3566,6 +3767,7 @@
       "unit_cents": 1399
      },
      {
+      "base_cents": 349,
       "deal_id": "",
       "index": 1,
       "mods": [
@@ -3578,6 +3780,7 @@
       "unit_cents": 349
      },
      {
+      "base_cents": 129,
       "deal_id": "",
       "index": 2,
       "mods": [],
@@ -3710,6 +3913,7 @@
     "errors": [],
     "lines": [
      {
+      "base_cents": 1199,
       "deal_id": "",
       "index": 0,
       "mods": [
@@ -3722,6 +3926,7 @@
       "unit_cents": 1199
      },
      {
+      "base_cents": 349,
       "deal_id": "",
       "index": 1,
       "mods": [
@@ -3734,6 +3939,7 @@
       "unit_cents": 349
      },
      {
+      "base_cents": 129,
       "deal_id": "",
       "index": 2,
       "mods": [],
@@ -3905,6 +4111,7 @@
     "errors": [],
     "lines": [
      {
+      "base_cents": 1399,
       "deal_id": "",
       "index": 0,
       "mods": [
@@ -3917,6 +4124,7 @@
       "unit_cents": 1399
      },
      {
+      "base_cents": 349,
       "deal_id": "",
       "index": 1,
       "mods": [
@@ -3929,6 +4137,7 @@
       "unit_cents": 349
      },
      {
+      "base_cents": 129,
       "deal_id": "",
       "index": 2,
       "mods": [],
@@ -4075,8 +4284,23 @@
     "errors": [],
     "lines": [
      {
+      "base_cents": 999,
       "deal_id": "",
       "index": 0,
+      "mod_prices": [
+       {
+        "pick": 0,
+        "price_cents": 0
+       },
+       {
+        "pick": 1,
+        "price_cents": 0
+       },
+       {
+        "pick": 2,
+        "price_cents": 0
+       }
+      ],
       "mods": [
        "8 pc",
        "Regular",
@@ -4090,6 +4314,7 @@
       "unit_cents": 999
      },
      {
+      "base_cents": 349,
       "deal_id": "",
       "index": 1,
       "mods": [
@@ -4102,6 +4327,7 @@
       "unit_cents": 349
      },
      {
+      "base_cents": 129,
       "deal_id": "",
       "index": 2,
       "mods": [],
@@ -4234,6 +4460,7 @@
     "errors": [],
     "lines": [
      {
+      "base_cents": 1899,
       "deal_id": "",
       "index": 0,
       "mods": [
@@ -4246,6 +4473,7 @@
       "unit_cents": 1899
      },
      {
+      "base_cents": 449,
       "deal_id": "",
       "index": 1,
       "mods": [
@@ -4258,6 +4486,7 @@
       "unit_cents": 449
      },
      {
+      "base_cents": 365,
       "deal_id": "",
       "index": 2,
       "mods": [],

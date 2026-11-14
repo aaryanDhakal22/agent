@@ -71,14 +71,14 @@ func (r *OrderRepository) PlaceCounterOrder(ctx context.Context, in terminal.New
 		case !errors.Is(err, sql.ErrNoRows):
 			return err
 		}
-		if err := takeNumbersDay(ctx, q, r.numberingAt(in.Now)); err != nil {
+		start := in.CounterStart
+		if start <= 0 {
+			start = r.numberingAt(in.Now).Start
+		}
+		n, err := takeNumber(ctx, q, start) // the store's one sequence (contract 2.10ae)
+		if err != nil {
 			return err
 		}
-		after, err := q.TakeCounterNumber(ctx, in.CounterStart)
-		if err != nil {
-			return fmt.Errorf("counter number: %w", err)
-		}
-		n := after - 1
 		snap := in.Snapshot
 		snap.KitchenNumber = &n
 		// A call-center delivery outside the store's area, acknowledged

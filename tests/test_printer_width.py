@@ -91,7 +91,7 @@ def test_width_test_saves_the_width_and_slips_follow_it(admin, main_store, spawn
     wait_until(lambda: any(band("REROUTED FROM WINGS", 42) in j for j in fakes["Online"].jobs), timeout=15,
                what="the rerouted Wings ticket on Online")
     ticket = next(j for j in fakes["Online"].jobs if band("REROUTED FROM WINGS", 42) in j)
-    assert band("REDIRIGIDO DE WINGS", 42) in ticket and b"1  Hot Wings" in ticket
+    assert band("REDIRIGIDO DE WINGS", 42) in ticket and b"1   Hot Wings" in ticket
     assert b"-" * 42 in ticket and b"-" * 43 not in ticket, ticket
 
     # The line didn't wrap (9 = 64 characters): back to 80 mm.

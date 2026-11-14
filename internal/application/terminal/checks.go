@@ -59,6 +59,12 @@ type Check struct {
 	// RefundOwedCents (an online order edited at a terminal, §2.10aa): what
 	// its customer is owed (the manager refunds it outside); 0 = none.
 	RefundOwedCents int64 `json:"refund_owed_cents"`
+	// Batch B (contract 2.10ak): reopened = open again after a reopen from
+	// All checks (order.Status.OpenAgain), when it was last reopened, and
+	// when the kitchen marked it READY (the rows' marker; null = not ready).
+	Reopened   bool       `json:"reopened"`
+	ReopenedAt *time.Time `json:"reopened_at"`
+	ReadyAt    *time.Time `json:"ready_at"`
 
 	// What the filters look at besides the fields above.
 	staffs, devices map[string]bool
@@ -107,6 +113,33 @@ type ChecksPage struct {
 	Limit    int     `json:"limit"`
 	Offset   int     `json:"offset"`
 	BatchIDs []int64 `json:"batch_ids"`
+	// Summary is over every check the filters match, not just this page
+	// (contract 2.10ak: All checks' footer).
+	Summary ChecksSummary `json:"summary"`
+}
+
+// ChecksSummary is the overview's totals over every matching check: how many,
+// their totals and what is left to collect (voided / cancelled ones left out
+// of the money, counted in Voided).
+type ChecksSummary struct {
+	Count      int   `json:"count"`
+	TotalCents int64 `json:"total_cents"`
+	DueCents   int64 `json:"due_cents"`
+	Voided     int   `json:"voided"`
+}
+
+// summarize is the summary of checks.
+func summarize(all []Check) ChecksSummary {
+	sum := ChecksSummary{Count: len(all)}
+	for _, c := range all {
+		if c.Voided || c.State == string(order.StateCancelled) {
+			sum.Voided++
+			continue
+		}
+		sum.TotalCents += c.TotalCents
+		sum.DueCents += c.CashDueCents
+	}
+	return sum
 }
 
 // CheckDetail is one order in full.
@@ -341,6 +374,15 @@ func (s *Service) checksOf(ctx context.Context, batchID int64, staffNames map[st
 			c.DriverID, c.DriverName = so.Status.PoolDriverID, driverNames[so.Status.PoolDriverID]
 		}
 		c.PaymentsCount = len(pays[snap.ID])
+		c.Reopened = so.Status.OpenAgain() // batch B (2.10ak)
+		if t := so.Status.ReopenedAt; t != nil {
+			u := t.UTC()
+			c.ReopenedAt = &u
+		}
+		if t := so.Status.ReadyAt; t != nil && so.Status.State == order.StateReady {
+			u := t.UTC()
+			c.ReadyAt = &u
+		}
 		if t := order.PromisedAt(so, 0); !t.IsZero() && (so.Status.EstimatedReadyAt != nil || snap.Fulfillment.PromisedAt != nil) {
 			u := t.UTC()
 			c.PromisedAt = &u
@@ -473,6 +515,7 @@ func (s *Service) Checks(ctx context.Context, a Actor, q ChecksQuery) (*ChecksPa
 	}
 	sort.SliceStable(all, func(i, j int) bool { return all[i].PlacedAt.After(all[j].PlacedAt) })
 	page.Total = len(all)
+	page.Summary = summarize(all)
 	if q.Offset < len(all) {
 		page.Checks = all[q.Offset:min(len(all), q.Offset+q.Limit)]
 	}

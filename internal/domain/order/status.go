@@ -85,6 +85,10 @@ type Status struct {
 	ScheduledLeadMinutes *int64     `json:"scheduled_lead_minutes,omitempty"`
 	RingAt               *time.Time `json:"ring_at,omitempty"`
 	Rerung               bool       `json:"rerung,omitempty"`
+	// NumberPlaceholder (batch E, contract 2.10ae): KitchenNumber is a future
+	// order's random 5-digit placeholder; it takes the next number of the
+	// store's sequence when it is placed.
+	NumberPlaceholder bool `json:"number_placeholder,omitempty"`
 
 	// AutoAccepted (2.2.0): accepted by auto-accept, not by staff (a future
 	// order auto-accepted at its re-ring too). The tablet shows a banner.
@@ -153,6 +157,25 @@ type Status struct {
 	// carried past its batch - still on the Pickup list and payable until
 	// settled.
 	Carried bool `json:"carried,omitempty"`
+	// ReopenedAt (00045, contract 2.10ak, batch B): when a cashier last
+	// reopened the check from All checks; OpenAgain says whether it still is.
+	ReopenedAt *time.Time `json:"reopened_at,omitempty"`
+}
+
+// OpenAgain: the check was reopened (contract 2.10ak) and nothing settled it
+// since - no payment brought it to paid, it wasn't picked up, sent out or
+// delivered after the reopen. A pickup / counter check open again is on the
+// Pickup list (paid or not); a delivery shows under Dispatch's New.
+func (st Status) OpenAgain() bool {
+	if st.ReopenedAt == nil {
+		return false
+	}
+	for _, t := range []*time.Time{st.PaidAt, st.FinishedAt, st.OutAt, st.DeliveredAt} {
+		if t != nil && t.After(*st.ReopenedAt) {
+			return false
+		}
+	}
+	return true
 }
 
 // MarkedBy is who did something on the floor: a paired tablet (kind

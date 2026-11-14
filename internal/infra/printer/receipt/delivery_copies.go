@@ -363,8 +363,8 @@ func deliveryItems(p *escw, snap order.Snapshot, voided bool) {
 				amt = moneyC(m.unit * int64(max(m.qty, 1)))
 			}
 			label := m.name
-			if m.qty > 1 {
-				label = fmt.Sprintf("%dx %s", m.qty, m.name)
+			if n := perItem(m.qty, qty); n > 1 { // per item, never folded (#20)
+				label = fmt.Sprintf("%dx %s", n, m.name)
 			}
 			bold := p.boldWords.Matches(m.name)
 			if bold {

@@ -374,6 +374,7 @@
   "errors": [],
   "lines": [
    {
+    "base_cents": 1599,
     "deal_id": "",
     "index": 0,
     "mods": [
@@ -387,6 +388,7 @@
     "unit_cents": 1599
    },
    {
+    "base_cents": 199,
     "deal_id": "",
     "index": 1,
     "mods": [],

@@ -30,14 +30,16 @@ ORDER BY arrival_date ASC;
 
 -- name: ClaimAccept :execrows
 -- Claims an arrived order for acceptance (0 rows = missing or already taken).
--- The kitchen number is kept across a revert + re-accept.
+-- The kitchen number is kept across a revert + re-accept; a future order's
+-- placeholder is replaced by the number taken (contract 2.10ae).
 UPDATE orders
 SET state              = 'accepted',
     printed_date       = COALESCE(printed_date, sqlc.arg(now)),
     accepted_at        = sqlc.arg(now),
     prep_minutes       = sqlc.arg(prep_minutes),
     estimated_ready_at = sqlc.arg(estimated_ready_at),
-    kitchen_number     = COALESCE(kitchen_number, sqlc.arg(kitchen_number)),
+    kitchen_number     = CASE WHEN number_placeholder = 1 OR kitchen_number IS NULL THEN sqlc.arg(kitchen_number) ELSE kitchen_number END,
+    number_placeholder = 0,
     accept_pending     = 1,
     auto_accepted      = sqlc.arg(auto_accepted)
 WHERE id = sqlc.arg(id) AND state = 'arrived';
@@ -553,37 +555,27 @@ WHERE id = 1;
 -- name: GetFloorSettings :one
 SELECT kitchen_next, last_prep_minutes FROM settings WHERE id = 1;
 
--- name: NextKitchenNumber :one
--- Allocates a kitchen number: kitchen_next (or start when it is 0, i.e. after
--- the daily restart) and moves it on. Returns the post-increment value
--- (caller subtracts 1).
-UPDATE settings
-SET kitchen_next = CASE WHEN kitchen_next > 0 THEN kitchen_next + 1 ELSE CAST(sqlc.arg(start) AS INTEGER) + 1 END
-WHERE id = 1
-RETURNING kitchen_next;
+-- E: ticket numbers (contract 2.10ae, 2026-11-14): one sequence in
+-- counter_next (TakeCounterNumber), restarted by every Close batch.
 
--- name: TakeNumbersDay :exec
--- Before a ticket number is taken (kitchen or counter, contract 2.10ae): on a
--- new business day after a close, both sequences start again (0 = start);
--- the day of this number is kept and the close is used up. SQLite evaluates
--- every SET expression on the old row.
-UPDATE settings
-SET kitchen_next   = CASE WHEN numbers_closed = 1 AND numbers_day <> CAST(sqlc.arg(day) AS TEXT) THEN 0 ELSE kitchen_next END,
-    counter_next   = CASE WHEN numbers_closed = 1 AND numbers_day <> CAST(sqlc.arg(day) AS TEXT) THEN 0 ELSE counter_next END,
-    numbers_closed = 0,
-    numbers_day    = CAST(sqlc.arg(day) AS TEXT)
-WHERE id = 1;
+-- name: RestartNumbers :exec
+-- Close batch: the next order's number is the start again (0 = start).
+UPDATE settings SET counter_next = 0, kitchen_next = 0 WHERE id = 1;
 
--- name: MarkNumbersClosed :exec
--- Close batch: the numbers restart with the first number of a new business day.
-UPDATE settings SET numbers_closed = 1 WHERE id = 1;
+-- name: PlaceholderHeld :one
+-- A future order's placeholder is held by another open future order.
+SELECT COUNT(*) FROM orders
+WHERE number_placeholder = 1 AND kitchen_number = sqlc.arg(number)
+  AND state IN ('arrived', 'scheduled');
 
--- name: SetNumbersState :exec
--- A restore (a blank Pi continuing the shift): the day of the last number + a close since.
-UPDATE settings SET numbers_day = ?, numbers_closed = ? WHERE id = 1;
+-- name: SetPlaceholderNumber :execrows
+-- Gives a future order its placeholder (only while it has no number).
+UPDATE orders SET kitchen_number = sqlc.arg(number), number_placeholder = 1
+WHERE id = sqlc.arg(id) AND kitchen_number IS NULL;
 
--- name: GetNumbersState :one
-SELECT kitchen_next, counter_next, numbers_day, numbers_closed FROM settings WHERE id = 1;
+-- name: SetOrderPlaceholderFlag :exec
+-- A restore: the order's number is a placeholder.
+UPDATE orders SET number_placeholder = sqlc.arg(placeholder) WHERE id = sqlc.arg(id);
 
 -- name: SetLastPrepMinutes :exec
 UPDATE settings SET last_prep_minutes = ? WHERE id = 1;
@@ -979,8 +971,9 @@ ON CONFLICT (kind) DO UPDATE SET version = excluded.version, etag = excluded.eta
     body = excluded.body, fetched_at = excluded.fetched_at;
 
 -- name: TakeCounterNumber :one
--- The counter sequence: hands out counter_next (or start when it is 0, i.e.
--- after Close batch) and moves it on. Returns the number AFTER the one taken.
+-- The store's one ticket-number sequence (every order, contract 2.10ae):
+-- hands out counter_next (or start when it is 0, i.e. after Close batch) and
+-- moves it on. Returns the number AFTER the one taken.
 UPDATE settings
 SET counter_next = CASE WHEN counter_next > 0 THEN counter_next + 1 ELSE CAST(sqlc.arg(start) AS INTEGER) + 1 END
 WHERE id = 1
@@ -1375,3 +1368,15 @@ SELECT terminal_app_release FROM settings WHERE id = 1;
 
 -- name: SetTerminalAppRelease :exec
 UPDATE settings SET terminal_app_release = ? WHERE id = 1;
+
+-- B: reopen a check (00045, contract 2.10ak) ----------------------------------
+
+-- name: SetOrderReopened :execrows
+-- A cashier reopened the check from All checks: open again until something
+-- settles it (paid_at / finished_at / out_at / delivered_at after this).
+UPDATE orders SET reopened_at = sqlc.arg(reopened_at) WHERE id = sqlc.arg(id);
+
+-- name: SetOrderRefinished :execrows
+-- A reopened check picked up again (contract 2.10ak): finished_at moves on.
+UPDATE orders SET finished_at = sqlc.arg(finished_at), finished_by = sqlc.arg(finished_by)
+WHERE id = sqlc.arg(id) AND state = 'ready';

@@ -83,6 +83,11 @@ CREATE TABLE orders (
     request_hash            text    NOT NULL DEFAULT '',
     carried                 boolean NOT NULL DEFAULT false,
     kitchen_pending         boolean NOT NULL DEFAULT false,
+    -- B: 00045_reopen: when a cashier last reopened the check (All checks).
+    reopened_at             text,
+    -- E: 00047_one_sequence: kitchen_number holds a future order's 5-digit
+    -- placeholder until it is placed (contract 2.10ae).
+    number_placeholder      boolean NOT NULL DEFAULT false,
     CHECK (state IN ('arrived', 'scheduled', 'accepted', 'ready', 'on_delivery', 'delivered', 'cancelled'))
 );
 CREATE INDEX idx_orders_arrival_date ON orders (arrival_date DESC);
@@ -264,10 +269,7 @@ CREATE TABLE settings (
     -- '' = 1024 on) + each device's last setup result (JSON {device id: result}).
     admin_pair                text    NOT NULL DEFAULT '',
     device_setups             text    NOT NULL DEFAULT '',
-    -- 00044_numbers_day: the business day of the last ticket number taken
-    -- ('' = none) + a close since then (the numbers restart once a day).
-    numbers_day               text    NOT NULL DEFAULT '',
-    numbers_closed            integer NOT NULL DEFAULT 0,
+    -- (00044_numbers_day's numbers_day / numbers_closed: dropped by E's 00047.)
     CHECK (id = 1)
 );
 
@@ -580,3 +582,21 @@ CREATE UNIQUE INDEX idx_phone_charges_key ON phone_charges (client_key);
 CREATE INDEX idx_phone_charges_phone ON phone_charges (phone_id, status);
 CREATE INDEX idx_phone_charges_order ON phone_charges (order_id);
 CREATE INDEX idx_phone_charges_order_key ON phone_charges (order_key) WHERE order_key <> '';
+
+-- F: 00046_driver_tips - card tips the driver types before Close batch
+-- (contract/agent.md 2.10am).
+CREATE TABLE driver_tips (
+    order_id          text    PRIMARY KEY,
+    batch_id          integer NOT NULL,
+    driver_id         text    NOT NULL DEFAULT '',
+    state             text    NOT NULL,
+    tip_cents         integer NOT NULL DEFAULT 0,
+    applied_cents     integer NOT NULL DEFAULT 0,
+    set_at            text    NOT NULL,
+    set_by            text    NOT NULL DEFAULT '',
+    applied_at        text,
+    square_state      text    NOT NULL DEFAULT '',
+    square_error      text    NOT NULL DEFAULT '',
+    square_payment_id text    NOT NULL DEFAULT ''
+);
+CREATE INDEX idx_driver_tips_batch ON driver_tips (batch_id);

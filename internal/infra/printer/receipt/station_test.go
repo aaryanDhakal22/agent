@@ -58,9 +58,9 @@ func TestBuildStation_Content(t *testing.T) {
 		// Printed on a stand-in: the reroute bands, English then Spanish, reverse + double size (2026-11-12).
 		cmdInvertOn + pad("REROUTED FROM OVEN", defaultLayout.big()) + cmdInvertOff,
 		cmdInvertOn + pad("REDIRIGIDO DE OVEN", defaultLayout.big()) + cmdInvertOff,
-		"2  Pepperoni Pizza\n   (Large)\n", H8 + "- Extra cheese\n", H8 + "Note: well done\n",
-		"1  Mystery\n", "** UNMATCHED **",
-		"Also on this order:\n   1 Fries\n",
+		"2   Pepperoni Pizza\n    (Large)\n", H8 + "- Extra cheese\n", H8 + "Note: well done\n",
+		"1   Mystery\n", "** UNMATCHED **",
+		"ITEMS TO OTHER PRINTER\n - 1   Fries\n",
 		"NOTE: Ring the bell twice\n", // the order's note, under the header (the owner, 2026-11-12)
 	} {
 		if !bytes.Contains(got, []byte(want)) {
@@ -89,7 +89,8 @@ func TestBuildStation_Content(t *testing.T) {
 
 func TestBuildStation_NoPrices(t *testing.T) {
 	snap, tk := stationFixture()
-	tk.Mine[0].Children = []order.LineItem{{Name: "Extra cheese", Quantity: 1, UnitPrice: 200}, {Name: "Ranch", Quantity: 2}}
+	// The line is 2 pizzas: a child at 4 = twice on each (perItem).
+	tk.Mine[0].Children = []order.LineItem{{Name: "Extra cheese", Quantity: 1, UnitPrice: 200}, {Name: "Ranch", Quantity: 4}}
 	got := string(BuildStation(snap, tk))
 	if !strings.Contains(got, H8+"- Extra cheese\n") || !strings.Contains(got, H8+"- (x2) Ranch\n") || strings.Contains(got, "$") {
 		t.Fatalf("modifiers without prices: %q", got)
@@ -240,10 +241,10 @@ func TestBuildStation_HidesServingSize(t *testing.T) {
 	out := string(BuildStation(snap, printer.Ticket{
 		Kind: printer.TicketStation, TargetID: "p1", Station: "Kitchen", Mine: snap.Items[:1], Others: snap.Items[1:],
 	}))
-	if !strings.Contains(out, "1  Turkey Club\n") || strings.Contains(strings.ToLower(out), "serving") {
+	if !strings.Contains(out, "1   Turkey Club\n") || strings.Contains(strings.ToLower(out), "serving") {
 		t.Errorf("single-size item should print without a size:\n%q", out)
 	}
-	if !strings.Contains(out, "1 Wings (6 Piece)") {
+	if !strings.Contains(out, " - 1   6 pc Wings\n") { // count first (2026-11-14, #4)
 		t.Errorf("a fixed portion keeps its size:\n%q", out)
 	}
 }
@@ -285,13 +286,13 @@ func TestBuildStation_Void(t *testing.T) {
 	tk.Void, tk.Others, tk.ReroutedFrom = true, nil, ""
 	tk.Mine = tk.Mine[:1]
 	out := string(BuildStation(snap, tk))
-	for _, want := range []string{"REMOVE / QUITAR", "(VOID) " + strikeImage("2  Pepperoni Pizza (Large)") + "\n",
+	for _, want := range []string{"REMOVE / QUITAR", "(VOID) " + strikeImage("2   Pepperoni Pizza (Large)") + "\n",
 		"          " + strikeImage("- Extra cheese") + "\n"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("void ticket lacks %q:\n%q", want, out)
 		}
 	}
-	if strings.Contains(out, "Also on this order") || strings.Contains(out, "ADD / AGREGAR") {
+	if strings.Contains(out, otherPrintersHead) || strings.Contains(out, "ADD / AGREGAR") {
 		t.Fatal("void ticket lists other items or adds")
 	}
 }
@@ -311,10 +312,10 @@ func TestBuildStation_AddOn(t *testing.T) {
 	tk.AddOn, tk.Others, tk.ReroutedFrom = true, nil, ""
 	tk.Mine = tk.Mine[:1]
 	out := string(BuildStation(snap, tk))
-	if !strings.Contains(out, "ADD / AGREGAR") || !strings.Contains(out, "2  Pepperoni Pizza\n") {
+	if !strings.Contains(out, "ADD / AGREGAR") || !strings.Contains(out, "2   Pepperoni Pizza\n") {
 		t.Fatalf("add-on ticket:\n%q", out)
 	}
-	if strings.Contains(out, "Also on this order") || strings.Contains(out, "VOID") {
+	if strings.Contains(out, otherPrintersHead) || strings.Contains(out, "VOID") {
 		t.Fatal("add-on ticket lists other items or says VOID")
 	}
 }

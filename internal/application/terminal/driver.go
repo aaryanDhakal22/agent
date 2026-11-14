@@ -69,6 +69,7 @@ type DriverLinks interface {
 type driverView struct {
 	floor  Floor
 	links  DriverLinks
+	tips   DriverTipRepo // batch F: the typed card tips (driver_tips.go); nil = none
 	linkMu sync.Mutex
 	// kick wakes RunDriverSync (a new terminal config is in use).
 	kick chan struct{}
@@ -394,13 +395,20 @@ type AvailableOrder struct {
 	Payment      string     `json:"payment"`
 	CashDueCents int64      `json:"cash_due_cents"`
 	TotalCents   int64      `json:"total_cents"`
+	// Old (#27, contract 2.10am): still not delivered past the store's
+	// driver_old_delivery_minutes - listed for every driver, whoever has it
+	// (DriverName, "" = nobody); a claim makes it his and delivered.
+	Old        bool   `json:"old"`
+	DriverName string `json:"driver_name"`
 }
 
 // claimRule: an order may be claimed once now is past its promised time
 // (order.PromisedAt; the owner, 2026-11-12); one with none counts the Pi's
 // default delivery minutes from when it went to the kitchen.
 func (s *Service) claimRule(now time.Time) order.ClaimRule {
-	return order.ClaimRule{Now: now, Fallback: time.Duration(s.orders.PrepMinutesFor("delivery")) * time.Minute}
+	cfg, _ := s.store.Config()
+	return order.ClaimRule{Now: now, Fallback: time.Duration(s.orders.PrepMinutesFor("delivery")) * time.Minute,
+		OldAfter: cfg.DriverOldDelivery()} // #27: old undelivered deliveries for every driver
 }
 
 // Available is GET /api/terminal/driver/available: the Dispatch list -
@@ -424,7 +432,7 @@ func (s *Service) Available(ctx context.Context, a Actor) ([]AvailableOrder, err
 	rule := s.claimRule(now)
 	var list []order.StoredOrder
 	for _, so := range append(open, done...) {
-		if order.ClaimableLate(so, so.Status.BatchID, rule) {
+		if order.Claimable(so, so.Status.BatchID, rule) {
 			list = append(list, so)
 		}
 	}
@@ -440,7 +448,8 @@ func (s *Service) Available(ctx context.Context, a Actor) ([]AvailableOrder, err
 		out = append(out, AvailableOrder{OrderID: so.Order.ID, Number: so.Number(), State: string(so.Status.State), Street: street,
 			Address: addr, Since: since, WaitingMinutes: int64(now.Sub(since) / time.Minute), PromisedAt: promised,
 			LateMinutes: int64(now.Sub(promised) / time.Minute), ReadyAt: so.Status.ReadyAt,
-			Payment: paymentOf(so), CashDueCents: so.Status.CashDueCents, TotalCents: so.Order.Money.Total})
+			Payment: paymentOf(so), CashDueCents: so.Status.CashDueCents, TotalCents: so.Order.Money.Total,
+			Old: !order.ClaimableLate(so, so.Status.BatchID, rule), DriverName: so.Status.DriverName})
 	}
 	return out, nil
 }
@@ -461,8 +470,12 @@ type DriverTicket struct {
 	TotalCents    int64          `json:"total_cents"`
 	TipCents      int64          `json:"tip_cents"`
 	AddedTipCents int64          `json:"added_tip_cents"`
-	TipKind       string         `json:"tip_kind"` // card = POST …/tip raises the card hold; none = no tip taken here (cash / counter)
+	TipKind       string         `json:"tip_kind"` // card = a tippable card delivery (POST …/tip saves a typed tip, 2.10am); none = no tip taken here
 	TipLocked     bool           `json:"tip_locked"`
+	// Batch F (contract 2.10am): the typed tip's state (none | tipped |
+	// no_tip; "" = not a tippable card delivery) and amount (tipped only).
+	TipState      string `json:"tip_state,omitempty"`
+	TypedTipCents int64  `json:"typed_tip_cents"`
 	RunSeq        *int64         `json:"run_seq"`
 	OutAt         *time.Time     `json:"out_at"`
 	DeliveredAt   *time.Time     `json:"delivered_at"`
@@ -482,9 +495,9 @@ func ticketOf(so order.StoredOrder) DriverTicket {
 		CashDueCents: so.Status.CashDueCents, TotalCents: so.Order.Money.Total, AddedTipCents: so.Status.AddedTipCents,
 		TipLocked: so.Status.TipLocked, RunSeq: so.Status.RunSeq, OutAt: so.Status.OutAt,
 		DeliveredAt: so.Status.DeliveredAt, TipKind: "none"}
-	t.TipCents = so.Order.Money.Tip + so.Status.AddedTipCents
-	if cardChannel(so) {
-		t.TipKind = "card"
+	t.TipCents = so.Order.Money.Tip + so.Status.AddedTipCents + max(so.Status.TipCents, 0)
+	if so.Status.DriverID != "" && order.CardTippable(so) {
+		t.TipKind, t.TipState = "card", order.TipStateNone
 	}
 	if g := so.Geo; g != nil && g.Lat != nil && g.Lng != nil {
 		t.Geo = &DriverGeo{Lat: *g.Lat, Lng: *g.Lng, Quality: g.Quality}
@@ -521,9 +534,10 @@ func (s *Service) mine(ctx context.Context, d *order.Driver) (*MineView, error) 
 			out = append(out, so)
 		}
 	}
+	tips := s.typedTips(ctx)
 	sort.SliceStable(out, func(i, j int) bool { return seqOf(out[i]) < seqOf(out[j]) })
 	for _, so := range out {
-		v.Out = append(v.Out, ticketOf(so))
+		v.Out = append(v.Out, ticketWith(so, tips))
 	}
 	batch, err := s.drv.floor.ListByBatch(ctx, 0, 0, 2000)
 	if err != nil {
@@ -531,7 +545,7 @@ func (s *Service) mine(ctx context.Context, d *order.Driver) (*MineView, error) 
 	}
 	for _, so := range batch { // newest first
 		if so.Status.State == order.StateDelivered && so.Status.DriverID == d.ID {
-			v.Delivered = append(v.Delivered, ticketOf(so))
+			v.Delivered = append(v.Delivered, ticketWith(so, tips))
 		}
 	}
 	return v, nil
@@ -636,40 +650,32 @@ type TipIn struct {
 
 // TipResult is the order with its tip and how it was taken.
 type TipResult struct {
-	Ticket DriverTicket `json:"ticket"`
-	Kind   string       `json:"kind"`
+	Ticket   DriverTicket `json:"ticket"`
+	Kind     string       `json:"kind"`
+	TipState string       `json:"tip_state"`
 }
 
-// Tip sets the whole tip added after the order (absolute) on one of his
-// orders: a website card order raises the card hold (ADD TIP's rules: 409
-// tip_locked once charged). A cash / counter order takes no tip here: cash
-// tips are kept out of the system (the owner, 2026-11-12: "keep cash tips out
-// the entire system"; the door tip was retired) → ErrNotTippable.
+// Tip saves the card tip he typed on one of his card deliveries (contract
+// 2.10am, batch F): saved, on his report at once, editable until Close
+// batch, put on the card at the press of Close batch (it no longer raises a
+// website card hold at once). 0 = No tip. A cash / vendor order takes no tip
+// here: cash tips are kept out of the system (the owner, 2026-11-12) ->
+// ErrNotTippable.
 func (s *Service) Tip(ctx context.Context, a Actor, id string, in TipIn) (*TipResult, error) {
-	st, d, err := s.driverOf(ctx, a)
-	if err != nil {
-		return nil, err
+	if in.TipCents == nil || *in.TipCents < 0 || *in.TipCents > order.MaxTypedTipCents {
+		return nil, badRequest(fmt.Sprintf("tip_cents is 0-%d", order.MaxTypedTipCents))
 	}
-	if in.TipCents == nil || *in.TipCents < 0 || *in.TipCents > order.MaxAddedTipCents {
-		return nil, badRequest(fmt.Sprintf("tip_cents is 0-%d", order.MaxAddedTipCents))
+	state := order.TipStateTipped
+	if *in.TipCents == 0 {
+		state = order.TipStateNoTip
 	}
-	cur, err := s.his(ctx, d, id)
-	if err != nil {
-		return nil, err
-	}
-	if !cardChannel(*cur) {
-		return nil, fmt.Errorf("%w: a cash tip at the door isn't recorded (the driver keeps it); only a website card order takes a tip here",
-			order.ErrNotTippable)
-	}
-	kind, prev := "card", cur.Status.AddedTipCents
-	so, err := s.drv.floor.SetTip(ctx, id, *in.TipCents)
-	if err != nil {
-		return nil, err
-	}
-	s.journal(ctx, terminal.Entry{StaffID: st.ID, DeviceID: a.DeviceID, Action: terminal.ActionDriverTip, OrderID: id,
-		Detail: detail(map[string]any{"driver_id": d.ID, "tip_cents": *in.TipCents, "prev_cents": prev, "kind": kind})})
-	s.publish(EventDriverTip, map[string]any{"staff_id": st.ID, "driver_id": d.ID, "order_id": id, "tip_cents": *in.TipCents, "kind": kind})
-	return &TipResult{Ticket: ticketOf(*so), Kind: kind}, nil
+	return s.driverSetTip(ctx, a, id, state, *in.TipCents)
+}
+
+// NoTip is POST /api/terminal/driver/orders/{id}/no-tip: the customer left
+// no tip on the card (it leaves his tip pile).
+func (s *Service) NoTip(ctx context.Context, a Actor, id string) (*TipResult, error) {
+	return s.driverSetTip(ctx, a, id, order.TipStateNoTip, 0)
 }
 
 // CloseResult is POST /api/terminal/driver/orders/{id}/close's answer.

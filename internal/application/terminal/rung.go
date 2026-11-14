@@ -337,6 +337,7 @@ func priceRung(menu *terminal.CounterMenu, tz *time.Location, typ string, cur *o
 	}
 	ctx := counterCtx(menu, tz, maxRepeat)
 	rungs := rungsOf(in, cur, ctx)
+	modChanges := modPriceChanges(ctx, in.Cart) // the cashier's own mod prices (orderlines.go)
 	idx := make([]int, 0, len(rungs))
 	for i := range rungs {
 		idx = append(idx, i)
@@ -354,7 +355,7 @@ func priceRung(menu *terminal.CounterMenu, tz *time.Location, typ string, cur *o
 		}
 		opts := append([]pricing.Pick(nil), l.Options...)
 		for k := range opts {
-			if c := r.picks[k]; c >= 0 {
+			if c := r.picks[k]; c >= 0 && opts[k].PriceCents == nil { // the terminal's own price wins (§2.10an)
 				opts[k].PriceCents = &c
 			}
 		}
@@ -431,6 +432,10 @@ func priceRung(menu *terminal.CounterMenu, tz *time.Location, typ string, cur *o
 		}
 	}
 	p.changes, p.gone, p.kept = changes, gone, kept
+	p.modChanges = modChanges
+	if is := noteIssues(in.Cart); len(is) > 0 { // a priced note must follow its item (§2.10an)
+		p.quote.Errors = append(p.quote.Errors, is...)
+	}
 	return p, implicit, nil
 }
 

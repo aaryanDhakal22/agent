@@ -21,7 +21,8 @@ type Querier interface {
 	// 2.4.3 CANCEL on a waiting future order (never accepted, nothing cooked).
 	CancelWaiting(ctx context.Context, arg CancelWaitingParams) (int64, error)
 	// Claims an arrived order for acceptance (0 rows = missing or already taken).
-	// The kitchen number is kept across a revert + re-accept.
+	// The kitchen number is kept across a revert + re-accept; a future order's
+	// placeholder is replaced by the number taken (contract 2.10ae).
 	ClaimAccept(ctx context.Context, arg ClaimAcceptParams) (int64, error)
 	ClearAcceptPending(ctx context.Context, id string) error
 	ClearOrderPool(ctx context.Context, id string) error
@@ -128,7 +129,6 @@ type Querier interface {
 	GetLatestAutoPlan(ctx context.Context) (GetLatestAutoPlanRow, error)
 	GetLinkInfo(ctx context.Context) (GetLinkInfoRow, error)
 	GetMapFile(ctx context.Context) (string, error)
-	GetNumbersState(ctx context.Context) (GetNumbersStateRow, error)
 	// Batches -------------------------------------------------------------------
 	GetOpenBatch(ctx context.Context) (Batch, error)
 	GetOpenDrawerByDevice(ctx context.Context, deviceID string) (DrawerSession, error)
@@ -282,8 +282,6 @@ type Querier interface {
 	// cancelled. Either way no driver, no pool, no out / delivered time, so it
 	// counts on no driver report.
 	MarkNotDelivered(ctx context.Context, arg MarkNotDeliveredParams) (int64, error)
-	// Close batch: the numbers restart with the first number of a new business day.
-	MarkNumbersClosed(ctx context.Context) error
 	// Leaving with a driver empties the order's pool slot (and ends a came-back
 	// hold: only the POS mirror sends a came-back order out).
 	MarkOnDelivery(ctx context.Context, arg MarkOnDeliveryParams) (int64, error)
@@ -295,10 +293,6 @@ type Querier interface {
 	// Close batch: future orders wait in the next batch.
 	MoveScheduledToBatch(ctx context.Context, arg MoveScheduledToBatchParams) error
 	NextDriverPosition(ctx context.Context) (int64, error)
-	// Allocates a kitchen number: kitchen_next (or start when it is 0, i.e. after
-	// the daily restart) and moves it on. Returns the post-increment value
-	// (caller subtracts 1).
-	NextKitchenNumber(ctx context.Context, start int64) (int64, error)
 	// A stop joining a run that is out goes last.
 	NextRunSeq(ctx context.Context, driverID sql.NullString) (int64, error)
 	// CM-9: the oldest unsynced, unparked event of each type.
@@ -307,6 +301,8 @@ type Querier interface {
 	// Driver shifts ----------------------------------------------------------------
 	OpenShift(ctx context.Context, arg OpenShiftParams) error
 	ParkFloorEvent(ctx context.Context, arg ParkFloorEventParams) (int64, error)
+	// A future order's placeholder is held by another open future order.
+	PlaceholderHeld(ctx context.Context, number sql.NullInt64) (int64, error)
 	// 2.4.3 MAKE NOW: a waiting future order leaves the future (made_now hides
 	// its promised_at) and waits as a plain arrived order for the accept that
 	// follows at once.
@@ -331,6 +327,10 @@ type Querier interface {
 	RenamePairedDevice(ctx context.Context, arg RenamePairedDeviceParams) (int64, error)
 	// Close batch: drivers out on a run are back in the queue (clocked-out stay off).
 	ResetDriversAvailable(ctx context.Context) error
+	// E: ticket numbers (contract 2.10ae, 2026-11-14): one sequence in
+	// counter_next (TakeCounterNumber), restarted by every Close batch.
+	// Close batch: the next order's number is the start again (0 = start).
+	RestartNumbers(ctx context.Context) error
 	RestoreDriver(ctx context.Context, arg RestoreDriverParams) error
 	RestoreOrder(ctx context.Context, arg RestoreOrderParams) error
 	RestoreShift(ctx context.Context, arg RestoreShiftParams) error
@@ -384,8 +384,6 @@ type Querier interface {
 	SetLinkInfo(ctx context.Context, arg SetLinkInfoParams) error
 	SetManagerPasswordHash(ctx context.Context, uiPasswordHash string) error
 	SetMapFile(ctx context.Context, mapFile string) error
-	// A restore (a blank Pi continuing the shift): the day of the last number + a close since.
-	SetNumbersState(ctx context.Context, arg SetNumbersStateParams) error
 	SetOrderCarried(ctx context.Context, arg SetOrderCarriedParams) error
 	// 2.4.0 Drivers tab: a delivered or out delivery moves to another driver
 	// (driver_id NULL = Unassigned) with its run stop number and the
@@ -396,14 +394,24 @@ type Querier interface {
 	// check ('pos') or an online pickup sat ready for the store's finish time
 	// ('auto'). It stays ready; it no longer counts as open.
 	SetOrderFinished(ctx context.Context, arg SetOrderFinishedParams) (int64, error)
+	// A restore: the order's number is a placeholder.
+	SetOrderPlaceholderFlag(ctx context.Context, arg SetOrderPlaceholderFlagParams) error
 	// Driver pools (2.0.9) ----------------------------------------------------------
 	// Puts a delivery order (accepted or ready) into a driver's pool, or back to
 	// unassigned with a NULL driver. 0 rows = not a pool-able order.
 	// The order's stop number is cleared; the service renumbers the pools.
 	SetOrderPool(ctx context.Context, arg SetOrderPoolParams) (int64, error)
+	// A reopened check picked up again (contract 2.10ak): finished_at moves on.
+	SetOrderRefinished(ctx context.Context, arg SetOrderRefinishedParams) (int64, error)
+	// B: reopen a check (00045, contract 2.10ak) ----------------------------------
+	// A cashier reopened the check from All checks: open again until something
+	// settles it (paid_at / finished_at / out_at / delivered_at after this).
+	SetOrderReopened(ctx context.Context, arg SetOrderReopenedParams) (int64, error)
 	SetOrderSnapshot(ctx context.Context, arg SetOrderSnapshotParams) error
 	SetPairedDeviceAppVersion(ctx context.Context, arg SetPairedDeviceAppVersionParams) error
 	SetPinThrottle(ctx context.Context, pinThrottle string) error
+	// Gives a future order its placeholder (only while it has no number).
+	SetPlaceholderNumber(ctx context.Context, arg SetPlaceholderNumberParams) (int64, error)
 	// Renumbers one pooled order (0 rows = no longer in that pool, or unchanged).
 	SetPoolSeq(ctx context.Context, arg SetPoolSeqParams) (int64, error)
 	SetPrintRouting(ctx context.Context, printRouting string) error
@@ -429,14 +437,10 @@ type Querier interface {
 	SetZReportFlagged(ctx context.Context, batchID int64) error
 	SumDrawerCash(ctx context.Context, drawerID string) (SumDrawerCashRow, error)
 	SumDrawerMovements(ctx context.Context, drawerID string) (SumDrawerMovementsRow, error)
-	// The counter sequence: hands out counter_next (or start when it is 0, i.e.
-	// after Close batch) and moves it on. Returns the number AFTER the one taken.
+	// The store's one ticket-number sequence (every order, contract 2.10ae):
+	// hands out counter_next (or start when it is 0, i.e. after Close batch) and
+	// moves it on. Returns the number AFTER the one taken.
 	TakeCounterNumber(ctx context.Context, start int64) (int64, error)
-	// Before a ticket number is taken (kitchen or counter, contract 2.10ae): on a
-	// new business day after a close, both sequences start again (0 = start);
-	// the day of this number is kept and the close is used up. SQLite evaluates
-	// every SET expression on the old row.
-	TakeNumbersDay(ctx context.Context, day string) error
 	TouchCustomerOrder(ctx context.Context, arg TouchCustomerOrderParams) error
 	TouchPairedDevice(ctx context.Context, arg TouchPairedDeviceParams) error
 	// 2.4.0 Back to deliveries: an Unassigned delivery goes back to the state it
