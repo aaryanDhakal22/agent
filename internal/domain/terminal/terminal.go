@@ -741,6 +741,9 @@ func (p Payment) Wire() map[string]any {
 	if p.Brand != "" { // 2.5.5 (§2.10ag): the card's brand as Square named it (amex | discover | mastercard | visa | other)
 		m["brand"] = p.Brand
 	}
+	if p.RefundKind == RefundTenderVoid { // batch C (§2.10al): any cashier's, never a refund under the limit
+		m["kind"] = RefundTenderVoid
+	}
 	return m
 }
 
@@ -954,8 +957,8 @@ func TipAllowed(p Payment) bool { return p.Refund || p.TipCents == 0 || IsCard(p
 func CashierRefunded(c *Config, paid []Payment) int64 {
 	var n int64
 	for _, p := range paid {
-		if !p.Refund || p.ApprovedBy != "" || p.Tender == TenderComp {
-			continue
+		if !p.Refund || p.ApprovedBy != "" || p.Tender == TenderComp || p.RefundKind == RefundTenderVoid {
+			continue // a tender void (batch C, §2.10al) is never under the limit
 		}
 		if st, ok := c.Find(p.StaffID); ok && c.LimitsOf(st).Unlimited {
 			continue
