@@ -139,14 +139,18 @@ func BuildDriverReport(rep order.DriverReport, sc storeconfig.StoreContext, size
 	nl()
 	w(leftRight("Deliveries", fmt.Sprintf("%d", rep.Deliveries), lineWidth))
 	nl()
-	// The owner's settlement (2.5.2): hand in = cash collected - delivery pay
-	// ($3 x every delivery) - card tips after the tip tax.
+	// The owner's settlement (2.5.8): hand in = cash collected - card tips
+	// after the tip tax; the delivery pay is paid weekly, so only Deliveries
+	// (the count) shows. With main's driver_pay_from_cash on (the 2.5.2 rule)
+	// the delivery pay ($3 x every delivery) comes off too.
 	w(leftRight("Cash collected", dollars(rep.CashCents), lineWidth))
 	nl()
-	w(leftRight("Delivery pay", "-"+dollars(rep.DriverShareCents), lineWidth))
-	nl()
-	w(fmt.Sprintf("  (%s x %d)", dollars(rep.DriverPayCents), rep.Deliveries)) // under it, like the tips: fits 32 columns
-	nl()
+	if rep.DriverPayFromCash {
+		w(leftRight("Delivery pay", "-"+dollars(rep.DriverShareCents), lineWidth))
+		nl()
+		w(fmt.Sprintf("  (%s x %d)", dollars(rep.DriverPayCents), rep.Deliveries)) // under it, like the tips: fits 32 columns
+		nl()
+	}
 	w(leftRight("Card tips after "+percent(rep.TipTaxBps), "-"+dollars(rep.TipAfterTaxCents), lineWidth))
 	nl()
 	w(fmt.Sprintf("  (%s - %s)", dollars(rep.TipCents), percent(rep.TipTaxBps)))

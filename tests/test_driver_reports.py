@@ -15,6 +15,7 @@ import requests
 
 from conftest import ADMIN_V1, wait_until
 from test_floor import floor, post  # noqa: F401  (fixture re-export)
+from test_terminal import counter_menu, rig, staff_config  # noqa: F401  (rig is a fixture)
 
 
 def deliver_order(a, name: str, tip: int, total: int, cash: bool) -> str:
@@ -63,14 +64,16 @@ def test_driver_reports_print_on_close(floor, fakes) -> None:
     # listed); only card tips count.
     # 2.5.2, the owner's settlement: hand in = cash - delivery pay x every delivery - card tips after 6 %
     # (the store's delivery_driver_cents, $3 unless the counter menu says otherwise).
-    pay = ab["driver_pay_cents"]
-    assert pay == 300 and ab["driver_share_cents"] == 3 * pay, ab
-    assert (ab["deliveries"], ab["cash_cents"], ab["tip_cents"], ab["tip_after_tax_cents"], ab["owed_cents"]) == (3, 3599, 400, 376, 2323)
+    # 2.5.8, the owner's settlement (default: main's driver_pay_from_cash off): hand in = cash - card tips after
+    # 6 %; the delivery pay is paid weekly, so it isn't on the report (only the count).
+    assert (ab["driver_share_cents"], ab["driver_pay_cents"], ab["driver_pay_from_cash"]) == (0, 0, False), ab
+    assert all(not ln.get("driver_share_cents") for ln in ab["lines"]), ab["lines"]
+    assert (ab["deliveries"], ab["cash_cents"], ab["tip_cents"], ab["tip_after_tax_cents"], ab["owed_cents"]) == (3, 3599, 400, 376, 3223)
     assert ab["lines"][0]["customer"] == "Erik D." and ab["lines"][2]["cash"] is False
     assert (ab["lines"][0]["cash_cents"], ab["lines"][0]["tip_cents"]) == (2049, 0)
-    assert ab["owed_rounded_cents"] == 2300  # whole dollars: 23 cents round down
-    assert by["Carlos"]["owed_cents"] == -1240  # card only: the store owes his $3 and his tip after 6 %
-    assert by["Carlos"]["owed_rounded_cents"] == -1200
+    assert ab["owed_rounded_cents"] == 3200  # whole dollars: 23 cents round down
+    assert by["Carlos"]["owed_cents"] == -940  # card only: the store owes his tip after 6 %
+    assert by["Carlos"]["owed_rounded_cents"] == -900
     assert by["Deep"]["deliveries"] == 0
 
     before = len(fakes["Front"].jobs)
@@ -80,9 +83,11 @@ def test_driver_reports_print_on_close(floor, fakes) -> None:
     wait_until(lambda: len(fakes["Front"].jobs) >= before + 3, timeout=20, what="3 driver reports printed after close")
     slips = [j.decode("latin-1") if isinstance(j, bytes) else j for j in fakes["Front"].jobs[before:before + 3]]
     abdul_slip = next(s for s in slips if "ABDUL" in s)
-    for want in ["DRIVER REPORT", "CASH ORDERS (2)", "CARD ORDERS (1)", "Total: $20.49", "Cash collected", "$35.99", "Delivery pay", "($3.00 x 3)",
-                 "-$9.00", "Card tips after 6%", "-$3.76", "HAND IN", "$23.00", "exact $23.23", "Tip: $4.00", "Total: $30.00"]:
+    for want in ["DRIVER REPORT", "CASH ORDERS (2)", "CARD ORDERS (1)", "Total: $20.49", "Cash collected", "$35.99",
+                 "Card tips after 6%", "-$3.76", "HAND IN", "$32.00", "exact $32.23", "Tip: $4.00", "Total: $30.00"]:
         assert want in abdul_slip, want
+    for not_there in ["Delivery pay", "($3.00 x 3)", "-$9.00"]:
+        assert not_there not in abdul_slip, f"paid weekly: no delivery pay on the slip: {not_there}"
     for not_there in ["Erik", "Ana P", "Lee M"]:
         assert not_there not in abdul_slip, f"no customer names on the driver report: {not_there}"
     assert "STORE OWES DRIVER" in next(s for s in slips if "CARLOS" in s)
@@ -100,6 +105,62 @@ def test_driver_reports_print_on_close(floor, fakes) -> None:
     fakes["Front"].stop()
     r = post(a, f"/api/batches/{closed}/driver-reports/print")
     assert r.status_code == 502 and r.json()["code"] == "nothing_printed"
+
+
+def test_driver_pay_from_cash_setting(rig, main_store) -> None:  # noqa: F811
+    """main's driver_pay_from_cash (agent 2.5.8, Store › Settings › End of day; the owner 2026-11-13): off (missing,
+    the default) = hand in = cash - card tips after 6 %, the delivery pay paid weekly (only the count); on = the
+    store's delivery_driver_cents x every delivery comes off too (the 2.5.2 rule). Read at report time: the same
+    batch counts again when it changes. The owner's sample: cash $40 + $25, a card order with a $5 tip, 3 deliveries."""
+    a, fm, term, fakes = rig["agent"], rig["fm"], rig["term"], rig["fakes"]
+    a.store = main_store
+    menu = counter_menu(rig["pizza_id"], version=8)
+    menu["pricing"]["settings"]["delivery_driver_cents"] = 300
+    fm.counter_menu = menu
+    fm.command("menu.changed", {"version": 8})
+    wait_until(lambda: term.get(f"{a.base}/api/terminal/menu", timeout=5).json()["menu_version"] == 8, what="menu v8")
+
+    def config(version: int, on: bool | None) -> None:
+        cfg = staff_config(version)
+        if on is not None:
+            cfg["settings"]["driver_pay_from_cash"] = on
+        fm.terminal_config = cfg
+        fm.command("terminal.changed", {"version": version})
+        wait_until(lambda: term.get(f"{a.base}/api/terminal/session", timeout=5).json().get("config_version") == version,
+                   what=f"config v{version}")
+
+    def report(did: str) -> dict:
+        return next(r for r in a.http.get(f"{a.base}/api/batches/current/driver-reports", timeout=5).json() if r["driver_id"] == did)
+
+    ali = driver(a, "Ali")
+    run(a, ali, deliver_order(a, "Erik Davis", 0, 4000, True), deliver_order(a, "Ana Perez", 0, 2500, True),
+        deliver_order(a, "Lee Min", 500, 3000, False))
+
+    def fields(r: dict) -> tuple:
+        return (r["deliveries"], r["cash_cents"], r["tip_cents"], r["tip_after_tax_cents"], r["driver_share_cents"],
+                r["driver_pay_cents"], r["driver_pay_from_cash"], r["owed_cents"], r["owed_rounded_cents"])
+
+    # Not sent (missing) = off: $65.00 - $4.70 = $60.30 -> HAND IN $60.
+    assert fields(report(ali)) == (3, 6500, 500, 470, 0, 0, False, 6030, 6000)
+    config(2, True)  # on: - $3.00 x 3 as well -> $51.30 -> $51
+    r = report(ali)
+    assert fields(r) == (3, 6500, 500, 470, 900, 300, True, 5130, 5100)
+    assert [ln["driver_share_cents"] for ln in r["lines"]] == [300, 300, 300]
+    n = len(fakes["Front"].jobs)
+    assert post(a, f"/api/drivers/{ali}/report/print").status_code == 200
+    wait_until(lambda: len(fakes["Front"].jobs) > n, what="Ali's slip (pay from the cash)")
+    slip = fakes["Front"].jobs[-1].decode("latin-1")
+    for want in ["Cash collected", "$65.00", "Delivery pay", "-$9.00", "($3.00 x 3)", "Card tips after 6%", "-$4.70", "HAND IN", "$51.00", "exact $51.30"]:
+        assert want in slip, want
+    config(3, False)  # off again: the same batch counts without the pay
+    assert fields(report(ali)) == (3, 6500, 500, 470, 0, 0, False, 6030, 6000)
+    n = len(fakes["Front"].jobs)
+    assert post(a, f"/api/drivers/{ali}/report/print").status_code == 200
+    wait_until(lambda: len(fakes["Front"].jobs) > n, what="Ali's slip (paid weekly)")
+    slip = fakes["Front"].jobs[-1].decode("latin-1")
+    for want in ["Deliveries", "Cash collected", "$65.00", "Card tips after 6%", "-$4.70", "HAND IN", "$60.00", "exact $60.30"]:
+        assert want in slip, want
+    assert "Delivery pay" not in slip and "x 3)" not in slip
 
 
 def test_undo_return(floor) -> None:

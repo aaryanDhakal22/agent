@@ -504,6 +504,12 @@ func main() {
 		}
 		return 0, false
 	})
+	// main's driver_pay_from_cash (2.5.8, off = the delivery pay is paid
+	// weekly and only counted): read from the terminal config at report time.
+	orderService.SetDriverPayFromCash(func() bool {
+		cfg, _ := termStore.Config()
+		return cfg.DriverPayFromCash()
+	})
 	termSvc := terminalApp.NewService(termStore, orderRepo, orderService, broker, logger)
 	termSvc.SetFloor(orderService, orderRepo) // the driver view (§2.10b)
 	// The roster = Store › Staff drivers (§2.1f): a pass at start, on every

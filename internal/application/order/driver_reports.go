@@ -52,9 +52,9 @@ func (s *Service) driverReports(ctx context.Context, batchID int64, ensure *orde
 	}
 	out := reps
 	tax := s.FloorPrefs(ctx).TipTaxBps
-	pay := s.DriverPayCents()
+	pay, fromCash := s.DriverPayCents(), s.DriverPayFromCash()
 	for i := range out {
-		out[i].Finish(tax, pay)
+		out[i].Finish(tax, pay, fromCash)
 	}
 	return out, nil
 }
@@ -71,6 +71,20 @@ func (s *Service) DriverPayCents() int64 {
 		}
 	}
 	return pricing.DefaultDriverShareCents
+}
+
+// SetDriverPayFromCash wires main's terminal setting driver_pay_from_cash
+// (2.5.8): whether the delivery pay comes off the cash on the driver
+// reports; nil = off (paid weekly).
+func (s *Service) SetDriverPayFromCash(fn func() bool) { s.driverPayFromCash.Store(&fn) }
+
+// DriverPayFromCash: the delivery pay comes off the driver's cash (main's
+// driver_pay_from_cash; off by default: paid weekly, only the count shows).
+func (s *Service) DriverPayFromCash() bool {
+	if fn := s.driverPayFromCash.Load(); fn != nil {
+		return (*fn)()
+	}
+	return false
 }
 
 func hasReport(reps []order.DriverReport, driverID string) bool {

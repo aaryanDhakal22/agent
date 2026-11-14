@@ -31,7 +31,7 @@ func TestDriverReportLine_CashOrderWithoutPayments(t *testing.T) {
 		t.Fatalf("line = %+v, want cash 2500 (total - tip) tip 0", l)
 	}
 	r := DriverReport{Lines: []DriverReportLine{l}}
-	r.Finish(600, 0) // no delivery pay: the cash rule alone
+	r.Finish(600, 0, false) // no delivery pay: the cash rule alone
 	if r.OwedCents != 2500 {
 		t.Errorf("owed = %d, want 2500", r.OwedCents)
 	}
@@ -61,17 +61,19 @@ func TestDriverReportLine_TipRules(t *testing.T) {
 			t.Errorf("%s: line = %+v, want cash=%v %d tip %d", tc.name, l, tc.cash, tc.cashC, tc.tipC)
 		}
 		r := DriverReport{Lines: []DriverReportLine{l}}
-		r.Finish(600, 0) // no delivery pay: the tip rules alone
+		r.Finish(600, 0, false) // no delivery pay: the tip rules alone
 		if r.OwedCents != tc.owedWith {
 			t.Errorf("%s: owed = %d, want %d", tc.name, r.OwedCents, tc.owedWith)
 		}
 	}
 }
 
-// The owner's settlement rule (2.5.2): hand in = cash collected − the store's
-// delivery pay × EVERY delivered delivery (a vendor order with no fee line and
-// a waived fee too) − card tips after the tip tax; negative = the store owes
-// the driver.
+// The owner's settlement rule (2.5.8, default): hand in = cash collected −
+// card tips after the tip tax; the delivery pay is paid weekly, so only the
+// count shows (no share, no pay). With the store's driver_pay_from_cash on
+// (the 2.5.2 rule) the store's delivery pay × EVERY delivered delivery (a
+// vendor order with no fee line and a waived fee too) comes off as well;
+// negative = the store owes the driver.
 func TestDriverReport_Settlement(t *testing.T) {
 	fee := []Fee{{Type: "delivery", Label: "Delivery fee", Amount: 400, DriverCents: 300}}
 	card := []PaymentSummary{{Method: "card", AmountCents: 3000}}
@@ -81,12 +83,31 @@ func TestDriverReport_Settlement(t *testing.T) {
 		NewDriverReportLine(StoredOrder{Order: Snapshot{Source: "online", Money: Money{Total: 3000, Tip: 500}, Payments: card}}), // card, $5 tip
 		NewDriverReportLine(StoredOrder{Order: Snapshot{Money: Money{Total: 1500, Fees: []Fee{{Type: "delivery", Amount: 0}}}}}), // fee waived
 	}
-	r := DriverReport{Lines: lines}
-	r.Finish(600, 300)
-	// cash 24 + 20 + 15 = 59.00; pay 4 × 3 = 12.00; tips 5.00 − 6% = 4.70 → 42.30
-	if r.Deliveries != 4 || r.CashCents != 5900 || r.DriverShareCents != 1200 || r.DriverPayCents != 300 ||
+	// Default (off): cash 24 + 20 + 15 = 59.00; tips 5.00 − 6% = 4.70 → 54.30; the pay isn't on it.
+	r := DriverReport{Lines: append([]DriverReportLine(nil), lines...)}
+	r.Finish(600, 300, false)
+	if r.Deliveries != 4 || r.CashCents != 5900 || r.DriverShareCents != 0 || r.DriverPayCents != 0 || r.DriverPayFromCash ||
+		r.TipAfterTaxCents != 470 || r.OwedCents != 5430 || r.OwedRoundedCents != 5400 {
+		t.Fatalf("report (paid weekly): %+v", r)
+	}
+	for _, l := range r.Lines {
+		if l.DriverShareCents != 0 {
+			t.Fatalf("no line carries a pay when it is paid weekly: %+v", l)
+		}
+	}
+	// All card: the store owes him his tips only.
+	owes := DriverReport{Lines: []DriverReportLine{lines[2]}}
+	owes.Finish(600, 300, false)
+	if owes.OwedCents != -470 || owes.OwedRoundedCents != -500 {
+		t.Fatalf("store owes (paid weekly): %d %d", owes.OwedCents, owes.OwedRoundedCents)
+	}
+
+	// driver_pay_from_cash on: pay 4 × 3 = 12.00 off too → 42.30.
+	r = DriverReport{Lines: append([]DriverReportLine(nil), lines...)}
+	r.Finish(600, 300, true)
+	if r.Deliveries != 4 || r.CashCents != 5900 || r.DriverShareCents != 1200 || r.DriverPayCents != 300 || !r.DriverPayFromCash ||
 		r.TipAfterTaxCents != 470 || r.OwedCents != 4230 {
-		t.Fatalf("report: %+v", r)
+		t.Fatalf("report (from the cash): %+v", r)
 	}
 	for _, l := range r.Lines {
 		if l.DriverShareCents != 300 {
@@ -94,19 +115,24 @@ func TestDriverReport_Settlement(t *testing.T) {
 		}
 	}
 	// All card: the store owes him his pay and his tips.
-	owes := DriverReport{Lines: []DriverReportLine{lines[2]}}
-	owes.Finish(600, 300)
+	owes = DriverReport{Lines: []DriverReportLine{lines[2]}}
+	owes.Finish(600, 300, true)
 	if owes.OwedCents != -770 || owes.OwedRoundedCents != -800 {
 		t.Fatalf("store owes: %d %d", owes.OwedCents, owes.OwedRoundedCents)
 	}
 	// Another store's pay; negative pay reads as 0.
-	r.Finish(600, 250)
+	r.Finish(600, 250, true)
 	if r.DriverShareCents != 1000 || r.OwedCents != 4430 {
 		t.Fatalf("pay 2.50: %+v", r)
 	}
-	r.Finish(600, -5)
+	r.Finish(600, -5, true)
 	if r.DriverShareCents != 0 {
 		t.Fatalf("negative pay: %d", r.DriverShareCents)
+	}
+	// Back off: the same report counted again drops the pay.
+	r.Finish(600, 300, false)
+	if r.DriverShareCents != 0 || r.OwedCents != 5430 {
+		t.Fatalf("off again: %+v", r)
 	}
 	// A share above the fee counts only the fee.
 	over := Money{Fees: []Fee{{Type: "delivery", Amount: 200, DriverCents: 300}, {Type: "service", Amount: 99, DriverCents: 50}}}

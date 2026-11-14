@@ -354,8 +354,10 @@ const UndoReturnWindow = 10 * time.Minute
 // tip on them (the driver keeps a cash tip; it is not listed). Tips count only
 // on card-paid deliveries (paid to the store, owed to the driver) minus the
 // tip tax, so Owed = Cash - TipAfterTax; negative means the store owes the
-// driver. POS deliveries count like online ones. Delivery fees are paid
-// weekly — only the count shows. (2.1.0 rule.)
+// driver. POS deliveries count like online ones. The driver's delivery pay is
+// paid weekly — only the count shows (2.1.0 rule; the owner again, 2.5.8) —
+// unless the store's driver_pay_from_cash is on (main's terminal setting,
+// 2.5.8): then Owed = Cash - DriverShare - TipAfterTax (the 2.5.2 rule).
 type DriverReport struct {
 	BatchID          int64              `json:"batch_id"`
 	BatchOpenedAt    time.Time          `json:"batch_opened_at"`
@@ -376,12 +378,19 @@ type DriverReport struct {
 	// charged yet (the driver hasn't clocked out, the batch isn't closed) -
 	// ADD TIP can still change them.
 	PendingTipCents int64 `json:"pending_tip_cents"`
-	// DriverShareCents: his delivery pay (the owner's settlement rule,
-	// 2.5.2): the store's delivery_driver_cents for EVERY delivered delivery
-	// (vendor orders and waived fees too), taken off what he hands in.
+	// DriverShareCents: his delivery pay taken off what he hands in - only
+	// with DriverPayFromCash (the 2.5.2 rule): the store's
+	// delivery_driver_cents for EVERY delivered delivery (vendor orders and
+	// waived fees too). 0 when the pay is paid weekly (the default, 2.5.8).
 	DriverShareCents int64 `json:"driver_share_cents"`
-	// DriverPayCents: the per-delivery pay DriverShareCents was counted with.
+	// DriverPayCents: the per-delivery pay DriverShareCents was counted with
+	// (0 when the pay is paid weekly).
 	DriverPayCents int64 `json:"driver_pay_cents"`
+	// DriverPayFromCash (2.5.8): main's terminal setting driver_pay_from_cash
+	// ("Driver delivery pay comes out of the cash at close", default off) as
+	// this report was counted with. Off = the delivery pay is paid weekly and
+	// not on the report; only Deliveries (the count) shows.
+	DriverPayFromCash bool `json:"driver_pay_from_cash"`
 }
 
 // DriverReportLine is one delivery on a driver report.
@@ -410,8 +419,10 @@ type DriverReportLine struct {
 	// TipPending = main hasn't charged the card yet (not tip_locked).
 	AddedTipCents int64 `json:"added_tip_cents,omitempty"`
 	TipPending    bool  `json:"tip_pending,omitempty"`
-	// DriverShareCents: the driver's share of the order's delivery fee (0 =
-	// none, or no split known: a vendor order).
+	// DriverShareCents: the delivery pay counted for this delivery on a
+	// driver report (Finish: the store's flat pay with driver_pay_from_cash
+	// on, else 0); on the UNASSIGNED slip's lines the driver's share of the
+	// order's delivery fee (0 = none, or no split known: a vendor order).
 	DriverShareCents int64 `json:"driver_share_cents,omitempty"`
 }
 
@@ -519,14 +530,21 @@ func NewDriverReportLine(so StoredOrder) DriverReportLine {
 	return l
 }
 
-// Finish fills the report's totals with the store's tip tax and delivery pay
-// (the owner's settlement rule, 2.5.2): he hands in the cash he collected
-// less his pay for every delivered delivery (driverPayCents each, flat) less
-// his card tips after the tip tax; negative = the store owes him.
-func (r *DriverReport) Finish(tipTaxBps, driverPayCents int64) {
+// Finish fills the report's totals with the store's tip tax and delivery pay.
+// The rule (the owner, 2.5.8): he hands in the cash he collected less his
+// card tips after the tip tax; his delivery pay is paid weekly, so only the
+// count shows (DriverShareCents / DriverPayCents 0). With payFromCash (main's
+// driver_pay_from_cash, the 2.5.2 rule) his pay for every delivered delivery
+// (driverPayCents each, flat) comes off the cash too. Negative = the store
+// owes him.
+func (r *DriverReport) Finish(tipTaxBps, driverPayCents int64, payFromCash bool) {
 	r.Deliveries = len(r.Lines)
 	r.CashCents, r.TipCents, r.PendingTipCents, r.DriverShareCents = 0, 0, 0, 0
-	r.DriverPayCents = max(driverPayCents, 0)
+	r.DriverPayFromCash = payFromCash
+	r.DriverPayCents = 0
+	if payFromCash {
+		r.DriverPayCents = max(driverPayCents, 0)
+	}
 	for i := range r.Lines {
 		r.Lines[i].DriverShareCents = r.DriverPayCents
 	}
