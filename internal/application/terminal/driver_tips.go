@@ -237,6 +237,12 @@ func (s *Service) ApplyDriverTips(ctx context.Context, driverID string, channelO
 		if channelOnly && counter {
 			continue
 		}
+		if !order.TipTakable(*so, so.Status.BatchID) {
+			// Moved to Unassigned / pickup / voided since: on no report, so
+			// not put on the card either (it stays pending, counted nowhere).
+			s.logger.Info().Ctx(ctx).Str("order_id", t.OrderID).Msg("typed tip left: the order is no driver's card delivery any more")
+			continue
+		}
 		if err := s.applyOne(ctx, *so, t, counter); err != nil {
 			s.logger.Warn().Ctx(ctx).Err(err).Str("order_id", t.OrderID).Int64("tip_cents", t.Target()).Msg("typed tip not applied")
 			s.page(ctx, fmt.Sprintf("Card tip %s on #%s could NOT be added: %v", dollars(t.Target()), tipNumber(*so), err))
