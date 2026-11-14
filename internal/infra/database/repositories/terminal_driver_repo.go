@@ -116,7 +116,7 @@ func (r *OrderRepository) ClaimDelivered(ctx context.Context, driverID string, i
 		return nil, order.ErrNoOrders
 	}
 	now := time.Now()
-	err = r.withTx(ctx, func(q *models.Queries) error {
+	err = r.withTxRaw(ctx, func(tx *sql.Tx, q *models.Queries) error {
 		d, err := q.GetDriver(ctx, driverID)
 		if err != nil || !d.Active {
 			return order.ErrDriverNotFound
@@ -126,7 +126,7 @@ func (r *OrderRepository) ClaimDelivered(ctx context.Context, driverID string, i
 			return fmt.Errorf("open batch: %w", err)
 		}
 		// All or nothing, first come first served: check every order first.
-		var todo []order.StoredOrder
+		var todo, old []order.StoredOrder
 		var taken []string
 		for _, id := range ids {
 			so, err := loadOrder(ctx, q, id)
@@ -138,6 +138,8 @@ func (r *OrderRepository) ClaimDelivered(ctx context.Context, driverID string, i
 				// already his
 			case order.ClaimableLate(so, b.ID, rule):
 				todo = append(todo, so)
+			case order.OldDelivery(so, b.ID, rule.Now, rule.OldAfter):
+				old = append(old, so) // #27: whoever has it, his and delivered
 			default:
 				taken = append(taken, id)
 			}
@@ -146,6 +148,36 @@ func (r *OrderRepository) ClaimDelivered(ctx context.Context, driverID string, i
 			return &order.ErrTaken{IDs: taken}
 		}
 		var names []string
+		for _, so := range old {
+			if names == nil {
+				if names, err = availableNames(ctx, q); err != nil {
+					return err
+				}
+			}
+			md := &order.MarkedDelivered{At: now.UTC(), By: by, PrevState: so.Status.State, Available: names}
+			if so.Status.DriverID != "" && so.Status.DriverID != d.ID {
+				md.FromDriver = so.Status.DriverName
+			}
+			raw, err := markedJSON(md)
+			if err != nil {
+				return err
+			}
+			n, err := claimOld(ctx, tx, so.Order.ID, b.ID, d.ID, d.Name, raw, now)
+			if err != nil {
+				return err
+			}
+			if n == 0 {
+				return &order.ErrTaken{IDs: []string{so.Order.ID}}
+			}
+			fresh, err := loadOrder(ctx, q, so.Order.ID)
+			if err != nil {
+				return err
+			}
+			if err := recordOrderStatus(ctx, q, fresh, false, now); err != nil {
+				return err
+			}
+			claimed = append(claimed, fresh)
+		}
 		for _, so := range todo {
 			md := so.Status.MarkedDelivered
 			if so.Status.State != order.StateDelivered {

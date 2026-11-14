@@ -582,3 +582,21 @@ CREATE UNIQUE INDEX idx_phone_charges_key ON phone_charges (client_key);
 CREATE INDEX idx_phone_charges_phone ON phone_charges (phone_id, status);
 CREATE INDEX idx_phone_charges_order ON phone_charges (order_id);
 CREATE INDEX idx_phone_charges_order_key ON phone_charges (order_key) WHERE order_key <> '';
+
+-- F: 00046_driver_tips - card tips the driver types before Close batch
+-- (contract/agent.md 2.10am).
+CREATE TABLE driver_tips (
+    order_id          text    PRIMARY KEY,
+    batch_id          integer NOT NULL,
+    driver_id         text    NOT NULL DEFAULT '',
+    state             text    NOT NULL,
+    tip_cents         integer NOT NULL DEFAULT 0,
+    applied_cents     integer NOT NULL DEFAULT 0,
+    set_at            text    NOT NULL,
+    set_by            text    NOT NULL DEFAULT '',
+    applied_at        text,
+    square_state      text    NOT NULL DEFAULT '',
+    square_error      text    NOT NULL DEFAULT '',
+    square_payment_id text    NOT NULL DEFAULT ''
+);
+CREATE INDEX idx_driver_tips_batch ON driver_tips (batch_id);

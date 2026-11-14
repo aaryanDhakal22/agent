@@ -97,7 +97,7 @@ func (s *Server) handleDriverTip(w http.ResponseWriter, r *http.Request) {
 	}
 	res, err := s.terminalSvc.Tip(r.Context(), actor(r), r.PathValue("id"), in)
 	if err != nil {
-		s.driverError(w, r, err)
+		s.tipError(w, r, err)
 		return
 	}
 	s.writeJSON(w, http.StatusOK, res)

@@ -203,6 +203,9 @@ func (s *Service) CloseBatch(ctx context.Context, force bool) (*order.Batch, []o
 	ctx, span := s.span(ctx, "batch.close", attribute.Bool("force", force))
 	defer span.End()
 	ctx = order.WithCloseUnpaid(ctx, s.CloseUnpaidAction())
+	// Batch F (contract 2.10am): at the press, before anything is checked or
+	// closed, the driver's typed card tips go on their orders.
+	s.closePressed(ctx)
 	closed, finished, err := s.repo.CloseBatch(ctx, force)
 	cm := observability.Counter()
 	trigger := order.CloseTriggerOf(ctx)
@@ -430,6 +433,7 @@ func (s *Service) ClockIn(ctx context.Context, id string) (*order.Driver, error)
 
 // ClockOut takes an available driver out of the queue and closes the shift.
 func (s *Service) ClockOut(ctx context.Context, id string) (*order.Driver, error) {
+	s.shiftClosing(ctx, id) // batch F: his typed website card tips before main captures
 	d, unpooled, err := s.repo.ClockOut(ctx, id)
 	if err != nil {
 		return nil, err
@@ -511,6 +515,7 @@ func (s *Service) DriverResetDue(ctx context.Context, now time.Time, loc *time.L
 	if local.Before(due) || !rs.LastRun.Before(due) {
 		return 0, nil
 	}
+	s.shiftClosing(ctx, "") // batch F: every driver's typed website card tips first
 	n, unpooled, err := s.repo.AutoClockOut(ctx, now)
 	if err != nil {
 		return 0, err

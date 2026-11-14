@@ -391,6 +391,12 @@ type DriverReport struct {
 	// this report was counted with. Off = the delivery pay is paid weekly and
 	// not on the report; only Deliveries (the count) shows.
 	DriverPayFromCash bool `json:"driver_pay_from_cash"`
+	// Batch F (contract 2.10am): TypedTipCents = the tips the driver typed
+	// on its lines (counted in TipCents until Close batch puts them on the
+	// orders); TipsToType = its tippable card deliveries with no tip state
+	// yet (the driver's tip pile).
+	TypedTipCents int64 `json:"typed_tip_cents"`
+	TipsToType    int   `json:"tips_to_type"`
 }
 
 // DriverReportLine is one delivery on a driver report.
@@ -424,6 +430,14 @@ type DriverReportLine struct {
 	// on, else 0); on the UNASSIGNED slip's lines the driver's share of the
 	// order's delivery fee (0 = none, or no split known: a vendor order).
 	DriverShareCents int64 `json:"driver_share_cents,omitempty"`
+	// Batch F (contract 2.10am): Tippable = a card delivery the driver's
+	// typed tip can go on (CardTippable, with a driver); TipState = none |
+	// tipped | no_tip on a tippable line; TypedTipCents = the typed tip
+	// (tipped only), counted in TipCents / OrderTipCents until Close batch
+	// puts it on the order.
+	Tippable      bool   `json:"tippable"`
+	TipState      string `json:"tip_state,omitempty"`
+	TypedTipCents int64  `json:"typed_tip_cents"`
 }
 
 // setSlipMoney fills the slip's Tip / Total from the order's total without
@@ -471,6 +485,11 @@ func NewDriverReportLine(so StoredOrder) DriverReportLine {
 		OutAt:         so.Status.OutAt,
 		// The driver's share of the delivery fee.
 		DriverShareCents: snap.Money.DeliveryDriverCents(),
+		// Batch F: a card delivery with a driver takes a typed tip.
+		Tippable: so.Status.DriverID != "" && CardTippable(so),
+	}
+	if l.Tippable {
+		l.TipState = TipStateNone
 	}
 	if a := snap.Fulfillment.Address; a != nil {
 		l.Street = StreetOnly(a.Line1)
@@ -540,6 +559,7 @@ func NewDriverReportLine(so StoredOrder) DriverReportLine {
 func (r *DriverReport) Finish(tipTaxBps, driverPayCents int64, payFromCash bool) {
 	r.Deliveries = len(r.Lines)
 	r.CashCents, r.TipCents, r.PendingTipCents, r.DriverShareCents = 0, 0, 0, 0
+	r.TypedTipCents, r.TipsToType = 0, 0
 	r.DriverPayFromCash = payFromCash
 	r.DriverPayCents = 0
 	if payFromCash {
@@ -554,6 +574,10 @@ func (r *DriverReport) Finish(tipTaxBps, driverPayCents int64, payFromCash bool)
 		r.TipCents += l.TipCents
 		if l.TipPending {
 			r.PendingTipCents += l.TipCents
+		}
+		r.TypedTipCents += l.TypedTipCents
+		if l.Tippable && l.TipState == TipStateNone {
+			r.TipsToType++
 		}
 	}
 	r.TipTaxBps = tipTaxBps

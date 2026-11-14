@@ -18,6 +18,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -416,4 +417,26 @@ func (s *Service) Refund(ctx context.Context, paymentID string, cents int64, key
 		return RefundResult{}, ErrUnreachable
 	}
 	return RefundResult{RefundID: r.RefundID, Status: r.Status}, nil
+}
+
+// MsgTipAdjust (batch F, contract 2.10am / main 2.5e): put a driver's typed
+// card tip on a counter card payment at the press of Close batch.
+const MsgTipAdjust = "square.tip_adjust"
+
+// TipAdjustKey is the Square idempotency key of one tip adjustment (one per
+// payment and whole tip, ≤ 45 characters).
+func TipAdjustKey(paymentID string, tipCents int64) string {
+	sum := sha256.Sum256([]byte("driver-tip\x00" + paymentID + "\x00" + strconv.FormatInt(tipCents, 10)))
+	return "dt" + hex.EncodeToString(sum[:])[:40]
+}
+
+// TipAdjust has main set a Square payment's whole tip. A *Refused with code
+// not_adjustable = Square no longer takes a tip change on it (completed).
+func (s *Service) TipAdjust(ctx context.Context, squarePaymentID string, tipCents int64, orderID string) (string, error) {
+	r, err := s.send(ctx, MsgTipAdjust, map[string]any{"square_payment_id": squarePaymentID, "tip_cents": tipCents,
+		"idempotency_key": TipAdjustKey(squarePaymentID, tipCents), "order_id": orderID})
+	if err != nil {
+		return "", err
+	}
+	return r.Status, nil
 }

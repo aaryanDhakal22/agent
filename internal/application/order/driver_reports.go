@@ -51,6 +51,7 @@ func (s *Service) driverReports(ctx context.Context, batchID int64, ensure *orde
 			DriverID: ensure.ID, DriverName: ensure.Name, Lines: []order.DriverReportLine{}})
 	}
 	out := reps
+	s.applyTypedTips(ctx, b.ID, out) // batch F: typed card tips count at once
 	tax := s.FloorPrefs(ctx).TipTaxBps
 	pay, fromCash := s.DriverPayCents(), s.DriverPayFromCash()
 	for i := range out {

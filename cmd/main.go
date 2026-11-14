@@ -512,6 +512,13 @@ func main() {
 	})
 	termSvc := terminalApp.NewService(termStore, orderRepo, orderService, broker, logger)
 	termSvc.SetFloor(orderService, orderRepo) // the driver view (§2.10b)
+	// Card tips the driver types before Close batch (§2.10am, batch F): on
+	// every report at once, put on the orders at the press of Close batch
+	// (website card holds also at the driver's clock-out: main captures then).
+	termSvc.SetDriverTips(orderRepo)
+	orderService.SetDriverTips(orderRepo)
+	orderService.OnClosePress(func(ctx context.Context) { termSvc.ApplyDriverTips(ctx, "", false) })
+	orderService.OnShiftClosing(func(ctx context.Context, driverID string) { termSvc.ApplyDriverTips(ctx, driverID, true) })
 	// The roster = Store › Staff drivers (§2.1f): a pass at start, on every
 	// terminal config and after every roster change (switched off in main:
 	// off the roster once he clocks out).
