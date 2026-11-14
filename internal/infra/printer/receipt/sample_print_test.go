@@ -13,6 +13,8 @@ package receipt
 //   - typeface: DELIVERY in Go Bold + the car, one size larger, centred (a picture)
 //   - plain: DELIVERY in the printer's own font, one size larger (GS ! 0x11), centred, no icon
 //   - kitchen: Order # and DELIVERY printed the kitchen ticket's way (font A, bold, GS ! size), centred, no icon
+//   - final: the owner's pick (2026-11-14): typeface + "Order # 100" (no colon), left as today
+//   - final_stacked: final with the header stacked: the logo centred at half the paper's width, the phone under it
 
 import (
 	"bytes"
@@ -30,8 +32,10 @@ import (
 	"quiccpos/agent/internal/domain/printer"
 	"quiccpos/agent/internal/domain/storeconfig"
 
+	xdraw "golang.org/x/image/draw"
 	"golang.org/x/image/font"
 	"golang.org/x/image/font/gofont/gobold"
+	"golang.org/x/image/font/gofont/goregular"
 	"golang.org/x/image/font/opentype"
 	"golang.org/x/image/math/fixed"
 )
@@ -116,11 +120,65 @@ func TestReceiptSamples(t *testing.T) {
 	k := bytes.Replace(one, []byte(oldNum), []byte(cmdCenter+cmdNormalSz+cmdBoldOn+size+num+cmdFeed+cmdLeft), 1)
 	k = bytes.Replace(k, typeRaster, []byte(cmdCenter+cmdNormalSz+cmdBoldOn+cmdDoubleSz+"DELIVERY"+cmdFeed+cmdSizeReset+cmdBoldOff+cmdLeft), 1)
 	out["kitchen"] = k
+	final := bytes.Replace(out["typeface"], []byte(num), []byte("Order # 100"), 1)
+	out["final"] = final
+	if hdr := headerFor(sc, layoutFor(cols)); len(hdr) > 0 && bytes.Contains(final, hdr) {
+		out["final_stacked"] = bytes.Replace(final, hdr, stackedHeader(t, sc, dots), 1)
+	}
 	for name, b := range out {
 		if err := os.WriteFile(filepath.Join(dir, name+".bin"), b, 0o644); err != nil {
 			t.Fatal(err)
 		}
 	}
+}
+
+// stackedHeader is the store's logo centred at half the paper's width with
+// the phone under it, centred, in the header's own font and size.
+func stackedHeader(t *testing.T, sc storeconfig.StoreContext, dots int) []byte {
+	t.Helper()
+	logoState.RLock()
+	logo := logoState.img
+	logoState.RUnlock()
+	lb := logo.Bounds()
+	w := dots / 2
+	h := w * lb.Dy() / lb.Dx()
+	scale := float64(dots) / 576
+	linePx := 22 * scale
+	phone := phoneParens(strings.TrimSpace(sc.Location.Phone))
+	fc := face(fontRegOnce(), linePx)
+	gap := int(10 * scale)
+	height := h + gap + int(linePx*1.3) + int(8*scale)
+	canvas := image.NewGray(image.Rect(0, 0, dots, height))
+	draw.Draw(canvas, canvas.Bounds(), image.White, image.Point{}, draw.Src)
+	sc2 := image.NewRGBA(image.Rect(0, 0, w, h))
+	draw.Draw(sc2, sc2.Bounds(), image.White, image.Point{}, draw.Src)
+	xdraw.CatmullRom.Scale(sc2, sc2.Bounds(), logo, lb, xdraw.Over, nil)
+	// The logo's beige background (232,212,185) dithers into a grey dotted box: light pixels are paper.
+	for y := 0; y < h; y++ {
+		for x := 0; x < w; x++ {
+			if color.GrayModel.Convert(sc2.At(x, y)).(color.Gray).Y > 175 {
+				sc2.Set(x, y, color.White)
+			}
+		}
+	}
+	dither(canvas, sc2, image.Pt((dots-w)/2, 0))
+	pw := font.MeasureString(fc, phone).Ceil()
+	d := &font.Drawer{Dst: canvas, Src: image.Black, Face: fc, Dot: fixed.P((dots-pw)/2, h+gap+int(linePx))}
+	d.DrawString(phone)
+	var b bytes.Buffer
+	b.WriteString(cmdCenter)
+	b.Write(rasterGSv0(canvas, canvas.Bounds()))
+	b.WriteString(cmdLeft)
+	return b.Bytes()
+}
+
+// fontRegOnce is the header's regular font (Go Regular), loaded as headerCanvas does.
+func fontRegOnce() *opentype.Font {
+	fontOnce.Do(func() {
+		fontReg, _ = opentype.Parse(goregular.TTF)
+		fontBold, _ = opentype.Parse(gobold.TTF)
+	})
+	return fontReg
 }
 
 // firstCopy is the slip up to and including its first paper cut (the Merchant Copy).
