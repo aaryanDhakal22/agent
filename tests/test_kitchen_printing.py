@@ -109,7 +109,7 @@ def test_station_tickets_and_receipt(kitchen, fakes) -> None:
     assert "\x1dB\x01" not in pizza, "no reverse print on an order ticket"
     assert "$" not in pizza, "station tickets carry no prices"
     # Wings station mirrors it.
-    assert "1  Hot Wings" in wings and "\n   1 Pepperoni Pizza (Large)\n" in wings
+    assert "1   Hot Wings" in wings and "\n - 1   Pepperoni Pizza (Large)\n" in wings
     # Front = the customer receipt only, in SoftTouch's layout (2026-11-12):
     # quantity, the size and name in capitals, the price on the right.
     assert len(fakes["Front"].jobs) == 1 and "Total:" in front and "1   Large Pepperoni Pizza " in front, front
@@ -134,7 +134,7 @@ def test_items_on_the_receipt_printer_print_only_on_the_receipt(kitchen, fakes) 
     assert "Total:" in fakes["Front"].text() and "Can Soda" in fakes["Front"].text()
     pizza = fakes["Pizza"].text()
     # 2.4.0: a receipt-only item isn't listed for the cooks.
-    assert "1  Pepperoni Pizza" in pizza and "Can Soda" not in pizza, pizza
+    assert "1   Pepperoni Pizza" in pizza and "Can Soda" not in pizza, pizza
     assert len(fakes["Wings"].jobs) == 0
 
 
@@ -183,7 +183,7 @@ def test_station_down_reroutes_to_receipt_printer(kitchen, fakes) -> None:
     assert r.status_code == 200, r.text + a.log_tail()
     _wait_jobs(fakes["Front"], 2)
     front = fakes["Front"].text()
-    assert "REROUTED FROM WINGS" in front and "1  Hot Wings" in front, front
+    assert "REROUTED FROM WINGS" in front and "1   Hot Wings" in front, front
     assert "Total:" in front, "the receipt still prints on Front"
     assert fakes["Wings"].jobs == []
 
@@ -260,7 +260,7 @@ def test_resend_to_kitchen_prints_only_the_stations(kitchen, fakes) -> None:
     _wait_jobs(fakes["Pizza"], 1)
     _wait_jobs(fakes["Wings"], 1)
     intentional_sleep(1.5, "the rest of the tickets print")
-    assert "1  Pepperoni Pizza" in fakes["Pizza"].text() and "1  Hot Wings" in fakes["Wings"].text()
+    assert "1   Pepperoni Pizza" in fakes["Pizza"].text() and "1   Hot Wings" in fakes["Wings"].text()
     assert fakes["Front"].jobs == [], "a kitchen resend prints no receipt"
     got = a.http.get(f"{a.base}/api/orders/{snap['id']}", timeout=5).json()
     assert got["status"]["state"] == "accepted", got

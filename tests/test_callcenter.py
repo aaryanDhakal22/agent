@@ -111,7 +111,9 @@ def test_relay_places_like_a_phone_order(rig):
     oid = so["order"]["id"]
     assert so["order"]["taken_by"] == TAKEN_BY and so["order"]["device_kind"] == "callcenter"
     assert so["status"]["state"] == "accepted" and placed["body"]["number"] == 500
-    wait_until(lambda: TAKEN_BY in text_of(fakes["Pizza"]), what="the station ticket names who took it")
+    # the kitchen ticket names the agent alone (the owner, 2026-11-14 #3); the slips keep "Call center - …"
+    wait_until(lambda: "Elena V." in text_of(fakes["Pizza"]) and "Call center" not in text_of(fakes["Pizza"]),
+               what="the station ticket names who took it")
     wait_until(lambda: "Merchant Copy" in text_of(fakes["Front"]) and "Customer Copy" in text_of(fakes["Front"]),
                what="the delivery ticket on the store's receipt printer")
     assert text_of(fakes["Front"]).count(TAKEN_BY) == 2  # both copies
