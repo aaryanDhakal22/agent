@@ -609,12 +609,17 @@ type CardInfo struct {
 	// money back on.
 	SquareRefundID string `json:"square_refund_id,omitempty"`
 	RefundOf       string `json:"refund_of,omitempty"`
+	// Held (contract 2.10ao, 2026-11-14): Square only authorized this card
+	// (a delivery's hold: the driver's typed tip goes on it, then main
+	// captures it). Only on a card / manual_card sale with Square's id. The
+	// Pi's money is the same as a captured card's.
+	Held bool `json:"held,omitempty"`
 }
 
 // Empty reports whether nothing about the card is known.
 func (c CardInfo) Empty() bool {
 	return c.AuthCode == "" && c.Entry == "" && len(c.EMV) == 0 && c.SquarePaymentID == "" && c.SquareReceiptNumber == "" &&
-		c.SquareRefundID == "" && c.RefundOf == ""
+		c.SquareRefundID == "" && c.RefundOf == "" && !c.Held
 }
 
 // Card entries (CardInfo.Entry).
@@ -720,6 +725,9 @@ func (p Payment) Wire() map[string]any {
 	}
 	if p.RefundKind == RefundTenderVoid { // batch C (§2.10al): any cashier's, never a refund under the limit
 		m["kind"] = RefundTenderVoid
+	}
+	if p.Held && !p.Refund && p.AmountCents > 0 { // §2.10ao: main keeps it as a card hold, captured with the driver's tip
+		m["held"] = true
 	}
 	return m
 }

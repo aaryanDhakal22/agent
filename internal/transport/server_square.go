@@ -131,9 +131,12 @@ func (s *Server) handleTerminalSquareKeyed(w http.ResponseWriter, r *http.Reques
 		s.writeJSON(w, http.StatusServiceUnavailable, errCodeMap("This Pi isn't linked to a store.", "not_linked"))
 		return
 	}
+	// 2.10ao: a delivery's card is a hold. The Pi decides (a sent order by
+	// its own fulfilment), never the client's hold.
+	in.Hold = s.terminalSvc.KeyedHold(r.Context(), in.OrderID, in.Fulfillment)
 	p, err := sq.Keyed(r.Context(), in)
 	d := map[string]any{"amount_cents": in.AmountCents, "tip_cents": in.TipCents, "reference_id": in.ReferenceID,
-		"idempotency_key": in.IdempotencyKey, "staff_id": sessView.Staff.ID, "ok": err == nil}
+		"idempotency_key": in.IdempotencyKey, "staff_id": sessView.Staff.ID, "ok": err == nil, "hold": in.Hold}
 	if in.OrderID != "" {
 		d["order_id"] = in.OrderID
 	}
