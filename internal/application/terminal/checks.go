@@ -59,6 +59,12 @@ type Check struct {
 	// RefundOwedCents (an online order edited at a terminal, §2.10aa): what
 	// its customer is owed (the manager refunds it outside); 0 = none.
 	RefundOwedCents int64 `json:"refund_owed_cents"`
+	// Batch B (contract 2.10ak): reopened = open again after a reopen from
+	// All checks (order.Status.OpenAgain), when it was last reopened, and
+	// when the kitchen marked it READY (the rows' marker; null = not ready).
+	Reopened   bool       `json:"reopened"`
+	ReopenedAt *time.Time `json:"reopened_at"`
+	ReadyAt    *time.Time `json:"ready_at"`
 
 	// What the filters look at besides the fields above.
 	staffs, devices map[string]bool
@@ -341,6 +347,15 @@ func (s *Service) checksOf(ctx context.Context, batchID int64, staffNames map[st
 			c.DriverID, c.DriverName = so.Status.PoolDriverID, driverNames[so.Status.PoolDriverID]
 		}
 		c.PaymentsCount = len(pays[snap.ID])
+		c.Reopened = so.Status.OpenAgain() // batch B (2.10ak)
+		if t := so.Status.ReopenedAt; t != nil {
+			u := t.UTC()
+			c.ReopenedAt = &u
+		}
+		if t := so.Status.ReadyAt; t != nil && so.Status.State == order.StateReady {
+			u := t.UTC()
+			c.ReadyAt = &u
+		}
 		if t := order.PromisedAt(so, 0); !t.IsZero() && (so.Status.EstimatedReadyAt != nil || snap.Fulfillment.PromisedAt != nil) {
 			u := t.UTC()
 			c.PromisedAt = &u

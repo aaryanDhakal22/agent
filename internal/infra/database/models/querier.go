@@ -401,6 +401,12 @@ type Querier interface {
 	// unassigned with a NULL driver. 0 rows = not a pool-able order.
 	// The order's stop number is cleared; the service renumbers the pools.
 	SetOrderPool(ctx context.Context, arg SetOrderPoolParams) (int64, error)
+	// A reopened check picked up again (contract 2.10ak): finished_at moves on.
+	SetOrderRefinished(ctx context.Context, arg SetOrderRefinishedParams) (int64, error)
+	// B: reopen a check (00045, contract 2.10ak) ----------------------------------
+	// A cashier reopened the check from All checks: open again until something
+	// settles it (paid_at / finished_at / out_at / delivered_at after this).
+	SetOrderReopened(ctx context.Context, arg SetOrderReopenedParams) (int64, error)
 	SetOrderSnapshot(ctx context.Context, arg SetOrderSnapshotParams) error
 	SetPairedDeviceAppVersion(ctx context.Context, arg SetPairedDeviceAppVersionParams) error
 	SetPinThrottle(ctx context.Context, pinThrottle string) error

@@ -83,6 +83,8 @@ CREATE TABLE orders (
     request_hash            text    NOT NULL DEFAULT '',
     carried                 boolean NOT NULL DEFAULT false,
     kitchen_pending         boolean NOT NULL DEFAULT false,
+    -- B: 00045_reopen: when a cashier last reopened the check (All checks).
+    reopened_at             text,
     CHECK (state IN ('arrived', 'scheduled', 'accepted', 'ready', 'on_delivery', 'delivered', 'cancelled'))
 );
 CREATE INDEX idx_orders_arrival_date ON orders (arrival_date DESC);

@@ -1375,3 +1375,15 @@ SELECT terminal_app_release FROM settings WHERE id = 1;
 
 -- name: SetTerminalAppRelease :exec
 UPDATE settings SET terminal_app_release = ? WHERE id = 1;
+
+-- B: reopen a check (00045, contract 2.10ak) ----------------------------------
+
+-- name: SetOrderReopened :execrows
+-- A cashier reopened the check from All checks: open again until something
+-- settles it (paid_at / finished_at / out_at / delivered_at after this).
+UPDATE orders SET reopened_at = sqlc.arg(reopened_at) WHERE id = sqlc.arg(id);
+
+-- name: SetOrderRefinished :execrows
+-- A reopened check picked up again (contract 2.10ak): finished_at moves on.
+UPDATE orders SET finished_at = sqlc.arg(finished_at), finished_by = sqlc.arg(finished_by)
+WHERE id = sqlc.arg(id) AND state = 'ready';

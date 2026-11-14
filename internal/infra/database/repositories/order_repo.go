@@ -309,6 +309,10 @@ func toStored(row models.Order) (order.StoredOrder, error) {
 	if st.PaidAt, err = optTS(row.PaidAt); err != nil {
 		return order.StoredOrder{}, fmt.Errorf("parse paid_at for order %s: %w", row.ID, err)
 	}
+	// 00045 (batch B): reopened from All checks.
+	if st.ReopenedAt, err = optTS(row.ReopenedAt); err != nil {
+		return order.StoredOrder{}, fmt.Errorf("parse reopened_at for order %s: %w", row.ID, err)
+	}
 	// 00023: the Pi's own due time / MADE NOW, applied here so every reader
 	// (future rule, ring, printing, Close batch, tablets, the hub) sees it.
 	due, err := optTS(row.DueOverride)

@@ -213,6 +213,7 @@ type Order struct {
 	RequestHash          string         `json:"request_hash"`
 	Carried              bool           `json:"carried"`
 	KitchenPending       bool           `json:"kitchen_pending"`
+	ReopenedAt           sql.NullString `json:"reopened_at"`
 }
 
 type OrderGeo struct {
