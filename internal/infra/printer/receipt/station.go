@@ -28,19 +28,21 @@ import (
 //	------------------------------------------------
 //	NOTE: ring the side bell          (bold: the order's note, when it has one)
 //	------------------------------------------------
-//	2  PEPPERONI PIZZA (LARGE)        (bold, the store's item size)
-//	   - Extra cheese
-//	   - Well done                    (a food note is a line too)
-//	1  CHEESE PIZZA (XL)
-//	   WHOLE:
-//	   - Extra cheese
-//	   1ST HALF:
-//	   - Pepperoni ONLY
-//	   2ND HALF:
-//	   - Hawaiian
+//	2   Pepperoni Pizza (Large)       (bold, the store's item size; 3 spaces
+//	          - Extra cheese           after the quantity, 2026-11-14)
+//	          Note: well done         (the food note)
+//	1   6 pc Party Wings              (a counted item: the count first, #4)
+//	          - Lite Ranch            (every choice its own line, never folded)
+//	1   Cheese Pizza (XL)
+//	          WHOLE:
+//	            - Extra cheese
+//	          1ST HALF:
+//	            - Pepperoni ONLY
+//	          2ND HALF:
+//	            - Hawaiian
 //	------------------------------------------------
-//	Also on this order:
-//	   1 Fries
+//	ITEMS TO OTHER PRINTER            (font A 1x1: one size smaller, #2;
+//	 - 1   Fries                       the heading alone when none)
 //
 // A change ticket (lines changed after SEND) has the same top, then the rule,
 // then [ ADD / AGREGAR ] and the added lines, then [ REMOVE / QUITAR ] and
@@ -109,8 +111,9 @@ func buildStation(snap order.Snapshot, t printer.Ticket, prefs order.ReceiptPref
 		}
 	}
 	w(cmdBoldOff)
-	// Who took it (a call-center order, contract §2.10ab): "Call center - Name".
-	if by := strings.TrimSpace(snap.TakenBy); by != "" {
+	// Who took it (a call-center order, contract §2.10ab): the agent's name
+	// alone (the owner, 2026-11-14, #3: "Jhoan", not "Call center - Jhoan").
+	if by := kitchenTaker(snap.TakenBy); by != "" {
 		for _, line := range wrapped(by, l.cols, "") {
 			w(line)
 			nl()
@@ -172,18 +175,7 @@ func buildStation(snap order.Snapshot, t printer.Ticket, prefs order.ReceiptPref
 		writeKitchenItems(w, nl, added, t, prefs, l, online)
 		w(l.rule(ruleChar))
 		nl()
-		w("Also on this order:")
-		nl()
-		if len(t.Others) == 0 {
-			w(itemIndent + "nothing else")
-			nl()
-		}
-		for _, it := range t.Others {
-			for _, line := range wordWrap(fmt.Sprintf("%s%d %s", itemIndent, it.Quantity, itemName(it)), l.cols, itemIndent+"  ") {
-				w(printable(line))
-				nl()
-			}
-		}
+		writeOtherPrinters(w, nl, t.Others, l)
 	}
 
 	w(cmdBaseSz)
@@ -307,10 +299,59 @@ func pad(text string, width int) string {
 	return strings.Repeat(" ", left) + text + strings.Repeat(" ", width-n-left)
 }
 
-// itemLabel is "2  PEPPERONI PIZZA (LARGE)" (printable turns its \x1f into
-// spaces).
+// otherPrintersHead heads the items that print on the order's other
+// printers (the owner, 2026-11-14, #2; "Also on this order:" before).
+const otherPrintersHead = "ITEMS TO OTHER PRINTER"
+
+// writeOtherPrinters is the ticket's bottom block (the owner, 2026-11-14, #2):
+// ITEMS TO OTHER PRINTER, then " - 1   Fries" per item another printer
+// makes, one size smaller than the ticket's base font (font A 1x1, the base
+// is 1x2); the heading alone when there are none. Store sizes stay in
+// brackets on every order here (an online order's size has no "- " line).
+func writeOtherPrinters(w func(string), nl func(), others []order.LineItem, l layout) {
+	w(cmdSizeReset)
+	w(cmdNormalSz)
+	w(otherPrintersHead)
+	nl()
+	for _, it := range others {
+		q := fmt.Sprintf("%d", it.Quantity)
+		hang := strings.Repeat(" ", len(" - ")+len(q)+len(qtyGap))
+		for _, line := range wordWrap(" - "+q+qtyGap+kitchenName(it, false), l.cols, hang) {
+			w(printable(line))
+			nl()
+		}
+	}
+	w(cmdBaseSz)
+}
+
+// kitchenTaker is who took the order as the kitchen ticket prints it: the
+// call-center agent's name alone ("Call center - Jhoan" -> "Jhoan"); the
+// customer slips keep the whole "Call center - Jhoan" (Cashier).
+func kitchenTaker(by string) string {
+	by = strings.TrimSpace(by)
+	const seat = "call center"
+	if len(by) >= len(seat) && strings.EqualFold(by[:len(seat)], seat) {
+		if name := strings.TrimSpace(strings.TrimLeft(by[len(seat):], " -:")); name != "" {
+			return name
+		}
+	}
+	return by
+}
+
+// qtyGap is the gap after an item's quantity (the owner, 2026-11-14, #4: "1   6
+// pc Party Wings", a clear gap between the quantity and a piece count); \x1f
+// is a space wordWrap keeps.
+const qtyGap = "\x1f\x1f\x1f"
+
+// itemLabel is "2   Pepperoni Pizza (Large)", "1   6 pc Party Wings"
+// (printable turns its \x1f into spaces).
 func itemLabel(it order.LineItem, online bool) string {
-	return fmt.Sprintf("%d\x1f\x1f%s", it.Quantity, kitchenName(it, online)) // \x1f: a space wordWrap keeps
+	return fmt.Sprintf("%d%s%s", it.Quantity, qtyGap, kitchenName(it, online))
+}
+
+// labelHang is where a wrapped item name goes on: under the name.
+func labelHang(it order.LineItem) string {
+	return strings.Repeat(" ", len(fmt.Sprintf("%d", it.Quantity))+len(qtyGap))
 }
 
 // writeKitchenItems prints items: quantity + name bold at the store's item
@@ -325,7 +366,7 @@ func writeKitchenItems(w func(string), nl func(), items []order.LineItem, t prin
 		}
 		w(cmdBoldOn)
 		w(textSize(prefs.KitchenItemSize))
-		for _, line := range wordWrap(itemLabel(it, online), lay.itemWidth(prefs.KitchenItemSize), itemIndent) {
+		for _, line := range wordWrap(itemLabel(it, online), lay.itemWidth(prefs.KitchenItemSize), labelHang(it)) {
 			w(printable(line))
 			nl()
 		}
@@ -354,15 +395,16 @@ func writeKitchenItems(w func(string), nl func(), items []order.LineItem, t prin
 // kitchenModIndent is where an item's choices start on a kitchen ticket
 // (agent 2.5.7, the owner 2026-11-13: "every item's modifiers indented under
 // the item"): two columns past the start of the item's name, which prints
-// at the store's item size ("1  " at double width = 6 columns), so a
-// choice never starts left of its item. The name's start is capped at 6
-// columns (xlarge items on 58 mm paper keep room for the choices).
+// at the store's item size ("1   " at double width = 8 columns since the
+// 2026-11-14 gap), so a choice never starts left of its item. The name's
+// start is capped at 8 columns (xlarge items on 58 mm paper keep room for
+// the choices).
 func kitchenModIndent(size string, lay layout) int {
 	wide := 1
 	if c := lay.sizeCols(size); c > 0 {
 		wide = max(lay.cols/c, 1) // 1 normal, 2 double, 3 quad, 4 huge
 	}
-	return min(len(itemIndent)*wide, 6) + 2
+	return min((1+len(qtyGap))*wide, 8) + 2
 }
 
 // ticketModLine is one line under an item on a kitchen ticket: a choice ("- X"),
@@ -403,7 +445,7 @@ func modLines(it order.LineItem, online bool) []ticketModLine {
 		out = append(out, halfLines(it)...)
 	} else {
 		for _, c := range it.Children {
-			out = append(out, ticketModLine{text: "- " + modName(c)})
+			out = append(out, ticketModLine{text: "- " + modName(c, it.Quantity)})
 		}
 	}
 	if note := strings.TrimSpace(it.Notes); note != "" { // the food note, told from a choice (the owner, 2.5.2)
@@ -412,11 +454,25 @@ func modLines(it order.LineItem, online bool) []ticketModLine {
 	return out
 }
 
-func modName(c order.LineItem) string {
-	if c.Quantity > 1 {
-		return fmt.Sprintf("(x%d) %s", c.Quantity, c.Name)
+// modName is a choice's line: its name, "(x2) Ranch" only when it counts
+// twice or more on each item (perItem). Never folded with another choice
+// (the owner, 2026-11-14, #20): every child is its own line.
+func modName(c order.LineItem, lineQty int) string {
+	if n := perItem(c.Quantity, lineQty); n > 1 {
+		return fmt.Sprintf("(x%d) %s", n, c.Name)
 	}
 	return c.Name
+}
+
+// perItem is a choice's count on each item: a counter line's children carry
+// the line's quantity ("2 Pepperoni Pizza" + Extra cheese stores the child
+// at 2: once per pizza), so a child's quantity that the line's divides is
+// per item; any other is printed as it is.
+func perItem(childQty, lineQty int) int {
+	if lineQty > 1 && childQty >= lineQty && childQty%lineQty == 0 {
+		return childQty / lineQty
+	}
+	return childQty
 }
 
 // halfLines is a half-and-half pie: WHOLE: (only when something is on the
@@ -433,8 +489,8 @@ func halfLines(it order.LineItem) []ticketModLine {
 		case order.ModeOnly:
 			name = strings.TrimPrefix(name, "ONLY ") + " ONLY"
 		}
-		if c.Quantity > 1 {
-			name = fmt.Sprintf("(x%d) %s", c.Quantity, name)
+		if n := perItem(c.Quantity, it.Quantity); n > 1 {
+			name = fmt.Sprintf("(x%d) %s", n, name)
 		}
 		parts[k] = append(parts[k], ticketModLine{text: "- " + name, level: 1})
 	}
@@ -466,7 +522,7 @@ func writeRemoved(w func(string), nl func(), items []order.LineItem, prefs order
 	room := lay.cols - len(voidMark)
 	base := kitchenModIndent(order.SizeNormal, lay) // the removed lines print at the normal size
 	for _, it := range items {
-		parts := [][]string{wordWrap(itemLabel(it, online), room, itemIndent)}
+		parts := [][]string{wordWrap(itemLabel(it, online), room, labelHang(it))}
 		for _, l := range modLines(it, online) {
 			parts = append(parts, l.wrap(base, room))
 		}

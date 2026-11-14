@@ -25,8 +25,8 @@ func halfPizza(name string, unit int64, kids ...order.LineItem) order.LineItem {
 
 // The format's cases as main sends them (names keep their readable text):
 // the condensed receipt's summary and the kitchen ticket's lines under the item
-// (2.5.7: the headings 8 columns in under a large item, each half's toppings
-// nested 2 more).
+// (2.5.7: the headings two past the item's name under a large item - column
+// 10 since the 2026-11-14 quantity gap - each half's toppings nested 2 more).
 var halfCases = []struct {
 	slug    string
 	item    order.LineItem
@@ -35,26 +35,26 @@ var halfCases = []struct {
 }{
 	{"a_add_on_a_half", halfPizza("Hawaiian", 1999, mod("Pepperoni (1st half)", "first", "add", 225)),
 		"HAWAIIAN + " + halfSign + " PEPPERONI",
-		"        1ST HALF:\n          - Pepperoni\n        2ND HALF:\n          - nothing added\n"},
+		"          1ST HALF:\n            - Pepperoni\n          2ND HALF:\n            - nothing added\n"},
 	{"b_only_on_a_half", halfPizza("Cheese Pizza", 1999, mod("Hawaiian (2nd half)", "second", "specialty", 0),
 		mod("ONLY Pepperoni (1st half)", "first", "only", 225)),
 		halfSign + " PEPPERONI | " + halfSign + " HAWAIIAN",
-		"        1ST HALF:\n          - Pepperoni ONLY\n        2ND HALF:\n          - Hawaiian\n"},
+		"          1ST HALF:\n            - Pepperoni ONLY\n          2ND HALF:\n            - Hawaiian\n"},
 	{"c_two_specialties", halfPizza("Cheese Pizza", 2899, mod("Supreme (1st half)", "first", "specialty", 0),
 		mod("Veggie (2nd half)", "second", "specialty", 0), mod("Extra Cheese", "", "add", 200)),
 		halfSign + " SUPREME | " + halfSign + " VEGGIE",
-		"        WHOLE:\n          - Extra Cheese\n        1ST HALF:\n          - Supreme\n        2ND HALF:\n          - Veggie\n"},
+		"          WHOLE:\n            - Extra Cheese\n          1ST HALF:\n            - Supreme\n          2ND HALF:\n            - Veggie\n"},
 	{"d_no_on_a_half", halfPizza("Hawaiian", 1999, mod("NO Pineapple (2nd half)", "second", "no", 0)),
 		"HAWAIIAN (" + halfSign + " NO PINEAPPLE)",
-		"        1ST HALF:\n          - nothing added\n        2ND HALF:\n          - NO Pineapple\n"},
+		"          1ST HALF:\n            - nothing added\n          2ND HALF:\n            - NO Pineapple\n"},
 	{"e_both_halves_added", halfPizza("Cheese Pizza", 1299, mod("Mushrooms (1st half)", "first", "add", 225),
 		mod("Sausage (2nd half)", "second", "add", 225), mod("Onion (2nd half)", "second", "add", 175)),
 		"CHEESE PIZZA " + halfSign + " MUSHROOMS | " + halfSign + " SAUSAGE, ONION",
-		"        1ST HALF:\n          - Mushrooms\n        2ND HALF:\n          - Sausage\n          - Onion\n"},
+		"          1ST HALF:\n            - Mushrooms\n          2ND HALF:\n            - Sausage\n            - Onion\n"},
 	{"f_specialty_with_adds_and_whole_no", halfPizza("Cheese Pizza", 1999, mod("Hawaiian (2nd half)", "second", "specialty", 0),
 		mod("Onion (2nd half)", "second", "add", 175), mod("Pepperoni (1st half)", "first", "add", 225), mod("NO Oregano", "", "no", 0)),
 		halfSign + " CHEESE PIZZA + PEPPERONI | " + halfSign + " HAWAIIAN + ONION (NO OREGANO)",
-		"        WHOLE:\n          - NO Oregano\n        1ST HALF:\n          - Pepperoni\n        2ND HALF:\n          - Hawaiian\n          - Onion\n"},
+		"          WHOLE:\n            - NO Oregano\n          1ST HALF:\n            - Pepperoni\n          2ND HALF:\n            - Hawaiian\n            - Onion\n"},
 }
 
 func halfSnap(items ...order.LineItem) order.Snapshot {
@@ -92,7 +92,7 @@ func TestHalves_StationGoldens(t *testing.T) {
 			}
 			snap := halfSnap(c.item)
 			got := BuildStation(snap, printer.Ticket{Kind: printer.TicketStation, TargetID: "p-pizza", Station: "Pizza", Mine: snap.Items})
-			head, lines := cmdBoldOn+cmdDoubleSz+"1  "+titleWords(c.item.Name), "\n"+cmdSizeReset+cmdBaseSz+cmdBoldOff+c.lines
+			head, lines := cmdBoldOn+cmdDoubleSz+"1   "+titleWords(c.item.Name), "\n"+cmdSizeReset+cmdBaseSz+cmdBoldOff+c.lines
 			if !bytes.Contains(got, []byte(head)) || !bytes.Contains(got, []byte(lines)) {
 				t.Errorf("ticket lacks\n%q\n%q\n%q", head, lines, got)
 			}

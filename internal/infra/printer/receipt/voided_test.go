@@ -33,8 +33,8 @@ func TestVoidedReceipt_StruckThrough(t *testing.T) {
 	}
 	// SoftTouch's slip (the owner, 2026-11-12): the item line, its 2 priced choices, its $0 Hawaiian half
 	// (2.5.7: a pie's halves always show; NO Oregano doesn't), the note, Soda = 6 struck pictures (GS v 0
-	// m=0) besides the powered-by logo.
-	if n := bytes.Count(got, []byte("\x1dv0\x00")) - 1; n != 6 {
+	// m=0) besides the powered-by logo and the type's icon line (2026-11-14, #16).
+	if n := bytes.Count(got, []byte("\x1dv0\x00")) - 2; n != 6 {
 		t.Errorf("%d struck pictures, want 6\n%q", n, got)
 	}
 	if !bytes.Contains(got, []byte("VOID - NOT CHARGED")) || bytes.Contains(got, []byte("Collect Cash")) {

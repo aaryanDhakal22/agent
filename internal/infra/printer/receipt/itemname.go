@@ -25,8 +25,35 @@ var (
 )
 
 func slipItemName(size, name string) string {
+	count, size, name := countParts(size, name)
 	size, name = inchParts(size, name)
-	return titleWords(strings.Join(nonEmpty(size, name), " "))
+	return strings.Join(nonEmpty(count, titleWords(strings.Join(nonEmpty(size, name), " "))), " ")
+}
+
+// pieceCount is a piece count in a size or a name: "6 pc", "6 Piece", "2 Pcs",
+// "(4 pc)", "40pc", "20-pc".
+var pieceCount = regexp.MustCompile(`(?i)\(?\b(\d+)\s*-?\s*(?:pcs?|pieces?)\b\.?\)?`)
+
+// countParts is the count-first rule (the owner, 2026-11-14, #4; MENU-PLAN
+// §9; the terminal's item_name.dart countParts, keep them in step): a COUNTED
+// item (wings, tenders, nuggets, mozz sticks...) prints its count first, as
+// "N pc" ("1   6 pc Party Wings"). The count comes from the size (the vendor's
+// "6 / Piece" and "Serving (2 Piece)" too), else from the name; it leaves the
+// size / name it came from. count is "" when there is none.
+func countParts(size, name string) (count, restSize, restName string) {
+	size = strings.Join(strings.Fields(strings.ReplaceAll(displaySize(size), " / ", " ")), " ")
+	name = strings.TrimSpace(name)
+	take := func(s string) (string, string) {
+		m := pieceCount.FindStringSubmatchIndex(s)
+		if m == nil {
+			return "", s
+		}
+		return s[m[2]:m[3]] + " pc", strings.Join(strings.Fields(s[:m[0]]+" "+s[m[1]:]), " ")
+	}
+	if count, size = take(size); count == "" {
+		count, name = take(name)
+	}
+	return count, size, name
 }
 
 // inchParts is the size (the vendor's placeholder dropped) and the name with
@@ -53,23 +80,32 @@ func inchParts(size, name string) (string, string) {
 // with the inch mark; a store order keeps its size in brackets on the name
 // line ("Pepperoni Pizza (Large)", held together when it wraps), an online
 // vendor order's size goes to its own "- " line (kitchenSizeLine).
+//
+// A counted item (2026-11-14, #4) starts with its count, held together:
+// "6 pc Party Wings" (an online order's count too: it leaves the size line).
 func kitchenName(it order.LineItem, online bool) string {
-	size, name := inchParts(it.Size, it.Name)
+	count, size, name := countParts(it.Size, it.Name)
+	size, name = inchParts(size, name)
 	name = titleWords(name)
+	if count != "" {
+		name = strings.TrimSpace(strings.ReplaceAll(count, " ", "\x1f") + " " + name) // \x1f: a space wordWrap keeps
+	}
 	if size == "" || online {
 		return name
 	}
 	return name + " (" + strings.ReplaceAll(titleWords(size), " ", "\x1f") + ")" // \x1f: a space wordWrap keeps
 }
 
-// kitchenSizeLine is an online order's size under its name ("6 Piece"; the
-// vendor's spaced slash "6 / Piece" reads as a space), "" for none.
+// kitchenSizeLine is an online order's size under its name ("Large"; the
+// vendor's spaced slash "6 / Piece" reads as a space), "" for none. A piece
+// count is not here: it leads the name (kitchenName).
 func kitchenSizeLine(it order.LineItem, online bool) string {
 	if !online {
 		return ""
 	}
-	size, _ := inchParts(it.Size, it.Name)
-	return titleWords(strings.Join(strings.Fields(strings.ReplaceAll(size, " / ", " ")), " "))
+	_, size, name := countParts(it.Size, it.Name)
+	size, _ = inchParts(size, name)
+	return titleWords(size)
 }
 
 func allDigits(s string) bool {

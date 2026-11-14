@@ -35,12 +35,19 @@ func TestTakenByPrints(t *testing.T) {
 		}
 	}
 	for name, text := range slips(by) {
-		want := 1
+		want, line := 1, by
 		if strings.HasPrefix(name, "delivery ticket") {
 			want = 2 // the Merchant Copy and the Customer Copy
 		}
-		if n := strings.Count(text, by); n != want {
-			t.Errorf("%s: %q printed %d times, want %d\n%s", name, by, n, want, text)
+		if strings.Contains(name, "kitchen") || strings.HasPrefix(name, "change") {
+			// The kitchen tickets print the agent's name alone (the owner, 2026-11-14, #3).
+			line = "Elena V."
+			if strings.Contains(text, "Call center") {
+				t.Errorf("%s: the kitchen ticket names the call center\n%s", name, text)
+			}
+		}
+		if n := strings.Count(text, line); n != want {
+			t.Errorf("%s: %q printed %d times, want %d\n%s", name, line, n, want, text)
 		}
 	}
 	for name, text := range slips("") {

@@ -33,16 +33,17 @@ func TestKitchenItemNames(t *testing.T) {
 			txt := got
 			var want []string
 			if src == order.SourceOnline {
-				want = []string{"2  Whole Wings Combo\n", H8 + "- 6 Piece\n" + H8 + "- Can of Ginger Ale\n" + H8 + "- Side of Fries\n",
-					"1  Garlic Knots\n", H8 + "- 2 Piece\n", "1  Turkey Club\n", "1  Cheese Pizza\n", H8 + "- 12\" Medium\n", "1  8\" Sub\n"}
+				// Count first (the owner, 2026-11-14, #4): the vendor's count leaves its size line for the name.
+				want = []string{"2   6 pc Whole Wings Combo", H8 + "- Can of Ginger Ale\n" + H8 + "- Side of Fries\n",
+					"1   2 pc Garlic Knots\n", "1   Turkey Club\n", "1   Cheese Pizza\n", H8 + "- 12\" Medium\n", "1   8\" Sub\n"}
 			} else {
-				want = []string{"2  Whole Wings", "(6 / Piece)", "1  Turkey Club\n", "1  8\" Sub\n", "Cheese Pizza", "(12\" Medium)"}
+				want = []string{"2   6 pc Whole Wings", "1   2 pc Garlic Knots\n", "1   Turkey Club\n", "1   8\" Sub\n", "Cheese Pizza", "(12\" Medium)"}
 				if strings.Contains(txt, "6 /\n") || strings.Contains(txt, "(12\"\n") || strings.Contains(txt, "(Large\n") {
 					t.Errorf("%s %d: a bracketed size split by the wrap\n%s", src, cols, txt)
 				}
 			}
 			for _, w := range want {
-				if !strings.Contains(strings.ReplaceAll(strings.ReplaceAll(txt, "\n   ", " "), "\x1f", " "), w) && !strings.Contains(txt, w) {
+				if !strings.Contains(strings.ReplaceAll(strings.ReplaceAll(txt, "\n    ", " "), "\x1f", " "), w) && !strings.Contains(txt, w) {
 					t.Errorf("%s %d: missing %q\n%s", src, cols, w, txt)
 				}
 			}

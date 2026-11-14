@@ -90,7 +90,12 @@ func softSlip(p *escw, snap order.Snapshot, st deliveryStore, at time.Time, copy
 	p.bold(false)
 	p.feed(1)
 	if typ := slipType(snap); typ != "" {
-		p.line(typ)
+		// the word + its icon, a bag or a car, as one picture (icons.go, the owner 2026-11-14 #16)
+		if typeIcon(typ) != nil {
+			p.raw(typeLine(typ, p.strikeImages))
+		} else {
+			p.line(typ)
+		}
 	}
 	if by := strings.TrimSpace(snap.TakenBy); by != "" && !hasCardCharge(snap) {
 		// a call-center order (contract §2.10ab); with a card the payment block's Cashier line says it
