@@ -2,14 +2,19 @@ package repositories
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
+	"path/filepath"
 	"testing"
 	"time"
 
 	"quiccpos/agent/internal/domain/order"
 	"quiccpos/agent/internal/domain/terminal"
+	"quiccpos/agent/internal/infra/database"
+	"quiccpos/agent/internal/migrate"
 
 	"github.com/google/uuid"
+	"github.com/rs/zerolog"
 )
 
 // Ticket numbers, the owner's final rule (contract 2.10ae, 2026-11-14): ONE
@@ -286,5 +291,43 @@ func TestARestoredPiKeepsTheSequence(t *testing.T) {
 	}
 	if placed := fire(t, b, *back); *placed.Status.KitchenNumber != 106 {
 		t.Fatalf("restored future order fires with %d, want 106", *placed.Status.KitchenNumber)
+	}
+}
+
+// 00047 must honour a close made on the 2026-11-13 binary (numbers_closed =
+// 1): the update round runs right after Close batch, so a store's first
+// 2.5.9 start comes with that close pending. Lombardi's 2026-11-14: the
+// numbers carried on (~170 -> 270) instead of restarting at 100.
+func TestMigration00047RestartsAfterACloseOnTheOldBinary(t *testing.T) {
+	for _, tc := range []struct {
+		closed int
+		want   int64
+	}{{1, 100}, {0, 171}} {
+		ctx := context.Background()
+		path := filepath.Join(t.TempDir(), "agent.db")
+		if err := migrate.RunTo(ctx, path, 46); err != nil {
+			t.Fatal(err)
+		}
+		raw, err := sql.Open("sqlite", path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := raw.Exec(`UPDATE settings SET counter_next = 171, kitchen_next = 1140, numbers_closed = ?, numbers_day = '2026-11-13' WHERE id = 1`, tc.closed); err != nil {
+			t.Fatal(err)
+		}
+		raw.Close()
+		if err := migrate.Run(ctx, path); err != nil {
+			t.Fatal(err)
+		}
+		db, err := database.Open(ctx, path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		r := NewOrderRepository(db, zerolog.Nop())
+		withStart(r, 100)
+		if got := onlineNo(t, r); got != tc.want {
+			t.Errorf("numbers_closed=%d: next number = %d, want %d", tc.closed, got, tc.want)
+		}
+		db.Close()
 	}
 }
