@@ -396,6 +396,7 @@
   "errors": [],
   "lines": [
    {
+    "base_cents": 1199,
     "deal_id": "",
     "index": 0,
     "mods": [

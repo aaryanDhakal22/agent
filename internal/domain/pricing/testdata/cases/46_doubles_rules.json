@@ -336,11 +336,28 @@
   ],
   "lines": [
    {
+    "base_cents": 999,
     "deal_id": "",
     "index": 0,
+    "mod_prices": [
+     {
+      "pick": 0,
+      "price_cents": 150
+     },
+     {
+      "pick": 1,
+      "price_cents": 150
+     },
+     {
+      "pick": 2,
+      "price_cents": 150
+     }
+    ],
     "mods": [
      "12 Medium",
-     "3× Pepperoni",
+     "Pepperoni",
+     "Pepperoni",
+     "Pepperoni",
      "NO Cheese"
     ],
     "name": "Cheese Pizza",
@@ -350,8 +367,19 @@
     "unit_cents": 1449
    },
    {
+    "base_cents": 899,
     "deal_id": "",
     "index": 1,
+    "mod_prices": [
+     {
+      "pick": 0,
+      "price_cents": 50
+     },
+     {
+      "pick": 1,
+      "price_cents": 50
+     }
+    ],
     "mods": [
      "Ranch",
      "Ranch"

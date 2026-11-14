@@ -361,8 +361,15 @@
   "errors": [],
   "lines": [
    {
+    "base_cents": 2549,
     "deal_id": "",
     "index": 0,
+    "mod_prices": [
+     {
+      "pick": 0,
+      "price_cents": 113
+     }
+    ],
     "mods": [
      "16 X-Large",
      "Hawaiian (1st half)",
@@ -376,6 +383,7 @@
     "unit_cents": 2662
    },
    {
+    "base_cents": 2475,
     "deal_id": "",
     "index": 1,
     "mods": [

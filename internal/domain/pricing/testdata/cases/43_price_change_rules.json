@@ -472,6 +472,7 @@
     "unit_cents": 2274
    },
    {
+    "base_cents": 199,
     "deal_id": "",
     "index": 1,
     "mods": [],
@@ -482,6 +483,7 @@
     "unit_cents": 199
    },
    {
+    "base_cents": 0,
     "deal_id": "",
     "index": 2,
     "list_cents": 150,
@@ -493,6 +495,7 @@
     "unit_cents": 0
    },
    {
+    "base_cents": 199,
     "deal_id": "",
     "index": 3,
     "mods": [],

@@ -348,6 +348,7 @@
     "unit_cents": 0
    },
    {
+    "base_cents": 199,
     "deal_id": "",
     "index": 2,
     "mods": [],

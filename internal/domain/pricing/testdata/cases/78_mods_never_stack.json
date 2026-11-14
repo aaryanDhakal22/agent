@@ -1,0 +1,326 @@
+{
+ "at": "2026-11-14T18:00:00-05:00",
+ "cart": {
+  "code": "",
+  "first_order": null,
+  "lines": [
+   {
+    "item_id": "00000000-0000-0000-0000-0000000002a1",
+    "options": [
+     {
+      "group_id": "00000000-0000-0000-0000-0000000002c1",
+      "option_id": "00000000-0000-0000-0000-0000000002d1"
+     },
+     {
+      "group_id": "00000000-0000-0000-0000-0000000002c1",
+      "option_id": "00000000-0000-0000-0000-0000000002d3"
+     },
+     {
+      "group_id": "00000000-0000-0000-0000-0000000002c1",
+      "option_id": "00000000-0000-0000-0000-0000000002d1"
+     },
+     {
+      "group_id": "00000000-0000-0000-0000-0000000002c1",
+      "option_id": "00000000-0000-0000-0000-0000000002d4"
+     },
+     {
+      "group_id": "00000000-0000-0000-0000-0000000002c1",
+      "option_id": "00000000-0000-0000-0000-0000000002d2"
+     },
+     {
+      "group_id": "00000000-0000-0000-0000-0000000002c1",
+      "option_id": "00000000-0000-0000-0000-0000000002d2"
+     },
+     {
+      "group_id": "00000000-0000-0000-0000-0000000002c1",
+      "option_id": "00000000-0000-0000-0000-0000000002d5"
+     },
+     {
+      "group_id": "00000000-0000-0000-0000-0000000002c1",
+      "option_id": "00000000-0000-0000-0000-0000000002d1"
+     },
+     {
+      "group_id": "00000000-0000-0000-0000-0000000002c2",
+      "option_id": "00000000-0000-0000-0000-0000000002d6"
+     },
+     {
+      "group_id": "00000000-0000-0000-0000-0000000002c2",
+      "option_id": "00000000-0000-0000-0000-0000000002d6"
+     },
+     {
+      "group_id": "00000000-0000-0000-0000-0000000002c2",
+      "option_id": "00000000-0000-0000-0000-0000000002d7"
+     }
+    ],
+    "qty": 1,
+    "size_id": "00000000-0000-0000-0000-0000000002b1"
+   }
+  ],
+  "payment": "cash",
+  "tip_cents": null,
+  "tip_pct": null,
+  "type": "pickup"
+ },
+ "context": {
+  "counter": true,
+  "deals": [],
+  "items": {
+   "00000000-0000-0000-0000-0000000002a1": {
+    "category_id": "00000000-0000-0000-0000-0000000002e1",
+    "tax_bps": 0
+   }
+  },
+  "menu": {
+   "categories": [
+    {
+     "id": "00000000-0000-0000-0000-0000000002e1",
+     "items": [
+      {
+       "anchor": {
+        "item_ids": [
+         "00000000-0000-0000-0000-0000000002a1"
+        ]
+       },
+       "description": "",
+       "id": "00000000-0000-0000-0000-0000000002a1",
+       "modifier_group_ids": [
+        "00000000-0000-0000-0000-0000000002c1",
+        "00000000-0000-0000-0000-0000000002c2"
+       ],
+       "name": "Cheesesteak",
+       "photo": "",
+       "price_cents": 0,
+       "sizes": [
+        {
+         "name": "8\"",
+         "price_cents": 1099,
+         "size_id": "00000000-0000-0000-0000-0000000002b1"
+        },
+        {
+         "name": "12\"",
+         "price_cents": 1499,
+         "size_id": "00000000-0000-0000-0000-0000000002b2"
+        }
+       ],
+       "sold_out": false
+      }
+     ],
+     "name": "Subs"
+    }
+   ],
+   "modifier_groups": [
+    {
+     "allow_multiple": false,
+     "id": "00000000-0000-0000-0000-0000000002c1",
+     "max_select": 0,
+     "min_select": 0,
+     "name": "Sub Mods",
+     "options": [
+      {
+       "id": "00000000-0000-0000-0000-0000000002d1",
+       "is_default": false,
+       "name": "Lite",
+       "price_cents": 0,
+       "prices": [],
+       "sold_out": false
+      },
+      {
+       "id": "00000000-0000-0000-0000-0000000002d2",
+       "is_default": false,
+       "name": "Extra",
+       "price_cents": 0,
+       "prices": [],
+       "sold_out": false
+      },
+      {
+       "id": "00000000-0000-0000-0000-0000000002d3",
+       "is_default": false,
+       "name": "Add Fried Onions",
+       "price_cents": 0,
+       "prices": [],
+       "sold_out": false
+      },
+      {
+       "id": "00000000-0000-0000-0000-0000000002d4",
+       "is_default": true,
+       "name": "Add Mayo",
+       "price_cents": 0,
+       "prices": [],
+       "sold_out": false
+      },
+      {
+       "id": "00000000-0000-0000-0000-0000000002d5",
+       "is_default": false,
+       "name": "Add Bacon",
+       "price_cents": 149,
+       "prices": [
+        {
+         "price_cents": 149,
+         "size_id": "00000000-0000-0000-0000-0000000002b1"
+        },
+        {
+         "price_cents": 174,
+         "size_id": "00000000-0000-0000-0000-0000000002b2"
+        }
+       ],
+       "sold_out": false
+      }
+     ]
+    },
+    {
+     "allow_multiple": true,
+     "id": "00000000-0000-0000-0000-0000000002c2",
+     "max_select": 0,
+     "min_select": 0,
+     "name": "Sub Toppings",
+     "options": [
+      {
+       "id": "00000000-0000-0000-0000-0000000002d6",
+       "is_default": false,
+       "name": "Ham",
+       "price_cents": 125,
+       "prices": [],
+       "sold_out": false
+      },
+      {
+       "id": "00000000-0000-0000-0000-0000000002d7",
+       "is_default": false,
+       "name": "Lite",
+       "price_cents": 0,
+       "prices": [],
+       "sold_out": false
+      }
+     ]
+    }
+   ]
+  },
+  "settings": {
+   "card_fee": {
+    "bps": 0,
+    "mode": "none"
+   },
+   "delivery_driver_cents": 0,
+   "delivery_fee_cents": 0,
+   "delivery_min_cents": 0,
+   "free_delivery_over_cents": null,
+   "half_specialty_off_pct": 0,
+   "half_topping_price": "full",
+   "service_fee_bps": 0,
+   "service_fee_cents": 0,
+   "stacking": "best",
+   "tax_bps": 600,
+   "tips": {
+    "default_pct": 0,
+    "enabled": false,
+    "presets": []
+   }
+  },
+  "timezone": "America/New_York",
+  "types": {
+   "delivery": true,
+   "pickup": true
+  }
+ },
+ "expect": {
+  "errors": [],
+  "lines": [
+   {
+    "base_cents": 1099,
+    "mods": [
+     "8\"",
+     "Lite Add Fried Onions",
+     "Lite Add Mayo",
+     "Extra Extra Add Bacon",
+     "Lite",
+     "Ham",
+     "Ham",
+     "Lite"
+    ],
+    "unit_cents": 1498
+   }
+  ]
+ },
+ "name": "Mods never stack (the owner 2026-11-14): Lite Fried Onions + Lite Mayo stay two mods (a qualifier joins the next pick of its group and may repeat in a pick-once group); a trailing qualifier stands alone; the same topping twice is two mods at its price each",
+ "quote": {
+  "card_fee_cents": 0,
+  "delivery_fee_cents": 0,
+  "discounts": [],
+  "errors": [],
+  "lines": [
+   {
+    "base_cents": 1099,
+    "deal_id": "",
+    "index": 0,
+    "mod_prices": [
+     {
+      "pick": 0,
+      "price_cents": 0
+     },
+     {
+      "pick": 1,
+      "price_cents": 0
+     },
+     {
+      "pick": 2,
+      "price_cents": 0
+     },
+     {
+      "pick": 3,
+      "price_cents": 0
+     },
+     {
+      "pick": 4,
+      "price_cents": 0
+     },
+     {
+      "pick": 5,
+      "price_cents": 0
+     },
+     {
+      "pick": 6,
+      "price_cents": 149
+     },
+     {
+      "pick": 7,
+      "price_cents": 0
+     },
+     {
+      "pick": 8,
+      "price_cents": 125
+     },
+     {
+      "pick": 9,
+      "price_cents": 125
+     },
+     {
+      "pick": 10,
+      "price_cents": 0
+     }
+    ],
+    "mods": [
+     "8\"",
+     "Lite Add Fried Onions",
+     "Lite Add Mayo",
+     "Extra Extra Add Bacon",
+     "Lite",
+     "Ham",
+     "Ham",
+     "Lite"
+    ],
+    "name": "Cheesesteak",
+    "qty": 1,
+    "regular_cents": null,
+    "total_cents": 1498,
+    "unit_cents": 1498
+   }
+  ],
+  "nudges": [],
+  "saved_cents": 0,
+  "service_fee_cents": 0,
+  "subtotal_cents": 1498,
+  "tax_cents": 90,
+  "tip_cents": 0,
+  "total_cents": 1588,
+  "warnings": []
+ }
+}

@@ -337,8 +337,23 @@
   "errors": [],
   "lines": [
    {
+    "base_cents": 1299,
     "deal_id": "",
     "index": 0,
+    "mod_prices": [
+     {
+      "pick": 0,
+      "price_cents": 225
+     },
+     {
+      "pick": 1,
+      "price_cents": 175
+     },
+     {
+      "pick": 2,
+      "price_cents": 225
+     }
+    ],
     "mods": [
      "16 X-Large",
      "Pepperoni (1st half)",

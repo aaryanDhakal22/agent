@@ -229,8 +229,9 @@ func buildItems(menu *terminal.CounterMenu, p priced) (items []order.LineItem, o
 		li := order.LineItem{ID: uuid.Must(uuid.NewV7()).String(), Position: pos, Name: r.Name, Size: r.SizeName, Quantity: qty,
 			UnitPrice: r.BaseCents, Notes: note}
 		total := r.BaseCents * int64(qty)
-		// A double / triple topping is one child "2x Pepperoni" at its price × 2.
-		for k, o := range pricing.FoldRepeats(r.Options) {
+		// One child per mod line (the owner, 2026-11-14: mods never stack; a
+		// qualifier joins its pick: "Lite Fried Onions").
+		for k, o := range pricing.ModLines(r.Options) {
 			child := order.LineItem{ID: uuid.Must(uuid.NewV7()).String(), Position: k, Quantity: qty, Name: o.Label,
 				Portion: o.Portion, Mode: o.Mode, UnitPrice: o.PriceCents * int64(o.Count)}
 			if o.RemovedDefault {

@@ -8,7 +8,11 @@
 // (frontend/src/lib/pricing/engine.ts); keep the two in step.
 package pricing
 
-import "quiccpos/agent/internal/domain/menuview"
+import (
+	"encoding/json"
+
+	"quiccpos/agent/internal/domain/menuview"
+)
 
 // Context is everything a quote prices against.
 type Context struct {
@@ -451,6 +455,44 @@ type Line struct {
 	// stays in coupons and the automatic deals. Its quote line still has
 	// list_cents.
 	KeepPrice bool `json:"keep_price,omitempty"`
+	// NoteOf: a priced note (the owner, 2026-11-14, #19; agent contract
+	// §2.10an): on a custom line, the cart index of the item line it belongs
+	// to. The engine prices it as any custom line; the Pi checks it and
+	// stores the line under its item (parent_line_id, its item's station).
+	NoteOf *int `json:"note_of,omitempty"`
+	// PrinterID: a custom line's kitchen printer (the terminal's Quicc Add,
+	// 2026-11-14, #17): Set with ID "" = prints nowhere (the wire's null),
+	// not Set = the store's Quick add item route (an older terminal).
+	// Pricing never reads it.
+	PrinterID LinePrinter `json:"printer_id,omitzero"`
+}
+
+// LinePrinter is a custom line's printer_id: absent (not Set), null (Set,
+// ID "") or a printer's id.
+type LinePrinter struct {
+	Set bool
+	ID  string
+}
+
+// IsZero: absent (omitzero leaves it out).
+func (p LinePrinter) IsZero() bool { return !p.Set }
+
+// MarshalJSON writes null or the id.
+func (p LinePrinter) MarshalJSON() ([]byte, error) {
+	if p.ID == "" {
+		return []byte("null"), nil
+	}
+	return json.Marshal(p.ID)
+}
+
+// UnmarshalJSON reads null or a string (present = Set).
+func (p *LinePrinter) UnmarshalJSON(b []byte) error {
+	p.Set = true
+	p.ID = ""
+	if string(b) == "null" {
+		return nil
+	}
+	return json.Unmarshal(b, &p.ID)
 }
 
 // Custom lines (Line.Custom).
@@ -544,6 +586,23 @@ type QuoteLine struct {
 	ListCents *int64 `json:"list_cents,omitempty"`
 	// Custom: a custom line (Line.Custom). Absent otherwise.
 	Custom bool `json:"custom,omitempty"`
+	// BaseCents: an item line's own price for one without its mods (its
+	// size; half and half: the pizza's with its halves; a price change: the
+	// line's own). ModPrices: one per cart option, its own price (mods keep
+	// their own price, the owner 2026-11-14, #11). Absent on custom and deal
+	// lines.
+	BaseCents *int64     `json:"base_cents,omitempty"`
+	ModPrices []ModPrice `json:"mod_prices,omitempty"`
+}
+
+// ModPrice is one cart option's price on its quote line: Pick = its index
+// in the cart line's options, PriceCents its price for one (after the half
+// rule; a NO 0; a kept / cashier's price when set), Included = one of the
+// item's included toppings (not charged).
+type ModPrice struct {
+	Pick       int   `json:"pick"`
+	PriceCents int64 `json:"price_cents"`
+	Included   bool  `json:"included,omitempty"`
 }
 
 type Discount struct {

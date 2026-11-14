@@ -569,11 +569,29 @@
   "errors": [],
   "lines": [
    {
+    "base_cents": 1499,
     "deal_id": "",
     "index": 0,
+    "mod_prices": [
+     {
+      "included": true,
+      "pick": 0,
+      "price_cents": 175
+     },
+     {
+      "included": true,
+      "pick": 1,
+      "price_cents": 175
+     },
+     {
+      "pick": 2,
+      "price_cents": 175
+     }
+    ],
     "mods": [
      "12\" Medium",
-     "2× Pepperoni",
+     "Pepperoni",
+     "Pepperoni",
      "Sausage"
     ],
     "name": "Chicken Alfredo Pizza",
@@ -583,11 +601,34 @@
     "unit_cents": 1674
    },
    {
+    "base_cents": 1699,
     "deal_id": "",
     "index": 1,
+    "mod_prices": [
+     {
+      "included": true,
+      "pick": 0,
+      "price_cents": 225
+     },
+     {
+      "included": true,
+      "pick": 1,
+      "price_cents": 225
+     },
+     {
+      "included": true,
+      "pick": 2,
+      "price_cents": 225
+     },
+     {
+      "pick": 3,
+      "price_cents": 225
+     }
+    ],
     "mods": [
      "14\" Large",
-     "2× Pepperoni",
+     "Pepperoni",
+     "Pepperoni",
      "Sausage",
      "Mushrooms"
     ],
@@ -598,8 +639,44 @@
     "unit_cents": 1924
    },
    {
+    "base_cents": 1599,
     "deal_id": "",
     "index": 2,
+    "mod_prices": [
+     {
+      "included": true,
+      "pick": 0,
+      "price_cents": 175
+     },
+     {
+      "included": true,
+      "pick": 1,
+      "price_cents": 175
+     },
+     {
+      "included": true,
+      "pick": 2,
+      "price_cents": 175
+     },
+     {
+      "included": true,
+      "pick": 3,
+      "price_cents": 175
+     },
+     {
+      "pick": 4,
+      "price_cents": 175
+     },
+     {
+      "pick": 5,
+      "price_cents": 250
+     },
+     {
+      "included": true,
+      "pick": 6,
+      "price_cents": 50
+     }
+    ],
     "mods": [
      "12\" Medium",
      "Pepperoni",

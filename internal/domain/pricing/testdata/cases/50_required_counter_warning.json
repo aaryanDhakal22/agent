@@ -352,8 +352,15 @@
   ],
   "lines": [
    {
+    "base_cents": 1099,
     "deal_id": "",
     "index": 0,
+    "mod_prices": [
+     {
+      "pick": 0,
+      "price_cents": 75
+     }
+    ],
     "mods": [
      "Ranch dip"
     ],
@@ -364,6 +371,7 @@
     "unit_cents": 1174
    },
    {
+    "base_cents": 1099,
     "deal_id": "",
     "index": 1,
     "mods": [],
@@ -374,6 +382,7 @@
     "unit_cents": 1099
    },
    {
+    "base_cents": 199,
     "deal_id": "",
     "index": 2,
     "mods": [],

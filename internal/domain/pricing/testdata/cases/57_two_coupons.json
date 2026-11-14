@@ -701,6 +701,7 @@
   "errors": [],
   "lines": [
    {
+    "base_cents": 899,
     "deal_id": "",
     "index": 0,
     "mods": [
@@ -713,6 +714,7 @@
     "unit_cents": 899
    },
    {
+    "base_cents": 399,
     "deal_id": "",
     "index": 1,
     "mods": [],
@@ -723,6 +725,7 @@
     "unit_cents": 399
    },
    {
+    "base_cents": 150,
     "deal_id": "",
     "index": 2,
     "mods": [],
@@ -733,6 +736,7 @@
     "unit_cents": 150
    },
    {
+    "base_cents": 250,
     "deal_id": "",
     "index": 3,
     "mods": [],
@@ -743,6 +747,7 @@
     "unit_cents": 250
    },
    {
+    "base_cents": 1199,
     "deal_id": "",
     "index": 4,
     "mods": [],

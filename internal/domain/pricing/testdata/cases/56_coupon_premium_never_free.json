@@ -645,8 +645,19 @@
   "errors": [],
   "lines": [
    {
+    "base_cents": 1299,
     "deal_id": "",
     "index": 0,
+    "mod_prices": [
+     {
+      "pick": 0,
+      "price_cents": 350
+     },
+     {
+      "pick": 1,
+      "price_cents": 0
+     }
+    ],
     "mods": [
      "14\" Large",
      "Steak",
@@ -660,6 +671,7 @@
     "unit_cents": 1649
    },
    {
+    "base_cents": 150,
     "deal_id": "",
     "index": 1,
     "mods": [],

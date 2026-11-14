@@ -406,9 +406,16 @@
   "errors": [],
   "lines": [
    {
+    "base_cents": 1299,
     "deal_id": "",
     "index": 0,
     "list_cents": 1599,
+    "mod_prices": [
+     {
+      "pick": 0,
+      "price_cents": 225
+     }
+    ],
     "mods": [
      "16 X-Large",
      "Pepperoni",
@@ -421,6 +428,7 @@
     "unit_cents": 1524
    },
    {
+    "base_cents": 1199,
     "deal_id": "",
     "index": 1,
     "mods": [
@@ -434,6 +442,7 @@
     "unit_cents": 1199
    },
    {
+    "base_cents": 250,
     "deal_id": "",
     "index": 2,
     "list_cents": 199,

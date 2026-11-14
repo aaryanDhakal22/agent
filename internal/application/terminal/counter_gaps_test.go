@@ -73,7 +73,7 @@ func quoteOf(t *testing.T, r *rig, lines ...pricing.Line) pricing.Quote {
 	return q.Quote.(pricing.Quote)
 }
 
-func TestDoubleToppingsCapAndOneLine(t *testing.T) {
+func TestDoubleToppingsCapAndEachPickItsOwnLine(t *testing.T) {
 	r := gapsRig(t, nil)
 	pizza := func(picks []pricing.Pick) pricing.Line {
 		return pricing.Line{Qty: 1, Selection: pricing.Selection{ItemID: gapPizza, SizeID: gapXL, Options: picks}}
@@ -87,8 +87,10 @@ func TestDoubleToppingsCapAndOneLine(t *testing.T) {
 	if q := quoteOf(t, r2, four); len(q.Errors) != 0 || q.Lines[0].UnitCents != 1299+4*113 {
 		t.Fatalf("cap 4: %+v %+v", q.Errors, q.Lines)
 	}
-	// 2× Pepperoni (whole) + 2× Mushrooms (1st half): one child each, at its
-	// price × 2 (Cheese, the group's default, is left off: NO Cheese).
+	// Mods never stack (the owner, 2026-11-14, #20): 2× Pepperoni (whole) +
+	// 2× Mushrooms (1st half) are four children in pick order, each at its own
+	// price (Cheese, the group's default, is left off: NO Cheese). Before:
+	// one "2x Pepperoni" child at twice the price.
 	res, err := r.svc.PlaceOrder(r.ctx, till, OrderIn{ClientKey: "k-doubles-01",
 		Cart: Cart{Cart: pricing.Cart{Lines: []pricing.Line{pizza(toppingPicks(gapPep, "", gapMush, "first", gapPep, "", gapMush, "first"))}}}})
 	if err != nil {
@@ -99,8 +101,9 @@ func TestDoubleToppingsCapAndOneLine(t *testing.T) {
 	for _, c := range it.Children {
 		got = append(got, c.Name)
 	}
-	if strings.Join(got, ", ") != "2x Pepperoni, 2x Mushrooms (1st half), NO Cheese" || it.Children[0].UnitPrice != 450 || it.Children[1].UnitPrice != 226 ||
-		it.Children[1].Portion != "first" || it.LineTotal != 1299+450+226 || res.Order.Order.Money.Subtotal != it.LineTotal {
+	if strings.Join(got, ", ") != "Pepperoni, Mushrooms (1st half), Pepperoni, Mushrooms (1st half), NO Cheese" || it.Children[0].UnitPrice != 225 ||
+		it.Children[1].UnitPrice != 113 || it.Children[2].UnitPrice != 225 || it.Children[1].Portion != "first" ||
+		it.LineTotal != 1299+450+226 || res.Order.Order.Money.Subtotal != it.LineTotal {
 		t.Fatalf("children %v: %+v", got, it)
 	}
 }
