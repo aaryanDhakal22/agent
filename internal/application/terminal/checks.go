@@ -113,6 +113,33 @@ type ChecksPage struct {
 	Limit    int     `json:"limit"`
 	Offset   int     `json:"offset"`
 	BatchIDs []int64 `json:"batch_ids"`
+	// Summary is over every check the filters match, not just this page
+	// (contract 2.10ak: All checks' footer).
+	Summary ChecksSummary `json:"summary"`
+}
+
+// ChecksSummary is the overview's totals over every matching check: how many,
+// their totals and what is left to collect (voided / cancelled ones left out
+// of the money, counted in Voided).
+type ChecksSummary struct {
+	Count      int   `json:"count"`
+	TotalCents int64 `json:"total_cents"`
+	DueCents   int64 `json:"due_cents"`
+	Voided     int   `json:"voided"`
+}
+
+// summarize is the summary of checks.
+func summarize(all []Check) ChecksSummary {
+	sum := ChecksSummary{Count: len(all)}
+	for _, c := range all {
+		if c.Voided || c.State == string(order.StateCancelled) {
+			sum.Voided++
+			continue
+		}
+		sum.TotalCents += c.TotalCents
+		sum.DueCents += c.CashDueCents
+	}
+	return sum
 }
 
 // CheckDetail is one order in full.
@@ -488,6 +515,7 @@ func (s *Service) Checks(ctx context.Context, a Actor, q ChecksQuery) (*ChecksPa
 	}
 	sort.SliceStable(all, func(i, j int) bool { return all[i].PlacedAt.After(all[j].PlacedAt) })
 	page.Total = len(all)
+	page.Summary = summarize(all)
 	if q.Offset < len(all) {
 		page.Checks = all[q.Offset:min(len(all), q.Offset+q.Limit)]
 	}
