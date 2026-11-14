@@ -12,7 +12,6 @@ import (
 
 	xdraw "golang.org/x/image/draw"
 	"golang.org/x/image/font"
-	"golang.org/x/image/font/gofont/gobold"
 	"golang.org/x/image/font/gofont/goregular"
 	"golang.org/x/image/font/opentype"
 	"golang.org/x/image/math/fixed"
@@ -101,8 +100,8 @@ func headerFor(sc storeconfig.StoreContext, lay layout) []byte {
 }
 
 var (
-	fontOnce          sync.Once
-	fontReg, fontBold *opentype.Font
+	fontOnce sync.Once
+	fontReg  *opentype.Font
 )
 
 func face(f *opentype.Font, px float64) font.Face {
@@ -158,7 +157,6 @@ const headerLight = 175
 func headerCanvas(logo image.Image, lines []string, dots int) *image.Gray {
 	fontOnce.Do(func() {
 		fontReg, _ = opentype.Parse(goregular.TTF)
-		fontBold, _ = opentype.Parse(gobold.TTF)
 	})
 	lb := logo.Bounds()
 	lw, lh := lb.Dx(), lb.Dy()
