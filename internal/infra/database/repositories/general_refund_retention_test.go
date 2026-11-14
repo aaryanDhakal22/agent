@@ -58,3 +58,45 @@ func TestRetentionKeepsAGeneralRefundWithItsBatch(t *testing.T) {
 		t.Fatalf("a trimmed batch's general refund is still kept (%v)", err)
 	}
 }
+
+// Batch J: a general refund to a card stays with its batch too, card block and all (Square's refund id), and the
+// Z has it on its card tender, never the cash.
+func TestRetentionKeepsAGeneralCardRefundWithItsCard(t *testing.T) {
+	r := newFloorRepo(t)
+	ctx := context.Background()
+	arrive(t, r, "pickup")
+	p := terminal.Payment{ID: uuid.Must(uuid.NewV7()).String(), ClientKey: "gc-" + uuid.NewString(), At: time.Now().UTC().Truncate(time.Millisecond),
+		Tender: terminal.TenderManualCard, AmountCents: 750, Refund: true, Reason: "Overcharged", RefundKind: terminal.RefundGeneral,
+		Brand: terminal.BrandVisa, Last4: "1111", Ref: "sqref_1", CardInfo: terminal.CardInfo{SquareRefundID: "sqref_1", Entry: "keyed"}}
+	got, _, err := r.AddGeneralRefund(ctx, p, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.DrawerID != "" {
+		t.Fatalf("a card general refund went in drawer %q", got.DrawerID)
+	}
+	markAllSynced(t, r)
+	if _, err := r.TrimBatches(ctx, 3, time.Now().Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	left, err := r.GeneralRefundByKey(ctx, p.ClientKey)
+	if err != nil || left == nil || left.SquareRefundID != "sqref_1" || left.Tender != terminal.TenderManualCard {
+		t.Fatalf("retention lost the card general refund or its card: %+v (%v)", left, err)
+	}
+	in, err := r.ZInputs(ctx, got.BatchID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	z := terminal.BuildZ(in)
+	for _, tt := range z.Tenders {
+		if tt.Tender == terminal.TenderCash && tt.RefundedCents != 0 {
+			t.Fatalf("the Z refunded cash: %+v", tt)
+		}
+		if tt.Tender == terminal.TenderManualCard && tt.RefundedCents != 750 {
+			t.Fatalf("manual_card %+v", tt)
+		}
+	}
+	if z.GeneralRefunds.Cents != 750 || z.CashOutside != 0 {
+		t.Fatalf("z general %+v, cash outside %d", z.GeneralRefunds, z.CashOutside)
+	}
+}

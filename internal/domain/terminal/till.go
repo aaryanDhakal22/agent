@@ -194,6 +194,10 @@ type TillDetail struct {
 	// GeneralRefunds: cash given back with no order in this scope (contract
 	// 2.10x; amount negative, inside Summary.Refunds and the cash).
 	GeneralRefunds TillCount `json:"general_refunds"`
+	// GeneralCardRefunds: the part of GeneralRefunds given back on a card
+	// (batch J, contract 2.10x): its money is on the card's brand row, never
+	// the cash.
+	GeneralCardRefunds TillCount `json:"general_card_refunds"`
 }
 
 // CategoryIndex maps a line's menu item id to its category on the counter
@@ -379,12 +383,26 @@ func BuildTill(in TillInput) Till {
 	byOrder := map[string]*taken{}
 	for _, p := range z.Payments {
 		if IsGeneralRefund(p) {
-			// No order (contract 2.10x): cash out, a refund of no sale.
+			// No order (contract 2.10x): a refund of no sale, out of the
+			// cash - or, a card one (batch J), off its card brand's row.
 			if !inPay(p) {
 				continue
 			}
 			cents := p.AmountCents + p.TipCents
-			cash.Amount -= cents
+			if IsCard(p.Tender) {
+				b := p.Brand
+				if b == "" || brandLabels[b] == "" {
+					b = BrandOther
+				}
+				if cards[b] == nil {
+					cards[b] = &TillCount{}
+				}
+				cards[b].Amount -= cents
+				t.Detail.GeneralCardRefunds.Count++
+				t.Detail.GeneralCardRefunds.Amount -= cents
+			} else {
+				cash.Amount -= cents
+			}
 			e := emp[p.StaffID]
 			if e == nil {
 				name := in.StaffNames[p.StaffID]

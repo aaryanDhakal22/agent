@@ -76,7 +76,7 @@ func (r *Refused) Error() string { return r.Message }
 // HTTPStatus is the Pi's answer for a refusal (contract §2.10r).
 func (r *Refused) HTTPStatus() int {
 	switch r.Code {
-	case "card_declined", "refund_failed":
+	case "card_declined", "refund_failed", "unlinked_unsupported":
 		return http.StatusPaymentRequired
 	case "square_not_linked", "square_reconnect":
 		return http.StatusConflict
@@ -141,6 +141,11 @@ type reply struct {
 	Payment     json.RawMessage `json:"payment"`
 	RefundID    string          `json:"refund_id"`
 	Status      string          `json:"status"`
+	// square.general_refund (batch J): the card Square refunded to.
+	Brand    string          `json:"brand"`
+	Last4    string          `json:"last4"`
+	Unlinked bool            `json:"unlinked"`
+	Payments json.RawMessage `json:"payments"`
 }
 
 // send asks main and sorts the answer: ok, a refusal, or an error.

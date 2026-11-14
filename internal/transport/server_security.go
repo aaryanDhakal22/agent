@@ -443,6 +443,7 @@ var staffRoutes = map[string]bool{
 	"GET /api/terminal/square/session":            true,
 	"GET /api/terminal/orders/{id}/phone-charges": true,
 	"GET /api/terminal/phone-charges/{id}":        true,
+	"GET /api/terminal/refunds/card-payments":     true, // batch J: the general card refund's fallback
 }
 
 // driverRoutes are the /api/terminal/* routes (mux patterns) a terminal with a

@@ -153,7 +153,12 @@
     {"id": "G03", "note": "a manager logged in", "by": "mia", "cents": 9000, "pi": "allow", "main": []},
     {"id": "G04", "note": "a cashier main made unlimited: still a manager", "by": "uma", "cents": 500, "pi": {"manager": "refund", "limit": 0, "requested": 500}, "main": ["refund_needs_manager"]},
     {"id": "G05", "note": "a driver", "by": "dev", "cents": 100, "pi": {"manager": "refund", "limit": 0, "requested": 100}, "main": ["refund_needs_manager"]},
-    {"id": "G06", "note": "a manager with his own (ignored) limits", "by": "max", "cents": 5000, "pi": "allow", "main": []}
+    {"id": "G06", "note": "a manager with his own (ignored) limits", "by": "max", "cents": 5000, "pi": "allow", "main": []},
+    {"id": "G07", "note": "to a card (batch J, 2026-11-14): a manager every time, like cash: a cashier", "by": "cara", "tender": "manual_card", "cents": 500, "pi": {"manager": "refund", "limit": 0, "requested": 500}, "main": ["refund_needs_manager"]},
+    {"id": "G08", "note": "to a card: a manager logged in", "by": "mia", "tender": "manual_card", "cents": 9000, "pi": "allow", "main": []},
+    {"id": "G09", "note": "to a card: a cashier main made unlimited still needs a manager", "by": "uma", "tender": "card", "cents": 500, "pi": {"manager": "refund", "limit": 0, "requested": 500}, "main": ["refund_needs_manager"]},
+    {"id": "G10", "note": "to a card: a driver", "by": "dev", "tender": "card", "cents": 100, "pi": {"manager": "refund", "limit": 0, "requested": 100}, "main": ["refund_needs_manager"]},
+    {"id": "G11", "note": "only cash or a card through Square: a Square-app / comp / other general refund is refused (even a manager's)", "by": "mia", "tender": "square_app", "cents": 500, "pi": {"refused": "general_refund_tender"}, "main": []}
   ],
   "comps": [
     {"id": "C01", "note": "a cashier's comp needs a manager (the owner, 2026-11-12 evening; that morning a cashier comped freely)", "by": "cara", "cents": 1377, "pi": {"manager": "comp", "limit": 0, "requested": 1377}, "main": ["comp_needs_manager"]},
