@@ -1,20 +1,20 @@
 package receipt
 
 import (
+	"encoding/hex"
 	"strings"
-
-	"golang.org/x/image/font/basicfont"
 )
 
-// The order type's icon on the customer slips (the owner, 2026-11-14, #16;
-// contract §2.1j step 3): "PICKUP" / "COUNTER" + one space + a line-art
-// takeout bag, "DELIVERY" + one space + a line-art car. Thermal printers
-// can't print emoji and GS v 0 can't share a text line, so the whole line is
-// ONE GS v 0 picture, 24 dots tall (font A's height): the word drawn like
-// the struck lines (strike.go: the X11 6x13 font at twice its size, 12 x 24
-// dots a character), a 12-dot space, then the icon. The bitmaps are
-// byte-identical to the terminal's (lib/platform/printer/icons.dart) and to
-// the fake printer's decoder (deploy/fakeprinter: "PICKUP [icon bag]").
+// The order type's line on the customer slips (the owner, 2026-11-14, #16,
+// and the receipt design he confirmed the same day; contract §2.1j step 3):
+// "PICKUP" / "COUNTER" with a line-art takeout bag, "DELIVERY" with a
+// line-art car, centred on the paper. Thermal printers can't print emoji and
+// GS v 0 can't share a text line, so the whole line is ONE GS v 0 picture as
+// wide as the paper (576 / 512 / 384 dots), typeRows dots tall: the word in
+// Go Bold at 46 px (type_words.go, about the printer's double size), a
+// 24-dot gap, then the icon at twice its size, the group centred. The rows
+// are byte-identical to the terminal's (lib/platform/printer/icons.dart) and
+// to the fake printer's decoder (deploy/fakeprinter: "DELIVERY [icon car]").
 
 // iconBag is a takeout (shopping) bag in outline: 24 x 24 dots.
 var iconBag = []string{
@@ -84,59 +84,74 @@ func typeIcon(typ string) []string {
 	return nil
 }
 
-// typeLine is the slip's type line: the word + its icon as one GS v 0
-// picture when the printer prints pictures (pictures = receipt_prefs
-// .strike_images), else the word as text. No line feed after a picture (it
-// is a line of its own); a text line ends with one.
-func typeLine(typ string, pictures bool) string {
-	icon := typeIcon(typ)
-	if icon == nil || !pictures {
-		return toPC437(typ) + cmdFeed
-	}
-	return iconRaster(typ, icon)
+// The type line's picture.
+const (
+	typeRows      = 52 // dots tall
+	typeBaseline  = 42 // the word's baseline
+	typeWordPx    = 46 // Go Bold's size (type_words.go)
+	typeGap       = 24 // dots between the word and the icon
+	typeIconScale = 2  // each icon dot printed 2 x 2
+)
+
+// typeArt is one word of type_words.go: w dots wide, typeRows rows of hex.
+type typeArt struct {
+	w    int
+	rows []string
 }
 
-// iconRaster draws word (12 x 24 dots a character), a 12-dot space and the
-// icon (24 dots tall) as a GS v 0 picture (m = 0).
-func iconRaster(word string, icon []string) string {
-	f := basicfont.Face7x13
-	runes := []rune(foldASCII(word))
-	x0 := (len(runes) + 1) * strikeCharDots
-	cols := x0 + len(icon[0])
-	wb := (cols + 7) / 8
-	data := make([]byte, wb*strikeRows)
-	set := func(x, y int) { data[y*wb+x/8] |= 0x80 >> (x % 8) }
-	for i, r := range runes {
-		if r == ' ' {
-			continue
+// typeLine is the slip's type line laid out for lay: the word + its icon as
+// one paper-wide GS v 0 picture when the printer prints pictures (pictures =
+// receipt_prefs.strike_images), else the word as text, centred, bold, at
+// double size (tall only when it can't fit wide). No line feed after a
+// picture (it is a line of its own); a text line ends with one.
+func typeLine(typ string, pictures bool, lay layout) string {
+	icon := typeIcon(typ)
+	if word, ok := typeWords[typ]; ok && icon != nil && pictures {
+		return typeRaster(word, icon, lay.dots())
+	}
+	size := gsBig
+	if len(dclean(typ))*2 > lay.cols {
+		size = gsTall
+	}
+	return cmdCenter + cmdBoldOn + size + dclean(typ) + cmdFeed + gsNormal + cmdBoldOff + cmdLeft
+}
+
+// typeRaster draws word, the gap and icon (doubled, centred on the line's
+// height) as one group centred on a paper dots wide (GS v 0, m = 0).
+func typeRaster(word typeArt, icon []string, dots int) string {
+	iconW, iconH := len(icon[0])*typeIconScale, len(icon)*typeIconScale
+	x0 := max((dots-(word.w+typeGap+iconW))/2, 0)
+	wb := (dots + 7) / 8
+	data := make([]byte, wb*typeRows)
+	set := func(x, y int) {
+		if x >= 0 && x < wb*8 && y >= 0 && y < typeRows {
+			data[y*wb+x/8] |= 0x80 >> (x % 8)
 		}
-		g, ok := glyphRow(f, r)
-		if !ok {
-			g, _ = glyphRow(f, '?')
-		}
-		for gx := 0; gx < f.Width; gx++ {
-			for gy := 1; gy < f.Height; gy++ { // the top row is always blank: 12 rows -> 24 dots
-				if !inked(f.Mask, gx, g*f.Height+gy) {
-					continue
-				}
-				x, y := i*strikeCharDots+gx*2, (gy-1)*2
-				set(x, y)
-				set(x+1, y)
-				set(x, y+1)
-				set(x+1, y+1)
+	}
+	for y, row := range word.rows {
+		bits, _ := hex.DecodeString(row)
+		for x := 0; x < word.w; x++ {
+			if bits[x/8]&(0x80>>(x%8)) != 0 {
+				set(x0+x, y)
 			}
 		}
 	}
+	ix, iy := x0+word.w+typeGap, (typeRows-iconH)/2
 	for y, row := range icon {
 		for x, c := range row {
-			if c == '#' {
-				set(x0+x, y)
+			if c != '#' {
+				continue
+			}
+			for dy := 0; dy < typeIconScale; dy++ {
+				for dx := 0; dx < typeIconScale; dx++ {
+					set(ix+x*typeIconScale+dx, iy+y*typeIconScale+dy)
+				}
 			}
 		}
 	}
 	var b strings.Builder
 	b.WriteString("\x1d\x76\x30")
-	b.Write([]byte{0, byte(wb % 256), byte(wb / 256), strikeRows, 0})
+	b.Write([]byte{0, byte(wb % 256), byte(wb / 256), typeRows % 256, typeRows / 256})
 	b.Write(data)
 	return b.String()
 }

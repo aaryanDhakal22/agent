@@ -1175,8 +1175,9 @@ function agentApp() {
           return;
         }
         if (!res.ok) { this.toast(b.error || 'Close failed', true); return; }
-        const u = b.unpaid_at_close;
-        this.toast('Batch ' + b.closed.id + ' closed — printing driver reports' + (u && u.count ? '; ' + u.count + ' unpaid check' + (u.count === 1 ? '' : 's') + ' written off ($' + (u.total_cents / 100).toFixed(2) + '), Unpaid at close list printing' : ''));
+        const u = b.unpaid_at_close, np = b.not_picked_up;
+        this.toast('Batch ' + b.closed.id + ' closed — printing driver reports' + (u && u.count ? '; ' + u.count + ' unpaid check' + (u.count === 1 ? '' : 's') + ' written off ($' + (u.total_cents / 100).toFixed(2) + '), Unpaid at close list printing' : '')
+          + (np && np.count ? '; ' + np.count + ' pickup' + (np.count === 1 ? '' : 's') + ' not picked up written off ($' + (np.total_cents / 100).toFixed(2) + '), Not picked up slip printing' : ''));
         this.reportBatch = 'current';
         this.loadFloor(); this.loadBatches(); this.loadReports();
       } catch (e) { this.toast(e.message, true); } finally { this.busy.close = false; }

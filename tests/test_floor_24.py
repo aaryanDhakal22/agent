@@ -153,6 +153,8 @@ def test_kitchen_ticket_header_and_others(kitchen, fakes) -> None:  # noqa: F811
     assert pizza.index("DELIVERY") < pizza.index("\x1d!3100\n"), "the type above the number"
     assert "Wings" in pizza and "Can Coke" not in pizza
     receipt = fakes["Front"].text()
-    # the type is a picture since 2026-11-14 (DELIVERY + its car: GS v 0, 18 bytes x 24 rows)
-    assert receipt.index("#") < receipt.index("\x1dv0\x00\x12\x00\x18\x00"), "the receipt: number, then the type"
+    # the type is a picture since 2026-11-14 (DELIVERY + its car, one paper-wide GS v 0 under the number;
+    # the header's logo, when there is one, is a picture above it)
+    num = receipt.index("Order #")
+    assert receipt.find("\x1dv0", num) > num, "the receipt: number, then the type"
     assert uuid.UUID(snap["id"])

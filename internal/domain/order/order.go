@@ -163,6 +163,15 @@ type LineItem struct {
 	// counter menu): printed as before. HiddenOnDriverTicket reads it.
 	ShowOnDriverTicket *bool `json:"show_on_driver_ticket,omitempty"`
 
+	// Drink (print only, the owner 2026-11-14, contract §2.1k): the Pi
+	// stamps a line (an item or a choice) true when it is a drink, from the
+	// counter menu (an item of a drink category, a choice of a drink group;
+	// a vendor line by its exact name), when it stores the order. A
+	// delivery's customer slips end its line in "#####" (SoftTouch's marks,
+	// receipt_prefs.drink_marks). nil = not a drink / not known. Never
+	// money: nothing prices, totals or routes by it.
+	Drink *bool `json:"drink,omitempty"`
+
 	// Kitchen routing stamped by main at ingest (top-level items only):
 	// the station printer this line prints on, and how it was matched.
 	MenuItemID string `json:"menu_item_id,omitempty"`
@@ -213,6 +222,9 @@ func (it LineItem) HasHalves() bool {
 func (it LineItem) HiddenOnDriverTicket() bool {
 	return it.UnitPrice == 0 && it.ShowOnDriverTicket != nil && !*it.ShowOnDriverTicket
 }
+
+// IsDrink says the line is stamped a drink (LineItem.Drink).
+func (it LineItem) IsDrink() bool { return it.Drink != nil && *it.Drink }
 
 // ShownOnDriverTicket says a child is stamped show_on_driver_ticket true.
 func (it LineItem) ShownOnDriverTicket() bool {

@@ -16,6 +16,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"quiccpos/agent/internal/domain/order"
 	"quiccpos/agent/internal/domain/terminal"
 
 	"github.com/rs/zerolog"
@@ -80,6 +81,9 @@ type Store struct {
 	kick     map[string]chan struct{}
 	failed   sync.Map // kind -> bool: the last fetch failed
 	refresh  sync.Mutex
+	// drinkRule / drinks: the drink stamps (drinks.go).
+	drinkRule atomic.Pointer[func() order.DrinkRule]
+	drinks    atomic.Pointer[drinkCache]
 }
 
 // NewStore builds the store; Load reads the saved snapshots.

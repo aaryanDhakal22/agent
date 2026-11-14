@@ -170,7 +170,13 @@ func TestBackupDoesNotBlockWrites(t *testing.T) {
 	if !usedRO {
 		t.Fatal("the backup didn't use its own read-only connection")
 	}
-	if limit := 200 * time.Millisecond; worst > limit && os.Getenv("GATE_PARALLEL") == "" {
-		t.Fatalf("a write waited %v during the backup", worst)
+	// 200 ms on an idle box; a loaded gate or GitHub's shared runners (CI on master, 2026-11-14: 201.6 ms) get 1 s:
+	// a backup that really blocked writes holds them for the whole copy (seconds), well past either.
+	limit := 200 * time.Millisecond
+	if os.Getenv("GATE_PARALLEL") != "" || os.Getenv("GITHUB_ACTIONS") != "" {
+		limit = time.Second
+	}
+	if worst > limit {
+		t.Fatalf("a write waited %v during the backup (limit %v)", worst, limit)
 	}
 }

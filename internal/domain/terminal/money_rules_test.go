@@ -70,7 +70,7 @@ func TestMoneyRules(t *testing.T) {
 		check(c, got)
 	}
 	for _, c := range tab.GeneralRefunds {
-		check(c, mr.Answer(terminal.GeneralRefundNeed(cfg, tab.Staff(cfg, c.By), c.Cents), nil))
+		check(c, mr.Answer(terminal.GeneralRefundCheck(cfg, tab.Staff(cfg, c.By), c.Tender, c.Cents)))
 	}
 	for _, c := range tab.Tips {
 		p := pay(c.Payment)

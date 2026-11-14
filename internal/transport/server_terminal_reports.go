@@ -139,7 +139,8 @@ func (s *Server) handleTerminalPrintDriverReports(w http.ResponseWriter, r *http
 	s.writeJSON(w, http.StatusOK, res)
 }
 
-// POST /api/terminal/close {force?, manager_pin?} — the day's close (Close
+// POST /api/terminal/close {force?, manager_pin?, print_unpaid_here?,
+// print_not_picked_up_here?} — the day's close (Close
 // batch) from a terminal: a manager logged in, or a manager's PIN.
 func (s *Server) handleTerminalClose(w http.ResponseWriter, r *http.Request) {
 	if !s.terminalReady(w) {
@@ -152,6 +153,9 @@ func (s *Server) handleTerminalClose(w http.ResponseWriter, r *http.Request) {
 		// PrintUnpaidHere: this terminal prints the Unpaid at close list
 		// itself (terminal 1.0.5); else the Pi prints it.
 		PrintUnpaidHere bool `json:"print_unpaid_here"`
+		// PrintNotPickedUpHere: this terminal prints the Not picked up slip
+		// itself (the owner, 2026-11-14); else the Pi prints it.
+		PrintNotPickedUpHere bool `json:"print_not_picked_up_here"`
 		// ForceUnpaid passes the unpaid counter checks only (not the
 		// leftovers, which force passes).
 		ForceUnpaid bool `json:"force_unpaid"`
@@ -159,7 +163,8 @@ func (s *Server) handleTerminalClose(w http.ResponseWriter, r *http.Request) {
 	if r.ContentLength != 0 && !s.decodeTerminal(w, r, &body) {
 		return
 	}
-	res, err := s.terminalSvc.CloseBatch(order.WithForceUnpaid(terminalApp.WithApprovals(r.Context(), body.Approvals), body.ForceUnpaid), actor(r), body.Force, strings.TrimSpace(body.ManagerPIN), body.PrintUnpaidHere)
+	ctx := order.WithPrintNotPickedUpHere(order.WithForceUnpaid(terminalApp.WithApprovals(r.Context(), body.Approvals), body.ForceUnpaid), body.PrintNotPickedUpHere)
+	res, err := s.terminalSvc.CloseBatch(ctx, actor(r), body.Force, strings.TrimSpace(body.ManagerPIN), body.PrintUnpaidHere)
 	if err != nil {
 		var mgr *terminal.ManagerRequired
 		switch {
@@ -177,12 +182,12 @@ func (s *Server) handleTerminalClose(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var unsettled *order.UnsettledList
-	var unpaid *order.UnpaidAtClose
+	var unpaid, notPicked *order.UnpaidAtClose
 	if res.Closed != nil {
-		unsettled, unpaid = res.Closed.Unsettled, res.Closed.UnpaidAtClose
+		unsettled, unpaid, notPicked = res.Closed.Unsettled, res.Closed.UnpaidAtClose, res.Closed.NotPickedUp
 	}
 	s.writeJSON(w, http.StatusOK, map[string]any{"closed": res.Closed, "opened": opened.Batch, "auto_finished": res.AutoFinished,
-		"unsettled": unsettled, "unpaid_at_close": unpaid})
+		"unsettled": unsettled, "unpaid_at_close": unpaid, "not_picked_up": notPicked})
 }
 
 // GET /api/terminal/checks — the All Checks Overview (contract §2.10o).

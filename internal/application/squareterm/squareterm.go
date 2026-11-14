@@ -76,7 +76,7 @@ func (r *Refused) Error() string { return r.Message }
 // HTTPStatus is the Pi's answer for a refusal (contract §2.10r).
 func (r *Refused) HTTPStatus() int {
 	switch r.Code {
-	case "card_declined", "refund_failed":
+	case "card_declined", "refund_failed", "unlinked_unsupported":
 		return http.StatusPaymentRequired
 	case "square_not_linked", "square_reconnect":
 		return http.StatusConflict
@@ -141,6 +141,11 @@ type reply struct {
 	Payment     json.RawMessage `json:"payment"`
 	RefundID    string          `json:"refund_id"`
 	Status      string          `json:"status"`
+	// square.general_refund (batch J): the card Square refunded to.
+	Brand    string          `json:"brand"`
+	Last4    string          `json:"last4"`
+	Unlinked bool            `json:"unlinked"`
+	Payments json.RawMessage `json:"payments"`
 }
 
 // send asks main and sorts the answer: ok, a refusal, or an error.
@@ -343,6 +348,14 @@ type KeyedIn struct {
 	IdempotencyKey string `json:"idempotency_key"`
 	ReferenceID    string `json:"reference_id"`
 	OrderID        string `json:"order_id"`
+	// Fulfillment (2.10ao): the terminal's / call center's order type for a
+	// cart not sent yet (delivery | pickup | counter). Only a hint: a sent
+	// order's own fulfilment decides.
+	Fulfillment string `json:"fulfillment,omitempty"`
+	// Hold (2.10ao) is the Pi's decision, never the client's (the handler
+	// overwrites it): a delivery's card is authorized only (main
+	// square.keyed_payment hold: true).
+	Hold bool `json:"hold"`
 }
 
 // KeyedPayment is the answer's payment.
@@ -356,6 +369,9 @@ type KeyedPayment struct {
 	Entry         string `json:"entry"`
 	AmountCents   int64  `json:"amount_cents"`
 	TipCents      int64  `json:"tip_cents"`
+	// Held (2.10ao): Square only authorized it (status APPROVED, a delivery's
+	// hold); the terminal records the payment with held: true.
+	Held bool `json:"held,omitempty"`
 }
 
 // Check validates a keyed payment body (the Pi's own limits).
@@ -387,6 +403,7 @@ func (s *Service) Keyed(ctx context.Context, in KeyedIn) (KeyedPayment, error) {
 	if json.Unmarshal(r.Payment, &p) != nil || p.ID == "" {
 		return KeyedPayment{}, ErrUnreachable
 	}
+	p.Held = p.Status == "APPROVED"
 	return p, nil
 }
 

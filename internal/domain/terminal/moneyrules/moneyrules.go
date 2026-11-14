@@ -63,6 +63,8 @@ type RuleCase struct {
 	Cents int64  `json:"cents"`
 	Pct   int    `json:"pct"`
 	Kind  string `json:"kind"`
+	// Tender: a general_refunds case's tender (batch J: a card; "" = cash).
+	Tender string `json:"tender"`
 	// What: a voids case: order | waste | line.
 	What     string         `json:"what"`
 	From     int64          `json:"from"`
@@ -75,11 +77,11 @@ type RuleCase struct {
 	Refund RulePay `json:"refund"`
 	// Payment / TipAfter: a tips case (a payment taken with its tip, or a
 	// tip set afterwards on it).
-	Payment  RulePay         `json:"payment"`
-	TipAfter bool            `json:"tip_after"`
+	Payment  RulePay `json:"payment"`
+	TipAfter bool    `json:"tip_after"`
 	// Void: a tender_voids case: the index of the order's payment voided.
-	Void int `json:"void"`
-	Pi       json.RawMessage `json:"pi"`
+	Void int             `json:"void"`
+	Pi   json.RawMessage `json:"pi"`
 }
 
 // LoadRules reads the table from path.
@@ -152,6 +154,8 @@ func Answer(need *terminal.ManagerRequired, err error) string {
 		return `{"refused":"tender_refunded"}`
 	case err != nil && errors.Is(err, terminal.ErrDriverNotAllowed):
 		return `{"refused":"driver_not_allowed"}`
+	case err != nil && errors.Is(err, terminal.ErrGeneralRefundTender):
+		return `{"refused":"general_refund_tender"}`
 	case err != nil && errors.As(err, new(*terminal.NotAllowedForCallcenter)):
 		return `{"refused":"not_allowed_for_callcenter"}`
 	case err != nil:

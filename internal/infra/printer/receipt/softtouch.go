@@ -13,9 +13,11 @@ import (
 // delivery's Merchant + Customer Copy and the customer receipt of any order
 // (pickup / takeout / delivery, a Reprint too) are one slip:
 //
-//	header (the store's logo left + its details right as one raster, else the
-//	details centred) · Date / Time · Order # (large) · type · LAST , FIRST ·
-//	the labelled block (printed even when empty) · one payment
+//	header (the store's logo centred at half the paper's width with its phone
+//	under it, as one raster; else the details centred) · Date / Time ·
+//	Order #100 (large) · the type in Go Bold with its icon, centred · LAST ,
+//	FIRST · the labelled block (printed even when empty) · the order's note
+//	between two rules · one payment
 //	block per card · items · Coupons · rule · totals (Total large) · a line per
 //	payment · the signature block (a card order with no tip taken yet) · the
 //	copy label · Order Online · the footer (large) · powered by.
@@ -77,8 +79,8 @@ func softSlip(p *escw, snap order.Snapshot, st deliveryStore, at time.Time, copy
 	if snap.KitchenNumber != nil {
 		num = fmt.Sprintf("%d", *snap.KitchenNumber)
 	}
-	t := "Order #: " + num
-	p.feed(1) // an empty line above and below (the owner, 2026-11-12, 2.5.2)
+	t := "Order #" + num // "Order #100": no colon, no space (the owner 2026-11-14)
+	p.feed(1)            // an empty line above and below (the owner, 2026-11-12, 2.5.2)
 	p.bold(true)
 	if len(dclean(t))*2 <= w {
 		p.raw(gsBig)
@@ -90,12 +92,8 @@ func softSlip(p *escw, snap order.Snapshot, st deliveryStore, at time.Time, copy
 	p.bold(false)
 	p.feed(1)
 	if typ := slipType(snap); typ != "" {
-		// the word + its icon, a bag or a car, as one picture (icons.go, the owner 2026-11-14 #16)
-		if typeIcon(typ) != nil {
-			p.raw(typeLine(typ, p.strikeImages))
-		} else {
-			p.line(typ)
-		}
+		// the word in Go Bold + its icon, a bag or a car, centred, as one picture (icons.go, the owner 2026-11-14)
+		p.raw(typeLine(typ, p.strikeImages, p.lay))
 	}
 	if by := strings.TrimSpace(snap.TakenBy); by != "" && !hasCardCharge(snap) {
 		// a call-center order (contract §2.10ab); with a card the payment block's Cashier line says it
@@ -133,7 +131,11 @@ func softSlip(p *escw, snap order.Snapshot, st deliveryStore, at time.Time, copy
 		always(p, "City", city) // no Directions line: drivers go by the street (the owner, 2.5.2)
 	}
 	if n := strings.TrimSpace(snap.Notes); n != "" {
+		// The order's note between two rules, every order (the owner 2026-11-14): the line's width
+		// exactly, nothing between them and the note.
+		p.line(strings.Repeat("-", w))
 		p.wrapped("Notes: "+n, strings.Repeat(" ", 7))
+		p.line(strings.Repeat("-", w))
 	}
 	p.feed(1)
 	// One payment block per card payment.
@@ -430,8 +432,9 @@ func signatureWanted(snap order.Snapshot) bool {
 // indented under it). A delivery drops the $0 choices stamped not for the
 // driver (§2.1g); a pickup prints them all.
 func softItems(p *escw, snap order.Snapshot, voided, delivery bool) {
-	_ = delivery // one rule for pickup and delivery (slipShowsChoice, 2.5.2)
-	deliveryItems(p, snap, voided)
+	// one choice rule for pickup and delivery (slipShowsChoice, 2.5.2); the drink marks on a delivery's
+	// slips only (the owner 2026-11-14: never a pickup or counter receipt)
+	deliveryItems(p, snap, voided, delivery && p.drinkMarks)
 }
 
 // hasCardCharge: a card payment with an amount (it gets a payment block).

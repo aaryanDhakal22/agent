@@ -82,21 +82,38 @@ func Build(snap order.Snapshot, sc storeconfig.StoreContext, t printer.Ticket, p
 //
 //   - the store's receipt Copies (1 or 2, Quibase Settings, every type);
 //   - a takeout / pickup order's customer receipt (fulfillment pickup, any
-//     source) with main's takeout_two_copies on: max(Copies, 2);
+//     source) or a counter order's (fulfillment counter, or dine_in rung on
+//     a terminal / the POS: the slip says COUNTER; the owner 2026-11-14:
+//     "all the counter orders, when they get cashed out, or even a pickup
+//     order that gets cashed out, always prints like 2 receipts") with
+//     main's takeout_two_copies on: max(Copies, 2);
 //   - a reprint: Copies only (the takeout setting never doubles a reprint,
 //     so with the default Copies 1 a reprint prints one).
 //
-// A counter (dine-in) order and a delivery (its Merchant + Customer Copy,
-// TicketDeliveryCopies, built apart) are unchanged.
+// A delivery (its Merchant + Customer Copy, TicketDeliveryCopies, built
+// apart) and an online dine-in order are unchanged.
 func CustomerCopies(snap order.Snapshot, t printer.Ticket, prefs order.ReceiptPrefs) int {
 	n := max(prefs.Copies, 1)
-	if !prefs.TakeoutTwoCopies || t.Reprint || !snap.IsPickup() {
+	if !prefs.TakeoutTwoCopies || t.Reprint || !(snap.IsPickup() || isCounterOrder(snap)) {
 		return n
 	}
 	if t.Kind == printer.TicketReceipt || t.Kind == printer.TicketFull {
 		return max(n, 2)
 	}
 	return n
+}
+
+// isCounterOrder: a counter order (the slip's COUNTER, the terminal's
+// receipt.dart typeLabel): fulfillment counter, or dine_in rung at the
+// counter (source counter) or on the POS.
+func isCounterOrder(snap order.Snapshot) bool {
+	switch strings.ToLower(strings.TrimSpace(snap.Fulfillment.Type)) {
+	case "counter":
+		return true
+	case "dine_in":
+		return snap.Source == order.SourceCounter || snap.Source == "pos"
+	}
+	return false
 }
 
 // BuildWith renders a canonical Snapshot into ESC/POS bytes using the

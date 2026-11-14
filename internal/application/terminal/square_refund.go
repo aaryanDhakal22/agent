@@ -96,3 +96,18 @@ func (s *Service) squareRefund(ctx context.Context, orderID string, in PaymentIn
 		Int64("amount_cents", pay.AmountCents+pay.TipCents).Msg("Square refund given")
 	return nil
 }
+
+// KeyedHold (contract 2.10ao) decides whether a typed card is taken as a
+// hold (authorized only, captured by main with the driver's typed tip): a
+// delivery's card. A sent order decides by its own fulfilment, whatever the
+// client says; a cart not sent yet (no order id, or none the Pi knows) by
+// the client's order type. A wrong "delivery" from the client costs nothing:
+// main captures a hold whose order isn't a delivery at once.
+func (s *Service) KeyedHold(ctx context.Context, orderID, fulfillment string) bool {
+	if id := strings.TrimSpace(orderID); id != "" {
+		if v, err := s.Order(ctx, id); err == nil && v != nil {
+			return v.Order.IsDelivery()
+		}
+	}
+	return strings.TrimSpace(fulfillment) == "delivery"
+}

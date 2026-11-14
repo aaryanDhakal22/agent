@@ -599,7 +599,7 @@ func (s *Server) handleCloseBatch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.writeJSON(w, http.StatusOK, map[string]any{"closed": closed, "opened": opened.Batch, "auto_finished": finished,
-		"unsettled": closed.Unsettled, "unpaid_at_close": closed.UnpaidAtClose})
+		"unsettled": closed.Unsettled, "unpaid_at_close": closed.UnpaidAtClose, "not_picked_up": closed.NotPickedUp})
 }
 
 // POST /api/drivers/{id}/undo-return — 409 invalid_state when it isn't the

@@ -1038,8 +1038,12 @@ VALUES (sqlc.arg(id), sqlc.arg(at), sqlc.arg(staff_id), sqlc.arg(device_id), sql
 SELECT * FROM journal ORDER BY at DESC, rowid DESC LIMIT ?;
 
 -- name: DeleteOrphanOrderPayments :exec
--- Retention: the payments of trimmed counter orders.
-DELETE FROM order_payments WHERE order_id NOT IN (SELECT id FROM orders);
+-- Retention: the payments of trimmed counter orders. A general refund has no
+-- order (order_id ''): it goes with its batch, never as an orphan (it was
+-- deleted within the hour and left out of the Z, 2026-11-14).
+DELETE FROM order_payments
+WHERE (order_id <> '' AND order_id NOT IN (SELECT id FROM orders))
+   OR (order_id = '' AND (batch_id IS NULL OR batch_id NOT IN (SELECT id FROM batches)));
 
 -- name: PruneJournal :execrows
 -- The Pi keeps the journal 30 days (main keeps it all).

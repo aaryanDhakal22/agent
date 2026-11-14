@@ -1035,12 +1035,16 @@ type PaymentIn struct {
 	EMV                 map[string]string `json:"emv,omitempty"`
 	SquarePaymentID     string            `json:"square_payment_id,omitempty"`
 	SquareReceiptNumber string            `json:"square_receipt_number,omitempty"`
+	// Held (2.10ao): Square only authorized this card (a delivery's hold,
+	// status APPROVED); kept with Square's payment id only.
+	Held bool `json:"held,omitempty"`
 }
 
 // cardInfo checks the Square fields of a card payment.
 func (p PaymentIn) cardInfo() (terminal.CardInfo, error) {
 	c := terminal.CardInfo{AuthCode: strings.TrimSpace(p.AuthCode), Entry: strings.TrimSpace(p.Entry),
 		SquarePaymentID: strings.TrimSpace(p.SquarePaymentID), SquareReceiptNumber: strings.TrimSpace(p.SquareReceiptNumber)}
+	c.Held = p.Held && c.SquarePaymentID != "" && (p.Tender == terminal.TenderCard || p.Tender == terminal.TenderManualCard)
 	if len(c.AuthCode) > 32 || len(c.SquarePaymentID) > 192 || len(c.SquareReceiptNumber) > 32 {
 		return c, badRequest("auth_code is at most 32 characters, square_payment_id 192, square_receipt_number 32")
 	}
@@ -1287,7 +1291,7 @@ func (s *Service) placeOrder(ctx context.Context, a Actor, in OrderIn) (*PlaceRe
 	if journal == nil {
 		journal = []terminal.Entry{}
 	}
-	items, off, fees, err := buildItems(m, p)
+	items, off, fees, err := s.orderLines(m, p)
 	if err != nil {
 		return nil, err
 	}

@@ -33,6 +33,13 @@ DEFAULTS = {
     "handover_choice_words": ["can", "cans", "soda", "pepsi", "coke", "sprite", "ginger ale", "ice tea", "iced tea", "tea", "dr pepper", "root beer", "mtn dew", "mountain dew", "lemonade", "fruit punch", "punch", "water", "juice", "2 liter", "liter", "bottle", "drink", "half/half", "half & half", "half and half", "triple mix", "shake", "lassi", "lasi", "slushie", "ice", "orange", "grape", "fries", "side", "salad", "chips", "celery", "rice", "naan", "roti", "dip", "dressing", "marinara", "chutney", "dessert", "cake", "cheesecake", "cannoli", "brownie", "cookie"],
     "style_online": "softtouch",  # 2.5.2: the slips' layout for online orders / the store's own
     "style_store": "softtouch",
+    # The drink marks (the owner 2026-11-14, contract §2.1k): "#####" after each drink on a delivery's slips.
+    "drink_marks": True,
+    "drink_categories": ["beverages", "beverage", "drinks", "drink", "soda", "sodas"],
+    "drink_groups": ["soda", "sodas", "drink", "drinks", "beverage", "beverages", "juice", "juices", "shake", "shakes",
+                     "slushie", "slushies", "slurpy", "lemonade"],
+    "drink_skip_words": ["sauce", "souce", "sause", "extra", "tender", "tenders", "fries", "all over", "on side",
+                         "dressing", "ranch"],
 }
 
 
@@ -99,6 +106,8 @@ def test_get_defaults_put_and_reject(store) -> None:
         ({**want, "bold_choice_words": [f"w{i}" for i in range(11)]}, "at most 10 words"),
         ({**want, "bold_choice_words": ["x" * 21]}, "at most 20 characters"),
         ({**want, "style_store": "fancy"}, "softtouch or classic"),
+        ({**want, "drink_categories": [f"c{i}" for i in range(21)]}, "drink_categories: at most 20 words"),
+        ({**want, "drink_groups": ["x" * 21]}, "at most 20 characters"),
     ):
         r = requests.put(f"{a.base}/api/settings/receipt", headers=tab, json=bad, timeout=5)
         assert r.status_code == 400 and r.json()["code"] == "bad_request", (bad, r.text)
@@ -112,6 +121,14 @@ def test_get_defaults_put_and_reject(store) -> None:
     assert requests.put(f"{a.base}/api/settings/receipt", headers=tab, json=off, timeout=5).json()["prefs"] == off
     older = {k: v for k, v in DEFAULTS.items() if k != "strike_images"}
     assert requests.put(f"{a.base}/api/settings/receipt", headers=tab, json=older, timeout=5).json()["prefs"]["strike_images"] is False
+
+    # The drink rule: a change sticks, and a tablet that doesn't know it yet keeps the store's.
+    drinks = {**DEFAULTS, "drink_marks": False, "drink_categories": ["Beverages", "Fountain"], "drink_groups": ["soda"],
+              "drink_skip_words": ["sauce"]}
+    assert requests.put(f"{a.base}/api/settings/receipt", headers=tab, json=drinks, timeout=5).json()["prefs"] == drinks
+    older = {k: v for k, v in DEFAULTS.items() if not k.startswith("drink_")}
+    kept = requests.put(f"{a.base}/api/settings/receipt", headers=tab, json=older, timeout=5).json()["prefs"]
+    assert {k: kept[k] for k in drinks if k.startswith("drink_")} == {k: drinks[k] for k in drinks if k.startswith("drink_")}, kept
 
     # Reset to defaults (the tablet sends the defaults object back).
     r = requests.put(f"{a.base}/api/settings/receipt", headers=tab, json=DEFAULTS, timeout=5)
@@ -137,7 +154,7 @@ def test_print_sample(store, fakes) -> None:
     assert job.count(b"CUSTOMER, SAMPLE") == 1, "the kitchen ticket"
     assert job.count(b"THANK YOU") == 2
     assert job.count(CUT) == 3, "2 copies x 1 cut + the kitchen ticket's cut"
-    for want in (b"Order #: 1234", b"   Note: extra ranch please", b"SAMPLE - not a real order", b"XXXXXXXXXXXX4242 Card"):
+    for want in (b"Order #1234", b"   Note: extra ranch please", b"SAMPLE - not a real order", b"XXXXXXXXXXXX4242 Card"):
         assert want in job, want
 
     # A chosen printer; the settings in force are the saved ones.

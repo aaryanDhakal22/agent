@@ -443,6 +443,7 @@ var staffRoutes = map[string]bool{
 	"GET /api/terminal/square/session":            true,
 	"GET /api/terminal/orders/{id}/phone-charges": true,
 	"GET /api/terminal/phone-charges/{id}":        true,
+	"GET /api/terminal/refunds/card-payments":     true, // batch J: the general card refund's fallback
 }
 
 // driverRoutes are the /api/terminal/* routes (mux patterns) a terminal with a
@@ -460,6 +461,8 @@ var driverRoutes = map[string]bool{
 	"GET /api/terminal/status":                     true,
 	"GET /api/terminal/receipt-header":             true,
 	"GET /api/terminal/setup":                      true,
+	"GET /api/terminal/printer-profiles":           true, // 2.10ap: the printer settings copy
+	"PUT /api/terminal/printer-profile":            true,
 	"POST /api/terminal/journal":                   true,
 	"POST /api/terminal/app/state":                 true,
 	"GET /api/terminal/app/latest":                 true,

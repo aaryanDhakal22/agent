@@ -145,6 +145,7 @@ func TestWidthGoldens(t *testing.T) {
 			"driver_report_small": BuildDriverReport(rep, rsc, order.SizeSmall, on, printed),
 			"unassigned":          BuildUnassignedReport(un, sc, "", rerouted, at),
 			"unsettled":           BuildUnsettledList(unsettledFixture(), sc, "", rerouted, at),
+			"not_picked_up":       BuildNotPickedUp(notPickedUpFixture(), sc, "", rerouted, at),
 			"test_slip":           BuildTestSlip("Pizza", sc, "Counter tablet", at, cols),
 			"sample":              BuildSample(sc, order.DefaultReceiptPrefs(), at, cols),
 		}

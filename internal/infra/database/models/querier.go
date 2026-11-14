@@ -79,7 +79,9 @@ type Querier interface {
 	DeleteOrphanDrawerMovements(ctx context.Context) error
 	DeleteOrphanDrawerSessions(ctx context.Context) error
 	DeleteOrphanOrderGeo(ctx context.Context) error
-	// Retention: the payments of trimmed counter orders.
+	// Retention: the payments of trimmed counter orders. A general refund has no
+	// order (order_id ''): it goes with its batch, never as an orphan (it was
+	// deleted within the hour and left out of the Z, 2026-11-14).
 	DeleteOrphanOrderPayments(ctx context.Context) error
 	DeleteOrphanOrderTimes(ctx context.Context) error
 	DeleteOrphanZReports(ctx context.Context) error

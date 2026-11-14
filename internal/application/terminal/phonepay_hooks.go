@@ -148,7 +148,7 @@ func (s *Service) PrecheckOrder(ctx context.Context, a Actor, in OrderIn) (*Prec
 			out.ApprovedBy = mgr.ID
 		}
 	}
-	items, off, fees, err := buildItems(m, p)
+	items, off, fees, err := s.orderLines(m, p)
 	if err != nil {
 		return nil, err
 	}

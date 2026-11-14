@@ -343,9 +343,10 @@ func (s *Service) CloseBatch(ctx context.Context, a Actor, force bool, pin strin
 		s.journal(ctx, overrideEntry(a, st, approver, need, ""))
 	}
 	// Who closed: a forced close writes unpaid counter checks off in their
-	// name (journal void.waste, order.void staff_id / approved_by).
+	// name (journal void.waste, order.void staff_id / approved_by), and every
+	// close the unpaid pickups not picked up (the owner, 2026-11-14).
 	by := order.CloseActor{StaffID: st.ID, StaffName: st.Name(), DeviceID: a.DeviceID, DeviceName: a.DeviceName,
-		Trigger: "terminal", PrintsHere: printsUnpaid}
+		Trigger: "terminal", PrintsHere: printsUnpaid, PrintsNotPickedUpHere: order.PrintNotPickedUpHereOf(ctx)}
 	if approver != nil {
 		by.ApprovedBy = approver.ID
 	}
@@ -361,6 +362,9 @@ func (s *Service) CloseBatch(ctx context.Context, a Actor, force bool, pin strin
 		d["batch_id"] = closed.ID
 		if u := closed.UnpaidAtClose; u != nil {
 			d["unpaid_written_off"], d["unpaid_written_off_cents"] = u.Count, u.TotalCents
+		}
+		if u := closed.NotPickedUp; u != nil {
+			d["not_picked_up_written_off"], d["not_picked_up_written_off_cents"] = u.Count, u.TotalCents
 		}
 	}
 	if approver != nil {

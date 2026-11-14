@@ -68,28 +68,40 @@ func listOf(batchID int64, checks []order.StoredOrder, now time.Time) *order.Uns
 // store's setting (order.CloseUnpaidOf, the owner 2026-11-13): waste = each
 // one with no payment row is written off as Void waste "Unpaid at close"
 // (wasteAtClose), carry (or a partly paid one) = carried like a pickup.
+// An unpaid counter / phone pickup that isn't picked up (order.NotPickedUp,
+// the open batch's or a carried one) never blocks; every close follows the
+// same setting for it (the owner, 2026-11-14): waste = written off as Void
+// waste "Not picked up" when it has no payment row, else carried.
 // Then it marks the checks the close carries, journals the remaining list
-// (batch.unsettled) and returns it, the write-offs and the carried ids.
-func closeUnsettled(ctx context.Context, q *models.Queries, batchID int64, auto, force bool, now time.Time) (*order.UnsettledList, *order.UnpaidAtClose, map[string]bool, error) {
+// (batch.unsettled) and returns it, the two write-off reports and the
+// carried ids.
+func closeUnsettled(ctx context.Context, q *models.Queries, batchID int64, auto, force bool, now time.Time) (*order.UnsettledList, *order.UnpaidAtClose, *order.UnpaidAtClose, map[string]bool, error) {
 	checks, err := unsettledOf(ctx, q, batchID)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, nil, nil, err
 	}
 	action := order.CloseUnpaidOf(ctx)
-	plan := map[string]string{} // blocking check -> waste | carry
+	plan := map[string]string{} // blocking check / unpaid pickup -> waste | carry
 	var block []order.UnsettledCheck
 	var preview order.ForcePreview
+	wasting := false
 	for _, so := range checks {
-		if !order.BlocksClose(so) {
+		blocks, pickup := order.BlocksClose(so), order.NotPickedUp(so)
+		if !blocks && !pickup {
 			continue
 		}
 		paid, err := listPayments(ctx, q, so.Order.ID)
 		if err != nil {
-			return nil, nil, nil, err
+			return nil, nil, nil, nil, err
+		}
+		outcome := order.ForceOutcome(action, len(paid))
+		plan[so.Order.ID] = outcome
+		wasting = wasting || outcome == order.UnpaidWaste
+		if !blocks {
+			continue // a pickup never blocks a close
 		}
 		c := order.UnsettledCheckOf(so, nil)
-		c.OnForce = order.ForceOutcome(action, len(paid))
-		plan[so.Order.ID] = c.OnForce
+		c.OnForce = outcome
 		if c.OnForce == order.UnpaidWaste {
 			preview.WasteCount++
 			preview.WasteCents += c.TotalCents
@@ -100,16 +112,21 @@ func closeUnsettled(ctx context.Context, q *models.Queries, batchID int64, auto,
 		block = append(block, c)
 	}
 	if len(block) > 0 && !auto && !force && !order.ForceUnpaidOf(ctx) {
-		return nil, nil, nil, &order.UnsettledError{Checks: block, ForceAction: action, Force: preview}
+		return nil, nil, nil, nil, &order.UnsettledError{Checks: block, ForceAction: action, Force: preview}
 	}
-	var wasted *order.UnpaidAtClose
-	if preview.WasteCount > 0 {
+	var wasted, notPicked *order.UnpaidAtClose
+	if wasting {
 		by := order.CloseActorOf(ctx)
-		wasted = &order.UnpaidAtClose{BatchID: batchID, Reason: order.UnpaidAtCloseReason, At: now.UTC().Truncate(time.Millisecond),
-			Auto: auto, ClosedBy: by, PrintedBy: "pi", Checks: []order.UnsettledCheck{}}
-		if by.PrintsHere {
-			wasted.PrintedBy = "terminal"
+		report := func(reason string, here bool) *order.UnpaidAtClose {
+			l := &order.UnpaidAtClose{BatchID: batchID, Reason: reason, At: now.UTC().Truncate(time.Millisecond),
+				Auto: auto, ClosedBy: by, PrintedBy: "pi", Checks: []order.UnsettledCheck{}}
+			if here {
+				l.PrintedBy = "terminal"
+			}
+			return l
 		}
+		wasted = report(order.UnpaidAtCloseReason, by.PrintsHere)
+		notPicked = report(order.NotPickedUpReason, by.PrintsNotPickedUpHere)
 		var entries []terminal.Entry
 		kept := checks[:0:0]
 		for _, so := range checks {
@@ -117,25 +134,31 @@ func closeUnsettled(ctx context.Context, q *models.Queries, batchID int64, auto,
 				kept = append(kept, so)
 				continue
 			}
-			c, e, err := wasteAtClose(ctx, q, so, by, auto, now)
+			into := wasted
+			if !order.BlocksClose(so) {
+				into = notPicked
+			}
+			c, e, err := wasteAtClose(ctx, q, so, by, into.Reason, auto, now)
 			if err != nil {
-				return nil, nil, nil, err
+				return nil, nil, nil, nil, err
 			}
 			if c == nil {
 				kept = append(kept, so) // changed under the close: left as it was
 				continue
 			}
-			wasted.Checks = append(wasted.Checks, *c)
-			wasted.TotalCents += c.TotalCents
+			into.Checks = append(into.Checks, *c)
+			into.TotalCents += c.TotalCents
 			entries = append(entries, e)
 		}
-		wasted.Count = len(wasted.Checks)
 		checks = kept
 		if err := insertJournal(ctx, q, now, entries); err != nil {
-			return nil, nil, nil, err
+			return nil, nil, nil, nil, err
 		}
-		if wasted.Count == 0 {
+		if wasted.Count = len(wasted.Checks); wasted.Count == 0 {
 			wasted = nil
+		}
+		if notPicked.Count = len(notPicked.Checks); notPicked.Count == 0 {
+			notPicked = nil
 		}
 	}
 	carry := map[string]bool{}
@@ -144,7 +167,7 @@ func closeUnsettled(ctx context.Context, q *models.Queries, batchID int64, auto,
 			continue
 		}
 		if err := q.SetOrderCarried(ctx, models.SetOrderCarriedParams{Carried: true, ID: so.Order.ID}); err != nil {
-			return nil, nil, nil, fmt.Errorf("carry check: %w", err)
+			return nil, nil, nil, nil, fmt.Errorf("carry check: %w", err)
 		}
 		checks[i].Status.Carried = true
 		carry[so.Order.ID] = true
@@ -162,19 +185,20 @@ func closeUnsettled(ctx context.Context, q *models.Queries, batchID int64, auto,
 		if err := insertJournal(ctx, q, now, []terminal.Entry{{DeviceID: "pi", Action: terminal.ActionUnsettled,
 			Detail: jsonDetail(map[string]any{"batch_id": batchID, "count": l.Count, "due_cents": l.DueCents, "order_ids": ids,
 				"auto": auto})}}); err != nil {
-			return nil, nil, nil, err
+			return nil, nil, nil, nil, err
 		}
 	}
-	return l, wasted, carry, nil
+	return l, wasted, notPicked, carry, nil
 }
 
-// wasteAtClose writes one unpaid counter check off as Void waste "Unpaid at
-// close" inside the close's transaction (contract 2.10s §4): cancelled with
-// the waste cancel reason, nothing prints, order.void {kind: waste,
-// waste_reason} for main, a carried one settled; the journal row (void.waste,
-// the Z / till Waste section) is returned for the caller to write. nil = the
-// check changed under the close (left alone).
-func wasteAtClose(ctx context.Context, q *models.Queries, so order.StoredOrder, by order.CloseActor, auto bool, now time.Time) (*order.UnsettledCheck, terminal.Entry, error) {
+// wasteAtClose writes one unpaid check off as Void waste inside the close's
+// transaction (contract 2.10s §4): reason "Unpaid at close" (a counter
+// check) or "Not picked up" (a pickup); cancelled with the waste cancel
+// reason, nothing prints, order.void {kind: waste, waste_reason} for main, a
+// carried one settled; the journal row (void.waste, the Z / till Waste
+// section) is returned for the caller to write. nil = the check changed
+// under the close (left alone).
+func wasteAtClose(ctx context.Context, q *models.Queries, so order.StoredOrder, by order.CloseActor, reason string, auto bool, now time.Time) (*order.UnsettledCheck, terminal.Entry, error) {
 	id := so.Order.ID
 	c := order.UnsettledCheckOf(so, nil)
 	c.BlocksClose, c.OnForce = false, order.UnpaidWaste
@@ -185,7 +209,6 @@ func wasteAtClose(ctx context.Context, q *models.Queries, so order.StoredOrder, 
 	if n == 0 {
 		return nil, terminal.Entry{}, nil
 	}
-	reason := order.UnpaidAtCloseReason
 	evID := uuid.NewString()
 	ev := map[string]any{"event_id": evID, "type": terminal.EventOrderVoid, "order_id": id, "at": now.UTC().Truncate(time.Millisecond),
 		"reason": reason, "staff_id": nilIfEmpty(by.StaffID), "kind": "waste", "waste_reason": reason}

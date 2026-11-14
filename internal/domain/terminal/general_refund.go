@@ -7,8 +7,9 @@ import (
 
 // General refund (the owner, 2026-11-12; contract/agent.md §2.10x): money
 // given back at the counter with no order attached ("doesn't ask for a
-// ticket number"). Cash only: a card can't go back without its original
-// Square payment (a manager does those in Square's dashboard). Stored as an
+// ticket number"). Cash, or (batch J, 2026-11-14) a card through Square: an
+// unlinked refund to the card typed into Square's card field, or a refund
+// linked to one of the store's recent Square payments. Stored as an
 // order_payments row with order_id "" and refund_kind "general", so it lands
 // in the paying terminal's drawer (expected cash goes down), on the drawer /
 // till report and the Z under Refunds as "General refund", and reaches main
@@ -24,8 +25,39 @@ const EventRefundGeneral = "refund.general"
 // GeneralRefundLabel is how reports and slips name it.
 const GeneralRefundLabel = "General refund"
 
-// ErrGeneralRefundCashOnly: a general refund is cash (400).
-var ErrGeneralRefundCashOnly = errors.New("a general refund is cash only: refund a card on its order, or in Square's dashboard")
+// ErrGeneralRefundTender: a general refund is cash, or a card through
+// Square (batch J, 2026-11-14); a Square-app card, a comp or anything else is
+// refused (400).
+var ErrGeneralRefundTender = errors.New("a general refund is cash, or a card through Square's card field")
+
+// GeneralRefundTender checks a general refund's tender ("" = cash): cash,
+// or (batch J, the owner 2026-11-14) a card given back through Square
+// (manual_card: typed into Square's card field; card: the fallback's
+// payment read by the reader).
+func GeneralRefundTender(t string) (string, error) {
+	switch t = strings.TrimSpace(t); t {
+	case "", TenderCash:
+		return TenderCash, nil
+	case TenderCard, TenderManualCard:
+		return t, nil
+	}
+	return "", ErrGeneralRefundTender
+}
+
+// GeneralRefundCheck is the money rule for a general refund of cents on
+// tender (contract/money-rules.json general_refunds): the tender first, then
+// a manager every time, whatever the tender (GeneralRefundNeed).
+func GeneralRefundCheck(c *Config, st Staff, tender string, cents int64) (*ManagerRequired, error) {
+	if _, err := GeneralRefundTender(tender); err != nil {
+		return nil, err
+	}
+	return GeneralRefundNeed(c, st, cents), nil
+}
+
+// ActionSquareGeneralRefund: the Pi's call to main for a general card
+// refund (batch J) {amount_cents, idempotency_key, unlinked, ok,
+// square_refund_id?, code?, square_code?}. Never the card or its token.
+const ActionSquareGeneralRefund = "square.general_refund"
 
 // IsGeneralRefund reports whether p is a general refund (no order).
 func IsGeneralRefund(p Payment) bool {
@@ -43,6 +75,12 @@ func GeneralRefundNeed(c *Config, st Staff, cents int64) *ManagerRequired {
 		return nil
 	}
 	return &ManagerRequired{Action: ActionRefund, Limit: 0, Requested: cents}
+}
+
+// IsGeneralCardRefund: a general refund given back on a card (never in a
+// drawer: its money is on the card's tender / brand).
+func IsGeneralCardRefund(p Payment) bool {
+	return IsGeneralRefund(p) && p.Tender != TenderCash
 }
 
 // GeneralRefunds sums the general refunds among pays (count, cents).

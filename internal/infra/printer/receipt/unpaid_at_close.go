@@ -18,6 +18,23 @@ import (
 // count, the total written off and who closed. Printed on the driver
 // reports' printer like the Unsettled Check List (same text size rule).
 func BuildUnpaidAtClose(l order.UnpaidAtClose, sc storeconfig.StoreContext, size string, on printer.Paper, printedAt time.Time) []byte {
+	return buildWriteOff(l, sc, size, on, printedAt, false)
+}
+
+// BuildNotPickedUp renders the NOT PICKED UP slip (the owner, 2026-11-14:
+// "when a pickup order isn't picked up and the close batch command is sent,
+// they're supposed to be voided as waste and printed on a not picked up
+// slip"; contract/agent.md §2.10s §4): the unpaid pickups a close wrote off
+// as Void waste "Not picked up". Per pickup its number, time placed, cashier,
+// customer name + phone, items and total; then the count, the sum written
+// off and who closed. Printed where the Unpaid at close list prints.
+func BuildNotPickedUp(l order.UnpaidAtClose, sc storeconfig.StoreContext, size string, on printer.Paper, printedAt time.Time) []byte {
+	return buildWriteOff(l, sc, size, on, printedAt, true)
+}
+
+// buildWriteOff is both write-off slips: pickups = NOT PICKED UP (each
+// customer's name and phone, "Pickups"), else UNPAID AT CLOSE.
+func buildWriteOff(l order.UnpaidAtClose, sc storeconfig.StoreContext, size string, on printer.Paper, printedAt time.Time, pickups bool) []byte {
 	l, sc, on = scrubUnpaidAtClose(l), scrubStore(sc), scrubPaper(on)
 	lay := layoutFor(on.Cols)
 	lineWidth := lay.cols
@@ -41,9 +58,13 @@ func BuildUnpaidAtClose(l order.UnpaidAtClose, sc storeconfig.StoreContext, size
 	w(cmdCenter)
 	w(cmdBoldOn)
 	w(cmdDoubleSz)
-	w("UNPAID")
+	title := [2]string{"UNPAID", "AT CLOSE"}
+	if pickups {
+		title = [2]string{"NOT", "PICKED UP"}
+	}
+	w(title[0])
 	nl()
-	w("AT CLOSE")
+	w(title[1])
 	nl()
 	w(cmdBaseSz)
 	w(cmdBoldOff)
@@ -70,6 +91,10 @@ func BuildUnpaidAtClose(l order.UnpaidAtClose, sc storeconfig.StoreContext, size
 		}
 		w(wrapJoin(placed, itemWidth, "  "))
 		nl()
+		if who := strings.TrimSpace(c.Customer.Name + " " + formatPhone(c.Customer.Phone)); pickups && who != "" {
+			w(wrapJoin(who, itemWidth, "  "))
+			nl()
+		}
 		for _, it := range c.Items {
 			for _, line := range wordWrap(fmt.Sprintf("%d %s", it.Qty, it.Name), itemWidth, "  ") {
 				w(line)
@@ -90,7 +115,11 @@ func BuildUnpaidAtClose(l order.UnpaidAtClose, sc storeconfig.StoreContext, size
 	}
 
 	separator()
-	w(leftRight("Checks", fmt.Sprintf("%d", l.Count), lineWidth))
+	count := "Checks"
+	if pickups {
+		count = "Pickups"
+	}
+	w(leftRight(count, fmt.Sprintf("%d", l.Count), lineWidth))
 	nl()
 	w(cmdBoldOn)
 	w(leftRight("Written off", dollars(l.TotalCents), lineWidth))

@@ -119,7 +119,12 @@ func (s *Service) AutoCloseDue(ctx context.Context, now time.Time, loc *time.Loc
 	// the auto-close always carried them): waste = written off, the Unpaid
 	// at close list prints; the Unsettled Check List (what was carried)
 	// prints too. Both on the driver reports' printer and the owner's page.
+	// Unpaid pickups not picked up follow the same setting (the owner,
+	// 2026-11-14): written off "Not picked up", the NOT PICKED UP slip prints.
 	if line := s.printUnpaid(ctx, closed.UnpaidAtClose); line != "" {
+		msg += ". " + line
+	}
+	if line := s.printNotPickedUp(ctx, closed.NotPickedUp); line != "" {
 		msg += ". " + line
 	}
 	if line := s.printUnsettled(ctx, closed.Unsettled); line != "" {

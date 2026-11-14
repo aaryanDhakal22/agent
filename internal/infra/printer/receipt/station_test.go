@@ -365,6 +365,7 @@ func TestRerouteBands(t *testing.T) {
 		"unassigned": BuildUnassignedReport(order.UnassignedReport{}, storeconfig.StoreContext{}, "", printer.Paper{ReroutedFrom: "Oven"}, time.Now()),
 		"unsettled":  BuildUnsettledList(order.UnsettledList{}, storeconfig.StoreContext{}, "", printer.Paper{ReroutedFrom: "Oven"}, time.Now()),
 		"unpaid":     BuildUnpaidAtClose(order.UnpaidAtClose{}, storeconfig.StoreContext{}, "", printer.Paper{ReroutedFrom: "Oven"}, time.Now()),
+		"not_picked": BuildNotPickedUp(order.UnpaidAtClose{}, storeconfig.StoreContext{}, "", printer.Paper{ReroutedFrom: "Oven"}, time.Now()),
 		"driver":     BuildDriverReport(order.DriverReport{}, storeconfig.StoreContext{}, "", printer.Paper{ReroutedFrom: "Oven"}, time.Now()),
 	} {
 		for _, l := range []string{"REROUTED FROM OVEN", "REDIRIGIDO DE OVEN"} {

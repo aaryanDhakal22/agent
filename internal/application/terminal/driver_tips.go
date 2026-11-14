@@ -85,9 +85,9 @@ func ticketWith(so order.StoredOrder, tips map[string]order.DriverTip) DriverTic
 // with nothing typed yet, oldest first), the ones typed (newest first) and
 // his report so far.
 type TipsView struct {
-	Driver *DriverPublic        `json:"driver"`
-	Pile   []DriverTicket       `json:"pile"`
-	Typed  []DriverTicket       `json:"typed"`
+	Driver *DriverPublic       `json:"driver"`
+	Pile   []DriverTicket      `json:"pile"`
+	Typed  []DriverTicket      `json:"typed"`
 	Report *order.DriverReport `json:"report"`
 }
 
@@ -234,7 +234,10 @@ func (s *Service) ApplyDriverTips(ctx context.Context, driverID string, channelO
 			continue
 		}
 		counter := so.Order.Source == order.SourceCounter
-		if channelOnly && counter {
+		if channelOnly && counter && !s.heldCard(ctx, t.OrderID) {
+			// A clock-out: a counter card held by main (2.10ao) is captured
+			// now, so its typed tip goes on it now; a completed one waits for
+			// the press of Close batch.
 			continue
 		}
 		if !order.TipTakable(*so, so.Status.BatchID) {
@@ -290,14 +293,9 @@ func (s *Service) journalApplied(ctx context.Context, so order.StoredOrder, t or
 
 var errNoCardPayment = errors.New("no card payment to put the tip on")
 
-// counterTip writes the typed tip's difference as a 2.10p tip payment on the
-// order's largest live card payment; whole = that payment's tip after it.
-func (s *Service) counterTip(ctx context.Context, so order.StoredOrder, t order.DriverTip) (terminal.Payment, int64, error) {
-	id := so.Order.ID
-	pays, err := s.repo.OrderPayments(ctx, id)
-	if err != nil {
-		return terminal.Payment{}, 0, err
-	}
+// tipCardOf is the payment a counter order's typed tip goes on: its largest
+// card sale (nil = none).
+func tipCardOf(pays []terminal.Payment) *terminal.Payment {
 	var pick *terminal.Payment
 	for i := range pays {
 		p := pays[i]
@@ -308,6 +306,30 @@ func (s *Service) counterTip(ctx context.Context, so order.StoredOrder, t order.
 			pick = &pays[i]
 		}
 	}
+	return pick
+}
+
+// heldCard: the counter order's typed tip goes on a card Square only
+// authorized (contract 2.10ao: a delivery's hold, captured by main at the
+// driver's clock-out, so his typed tip goes on it then too).
+func (s *Service) heldCard(ctx context.Context, id string) bool {
+	pays, err := s.repo.OrderPayments(ctx, id)
+	if err != nil {
+		return false
+	}
+	p := tipCardOf(pays)
+	return p != nil && p.Held && p.SquarePaymentID != ""
+}
+
+// counterTip writes the typed tip's difference as a 2.10p tip payment on the
+// order's largest live card payment; whole = that payment's tip after it.
+func (s *Service) counterTip(ctx context.Context, so order.StoredOrder, t order.DriverTip) (terminal.Payment, int64, error) {
+	id := so.Order.ID
+	pays, err := s.repo.OrderPayments(ctx, id)
+	if err != nil {
+		return terminal.Payment{}, 0, err
+	}
+	pick := tipCardOf(pays)
 	if pick == nil {
 		return terminal.Payment{}, 0, errNoCardPayment
 	}
@@ -375,8 +397,8 @@ func (s *Service) squareTip(ctx context.Context, so order.StoredOrder, pay termi
 		return
 	}
 	bg := context.WithoutCancel(ctx)
-	safego.Go("driver-tip-square", func() {
-		_, err := adj.TipAdjust(bg, pay.SquarePaymentID, whole, id)
+	adjust := func(ctx context.Context) {
+		_, err := adj.TipAdjust(ctx, pay.SquarePaymentID, whole, id)
 		var ref *squareterm.Refused
 		switch {
 		case err == nil:
@@ -386,8 +408,23 @@ func (s *Service) squareTip(ctx context.Context, so order.StoredOrder, pay termi
 		default:
 			record(bg, order.TipSquareFailed, err.Error())
 		}
-	})
+	}
+	if pay.Held {
+		// A delivery's hold (2.10ao): main keeps the tip on the hold and puts
+		// it on the card when it captures, which the batch.closed / clock-out
+		// event that follows asks for. So the tip reaches main first: asked
+		// now, before the caller goes on (main only writes it down: quick).
+		tctx, cancel := context.WithTimeout(bg, heldTipTimeout)
+		defer cancel()
+		adjust(tctx)
+		return
+	}
+	safego.Go("driver-tip-square", func() { adjust(bg) })
 }
+
+// heldTipTimeout bounds one held card's tip hand-over at a press of Close
+// batch / a clock-out (main answers from its database, no Square call).
+const heldTipTimeout = 10 * time.Second
 
 func tipNumber(so order.StoredOrder) string {
 	if n := so.Number(); n != nil {
