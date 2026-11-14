@@ -123,7 +123,8 @@ func modPriceEntries(a Actor, st terminal.Staff, changes []ModPriceChange, appro
 }
 
 // noteIssues: a priced note (a custom line with note_of) must follow its
-// item: an earlier line that is neither custom nor a deal.
+// item: an earlier line that is not a deal and not a note itself (a Quicc
+// Add may carry one: it follows that line's printer_id).
 func noteIssues(c pricing.Cart) []pricing.Issue {
 	var out []pricing.Issue
 	for i, l := range c.Lines {
@@ -131,7 +132,7 @@ func noteIssues(c pricing.Cart) []pricing.Issue {
 			continue
 		}
 		at := *l.NoteOf
-		if !l.Custom || at < 0 || at >= i || c.Lines[at].Custom || c.Lines[at].DealID != "" {
+		if !l.Custom || at < 0 || at >= i || c.Lines[at].NoteOf != nil || c.Lines[at].DealID != "" {
 			idx := i
 			out = append(out, pricing.Issue{Code: pricing.IssueCustomLine, Message: "A priced note must follow its item.", Line: &idx})
 		}

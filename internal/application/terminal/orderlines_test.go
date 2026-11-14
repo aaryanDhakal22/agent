@@ -6,6 +6,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"quiccpos/agent/internal/domain/order"
 	"quiccpos/agent/internal/domain/pricing"
@@ -222,5 +223,42 @@ func TestBYOSixthToppingAtItsSizePriceOnThePi(t *testing.T) {
 	q := quoteOf(t, r, byo(tp(1, 2, 3, 4, 1, 2)))
 	if q.Lines[0].UnitCents != 1599+175 || len(q.Lines[0].ModPrices) != 6 || !q.Lines[0].ModPrices[0].Included || q.Lines[0].ModPrices[5].Included {
 		t.Fatalf("6 toppings: %+v", q.Lines[0])
+	}
+}
+
+// A priced note under a Quicc Add follows that line's printer_id: null =
+// nowhere (no kitchen paper), an id = that printer alone; never the item route.
+func TestPricedNoteUnderAQuiccAddFollowsItsPrinter(t *testing.T) {
+	for _, c := range []struct {
+		name, body       string
+		routing, printer string
+	}{
+		{"null: nowhere", `null`, order.RoutingNone, ""},
+		{"a printer: that one", `"p-pizza"`, order.RoutingMatched, "p-pizza"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			var cart pricing.Cart
+			raw := `{"lines":[{"custom":true,"name":"Side of ranch","qty":2,"price_cents":75,"printer_id":` + c.body + `},` +
+				`{"custom":true,"name":"in a cup","qty":2,"price_cents":25,"note_of":0}]}`
+			if err := json.Unmarshal([]byte(raw), &cart); err != nil {
+				t.Fatal(err)
+			}
+			m := driverMenu(t, true)
+			m.QuickAddItemID = "qa-item"
+			m.Routes = map[string]terminal.Route{"qa-item": {PrinterID: "p-wings", Name: "Wings"}}
+			p, err := priceCart(m, time.UTC, terminal.TypeCounter, Cart{Cart: cart}, time.Now(), 3)
+			if err != nil || len(p.quote.Errors) > 0 || len(noteIssues(cart)) > 0 {
+				t.Fatalf("price: %v %+v %+v", err, p.quote.Errors, noteIssues(cart))
+			}
+			items, _, _, err := buildItems(m, p)
+			if err != nil || len(items) != 2 {
+				t.Fatalf("build: %v %+v", err, items)
+			}
+			note := items[1]
+			if note.SKU != order.SKUNote || note.ParentLineID != items[0].ID || note.Routing != c.routing || note.PrinterID != c.printer ||
+				note.LineTotal != 50 {
+				t.Errorf("note: %+v", note)
+			}
+		})
 	}
 }

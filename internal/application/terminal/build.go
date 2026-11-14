@@ -264,8 +264,10 @@ func buildItems(menu *terminal.CounterMenu, p priced) (items []order.LineItem, o
 			if at, ok := firstOf[*l.NoteOf]; ok && at < len(lines) && *l.NoteOf < i {
 				ql := p.quote.Lines[i]
 				par := lines[at]
+				// Under a Quicc Add it follows that line's printer_id (null = nowhere), as the line itself does.
 				lines = append(lines, built{item: order.LineItem{ID: uuid.Must(uuid.NewV7()).String(), Position: len(lines), SKU: order.SKUNote,
-					Name: ql.Name, Quantity: qty, UnitPrice: ql.UnitCents, LineTotal: ql.TotalCents, ParentLineID: par.item.ID}, route: par.route})
+					Name: ql.Name, Quantity: qty, UnitPrice: ql.UnitCents, LineTotal: ql.TotalCents, ParentLineID: par.item.ID}, route: par.route,
+					printer: par.printer})
 				continue
 			}
 		}
