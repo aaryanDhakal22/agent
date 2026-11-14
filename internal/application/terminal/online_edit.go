@@ -106,7 +106,7 @@ func (s *Service) priceOnline(menu *terminal.CounterMenu, snap order.Snapshot, c
 		if len(p.quote.Errors) > 0 {
 			return nil, &terminal.CartInvalid{Issues: p.quote.Errors}
 		}
-		items, off, fees, err := buildItems(menu, p)
+		items, off, fees, err := s.orderLines(menu, p)
 		if err != nil {
 			return nil, err
 		}

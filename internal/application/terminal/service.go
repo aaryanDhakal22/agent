@@ -1291,7 +1291,7 @@ func (s *Service) placeOrder(ctx context.Context, a Actor, in OrderIn) (*PlaceRe
 	if journal == nil {
 		journal = []terminal.Entry{}
 	}
-	items, off, fees, err := buildItems(m, p)
+	items, off, fees, err := s.orderLines(m, p)
 	if err != nil {
 		return nil, err
 	}

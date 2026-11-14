@@ -21,12 +21,13 @@ import (
 	"quiccpos/agent/internal/domain/storeconfig"
 )
 
-// The receipt header with the store's logo (the owner, 2026-11-12; contract
-// §2.1j): one raster as wide as the paper (576 / 512 / 384 dots for 48 / 42 /
-// 32 columns), the logo on the LEFT (at most 40 % of the width, dithered to
-// black and white) and the store's name / address / phone on the RIGHT, drawn
-// with the Go fonts (BSD, golang.org/x/image). No logo = no raster: the slip
-// prints the details centred as text.
+// The receipt header with the store's logo (the owner, 2026-11-12, stacked
+// 2026-11-14; contract §2.1j): one raster as wide as the paper (576 / 512 /
+// 384 dots for 48 / 42 / 32 columns), the logo centred at half the paper's
+// width (its light background printed as paper, dithered to black and white)
+// and the store's phone centred under it, drawn with Go Regular (BSD,
+// golang.org/x/image). No logo = no raster: the slip prints the details
+// centred as text.
 
 var logoState struct {
 	sync.RWMutex
@@ -112,7 +113,7 @@ func face(f *opentype.Font, px float64) font.Face {
 	return fc
 }
 
-// renderHeader draws the logo (left) and the store's lines (right) on a white
+// renderHeader draws the logo with the store's phone under it on a white
 // canvas `dots` wide and returns it as a centred GS v 0 raster.
 func renderHeader(logo image.Image, lines []string, dots int) []byte {
 	canvas := headerCanvas(logo, lines, dots)
@@ -137,103 +138,86 @@ func headerImage(sc storeconfig.StoreContext, lay layout) image.Image {
 	return headerCanvas(img, headerLines(sc), lay.dots())
 }
 
+// headerLines are what the header draws besides the logo: the store's phone
+// alone (the owner 2026-11-14: no name or address text under the logo).
 func headerLines(sc storeconfig.StoreContext) []string {
-	lines := []string{sc.StoreName(), strings.TrimSpace(sc.Location.AddressLine1), strings.TrimSpace(sc.Location.AddressLine2)}
 	if ph := strings.TrimSpace(sc.Location.Phone); ph != "" {
-		lines = append(lines, phoneParens(ph))
+		return []string{phoneParens(ph)}
 	}
-	return lines
+	return nil
 }
 
+// headerLight: a logo pixel at least this light prints as paper (Lombardi's
+// beige background, 232,212,185, dithered into a grey dotted box).
+const headerLight = 175
+
+// headerCanvas is the header the owner picked (2026-11-14): the logo alone,
+// centred, half the paper's width (at most as tall), its light background as
+// paper, then the lines (the phone) centred under it in Go Regular at 22 px
+// on 80 mm, scaled with the paper.
 func headerCanvas(logo image.Image, lines []string, dots int) *image.Gray {
 	fontOnce.Do(func() {
 		fontReg, _ = opentype.Parse(goregular.TTF)
 		fontBold, _ = opentype.Parse(gobold.TTF)
 	})
-	scale := float64(dots) / 576
-	namePx, linePx := 30*scale, 22*scale
-	gap := int(14 * scale)
-	// The text block's height.
-	textH, nonEmpty := 0, 0
-	for i, l := range lines {
-		if l == "" {
-			continue
-		}
-		nonEmpty++
-		if i == 0 {
-			textH += int(namePx * 1.25)
-		} else {
-			textH += int(linePx * 1.3)
-		}
-	}
-	// The logo's box: at most 40 % of the width, as tall as the text (at least 96 dots, at most 200).
-	maxW := dots * 40 / 100
-	boxH := min(max(textH, int(96*scale)), int(200*scale))
 	lb := logo.Bounds()
 	lw, lh := lb.Dx(), lb.Dy()
 	if lw <= 0 || lh <= 0 {
 		return nil
 	}
-	w, h := maxW, maxW*lh/lw
-	if h > boxH {
-		h, w = boxH, boxH*lw/lh
+	scale := float64(dots) / 576
+	linePx := 22 * scale
+	gap := int(10 * scale)
+	w := dots / 2
+	h := w * lh / lw
+	if h > dots/2 { // a tall logo: as tall as the box is wide
+		h, w = dots/2, (dots/2)*lw/lh
 	}
 	w, h = max(w, 1), max(h, 1)
-	// The store's lines, each shrunk until it fits right of the logo; the
-	// widest sets the text block's width.
 	type textLine struct {
-		s     string
-		fc    font.Face
-		px    float64
-		lineH int
+		s  string
+		fc font.Face
 	}
 	var tl []textLine
-	textW, blockW := dots-w-gap, 0
-	for i, l := range lines {
-		if l == "" {
+	for _, l := range lines {
+		if l = strings.TrimSpace(l); l == "" {
 			continue
 		}
-		f, px := fontReg, linePx
-		if i == 0 {
-			f, px = fontBold, namePx
+		px := linePx
+		fc := face(fontReg, px)
+		for fc != nil && px > 10 && font.MeasureString(fc, l).Ceil() > dots {
+			px--
+			fc = face(fontReg, px)
 		}
-		fc := face(f, px)
-		if fc == nil {
-			continue
+		if fc != nil {
+			tl = append(tl, textLine{l, fc})
 		}
-		for px > 10 && font.MeasureString(fc, l).Ceil() > textW {
-			px -= 1
-			fc = face(f, px)
-		}
-		lineH := int(px * 1.3)
-		if i == 0 {
-			lineH = int(px * 1.25)
-		}
-		blockW = max(blockW, min(font.MeasureString(fc, l).Ceil(), textW))
-		tl = append(tl, textLine{l, fc, px, lineH})
 	}
-	height := max(h, textH) + int(8*scale)
+	lineH := int(linePx * 1.3)
+	height := h + int(8*scale)
+	if len(tl) > 0 {
+		height += gap + lineH*len(tl)
+	}
 	canvas := image.NewGray(image.Rect(0, 0, dots, height))
 	draw.Draw(canvas, canvas.Bounds(), image.White, image.Point{}, draw.Src)
-	// Logo + text are ONE group, centred on the paper (the owner, 2026-11-12).
-	groupW := w
-	if blockW > 0 {
-		groupW += gap + blockW
-	}
-	ox := max((dots-groupW)/2, 0)
-	// The logo, scaled onto white (transparency = paper), then dithered.
+	// The logo, scaled onto white (transparency = paper), light pixels paper, then dithered.
 	scaled := image.NewRGBA(image.Rect(0, 0, w, h))
 	draw.Draw(scaled, scaled.Bounds(), image.White, image.Point{}, draw.Src)
 	xdraw.CatmullRom.Scale(scaled, scaled.Bounds(), logo, lb, xdraw.Over, nil)
-	top := (height - h) / 2
-	dither(canvas, scaled, image.Pt(ox, top))
-	// The store's lines, left-aligned right of the logo, vertically centred.
-	x := ox + w + gap
-	y := (height - textH) / 2
+	for y := 0; y < h; y++ {
+		for x := 0; x < w; x++ {
+			if color.GrayModel.Convert(scaled.At(x, y)).(color.Gray).Y > headerLight {
+				scaled.Set(x, y, color.White)
+			}
+		}
+	}
+	dither(canvas, scaled, image.Pt((dots-w)/2, 0))
+	y := h + gap
 	for _, l := range tl {
-		d := &font.Drawer{Dst: canvas, Src: image.Black, Face: l.fc, Dot: fixed.P(x, y+int(l.px))}
+		lwid := font.MeasureString(l.fc, l.s).Ceil()
+		d := &font.Drawer{Dst: canvas, Src: image.Black, Face: l.fc, Dot: fixed.P(max((dots-lwid)/2, 0), y+int(linePx))}
 		d.DrawString(l.s)
-		y += l.lineH
+		y += lineH
 	}
 	return canvas
 }

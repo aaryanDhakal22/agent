@@ -34,6 +34,8 @@ func StoreInfo(sc storeconfig.StoreContext, prefs order.ReceiptPrefs) map[string
 		"bold_choice_words": prefs.BoldChoiceWords.Words(),
 		// a $0 choice holding one of these whole words is one the driver hands over (2.5.7)
 		"handover_choice_words": prefs.HandoverChoiceWords.Words(),
+		// a delivery's lines stamped drink end in "#####" (receipt_prefs.drink_marks, contract §2.1k, 2026-11-14)
+		"drink_marks": prefs.DrinkMarks,
 		// the slips' layout per kind of order (softtouch | classic, 2.5.2)
 		"receipt_style_online": prefs.StyleFor(order.SourceOnline), "receipt_style_store": prefs.StyleFor(order.SourceCounter)}
 }

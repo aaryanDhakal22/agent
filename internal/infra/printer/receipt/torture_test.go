@@ -163,6 +163,20 @@ func tortureItems() []order.LineItem {
 	}
 }
 
+// drinkItems are lines the Pi stamped drinks (contract §2.1k): a long name, a
+// name that fills the line, a drink choice with a long name, a priced one.
+func drinkItems() []order.LineItem {
+	yes := true
+	long := tItem(1, tName60, "2 Liter", 365, "p-front")
+	long.Drink = &yes
+	fill := tItem(3, "Jumbo 44oz Pink Lemonade Extra", "", 1, "p-front")
+	fill.Drink = &yes
+	combo := tItem(2, "8 Wings & Fries", "", 1299, "p-fry", order.LineItem{Name: "Hot", Quantity: 1},
+		order.LineItem{Name: "W Can Coke Zero Sugar Free Caffeine Free Cherry Vanilla", Quantity: 1, Drink: &yes, ShowOnDriverTicket: &yes},
+		order.LineItem{Name: "Med Lemonade", Quantity: 1, UnitPrice: 100, Drink: &yes})
+	return []order.LineItem{long, fill, combo}
+}
+
 func manyItems(n int) []order.LineItem {
 	var out []order.LineItem
 	for i := 0; i < n; i++ {
@@ -274,6 +288,7 @@ func dumpTortureWidth(t *testing.T, dir string, cols int) {
 		receipt("receipt_"+typ+"_torture", tortureSnap(typ, items...), def, "")
 	}
 	receipt("receipt_delivery_many64", tortureSnap("delivery", manyItems(64)...), def, "")
+	receipt("receipt_delivery_drinks", tortureSnap("delivery", drinkItems()...), def, "") // the "#####" marks (§2.1k)
 	receipt("receipt_pickup_coupons", tortureSnap("pickup", couponItems()...), def, "")
 	receipt("receipt_delivery_rerouted", tortureSnap("delivery", items[:2]...), def, tPrinter)
 	receipt("receipt_delivery_rerouted_all", tortureSnap("delivery", items...), def, tPrinter)

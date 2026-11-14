@@ -565,7 +565,8 @@ func main() {
 	// and every close with an unpaid pickup not picked up (main's
 	// close_unpaid_counter_action: waste, the default, or carry).
 	orderService.SetCloseUnpaidAction(func() string { cfg, _ := termStore.Config(); return cfg.CloseUnpaidCounterAction() })
-	orderService.SetArrivalStamp(termStore.StampDriverTicket) // show_on_driver_ticket on channel orders
+	orderService.SetArrivalStamp(termStore.StampArrival) // drinks on every order + show_on_driver_ticket on channel orders
+	termStore.SetDrinkRule(func() order.DrinkRule { return orderService.PrintPrefs().DrinkRule() }) // receipt_prefs.drink_*
 	registry.Register(terminalApp.MsgMenuChanged, termStore.HandleMenuChanged)
 	registry.Register(terminalApp.MsgTerminalChanged, termStore.HandleTerminalChanged)
 	termStore.Run(ctx, 5*time.Minute, sseCtrl.Configured)

@@ -96,7 +96,7 @@ func TestSoftTouchSlipGoldens(t *testing.T) {
 					if hasStoreText == logo {
 						t.Errorf("%s: with a logo the store's details are in the raster, without it text (text: %v)", name, hasStoreText)
 					}
-					for _, want := range []string{"Date: 11/12/26", "Order #: 1104", "Phone      : (410) 555-0100", "Customer Copy", "Powered By"} {
+					for _, want := range []string{"Date: 11/12/26", "Order #1104", "Phone      : (410) 555-0100", "Customer Copy", "Powered By"} {
 						if !strings.Contains(txt, want) {
 							t.Errorf("%s: no %q\n%s", name, want, txt)
 						}
@@ -147,7 +147,7 @@ func TestDumpSlips(t *testing.T) {
 	SetReceiptLogo(testLogo(), `"logo-1"`)
 	cp := Build(slipSnap("tip"), sc, printer.Ticket{Kind: printer.TicketDeliveryCopies, Cols: 42}, prefs)
 	txt := textOf(cp)
-	write("1-delivery-copies-with-logo-42.txt", []byte("[header raster: the logo left + the store's details right, see 1-header-42.png]\n"+txt))
+	write("1-delivery-copies-with-logo-42.txt", []byte("[header raster: the logo centred, the phone under it, see 1-header-42.png]\n"+txt))
 	write("1-delivery-copies-with-logo-42.bin", cp)
 	lay := layoutFor(42)
 	img := headerImage(sc, lay)

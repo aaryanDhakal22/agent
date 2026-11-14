@@ -74,6 +74,21 @@ func (s *Server) handleSetReceiptPrefs(w http.ResponseWriter, r *http.Request) {
 		if _, ok := keys["strike_images"]; !ok {
 			p.StrikeImages = s.service.ReceiptPrefs(r.Context()).StrikeImages
 		}
+		// A tablet that doesn't know the drink rule yet keeps the store's
+		// (contract §2.1k, 2026-11-14).
+		cur := s.service.ReceiptPrefs(r.Context())
+		if _, ok := keys["drink_marks"]; !ok {
+			p.DrinkMarks = cur.DrinkMarks
+		}
+		if _, ok := keys["drink_categories"]; !ok {
+			p.DrinkCategories = cur.DrinkCategories
+		}
+		if _, ok := keys["drink_groups"]; !ok {
+			p.DrinkGroups = cur.DrinkGroups
+		}
+		if _, ok := keys["drink_skip_words"]; !ok {
+			p.DrinkSkipWords = cur.DrinkSkipWords
+		}
 	}
 	saved, err := s.service.SetReceiptPrefs(r.Context(), p)
 	if errors.Is(err, orderApp.ErrBadRequest) {

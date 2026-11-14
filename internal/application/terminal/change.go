@@ -314,7 +314,7 @@ func (s *Service) changeCart(ctx context.Context, a Actor, id string, in ChangeI
 	// A price change (or comp line) the order had already (same item, size
 	// and price) was approved then: only new ones are checked and journaled.
 	priceNeed, compNeed := checkPrices(cfg, st, p.changes, keptPrices(cur.Order.Order))
-	items, off, fees, err := buildItems(m, p)
+	items, off, fees, err := s.orderLines(m, p)
 	if err != nil {
 		return nil, err
 	}

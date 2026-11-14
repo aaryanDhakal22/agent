@@ -85,7 +85,7 @@ func TestDeliveryCopies(t *testing.T) {
 		// SoftTouch's slip (the owner, 2026-11-12): Phone / Street / City (Company, Complex, Zone
 		// Code, Gate Code went after the owner saw it printed), Directions, LAST , FIRST, the padded
 		// time, a rule above and below the Order #, the Transaction ID's last 10 characters.
-		for _, want := range []string{"Merchant Copy", "Customer Copy", "Order #: 1104", "DELIVERY", "LOPEZ , MARIA",
+		for _, want := range []string{"Merchant Copy", "Customer Copy", "Order #1104", "DELIVERY", "LOPEZ , MARIA",
 			"Phone      : (410) 555-0100", "Street     : 12 Test St, APT 4B", "City       : TOWSON, MD 21204",
 			"Notes: Ring twice", "Date: 11/12/26", "Time: 05:41 pm",
 			"Large Cheese Pizza", "Pepperoni", "Note: extra hot", "Delivery:", "Tip:", "Order Online", "lombardis.example"} {
@@ -98,7 +98,7 @@ func TestDeliveryCopies(t *testing.T) {
 				t.Errorf("%s: %q is gone from the slip", name, gone)
 			}
 		}
-		if !strings.Contains(txt, "\n\nOrder #: 1104\n\n") { // an empty line above and below (2.5.2)
+		if !strings.Contains(txt, "\n\nOrder #1104\n\n") { // an empty line above and below (2.5.2)
 			t.Errorf("%s: the Order # between two empty lines\n%s", name, txt)
 		}
 		if strings.Contains(txt, "Well Done") {

@@ -4,7 +4,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"regexp"
 	"strings"
+	"unicode"
 )
 
 // Text sizes of the receipt settings, smallest first. Not every setting takes
@@ -90,6 +92,25 @@ type ReceiptPrefs struct {
 	StyleOnline string `json:"style_online"`
 	StyleStore  string `json:"style_store"`
 
+	// DrinkMarks (the owner 2026-11-14, contract §2.1k: SoftTouch's marks,
+	// "drivers scan a long delivery ticket for them to know what to carry"):
+	// on, every line stamped a drink (LineItem.Drink) ends in DrinkMark on a
+	// delivery's customer slips. Off = no marks; the stamps stay.
+	DrinkMarks bool `json:"drink_marks"`
+	// DrinkCategories: an item of a counter-menu category whose name is one
+	// of these (any case, punctuation and a "(Counter)" ending ignored) is a
+	// drink. At most MaxDrinkWords names of MaxBoldWordLen plain characters.
+	DrinkCategories WordList `json:"drink_categories"`
+	// DrinkGroups: a choice of a modifier group whose name holds one of these
+	// as a whole word (any case) is a drink ("Whole Wings Soda (Counter)").
+	// At most MaxDrinkWords words of MaxBoldWordLen plain characters.
+	DrinkGroups WordList `json:"drink_groups"`
+	// DrinkSkipWords: an option of a drink group whose name holds one of
+	// these as a whole word is not a drink (Lombardi's "Whole Wings Soda
+	// (Counter)" also sells "Extra BBq Sauce", "BBQ on Tender", "SP & K on
+	// Fries"). At most MaxDrinkWords words of MaxBoldWordLen plain characters.
+	DrinkSkipWords WordList `json:"drink_skip_words"`
+
 	// TakeoutTwoCopies is not a tablet setting: main's terminal setting
 	// takeout_two_copies (Store › Settings › Receipts and printing, the
 	// owner 2026-11-13), set on the prefs at print time from the terminal
@@ -117,12 +138,75 @@ func (p ReceiptPrefs) StyleFor(source string) string {
 }
 
 // MaxBoldWords / MaxBoldWordLen bound ReceiptPrefs.BoldChoiceWords;
-// MaxHandoverWords (and MaxBoldWordLen) ReceiptPrefs.HandoverChoiceWords.
+// MaxHandoverWords (and MaxBoldWordLen) ReceiptPrefs.HandoverChoiceWords;
+// MaxDrinkWords each of DrinkCategories / DrinkGroups.
 const (
 	MaxBoldWords     = 10
 	MaxBoldWordLen   = 20
 	MaxHandoverWords = 80
+	MaxDrinkWords    = 20
 )
+
+// DrinkMark is what ends a drink's line on a delivery's customer slips
+// (SoftTouch's, the owner 2026-11-14: exactly five).
+const DrinkMark = "#####"
+
+// DefaultDrinkCategories / DefaultDrinkGroups are the drink rule a Pi starts
+// with (Lombardi's counter menu, 2026-11-14: the "Beverages" category, the
+// "Whole Wings Soda (Counter)" and "Milk Shake Mods (Counter)" groups).
+var (
+	DefaultDrinkCategories = []string{"beverages", "beverage", "drinks", "drink", "soda", "sodas"}
+	DefaultDrinkGroups     = []string{"soda", "sodas", "drink", "drinks", "beverage", "beverages", "juice", "juices",
+		"shake", "shakes", "slushie", "slushies", "slurpy", "lemonade"}
+	DefaultDrinkSkipWords = []string{"sauce", "souce", "sause", "extra", "tender", "tenders", "fries", "all over",
+		"on side", "dressing", "ranch"}
+)
+
+// DrinkRule is the part of the receipt settings the Pi stamps drinks with
+// (comparable: a cache key).
+type DrinkRule struct{ Categories, Groups, Skip WordList }
+
+// DrinkRule is these settings' drink rule.
+func (p ReceiptPrefs) DrinkRule() DrinkRule {
+	return DrinkRule{Categories: p.DrinkCategories, Groups: p.DrinkGroups, Skip: p.DrinkSkipWords}
+}
+
+// CategoryIsDrink: the category's name is one of the drink categories
+// (DrinkNameKey of both, a "(Counter)"-style ending left off the name).
+func (r DrinkRule) CategoryIsDrink(name string) bool {
+	k := DrinkNameKey(parenEnd.ReplaceAllString(name, ""))
+	if k == "" {
+		return false
+	}
+	for _, w := range r.Categories.Words() {
+		if DrinkNameKey(w) == k {
+			return true
+		}
+	}
+	return false
+}
+
+// GroupIsDrink: the modifier group's name holds a drink group word as a
+// whole word.
+func (r DrinkRule) GroupIsDrink(name string) bool { return r.Groups.MatchesWord(name) }
+
+// OptionIsDrink: an option of a drink group is a drink unless its name holds
+// a skip word as a whole word.
+func (r DrinkRule) OptionIsDrink(name string) bool { return !r.Skip.MatchesWord(name) }
+
+var parenEnd = regexp.MustCompile(`\s*\([^()]*\)\s*$`)
+
+// DrinkNameKey is a name compared for the drink rule: lower case, letters
+// and digits only ("2 Lt. Diet Pepsi" = "2ltdietpepsi").
+func DrinkNameKey(name string) string {
+	var b strings.Builder
+	for _, r := range strings.ToLower(name) {
+		if r >= 'a' && r <= 'z' || r >= '0' && r <= '9' || r > 0x7f && unicode.IsLetter(r) {
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
 
 // DefaultHandoverWords are the hand-over words a Pi starts with (Lombardi's
 // online vendor and counter names, 2026-11-13): every drink name the owner's
@@ -256,6 +340,10 @@ func DefaultReceiptPrefs() ReceiptPrefs {
 		HandoverChoiceWords: NewWordList(DefaultHandoverWords...),
 		StyleOnline:         StyleSoftTouch,
 		StyleStore:          StyleSoftTouch,
+		DrinkMarks:          true,
+		DrinkCategories:     NewWordList(DefaultDrinkCategories...),
+		DrinkGroups:         NewWordList(DefaultDrinkGroups...),
+		DrinkSkipWords:      NewWordList(DefaultDrinkSkipWords...),
 	}
 }
 
@@ -357,6 +445,15 @@ func (p ReceiptPrefs) Validate() error {
 		return err
 	}
 	if err := validWords("handover_choice_words", p.HandoverChoiceWords, MaxHandoverWords); err != nil {
+		return err
+	}
+	if err := validWords("drink_categories", p.DrinkCategories, MaxDrinkWords); err != nil {
+		return err
+	}
+	if err := validWords("drink_groups", p.DrinkGroups, MaxDrinkWords); err != nil {
+		return err
+	}
+	if err := validWords("drink_skip_words", p.DrinkSkipWords, MaxDrinkWords); err != nil {
 		return err
 	}
 	if f := p.FooterText; f != nil {

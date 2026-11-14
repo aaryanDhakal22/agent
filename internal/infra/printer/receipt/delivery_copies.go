@@ -49,6 +49,9 @@ type escw struct {
 	// handoverWords: a $0 choice holding one of them prints on the slip
 	// (receipt_prefs.handover_choice_words, 2.5.7, handedOver).
 	handoverWords order.WordList
+	// drinkMarks: receipt_prefs.drink_marks; a delivery's lines stamped a
+	// drink end in order.DrinkMark (contract §2.1k, deliveryItems).
+	drinkMarks bool
 }
 
 func (p *escw) raw(s string) { p.buf.WriteString(s) }
@@ -227,7 +230,7 @@ func BuildDeliveryCopies(snap order.Snapshot, sc storeconfig.StoreContext, prefs
 		at = at.In(loc)
 	}
 	p := &escw{width: lay.cols, lay: lay, strikeImages: prefs.StrikeImages, boldWords: prefs.BoldChoiceWords,
-		handoverWords: prefs.HandoverChoiceWords}
+		handoverWords: prefs.HandoverChoiceWords, drinkMarks: prefs.DrinkMarks}
 	p.raw(cmdInit + cmdNormalSz)
 	st := storeOf(sc, prefs.Normalize())
 	classic := prefs.Normalize().StyleFor(snap.Source) == order.StyleClassic
@@ -272,7 +275,7 @@ func BuildCustomerReceipt(snap order.Snapshot, sc storeconfig.StoreContext, pref
 		at = at.In(loc)
 	}
 	p := &escw{width: lay.cols, lay: lay, strikeImages: prefs.StrikeImages, boldWords: prefs.BoldChoiceWords,
-		handoverWords: prefs.HandoverChoiceWords}
+		handoverWords: prefs.HandoverChoiceWords, drinkMarks: prefs.DrinkMarks}
 	p.raw(cmdInit + cmdNormalSz)
 	if on.ReroutedFrom != "" { // the receipt's own bands (writeRerouted), as on every slip of a stand-in
 		writeRerouted(p.raw, func() { p.raw(cmdFeed) }, on.ReroutedFrom, lay)
@@ -318,8 +321,9 @@ func nonEmpty(ss ...string) []string {
 // deliveryItems is itemLines: quantity, the name in capitals (size first),
 // the line's price at the right; modifiers indented under it with their own
 // price (half-pie modifiers by half); a line's note under them. A $0 choice
-// prints only when the driver hands it over (slipShowsChoice, §2.1j).
-func deliveryItems(p *escw, snap order.Snapshot, voided bool) {
+// prints only when the driver hands it over (slipShowsChoice, §2.1j). On a
+// delivery (marks) a line stamped a drink ends in "#####" (withDrinkMark).
+func deliveryItems(p *escw, snap order.Snapshot, voided, marks bool) {
 	w := p.width
 	const priceW = 10
 	nameW := w - 4 - priceW
@@ -345,7 +349,7 @@ func deliveryItems(p *escw, snap order.Snapshot, voided bool) {
 			price = moneyC(int64(qty) * it.UnitPrice)
 		}
 		p.bold(true) // the item's own lines bold (the owner, 2.5.2); its choices follow the bold words
-		for i, l := range dwrap(dclean(name), nameW, "") {
+		for i, l := range withDrinkMark(dwrap(dclean(name), nameW, ""), nameW, marks && it.IsDrink()) {
 			head := "    " + l
 			if i == 0 {
 				head = fmt.Sprintf("%-3d %s", qty, l)
@@ -370,7 +374,7 @@ func deliveryItems(p *escw, snap order.Snapshot, voided bool) {
 			if bold {
 				p.bold(true)
 			}
-			for i, l := range dwrap(dclean(label), nameW-2, "") {
+			for i, l := range withDrinkMark(dwrap(dclean(label), nameW-2, ""), nameW-2, marks && m.drink) {
 				head := "      " + l
 				if i == 0 && amt != "" {
 					p.line(dleftRight(head, amt, w))
@@ -413,6 +417,9 @@ func handedOver(c order.LineItem, words order.WordList) bool {
 	if isNoChoice(c) {
 		return false
 	}
+	if c.IsDrink() { // a drink the Pi stamped (§2.1k): the driver hands it over
+		return true
+	}
 	// A half of a half-and-half pie (its specialty or topping) is what the
 	// pizza is: it always shows (the owner 2026-11-13: "its halves must show").
 	return c.Portion == order.PortionFirst || c.Portion == order.PortionSecond ||
@@ -428,9 +435,26 @@ func isNoChoice(c order.LineItem) bool {
 }
 
 type modLine struct {
-	name string
-	qty  int
-	unit int64
+	name  string
+	qty   int
+	unit  int64
+	drink bool // stamped a drink (LineItem.Drink)
+}
+
+// withDrinkMark ends a drink's wrapped name in " #####" (SoftTouch's marks,
+// the owner 2026-11-14, contract §2.1k): on its last line when it fits in
+// width, else on a line of its own (a wrapped line; the caller indents it).
+// The marks are whole, never split; added after the scrub (they are ours).
+func withDrinkMark(lines []string, width int, drink bool) []string {
+	if !drink {
+		return lines
+	}
+	if n := len(lines); n > 0 && len(lines[n-1])+1+len(order.DrinkMark) <= width {
+		out := append([]string(nil), lines...)
+		out[n-1] += " " + order.DrinkMark
+		return out
+	}
+	return append(append([]string(nil), lines...), order.DrinkMark)
 }
 
 var halfSuffix = regexp.MustCompile(` \((1st|2nd) half\)$`)
@@ -468,7 +492,7 @@ func deliveryModLines(mods []order.LineItem) []modLine {
 					name = "2nd: " + name
 				}
 			}
-			out = append(out, modLine{name: name, qty: m.Quantity, unit: m.UnitPrice})
+			out = append(out, modLine{name: name, qty: m.Quantity, unit: m.UnitPrice, drink: m.IsDrink()})
 		}
 	}
 	return out
