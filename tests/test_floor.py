@@ -98,17 +98,17 @@ def test_pickup_flow(floor, fakes) -> None:
     r = post(a, f"/api/orders/{oid}/accept", {"prep_minutes": 15})
     assert r.status_code == 200, r.text
     st = r.json()["status"]
-    assert st["state"] == "accepted" and st["kitchen_number"] == 1100 and st["prep_minutes"] == 15
+    assert st["state"] == "accepted" and st["kitchen_number"] == 100 and st["prep_minutes"] == 15  # one sequence from 100 (2.10ae)
     eta = datetime.fromisoformat(st["estimated_ready_at"].replace("Z", "+00:00"))
     acc = datetime.fromisoformat(st["accepted_at"].replace("Z", "+00:00"))
     assert abs((eta - acc).total_seconds() - 900) < 2
     wait_until(lambda: fakes["Front"].jobs, what="ticket printed")
-    assert "1100" in fakes["Front"].text(), "kitchen number on the ticket"
+    assert "100" in fakes["Front"].text(), "ticket number on the ticket"
     again = post(a, f"/api/orders/{oid}/accept")
     assert again.status_code == 409 and again.json()["code"] == "already_accepted"
 
     floor_now = a.http.get(f"{a.base}/api/floor", timeout=5).json()
-    assert floor_now["kitchen_next"] == 1101 and floor_now["last_prep_minutes"] == 15
+    assert floor_now["kitchen_next"] == 101 and floor_now["last_prep_minutes"] == 15
 
     r = post(a, f"/api/orders/{oid}/ready")
     assert r.status_code == 200 and r.json()["status"]["state"] == "ready"
@@ -205,18 +205,17 @@ def test_close_batch(floor) -> None:
     assert r.json()["auto_finished"][0]["status"].get("kitchen_number") is None
 
     f = a.http.get(f"{a.base}/api/floor", timeout=5).json()
-    # The kitchen numbers carry on after a close the same business day (contract 2.10ae).
-    assert f["batch"]["id"] > first and f["kitchen_next"] == 1101 and f["batch"]["order_count"] == 0
+    # Every close restarts the numbers at 100 (contract 2.10ae, 2026-11-14).
+    assert f["batch"]["id"] > first and f["kitchen_next"] == 100 and f["batch"]["order_count"] == 0
     assert a.http.get(f"{a.base}/api/orders", timeout=5).json() == [], "current batch is empty"
     assert len(a.http.get(f"{a.base}/api/orders", params={"batch": first}, timeout=5).json()) == 2
     assert len(a.http.get(f"{a.base}/api/orders", params={"batch": "all"}, timeout=5).json()) == 2
     batches = a.http.get(f"{a.base}/api/batches", timeout=5).json()
     assert batches[0].get("closed_at") is None and batches[1]["id"] == first and batches[1]["order_count"] == 2
 
-    # ... and the next accepted order takes it (they restart on the next business day:
-    # test_terminal.py::test_ticket_numbers_restart_once_a_business_day).
+    # ... and the next accepted order takes it (test_numbering.py has the rest).
     nxt = arrive(a)
-    assert post(a, f"/api/orders/{nxt}/accept").json()["status"]["kitchen_number"] == 1101
+    assert post(a, f"/api/orders/{nxt}/accept").json()["status"]["kitchen_number"] == 100
 
 
 def test_live_events_for_a_paired_tablet(floor) -> None:
@@ -263,7 +262,7 @@ def test_live_events_for_a_paired_tablet(floor) -> None:
     flash = next(d for e, d in events if e == "drivers.dispatched")
     assert flash["driver"]["name"] == "Zed" and [o["order"]["id"] for o in flash["orders"]] == [did]
     upd = next(d for e, d in events if e == "order.updated")
-    assert upd["order"]["id"] == oid and upd["status"]["kitchen_number"] == 1100
+    assert upd["order"]["id"] == oid and upd["status"]["kitchen_number"] == 100
 
 
 def test_undo_ready(floor) -> None:

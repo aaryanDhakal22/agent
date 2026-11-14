@@ -36,7 +36,7 @@ def test_link_with_manager_login(admin, main_store, blank_agent) -> None:
     assert r.status_code == 200, r.text
     body = r.json()
     assert body["device_key"].startswith("qagt_") and body["device_name"] == "Counter tablet"
-    assert body["restored"]["orders"] == 0 and body["restored"]["kitchen_next"] == 1100
+    assert body["restored"]["orders"] == 0 and body["restored"]["kitchen_next"] == 100  # the one sequence's start (2.10ae)
     tablet = {"X-Agent-Device-Key": body["device_key"]}
     assert requests.get(f"{a.base}/api/floor", headers=tablet, timeout=5).status_code == 200
 
