@@ -39,7 +39,9 @@ func (s *Service) OnClosePress(fn func(ctx context.Context)) { s.drvTips.press.S
 // OnShiftClosing registers what runs before a driver clocks out (driverID;
 // "" = the daily auto clock-out of everyone): his typed tips on website card
 // orders and on counter cards main holds (2.10ao) go on before main captures them.
-func (s *Service) OnShiftClosing(fn func(ctx context.Context, driverID string)) { s.drvTips.shift.Store(&fn) }
+func (s *Service) OnShiftClosing(fn func(ctx context.Context, driverID string)) {
+	s.drvTips.shift.Store(&fn)
+}
 
 func (s *Service) closePressed(ctx context.Context) {
 	if fn := s.drvTips.press.Load(); fn != nil && *fn != nil {

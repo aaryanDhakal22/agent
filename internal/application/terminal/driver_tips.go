@@ -85,9 +85,9 @@ func ticketWith(so order.StoredOrder, tips map[string]order.DriverTip) DriverTic
 // with nothing typed yet, oldest first), the ones typed (newest first) and
 // his report so far.
 type TipsView struct {
-	Driver *DriverPublic        `json:"driver"`
-	Pile   []DriverTicket       `json:"pile"`
-	Typed  []DriverTicket       `json:"typed"`
+	Driver *DriverPublic       `json:"driver"`
+	Pile   []DriverTicket      `json:"pile"`
+	Typed  []DriverTicket      `json:"typed"`
 	Report *order.DriverReport `json:"report"`
 }
 
