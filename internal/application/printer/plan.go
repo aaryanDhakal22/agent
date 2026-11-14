@@ -281,7 +281,13 @@ func stationTickets(snap order.Snapshot, roster []RosterEntry, receipt RosterEnt
 	}
 	for _, p := range roster {
 		idx := assigned[p.ID]
-		if len(idx) == 0 || (p.ID == receipt.ID && !receiptIsStation) {
+		if p.ID == receipt.ID && !receiptIsStation {
+			// A Quicc Add the cashier sent to the receipt printer prints there
+			// (the owner 2026-11-14, #17: "only on that one printer"); the rest
+			// routed there stays receipt-only.
+			idx = quiccAddsOn(snap, idx)
+		}
+		if len(idx) == 0 {
 			continue
 		}
 		mine := make([]order.LineItem, 0, len(idx))
@@ -301,6 +307,18 @@ func stationTickets(snap order.Snapshot, roster []RosterEntry, receipt RosterEnt
 		})
 	}
 	return tickets, unrouted
+}
+
+// quiccAddsOn keeps the Quicc Add (custom) lines of idx: the receipt
+// printer's own station ticket carries only those.
+func quiccAddsOn(snap order.Snapshot, idx []int) []int {
+	var out []int
+	for _, i := range idx {
+		if snap.Items[i].SKU == order.SKUCustom {
+			out = append(out, i)
+		}
+	}
+	return out
 }
 
 // isDeliverySnap: the order is a delivery (fulfillment delivery).

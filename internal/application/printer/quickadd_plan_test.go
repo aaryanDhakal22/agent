@@ -35,4 +35,14 @@ func TestPlan_QuiccAddPrintsOnlyWherePicked(t *testing.T) {
 	if un != nil || len(tk) != 1 || tk[0].TargetID != wings.ID || !reflect.DeepEqual(names(tk[0].Mine), []string{"Pizza dough"}) {
 		t.Fatalf("on the picked printer alone: %+v %v", tk, un)
 	}
+	// On the receipt printer (Front): a station ticket there with only the Quicc Add; a drink routed
+	// there stays receipt-only.
+	coke := item("Coke", order.RoutingMatched, front.ID)
+	tk, _ = PlanFor(counter(add(order.RoutingMatched, front.ID), coke), roster, printer.ModePlaced)
+	if len(tk) != 1 || tk[0].TargetID != front.ID || tk[0].Kind != printer.TicketStation || !reflect.DeepEqual(names(tk[0].Mine), []string{"Pizza dough"}) {
+		t.Fatalf("a Quicc Add on the receipt printer: %+v", tk)
+	}
+	if tk, _ := PlanFor(counter(coke), roster, printer.ModePlaced); len(tk) != 0 {
+		t.Fatalf("a drink on the receipt printer stays receipt-only: %+v", tk)
+	}
 }
