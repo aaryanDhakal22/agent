@@ -125,6 +125,53 @@ func TestReceiptSamples(t *testing.T) {
 	if hdr := headerFor(sc, layoutFor(cols)); len(hdr) > 0 && bytes.Contains(final, hdr) {
 		out["final_stacked"] = bytes.Replace(final, hdr, stackedHeader(t, sc, dots), 1)
 	}
+	// The drinks samples (the owner 2026-11-14): 2 x 8 Wings & Fries (a can with each) + a 2 liter, in the
+	// owner's pick (final). drinks_hashtags = SoftTouch's "#####" after each drink's name (a print name);
+	// drinks_invert = no marks, every drink line printed white on black across the paper.
+	yes := true
+	combo := func(kind, sauce, dressing, can string) order.LineItem {
+		return order.LineItem{Name: "8 Wings & Fries", Quantity: 1, UnitPrice: 1299, LineTotal: 1299, Children: []order.LineItem{
+			{Name: kind, Quantity: 1}, {Name: sauce, Quantity: 1}, {Name: dressing, Quantity: 1},
+			{Name: can, Quantity: 1, ShowOnDriverTicket: &yes}}}
+	}
+	drinks := s
+	drinks.Items = []order.LineItem{
+		combo("Regular", "Hot Sauce", "Ranch", "W Can Coke"),
+		combo("Boneless", "BBQ", "Blue Cheese", "W Can Sprite"),
+		{Name: "2Lt Pepsi", Quantity: 1, UnitPrice: 365, LineTotal: 365},
+	}
+	drinks.Money = order.Money{Subtotal: 2963, Tax: 178, Total: 3441,
+		Fees: []order.Fee{{Type: "delivery", Label: "Delivery fee", Amount: 300}}}
+	isDrink := map[string]bool{"W Can Coke": true, "W Can Sprite": true, "2Lt Pepsi": true}
+	finalOf := func(b []byte) []byte {
+		b = bytes.Replace(b, typeRaster, typefaceLine(t, "DELIVERY", iconCar, dots), 1)
+		return bytes.Replace(b, []byte(num), []byte("Order # 100"), 1)
+	}
+	tagged := drinks
+	tagged.Items = nil
+	for _, it := range drinks.Items {
+		it.Children = append([]order.LineItem(nil), it.Children...)
+		if isDrink[it.Name] {
+			it.Name += "  #####"
+		}
+		for i, c := range it.Children {
+			if isDrink[c.Name] {
+				it.Children[i].Name += " #####"
+			}
+		}
+		tagged.Items = append(tagged.Items, it)
+	}
+	out["drinks_hashtags"] = finalOf(firstCopy(t, BuildDeliveryCopies(tagged, sc, prefs, printer.Paper{Cols: cols})))
+	plainDrinks := finalOf(firstCopy(t, BuildDeliveryCopies(drinks, sc, prefs, printer.Paper{Cols: cols})))
+	out["drinks_invert"] = invertLines(plainDrinks, cols, func(text string) bool {
+		for d := range isDrink {
+			if strings.Contains(strings.ToLower(text), strings.ToLower(slipItemName("", d))) ||
+				strings.Contains(strings.ToLower(text), strings.ToLower(d)) {
+				return true
+			}
+		}
+		return false
+	})
 	for name, b := range out {
 		if err := os.WriteFile(filepath.Join(dir, name+".bin"), b, 0o644); err != nil {
 			t.Fatal(err)
@@ -179,6 +226,32 @@ func fontRegOnce() *opentype.Font {
 		fontBold, _ = opentype.Parse(gobold.TTF)
 	})
 	return fontReg
+}
+
+// invertLines prints every text line that drink matches white on black,
+// padded to the paper's width so the band spans the whole line. Only plain
+// lines (escape codes before the text) are touched; pictures are left alone.
+func invertLines(b []byte, cols int, drink func(string) bool) []byte {
+	parts := bytes.Split(b, []byte(cmdFeed))
+	for i, p := range parts {
+		if bytes.Contains(p, []byte("\x1dv0")) {
+			continue
+		}
+		// split the leading escape codes (ESC x n / GS x n) from the text
+		j := 0
+		for j+2 < len(p) && (p[j] == 0x1b || p[j] == 0x1d) {
+			j += 3
+		}
+		text := string(p[j:])
+		if text == "" || strings.ContainsAny(text, "\x1b\x1d") || !drink(text) {
+			continue
+		}
+		if pad := cols - len([]rune(text)); pad > 0 {
+			text += strings.Repeat(" ", pad)
+		}
+		parts[i] = []byte(string(p[:j]) + cmdInvertOn + text + cmdInvertOff)
+	}
+	return bytes.Join(parts, []byte(cmdFeed))
 }
 
 // firstCopy is the slip up to and including its first paper cut (the Merchant Copy).
