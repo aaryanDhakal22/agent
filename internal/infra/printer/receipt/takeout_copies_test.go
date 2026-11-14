@@ -10,9 +10,10 @@ import (
 
 // main's takeout_two_copies (Store › Settings › Receipts and printing, the
 // owner 2026-11-13; contract agent §2.10ah): a pickup's customer receipt
-// prints two copies (each cut) when on, one when off; the receipt Copies
-// still counts (max); a reprint, a counter (dine-in) order, a delivery's
-// Merchant + Customer Copy and a kitchen ticket don't change.
+// prints two copies (each cut) when on, one when off, and a counter order's
+// too (the owner 2026-11-14); the receipt Copies still counts (max); a
+// reprint, a delivery's Merchant + Customer Copy and a kitchen ticket don't
+// change.
 func TestTakeoutTwoCopies(t *testing.T) {
 	sc := previewStore()
 	on := prefsWith(func(p *order.ReceiptPrefs) { p.TakeoutTwoCopies = true })
@@ -57,11 +58,25 @@ func TestTakeoutTwoCopies(t *testing.T) {
 		t.Errorf("reprint: %d copies, want 1", n)
 	}
 
-	// A counter (dine-in) order: unchanged.
-	counter := previewPickup()
-	counter.Source, counter.Fulfillment.Type = order.SourceCounter, "dine_in"
-	if a, b := Build(counter, sc, printer.Ticket{Kind: printer.TicketReceipt}, off), Build(counter, sc, printer.Ticket{Kind: printer.TicketReceipt}, on); !bytes.Equal(a, b) {
-		t.Error("a counter order prints one customer receipt whatever takeout_two_copies says")
+	// A counter order (the owner 2026-11-14: "all the counter orders ... always
+	// prints like 2 receipts"): two too, a reprint one.
+	for _, c := range []struct{ src, typ string }{{order.SourceCounter, "dine_in"}, {order.SourceCounter, "counter"}, {"pos", "dine_in"}, {"", "counter"}} {
+		counter := previewPickup()
+		counter.Source, counter.Fulfillment.Type = c.src, c.typ
+		tk := printer.Ticket{Kind: printer.TicketReceipt}
+		one, two := Build(counter, sc, tk, off), Build(counter, sc, tk, on)
+		if !bytes.Equal(two, append(append([]byte{}, one...), one...)) {
+			t.Errorf("counter order %+v: two copies when on", c)
+		}
+		if n := CustomerCopies(counter, printer.Ticket{Kind: printer.TicketReceipt, Reprint: true}, on); n != 1 {
+			t.Errorf("counter order %+v reprint: %d copies, want 1", c, n)
+		}
+	}
+	// An online dine-in order (not rung at the counter): unchanged.
+	dine := previewPickup()
+	dine.Source, dine.Fulfillment.Type = order.SourceOnline, "dine_in"
+	if n := CustomerCopies(dine, printer.Ticket{Kind: printer.TicketReceipt}, on); n != 1 {
+		t.Errorf("online dine-in: %d copies, want 1", n)
 	}
 
 	// A delivery: its Merchant + Customer Copy, unchanged (and its plain receipt too).
